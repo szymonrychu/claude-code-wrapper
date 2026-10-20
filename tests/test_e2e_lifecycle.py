@@ -546,7 +546,7 @@ async def test_full_lifecycle_events_and_hooks(e2e: E2E) -> None:
 
     created = e2e.hooks("onCreate", lambda p: p["session_id"] == sid)
     assert len(created) == 1 and created[0]["data"]["state"] == "ready"
-    turn = e2e.hooks("onTurn", lambda p: p["session_id"] == sid)
+    turn = e2e.hooks("onTurn", of_turn)
     assert len(turn) == 1 and turn[0]["data"]["text"].startswith(LIFECYCLE_PROMPT)
     tools = [p["data"]["tool_name"] for p in e2e.hooks("onAgentToolCall") if of_turn(p)]
     assert tools == ["Bash", "Write"]

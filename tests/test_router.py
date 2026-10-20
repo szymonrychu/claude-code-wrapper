@@ -48,6 +48,7 @@ class StubSession:
         self.interrupt_result: str | None = None
         self.reject: str | None = None
         self.state = "ready"
+        self.submitted_turn_ids: list[str | None] = []
 
     @property
     def current_turn(self):
@@ -69,12 +70,13 @@ class StubSession:
         self.calls.append(("complete", payload, usage, model_tokens, marker_turn_id))
         return self.complete_result
 
-    async def submit(self, text, *, origin="client", callback_url=None):
+    async def submit(self, text, *, origin="client", callback_url=None, turn_id=None):
         if self.reject:
             raise TurnRejected(self.reject)
         self.calls.append(("submit", text, origin, callback_url))
+        self.submitted_turn_ids.append(turn_id)
         self.turn = TurnRecord(
-            turn_id="turn-1",
+            turn_id=turn_id or "turn-1",
             session_id=SID,
             origin=origin,
             text=text,
@@ -385,6 +387,21 @@ async def test_on_turn_complete_fires_for_every_terminal_state(tmp_path, state):
     await h.router.close()
 
 
+async def test_on_turn_complete_envelope_carries_the_finished_turn_id(tmp_path):
+    # The turn is no longer current once it finished: the envelope names it from its record.
+    h = Harness(tmp_path, hooks={"onTurnComplete": [webhook()]})
+    h.session.turn = None
+    h.session.complete_result = completed_record(turn_id="turn-done")
+    await h.router.handle_claude_hook("Stop", {})
+    h.router.on_turn_end(completed_record(turn_id="turn-failed", state="failed"))
+    await h.router.drain()
+    assert [(p["turn_id"], p["data"]["turn_id"]) for p in h.hook_posts] == [
+        ("turn-done", "turn-done"),
+        ("turn-failed", "turn-failed"),
+    ]
+    await h.router.close()
+
+
 async def test_on_turn_end_completed_does_nothing(h):
     h.router.on_turn_end(completed_record())
     await h.router.drain()
@@ -511,11 +528,11 @@ async def test_submit_turn_writes_files_and_emits(h):
     rec = await h.router.submit_turn(
         f"hello {SECRET}", files={"a/b.txt": "x"}, callback_url="http://c", origin="client"
     )
-    assert rec.turn_id == "turn-1"
+    assert rec.turn_id.startswith("turn-") and h.session.submitted_turn_ids == [rec.turn_id]
     assert (h.workdir / "a" / "b.txt").read_text() == "x"
     assert h.calls("submit") == [("submit", f"hello {SECRET}", "client", "http://c")]
     (ev,) = h.events("turn_started")
-    assert ev.data["turn_id"] == "turn-1" and SECRET not in ev.data["text"]
+    assert ev.data["turn_id"] == rec.turn_id and SECRET not in ev.data["text"]
     assert h.router.tailer is not None
 
 
@@ -528,6 +545,16 @@ async def test_on_turn_veto_rejects_submit(tmp_path):
     assert h.events("turn_rejected")[0].data == {"reason": "not now"}
     assert not h.calls("submit") and not (h.workdir / "f.txt").exists()
     assert h.hook_posts[0]["data"] == {"text": "hi", "files": ["f.txt"], "origin": "client"}
+    await h.router.close()
+
+
+async def test_on_turn_envelope_carries_the_new_turn_id(tmp_path):
+    # onTurn fires before the turn exists: the router allocates the id and the turn uses it.
+    h = Harness(tmp_path, hooks={"onTurn": [webhook()]})
+    rec = await h.router.submit_turn("hi")
+    (post,) = h.hook_posts
+    assert post["event"] == "onTurn" and post["turn_id"].startswith("turn-")
+    assert rec.turn_id == post["turn_id"] and h.session.submitted_turn_ids == [rec.turn_id]
     await h.router.close()
 
 
@@ -544,6 +571,7 @@ async def test_interrupt_fires_on_interrupt(tmp_path):
     assert await h.router.interrupt() == "turn-1"
     assert h.events("interrupted")[0].data == {"turn_id": "turn-1"}
     assert h.hook_posts[0]["event"] == "onInterrupt"
+    assert h.hook_posts[0]["turn_id"] == "turn-1"  # the interrupted turn, not the current one
     h.session.interrupt_result = None
     assert await h.router.interrupt() is None
     assert len(h.events("interrupted")) == 1

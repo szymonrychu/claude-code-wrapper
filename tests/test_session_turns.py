@@ -238,6 +238,15 @@ async def test_submit_writes_paste_then_cr_and_marker(harness: Harness) -> None:
     assert plain.text == "no marker please"
 
 
+async def test_submit_uses_a_preallocated_turn_id(harness: Harness) -> None:
+    session = await harness.start({"turns": [{"match": "hello", "steps": [{"text": "hi"}]}]})
+    record = await session.submit("hello again", turn_id="turn-preallocated")
+    assert record.turn_id == "turn-preallocated"
+    assert harness.store.current is not None
+    assert harness.store.current.turn_id == "turn-preallocated"
+    assert harness.writes[0] == paste_bytes("hello again" + marker("turn-preallocated"))
+
+
 async def test_submit_busy_rejected(harness: Harness) -> None:
     session = await harness.start({"turns": [{"match": "slow", "steps": [{"sleep": 30}]}]})
     record = await session.submit("slow one")

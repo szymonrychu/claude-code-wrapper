@@ -47,7 +47,7 @@ from .transcript import (
     UserPrompt,
 )
 from .transcript import Event as TranscriptEvent
-from .turns import TERMINAL_STATES, Origin, TurnRecord, TurnStore
+from .turns import TERMINAL_STATES, Origin, TurnRecord, TurnStore, new_turn_id
 from .workdir import safe_write_files
 
 log = logging.getLogger(__name__)
@@ -199,15 +199,22 @@ class SessionRouter(SessionListener):
             await asyncio.wait(pending, timeout=timeout)
 
     async def _fire(
-        self, event: str, data: Mapping[str, Any], *, tool_name: str | None = None
+        self,
+        event: str,
+        data: Mapping[str, Any],
+        *,
+        tool_name: str | None = None,
+        turn_id: str | None = None,
     ) -> HookOutcome:
+        """Run `event`'s hooks; the envelope names `turn_id`, else the running turn."""
         try:
-            current = self.session.current_turn
+            if turn_id is None and (current := self.session.current_turn) is not None:
+                turn_id = current.turn_id
             payload = build_payload(
                 event,
                 session_id=self.info.session_id,
                 claude_session_id=self.info.claude_session_id,
-                turn_id=current.turn_id if current is not None else None,
+                turn_id=turn_id,
                 workdir=self.info.workdir,
                 data=data,
             )
@@ -406,7 +413,9 @@ class SessionRouter(SessionListener):
 
     async def _after_turn(self, record: TurnRecord, event: LogEvent) -> None:
         """onTurnComplete (any terminal state) and the callback delivery."""
-        await self._fire("onTurnComplete", record.model_dump(mode="json", by_alias=True))
+        await self._fire(
+            "onTurnComplete", record.model_dump(mode="json", by_alias=True), turn_id=record.turn_id
+        )
         self._deliver(self._callback_url(record), event)
 
     async def submit_turn(
@@ -417,8 +426,11 @@ class SessionRouter(SessionListener):
         callback_url: str | None = None,
         origin: Origin = "client",
     ) -> TurnRecord:
+        turn_id = new_turn_id()
         outcome = await self._fire(
-            "onTurn", {"text": text, "files": list((files or {}).keys()), "origin": origin}
+            "onTurn",
+            {"text": text, "files": list((files or {}).keys()), "origin": origin},
+            turn_id=turn_id,
         )
         if outcome.decision == "deny":
             reason = outcome.reason or DEFAULT_DENY_REASON
@@ -432,9 +444,7 @@ class SessionRouter(SessionListener):
                 max_files=self._cfg.limits.max_files_per_turn,
             )
         record = await self.session.submit(
-            text,
-            origin=origin,
-            callback_url=callback_url,
+            text, origin=origin, callback_url=callback_url, turn_id=turn_id
         )
         self._usage.reset()
         self._emit(
@@ -447,7 +457,7 @@ class SessionRouter(SessionListener):
         turn_id = await self.session.interrupt()
         if turn_id is not None:
             self._emit("interrupted", {"turn_id": turn_id})
-            await self._fire("onInterrupt", {"turn_id": turn_id})
+            await self._fire("onInterrupt", {"turn_id": turn_id}, turn_id=turn_id)
         return turn_id
 
     # ------------------------------------------------------------------ transcript events

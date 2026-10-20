@@ -608,10 +608,16 @@ class Session:
         return self.pty
 
     async def submit(
-        self, text: str, *, origin: Origin = "client", callback_url: str | None = None
+        self,
+        text: str,
+        *,
+        origin: Origin = "client",
+        callback_url: str | None = None,
+        turn_id: str | None = None,
     ) -> TurnRecord:
         """Start a turn: reserve the slot, persist the record, then paste and CR.
 
+        `turn_id` is an id allocated earlier (the router names it in the onTurn payload).
         Raises `TurnRejected` (booting, dead, busy). A claude that exits under the write fails
         the turn with `claude_exited`; the record is returned either way.
         """
@@ -620,7 +626,7 @@ class Session:
             raise TurnRejected("busy")
         now = now_iso()
         record = TurnRecord(
-            turn_id=new_turn_id(),
+            turn_id=turn_id or new_turn_id(),
             session_id=self.spec.session_id,
             origin=origin,
             state="running",
