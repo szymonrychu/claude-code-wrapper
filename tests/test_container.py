@@ -54,9 +54,10 @@ def test_dockerfile_installs_required_tools():
     assert "MISE_TRUSTED_CONFIG_PATHS=/workdir" in code
     path = re.search(r"PATH=(\S+)", code)
     assert path
-    assert "/opt/mise/shims" in path.group(1) and "/app/.venv/bin" in path.group(1)
-    # Debian's /etc/profile resets PATH for login shells: ccw must be linked and shims re-added.
-    assert "/usr/local/bin/ccw " in code and "/usr/local/bin/ccw-hook" in code
+    assert "/opt/mise/shims" in path.group(1)
+    # Debian's /etc/profile resets PATH for login shells: pip puts ccw in /usr/local/bin, which
+    # survives; the mise shims are re-added.
+    assert "/usr/local/bin" in path.group(1)
     assert "/etc/profile.d/" in code
 
 
@@ -70,8 +71,9 @@ def test_dockerfile_runtime_shape():
     assert "FROM python:3.12-slim-bookworm AS builder" in DOCKERFILE
     assert "FROM python:3.12-slim-bookworm AS runtime" in DOCKERFILE
     assert "trixie" not in DOCKERFILE
-    assert "uv sync --frozen --no-dev" in DOCKERFILE
-    assert "COPY config.example.yaml /app/config.example.yaml" in DOCKERFILE
+    assert "uv build --wheel" in DOCKERFILE
+    assert "pip install --no-cache-dir /tmp/dist/*.whl" in DOCKERFILE
+    assert not re.search(r"^(?:COPY|WORKDIR|ENV|RUN).*(?:/app\b|\.venv)", DOCKERFILE, re.M)
     for d in ("/workdir", "/sessions", "/opt/mise", "/etc/ccw"):
         assert d in DOCKERFILE
     assert "EXPOSE 8080" in DOCKERFILE

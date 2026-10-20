@@ -36,6 +36,55 @@ Callbacks: a session (`callbackUrl` in the create body) or an individual turn (`
 turn body) can name a URL that receives a signed POST of the event envelope when a turn reaches a
 terminal state and when Claude asks a question. See [Callbacks](#callbacks).
 
+## Installation
+
+`ccw` is a normal Python package (Python >= 3.12). Installing it puts two commands on `PATH`:
+`ccw` (the service CLI) and `ccw-hook` (the Claude Code hook relay the service wires into each
+session's `settings.json`, by absolute path).
+
+```bash
+pip install claude-code-wrapper                         # from a package index
+pip install git+https://github.com/szymonrychu/claude-code-wrapper   # straight from git
+pip install .                                           # from a checkout
+pipx install claude-code-wrapper                        # isolated, on PATH
+uv tool install claude-code-wrapper                     # same, with uv
+
+ccw --version
+```
+
+### Containerless host
+
+Prerequisites on `PATH`: the `claude` CLI (`npm install -g @anthropic-ai/claude-code`, or the
+binary named in `claude.binary`), `git`, and optionally `mise` for the `mise:` section.
+`ccw serve` checks `claude` and `git` at startup and exits with a clear message if either is
+missing.
+
+```bash
+ccw config example > config.yaml        # the bundled example config
+export CCW_WORKDIR_ROOT=$HOME/ccw/workdir CCW_SESSIONS_ROOT=$HOME/ccw/sessions
+export MISE_DATA_DIR=$HOME/.local/share/mise   # only when using mise
+mkdir -p "$CCW_WORKDIR_ROOT" "$CCW_SESSIONS_ROOT"
+ccw serve --config config.yaml
+```
+
+Container-specific paths all come from config. The example sets `paths.workdir_root` and
+`paths.sessions_root` from `CCW_WORKDIR_ROOT` (default `/workdir`) and `CCW_SESSIONS_ROOT`
+(default `/sessions`), `mise.trusted_paths` from `CCW_WORKDIR_ROOT`, and
+`mise.global_config_path` under `$HOME`; the mise data directory is mise's own `MISE_DATA_DIR`.
+
+### Custom Docker image
+
+```dockerfile
+FROM python:3.12-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends git nodejs npm \
+ && npm install -g @anthropic-ai/claude-code
+RUN pip install --no-cache-dir claude-code-wrapper     # or: pip install /tmp/*.whl
+CMD ["ccw", "serve"]
+```
+
+The repository's own `Dockerfile` builds a wheel in a builder stage (`uv build --wheel`) and
+`pip install`s it into the runtime image.
+
 ## Trust model
 
 This is an internal backend service. Run it cluster-internal only (for example in Kubernetes) and
@@ -1058,8 +1107,7 @@ curl -fsS -X DELETE localhost:8080/v1/sessions/$SID -H "$H"   # keeps files; add
 ```
 
 See [API reference](#api-reference) for the exact bodies and [Events (SSE)](#events-sse) for the
-stream. Without Docker: `mise run install && mise run run` serves `config.example.yaml` locally
-(the paths `/workdir` and `/sessions` must then be writable, or point `paths.*` elsewhere).
+stream. Without Docker see [Installation](#installation).
 
 ## Configuration reference
 

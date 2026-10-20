@@ -3,6 +3,7 @@
 import copy
 import json
 import shlex
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -41,8 +42,17 @@ def relay_timeouts(cfg: Config) -> RelayTimeouts:
 
 
 def default_relay_command() -> str:
+    """Absolute path of the installed `ccw-hook`, never repo-relative.
+
+    Prefers the script beside the running interpreter (the venv the service was installed in),
+    then PATH, then `python -m claude_code_wrapper.hook_relay` with this interpreter."""
     sibling = Path(sys.executable).parent / "ccw-hook"
-    return str(sibling) if sibling.exists() else "ccw-hook"
+    if sibling.exists():
+        return str(sibling)
+    found = shutil.which("ccw-hook")
+    if found:
+        return str(Path(found).absolute())
+    return f"{shlex.quote(sys.executable)} -m claude_code_wrapper.hook_relay"
 
 
 def _is_relay(hook: Any, relay: str) -> bool:
