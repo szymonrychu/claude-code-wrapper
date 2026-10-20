@@ -167,7 +167,7 @@ class EventLog:
 
     def _read_file(self) -> Iterator[Event]:
         try:
-            fh = self.path.open(encoding="utf-8")
+            fh = self.path.open(encoding="utf-8", errors="replace")
         except OSError:
             return
         with fh:

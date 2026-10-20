@@ -253,3 +253,15 @@ async def test_rotation_failure_keeps_log_writable(tmp_path, monkeypatch):
     assert calls["n"] >= 2
     last = json.loads(p.read_text().splitlines()[-1])
     assert last["seq"] == 30
+
+
+async def test_corrupt_tail_mid_multibyte(tmp_path):
+    p = tmp_path / "e.jsonl"
+    log = EventLog(p, "s1")
+    log.append("probe", {"t": "zażółć"})
+    log.close()
+    with p.open("ab") as f:
+        f.write('{"seq": 2, "data": "ż'.encode()[:-1])
+    log2 = EventLog(p, "s1")
+    assert log2.append("probe", {}).seq == 2
+    assert [e.seq for e in log2.page()[0]][:1] == [1]
