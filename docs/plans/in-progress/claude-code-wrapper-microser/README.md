@@ -44,3 +44,12 @@ Estimate: 2310 min | Actual: 67 min | Remaining estimate: 0 min
 ## Review
 
 Filled when the epic reaches stage `review`: the verdict, the findings acted on, the findings dropped.
+
+Verdict: pass (2026-10-20)
+
+Epic review on main 5d980a3.
+- Full suite: 603 passed, 1 warning in 215.56s; lint: All checks passed!, 122 files already formatted; docker build + `ccw check-config --config /app/config.example.yaml` exit 0.
+- Scope audit (auditOnly run wf_ff8ba4b1-478): 16/19 approvals landed; A2/A5/A6 gaps (image example config, home-seed AC test names) fixed by audit-fixes-container-home-s.
+- Security review: safe to push history public. Acted on: empty auth_token refused unless server.allow_anonymous; compose requires token and binds 127.0.0.1 (review-fixes-auth-compose). Dropped (by design, trust model D23): /metrics unauthenticated for in-cluster scrape; command hooks receive the service env (operator-authored). Noted only: gh/glab download checksums, base image digest pin.
+- Whole-diff review: pass; acted on duplicated timestamp helper (unified Z format), duplicated _squash/_out, missing guard.sh example, duplicate example config (review-fixes-dedupe-helpers), plus the preflight test regression the auth change caused.
+- Process gaps (workbench plugin, not this repo): plan-execute passes `--prev-head unknown` to verify-task after a verifier death (workflows/plan-execute.js:1022), escalating claude-env-model, e2e-lifecycle, pip-package; orchestrator re-verified each with verify-task.py on HEAD. Rebased merges broke ticket.py _task_merged (fixed by plain --no-ff merges).
