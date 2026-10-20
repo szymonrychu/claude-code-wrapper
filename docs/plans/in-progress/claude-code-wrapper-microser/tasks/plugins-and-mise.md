@@ -44,6 +44,9 @@ tooling.py:
 Settled by the builder check (binding):
 - A plugin counts as installed and enabled when its id is present in `claude plugin list --json` (the `enabled` field is not consulted).
 
+
+- Run 3: add the two missing tests (AC13, AC14) with small shell-script stubs written to tmp_path (as test_timeout does); do not rely on the shared fake claude for these.
+
 ## Acceptance conditions
 
 - AC1: Missing marketplaces are added and plugins installed with -y --json [evidence: test:tests/test_plugins.py::test_adds_missing_marketplace_and_installs]
@@ -58,6 +61,8 @@ Settled by the builder check (binding):
 - AC10: install_workdir does nothing without a mise config [evidence: test:tests/test_tooling.py::test_install_workdir_noop_without_config]
 - AC11: A required mise failure raises ToolingError [evidence: test:tests/test_tooling.py::test_failure_required_raises]
 - AC12: mise_env exposes the vars the claude child needs [evidence: test:tests/test_tooling.py::test_mise_env_vars]
+- AC13: Post-install check is tested: a stub `claude` shell script whose final `plugin list` omits a required plugin id makes install raise PluginInstallError(id, 0, ...); the same omission for an optional plugin moves it from `installed` to a warning [evidence: test:tests/test_plugins.py::test_post_install_check_required_missing_raises_optional_warns]
+- AC14: Child stdin is closed: a stub script that reads stdin and records whether it saw EOF proves every plugin/mise subprocess runs with stdin=DEVNULL [evidence: test:tests/test_plugins.py::test_subprocess_stdin_is_closed]
 
 ## Files
 
@@ -88,3 +93,5 @@ A session's config dir gets the configured marketplaces and plugins (the workben
 - mise facts: `mise install` trusts its active config; `MISE_TRUSTED_CONFIG_PATHS` covers workdirs; keep MISE_DATA_DIR outside a mounted HOME.
 
 - 2026-10-20 run claude-code-wrapper-microser: dependency-failed on config-models
+
+- 2026-10-20 amended: run2 no-progress: two real test-coverage findings; made explicit ACs
