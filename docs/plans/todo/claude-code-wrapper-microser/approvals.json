@@ -216,5 +216,18 @@
       "container"
     ],
     "status": "approved"
+  },
+  {
+    "id": "A16",
+    "text": "onTurnComplete fires for every terminal turn state (completed, failed, interrupted, timeout) with state in its data; turn completion callbacks follow the same rule. Orchestrator call, the user did not object.",
+    "decisions": [
+      "D22"
+    ],
+    "tasks": [
+      "event-router",
+      "readme-api",
+      "e2e-lifecycle"
+    ],
+    "status": "approved"
   }
 ]

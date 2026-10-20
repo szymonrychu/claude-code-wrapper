@@ -459,6 +459,9 @@ AskUserQuestion is forwarded by default: the PreToolUse relay denies it with gui
 ### D21: Third named volume mise
 docker-compose.yml declares a third named volume mise mounted at /opt/mise next to workdir and sessions. (user decision)
 
+### D22: onTurnComplete fires for every terminal turn state
+onTurnComplete fires for every terminal turn state (completed, failed, interrupted, timeout) with state in its data; turn completion callbacks follow the same rule. Orchestrator call, the user did not object. (user decision)
+
 ## Research
 
 | Lens | Ran or skipped | Adopted | Rejected |
@@ -550,6 +553,7 @@ docker-compose.yml declares a third named volume mise mounted at /opt/mise next 
 | D19 DELETE keeps files unless purge=true | session-manager, api-sessions |
 | D20 Forward AskUserQuestion and POST it to callbackUrl | event-router, api-sessions, api-turns-events, session-turns, session-manager, readme-api, e2e-lifecycle |
 | D21 Third named volume mise | container |
+| D22 onTurnComplete fires for every terminal turn state | event-router, readme-api, e2e-lifecycle |
 
 ## Contracts
 
