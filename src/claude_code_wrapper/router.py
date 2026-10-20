@@ -30,6 +30,7 @@ from .events import Event as LogEvent
 from .events import EventLog
 from .hook_relay import RelayResponse, deny_output
 from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload
+from .metrics import Metrics
 from .redact import Redactor
 from .session import Session, SessionListener
 from .transcript import (
@@ -46,7 +47,7 @@ from .transcript import (
     UserPrompt,
 )
 from .transcript import Event as TranscriptEvent
-from .turns import TERMINAL_STATES, Origin, TurnRecord, TurnStore
+from .turns import TERMINAL_STATES, Origin, TurnRecord, TurnStore, new_turn_id
 from .workdir import safe_write_files
 
 log = logging.getLogger(__name__)
@@ -129,7 +130,9 @@ class SessionRouter(SessionListener):
         cfg: Config,
         *,
         session_info: SessionInfo | Mapping[str, Any],
+        metrics: Metrics | None = None,
     ) -> None:
+        self._metrics = metrics
         self._session = session
         self._event_log = event_log
         self._dispatcher = dispatcher
@@ -196,15 +199,22 @@ class SessionRouter(SessionListener):
             await asyncio.wait(pending, timeout=timeout)
 
     async def _fire(
-        self, event: str, data: Mapping[str, Any], *, tool_name: str | None = None
+        self,
+        event: str,
+        data: Mapping[str, Any],
+        *,
+        tool_name: str | None = None,
+        turn_id: str | None = None,
     ) -> HookOutcome:
+        """Run `event`'s hooks; the envelope names `turn_id`, else the running turn."""
         try:
-            current = self.session.current_turn
+            if turn_id is None and (current := self.session.current_turn) is not None:
+                turn_id = current.turn_id
             payload = build_payload(
                 event,
                 session_id=self.info.session_id,
                 claude_session_id=self.info.claude_session_id,
-                turn_id=current.turn_id if current is not None else None,
+                turn_id=turn_id,
                 workdir=self.info.workdir,
                 data=data,
             )
@@ -323,6 +333,8 @@ class SessionRouter(SessionListener):
         data = {"tool_use_id": tool_use_id, "tool_name": tool_name, "tool_input": tool_input}
         self._emit("tool_call", data)
         outcome = await self._fire("onAgentToolCall", data, tool_name=tool_name)
+        if self._metrics is not None:
+            self._metrics.tool_call(tool_name, "deny" if outcome.decision == "deny" else "allow")
         if outcome.decision == "deny":
             reason = outcome.reason or DEFAULT_DENY_REASON
             self._emit(
@@ -373,7 +385,11 @@ class SessionRouter(SessionListener):
             marker_turn_id=self._last_marker,
         )
         self._usage.reset()
+        if self._metrics is not None:
+            self._metrics.tokens(per_model)
         if record is not None:
+            if self._metrics is not None:
+                self._metrics.turn_finished(record)
             event = self._emit_turn_event("turn_completed", record)
             await self._after_turn(record, event)
         return _allow()
@@ -397,7 +413,9 @@ class SessionRouter(SessionListener):
 
     async def _after_turn(self, record: TurnRecord, event: LogEvent) -> None:
         """onTurnComplete (any terminal state) and the callback delivery."""
-        await self._fire("onTurnComplete", record.model_dump(mode="json", by_alias=True))
+        await self._fire(
+            "onTurnComplete", record.model_dump(mode="json", by_alias=True), turn_id=record.turn_id
+        )
         self._deliver(self._callback_url(record), event)
 
     async def submit_turn(
@@ -408,8 +426,11 @@ class SessionRouter(SessionListener):
         callback_url: str | None = None,
         origin: Origin = "client",
     ) -> TurnRecord:
+        turn_id = new_turn_id()
         outcome = await self._fire(
-            "onTurn", {"text": text, "files": list((files or {}).keys()), "origin": origin}
+            "onTurn",
+            {"text": text, "files": list((files or {}).keys()), "origin": origin},
+            turn_id=turn_id,
         )
         if outcome.decision == "deny":
             reason = outcome.reason or DEFAULT_DENY_REASON
@@ -423,9 +444,7 @@ class SessionRouter(SessionListener):
                 max_files=self._cfg.limits.max_files_per_turn,
             )
         record = await self.session.submit(
-            text,
-            origin=origin,
-            callback_url=callback_url,
+            text, origin=origin, callback_url=callback_url, turn_id=turn_id
         )
         self._usage.reset()
         self._emit(
@@ -438,7 +457,7 @@ class SessionRouter(SessionListener):
         turn_id = await self.session.interrupt()
         if turn_id is not None:
             self._emit("interrupted", {"turn_id": turn_id})
-            await self._fire("onInterrupt", {"turn_id": turn_id})
+            await self._fire("onInterrupt", {"turn_id": turn_id}, turn_id=turn_id)
         return turn_id
 
     # ------------------------------------------------------------------ transcript events
@@ -506,6 +525,8 @@ class SessionRouter(SessionListener):
                 "restart": {"count": count, "resumed": resumed},
             },
         )
+        if self._metrics is not None:
+            self._metrics.claude_restart()
         message = f"claude restarted (restart {count}, {'resumed' if resumed else 'fresh'})"
         self._spawn(self._fire("onError", {"kind": "restart", "message": message, "count": count}))
 
@@ -520,10 +541,14 @@ class SessionRouter(SessionListener):
         # Completed turns are finished by the Stop hook handler, which also has the usage.
         if record.state == "completed" or record.state not in TERMINAL_STATES:
             return
+        if self._metrics is not None:
+            self._metrics.turn_finished(record)
         event = self._emit_turn_event("turn_failed", record)
         self._spawn(self._after_turn(record, event))
 
     def on_hook_result(self, result: ActionResult) -> None:
+        if self._metrics is not None:
+            self._metrics.hook_action(result.event, result.type, result.ok)
         self._emit(
             "hook_result",
             {

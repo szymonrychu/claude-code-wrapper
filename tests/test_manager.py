@@ -874,6 +874,19 @@ async def test_open_event_log_and_turns_for_stopped_session(world: World) -> Non
             fn("ses_ffffffffffff")
 
 
+async def test_transcript_path_live_and_stopped(world: World) -> None:
+    m = world.manager(world.cfg())
+    snap = await m.create(CreateSessionRequest(prompt="hi"))
+    sid = snap["session_id"]
+    await wait_turn(m, sid)
+    live = m.transcript_path(sid)
+    assert live == m.router(sid).session.transcript_path
+    await m.destroy(sid)
+    assert m.transcript_path(sid) == live
+    with pytest.raises(SessionNotFound):
+        m.transcript_path("ses_ffffffffffff")
+
+
 async def test_snapshot_state_vocabulary(world: World, tmp_path: Path) -> None:
     gate = tmp_path / "gate"
     cfg = world.cfg(

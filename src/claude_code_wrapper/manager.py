@@ -47,6 +47,7 @@ from .claude_env import SECRET_KEY_RE, ClaudeEnv
 from .config import Config, InitialPromptTemplate
 from .events import EventLog
 from .hooks import RETRY_BASE_SECONDS, HookDispatcher, HookOutcome, build_payload
+from .metrics import Metrics
 from .plugins import install_plugins
 from .prompts import render_template, resolve_prompt
 from .redact import Redactor
@@ -259,7 +260,9 @@ class SessionManager:
         redactor: Redactor,
         relay_command: str | None = None,
         reaper_interval: float = REAPER_INTERVAL_SECONDS,
+        metrics: Metrics | None = None,
     ) -> None:
+        self.metrics = metrics
         self.cfg = cfg
         self.internal_url = internal_url
         self.service_env = dict(service_env)
@@ -310,6 +313,23 @@ class SessionManager:
         if ctx is None or not token:
             return False
         return hmac.compare_digest(ctx.hook_token.encode(), token.encode())
+
+    def transcript_path(self, session_id: str) -> str | None:
+        """The main transcript file: the live session's, else the persisted layout's."""
+        ctx = self._active.get(session_id)
+        if ctx is not None and ctx.session is not None:
+            return str(ctx.session.transcript_path)
+        meta = self._read_meta(session_id)
+        claude_sid = meta.get("claude_session_id")
+        if not claude_sid:
+            return None
+        return str(
+            self._session_dir(session_id)
+            / "config"
+            / "projects"
+            / PROJECT_DIR_NAME
+            / f"{claude_sid}.jsonl"
+        )
 
     def open_event_log(self, session_id: str) -> EventLog:
         """The live EventLog, else a read-only one opened from the session dir."""
@@ -403,6 +423,7 @@ class SessionManager:
             await self._bootstrap(ctx)
             await self._launch(ctx, resume=False)
         except _StepFailed as exc:
+            self._count_created("failed")
             raise await self._fail(ctx, exc, "create_failed") from exc.cause
         except asyncio.CancelledError:
             await asyncio.shield(self._abandon(ctx))
@@ -413,7 +434,12 @@ class SessionManager:
             self._set_step(ctx, "initial_prompt")
             self._track(ctx, self._initial_turn(ctx, initial))
         self._set_step(ctx, "ready")
+        self._count_created("ok")
         return self._snapshot(ctx)
+
+    def _count_created(self, result: str) -> None:
+        if self.metrics is not None:
+            self.metrics.sessions_created(result)
 
     def _initial_prompt(self, req: CreateSessionRequest) -> str | None:
         text = resolve_prompt(
@@ -502,6 +528,8 @@ class SessionManager:
             await self._teardown(ctx, self.cfg.limits.shutdown_timeout_seconds)
             ctx.meta.update(state="stopped", error=None)
             self._finish(ctx)
+            if not resume:
+                self._count_created("vetoed")
             raise (ResumeVetoed if resume else CreateVetoed)(reason)
         ctx.phase = "running"
         ctx.activated = time.time()
@@ -595,6 +623,7 @@ class SessionManager:
                 workdir=str(ctx.workdir),
                 callback_url=meta.get("callbackUrl"),
             ),
+            metrics=self.metrics,
             on_state_change=lambda state: self._on_session_state(ctx, state),
         )
         spec = SessionSpec(
@@ -751,6 +780,8 @@ class SessionManager:
                 log.exception("session %s: closing the router failed", ctx.session_id)
         if self._active.get(ctx.session_id) is ctx:
             del self._active[ctx.session_id]
+            if self.metrics is not None:
+                self.metrics.session_closed()
 
     def _finish(self, ctx: _Active) -> None:
         """Persist the final metadata and close the event log."""
@@ -1005,6 +1036,8 @@ class SessionManager:
         self.redactor.add([*claude_env.secret_values(), ctx.hook_token])
         ctx.task = asyncio.current_task()
         self._active[ctx.session_id] = ctx
+        if self.metrics is not None:
+            self.metrics.session_opened()
         return ctx
 
     def _new_session_id(self) -> str:
