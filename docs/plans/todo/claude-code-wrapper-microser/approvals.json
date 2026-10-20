@@ -205,5 +205,16 @@
       "e2e-lifecycle"
     ],
     "status": "approved"
+  },
+  {
+    "id": "A15",
+    "text": "docker-compose.yml declares a third named volume mise mounted at /opt/mise next to workdir and sessions.",
+    "decisions": [
+      "D21"
+    ],
+    "tasks": [
+      "container"
+    ],
+    "status": "approved"
   }
 ]
