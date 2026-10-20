@@ -95,10 +95,18 @@ def test_serve_preflight_missing_binaries(tmp_path):
         capture_output=True,
         text=True,
         check=False,
+        timeout=60,
     )
     assert res.returncode != 0
     assert "definitely-not-claude-xyz" in res.stderr
     assert "PATH" in res.stderr
+
+
+def test_example_config_has_no_hardcoded_container_paths():
+    text = (ROOT / "config.example.yaml").read_text()
+    stripped = text.replace("${CCW_SESSIONS_ROOT:-/sessions}", "")
+    for line in stripped.splitlines():
+        assert "/sessions/" not in line, line
 
 
 def test_dockerfile_installs_wheel_via_pip():

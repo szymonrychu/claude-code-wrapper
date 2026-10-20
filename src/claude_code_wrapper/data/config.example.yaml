@@ -111,17 +111,17 @@ plugins:
 # matcher (regex, full match on the tool name) is only valid on onAgentToolCall and onToolResult.
 hooks:
   onCreate:                  # after claude is ready; a blocking deny aborts creation
-    - {type: command, run: "echo created $CCW_SESSION_ID >> /sessions/audit.log"}
+    - {type: command, run: "echo created $CCW_SESSION_ID >> ${CCW_SESSIONS_ROOT:-/sessions}/audit.log"}
   onResume: []               # after a resumed claude is ready; a blocking deny aborts resume
     # - {type: command, run: ./check-resume.sh, blocking: true, on_error: deny}
   onDestroy:                 # after claude stopped
-    - {type: command, run: "echo destroyed $CCW_SESSION_ID >> /sessions/audit.log"}
+    - {type: command, run: "echo destroyed $CCW_SESSION_ID >> ${CCW_SESSIONS_ROOT:-/sessions}/audit.log"}
   onTurn: []                 # before the prompt is pasted; a blocking deny vetoes the turn
     # - {type: webhook, url: "https://policy.example.com/turn", secret: "${HOOK_SECRET:-}", blocking: true}
   onTurnComplete: []         # every terminal turn state
     # - {type: webhook, url: "https://example.com/turn-done", secret: "${HOOK_SECRET:-}"}
   onAgentResponse: []        # assistant text from the transcript
-    # - {type: command, run: "jq -r .data.text >> /sessions/replies.log"}
+    # - {type: command, run: "jq -r .data.text >> ${CCW_SESSIONS_ROOT:-/sessions}/replies.log"}
   onAgentToolCall:           # PreToolUse; a blocking deny blocks the tool call
     - type: command
       run: "./guard.sh"
