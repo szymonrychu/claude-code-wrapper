@@ -267,7 +267,7 @@ async def test_corrupt_tail_mid_multibyte(tmp_path):
     assert [e.seq for e in log2.page()[0]][:1] == [1]
 
 
-async def test_rotation_survives_multibyte_corrupt_tail(tmp_path):
+async def test_rotation_survives_corrupt_tail(tmp_path):
     p = tmp_path / "e.jsonl"
     log = EventLog(p, "s1")
     log.append("probe", {})
