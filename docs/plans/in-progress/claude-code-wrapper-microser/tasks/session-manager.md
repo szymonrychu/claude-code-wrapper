@@ -1,6 +1,6 @@
 ---
 title: Session manager
-status: escalated
+status: done
 repo: claude-code-wrapper
 value: "Many independent sessions, destroyable and resumable by id"
 files: [src/claude_code_wrapper/manager.py, src/claude_code_wrapper/prompts.py, tests/test_manager.py, tests/test_prompts.py]
