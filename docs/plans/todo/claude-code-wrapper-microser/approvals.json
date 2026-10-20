@@ -229,5 +229,19 @@
       "e2e-lifecycle"
     ],
     "status": "approved"
+  },
+  {
+    "id": "A17",
+    "text": "Trust model: one wrapper instance per project or assignment; bearer-token callers are fully trusted. No workdir allowlist and no callback host policy. The service must not be exposed to untrusted callers, and the README says so.",
+    "decisions": [
+      "D23"
+    ],
+    "tasks": [
+      "readme-api",
+      "readme-config",
+      "api-sessions",
+      "api-turns-events"
+    ],
+    "status": "approved"
   }
 ]

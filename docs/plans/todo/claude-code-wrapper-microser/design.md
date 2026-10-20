@@ -462,6 +462,9 @@ docker-compose.yml declares a third named volume mise mounted at /opt/mise next 
 ### D22: onTurnComplete fires for every terminal turn state
 onTurnComplete fires for every terminal turn state (completed, failed, interrupted, timeout) with state in its data; turn completion callbacks follow the same rule. Orchestrator call, the user did not object. (user decision)
 
+### D23: Trust model: one instance per project, trusted callers
+Trust model: one wrapper instance per project or assignment; bearer-token callers are fully trusted. No workdir allowlist and no callback host policy. The service must not be exposed to untrusted callers, and the README says so. (user decision)
+
 ## Research
 
 | Lens | Ran or skipped | Adopted | Rejected |
@@ -554,6 +557,7 @@ onTurnComplete fires for every terminal turn state (completed, failed, interrupt
 | D20 Forward AskUserQuestion and POST it to callbackUrl | event-router, api-sessions, api-turns-events, session-turns, session-manager, readme-api, e2e-lifecycle |
 | D21 Third named volume mise | container |
 | D22 onTurnComplete fires for every terminal turn state | event-router, readme-api, e2e-lifecycle |
+| D23 Trust model: one instance per project, trusted callers | readme-api, readme-config, api-sessions, api-turns-events |
 
 ## Contracts
 
