@@ -1,0 +1,36 @@
+services:
+  ccw:
+    build: .
+    image: claude-code-wrapper:local
+    ports:
+      - "${CCW_PORT:-8080}:8080"
+    environment:
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CCW_AUTH_TOKEN: ${CCW_AUTH_TOKEN:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+    volumes:
+      - workdir:/workdir
+      - sessions:/sessions
+      - mise:/opt/mise
+      - ${CCW_CONFIG_FILE:-./config.example.yaml}:/etc/ccw/config.yaml:ro
+    restart: unless-stopped
+    # Must exceed limits.shutdown_timeout_seconds (10 in config.example.yaml).
+    stop_grace_period: 30s
+
+  # Makes `docker compose up -d` return only once ccw is healthy: the published port
+  # resets connections until uvicorn is listening, which breaks scripted smoke checks.
+  ccw-ready:
+    image: claude-code-wrapper:local
+    pull_policy: never
+    entrypoint: ["true"]
+    restart: "no"
+    depends_on:
+      ccw:
+        condition: service_healthy
+
+volumes:
+  workdir:
+  sessions:
+  mise:

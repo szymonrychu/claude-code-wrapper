@@ -1,0 +1,62 @@
+# Runs the workbench plugin flow inside claude-code-wrapper.
+# Use with examples/docker-compose.workbench.yml (mounts the plugin, the workbench tree and ssh keys).
+
+init:
+  workdir:
+    # Fixed absolute path: workbench task files store absolute worktree paths, so the tree must
+    # live at the same path on every run.
+    mode: mounted
+    path: /workdir/workbench
+    # Clone alternative:
+    # mode: clone
+    # repo_url: git@github.com:acme/workbench.git
+    # name: workbench
+    # submodules: true
+  git:
+    user_name: ${GIT_USER_NAME}
+    user_email: ${GIT_USER_EMAIL}
+
+claude:
+  env:
+    # The plugin's `claude -p` helpers strip ANTHROPIC_API_KEY, so OAuth is the working auth.
+    claude_code_oauth_token: ${CLAUDE_CODE_OAUTH_TOKEN}
+    disable_autoupdater: true
+    extra:
+      WORKBENCH_ROOT: /workdir/workbench
+  passthrough_env: [GH_TOKEN, GITLAB_TOKEN, SSH_AUTH_SOCK, WORKBENCH_SCM_HOSTS]
+  permission_mode: bypassPermissions
+  config_files:
+    - {source: /opt/plugins/claude-infra-plugin/rules, target: rules}
+
+prompts:
+  # Optional: a global CLAUDE.md for every session.
+  # global_claude_md: /etc/ccw/CLAUDE.md
+  system_append: ""
+
+# Never enable two plugins named `workbench`; superpowers is disabled.
+plugins:
+  marketplaces:
+    - {name: szymonrychu-workbench, source: /opt/plugins/claude-infra-plugin}
+  install:
+    - {plugin: "workbench@szymonrychu-workbench", scope: user, required: true}
+  disable: ["superpowers@claude-plugins-official"]
+
+mise:
+  install_workdir: true
+  trusted_paths: [/workdir]
+
+sessions:
+  ask_user_question: forward
+  idle_timeout_seconds: 0     # long-lived sessions
+  turn_stall_seconds: 3600
+
+hooks:
+  onAgentToolCall:
+    # Deny force pushes (exit code 2 = deny).
+    - type: command
+      run: 'if jq -r .data.tool_input.command | grep -Eq "git push.*(--force|-f)( |$)"; then echo "force push is not allowed" >&2; exit 2; fi'
+      matcher: Bash
+      blocking: true
+      on_error: allow
+  # onTurnComplete:
+  #   - {type: webhook, url: "https://example.com/turn-done", secret: "${HOOK_SECRET:-}"}

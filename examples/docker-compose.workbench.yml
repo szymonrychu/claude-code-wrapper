@@ -1,0 +1,13 @@
+# Override for docker-compose.yml:
+#   WORKBENCH_TREE=~/Documents/workbench docker compose -f docker-compose.yml -f examples/docker-compose.workbench.yml up -d
+services:
+  ccw:
+    environment:
+      GIT_USER_NAME: ${GIT_USER_NAME:-}
+      GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
+      WORKBENCH_SCM_HOSTS: ${WORKBENCH_SCM_HOSTS:-}
+    volumes:
+      - ${WORKBENCH_PLUGIN_DIR:-~/Documents/claude-infra-plugin}:/opt/plugins/claude-infra-plugin:ro
+      - ${WORKBENCH_TREE:?set WORKBENCH_TREE}:/workdir/workbench
+      - ${SSH_DIR:-~/.ssh}:/home/agent/.ssh:ro
+      - ./examples/workbench.config.yaml:/etc/ccw/config.yaml:ro
