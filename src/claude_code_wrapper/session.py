@@ -10,6 +10,15 @@ when the transcript exists (resuming a conversation that was never written exits
 and burns the budget). The ring is emptied before every relaunch so the old screen cannot
 satisfy the new boot's dialog or marker checks.
 
+Turns (D13): one at a time. `submit` reserves the slot and persists the record before the first
+byte is written, then pastes the prompt (with a `<!-- ccw turn: <id> -->` marker, because Stop
+payloads carry no turn id) and sends CR as a separate write. A turn ends exactly once, on the
+first of: a matching Stop (`complete`), an interrupt (resolved by the transcript interrupt line or
+a second ESC after `interrupt_settle_seconds`, since claude runs no Stop hook for an interrupted
+turn), a fatal pattern on screen, claude exiting, the hard `turn_max_seconds` limit, or `stop`.
+Every end frees the slot, persists the record and calls `on_turn_end`. A quiet turn is only
+reported (`on_stall`), never failed: silence is not a stall.
+
 The screen is never the source of turn results; it is read only for boot, fatal patterns and
 debug tails, and every tail that leaves this module is redacted.
 """
@@ -19,7 +28,6 @@ from __future__ import annotations
 import asyncio
 import codecs
 import contextlib
-import datetime
 import inspect
 import logging
 import os
@@ -30,10 +38,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .claude_env import SECRET_KEY_RE, ClaudeEnv
-from .config import BootConfig, BootDialog
+from .config import BootConfig, BootDialog, LimitsConfig, SessionsConfig
 from .pty_proc import PtyClosed, PtyProcess
 from .redact import Redactor
 from .ring import Ring, strip_ansi
+from .turns import Origin, Probe, TurnRecord, TurnState, new_probe_id, new_turn_id, now_iso
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +60,14 @@ DANGEROUS_FLAG = "--dangerously-skip-permissions"
 #: The only service env vars every child inherits.
 BASE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "USER", "SHELL", "TMPDIR")
 GATE_FAIL_MODES = ("allow", "deny")
+ESC = b"\x1b"
+DEFAULT_PROBE_TEXT = "Reply with CCW-ALIVE and one sentence on what you are doing, then continue."
+#: The turn watchdog re-checks at least this often, so a cleared stall re-arms promptly.
+TURN_WATCH_MAX_SLEEP = 0.25
+#: `note_activity` persists `last_activity_at` at most this often (it runs on every event).
+ACTIVITY_PERSIST_SECONDS = 5.0
+#: Probes remembered for `get_probe`; the oldest are forgotten first.
+MAX_PROBES = 100
 
 STATES = ("booting", "ready", "busy", "stopping", "stopped", "dead")
 PUBLIC_STATES = ("creating", "ready", "busy", "stopped", "failed", "dead")
@@ -73,8 +90,12 @@ def public_state(state: str) -> str:
     return _PUBLIC.get(state, state)
 
 
-def _now_iso() -> str:
-    return datetime.datetime.now(datetime.UTC).isoformat(timespec="milliseconds")
+class TurnRejected(Exception):
+    """A turn or probe cannot be written now. `reason`: busy, booting or dead."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class BootError(Exception):
@@ -103,6 +124,10 @@ class SessionSpec:
     boot: BootConfig = field(default_factory=BootConfig)
     max_restarts: int = 3
     resume: bool = False
+    #: Turn behaviour: `turn_marker`, `turn_stall_seconds`, `interrupt_settle_seconds`.
+    sessions: SessionsConfig = field(default_factory=SessionsConfig)
+    #: Turn limits: `turn_max_seconds`.
+    limits: LimitsConfig = field(default_factory=LimitsConfig)
 
 
 def transcript_path_for(spec: SessionSpec) -> str:
@@ -253,13 +278,23 @@ def _redactor_for(env: Mapping[str, str]) -> Redactor:
     return Redactor(value for name, value in env.items() if SECRET_KEY_RE.search(name))
 
 
+@dataclass
+class _PendingInterrupt:
+    """An interrupt in flight for `record`; `final` is the state the turn ends in."""
+
+    record: TurnRecord
+    final: TurnState
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    task: asyncio.Future[None] | None = None
+
+
 class Session:
-    """One claude process (relaunched as needed) and its boot state machine.
+    """One claude process (relaunched as needed), its boot state machine and its turn slot.
 
     `state` is internal (`STATES`); `snapshot()["state"]` and `on_state` use `PUBLIC_STATES`.
     `pty` is the current `PtyProcess`, `ring` the screen shared across relaunches, and
     `transcript_path` the conversation file (the router may replace it with the path a hook
-    payload reports).
+    payload reports). `turn_store` (a `TurnStore`) receives every change of every turn record.
     """
 
     def __init__(
@@ -291,6 +326,12 @@ class Session:
         self._stopping = False
         self._recovery: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Future[Any]] = set()
+        self._turn: TurnRecord | None = None
+        self._turn_watch: asyncio.Future[None] | None = None
+        self._interrupting: _PendingInterrupt | None = None
+        self._last_activity = clock()
+        self._activity_persisted = self._last_activity
+        self._probes: dict[str, Probe] = {}
         listener.bind(self)
 
     # -- state and reporting ---------------------------------------------------------------
@@ -324,9 +365,12 @@ class Session:
             log.exception("session %s: listener %s failed", self.spec.session_id, name)
             return
         if inspect.isawaitable(result):
-            task = asyncio.ensure_future(result)
-            self._tasks.add(task)
-            task.add_done_callback(self._task_done)
+            self._track(asyncio.ensure_future(result))
+
+    def _track(self, task: asyncio.Future[Any]) -> asyncio.Future[Any]:
+        self._tasks.add(task)
+        task.add_done_callback(self._task_done)
+        return task
 
     def _task_done(self, task: asyncio.Future[Any]) -> None:
         self._tasks.discard(task)
@@ -343,7 +387,7 @@ class Session:
         """Launch claude and return once it is idle at its prompt; raises `BootError`."""
         if self.started_at is not None:
             raise RuntimeError("Session.start() may be called only once")
-        self.started_at = _now_iso()
+        self.started_at = now_iso()
         self._set_state("booting")
         await self._boot(resume=self.spec.resume or os.path.isfile(self.transcript_path))
 
@@ -374,7 +418,7 @@ class Session:
             assert self.pty is not None
             code = await self._boot_wait(self.pty)
             if code == "ready":
-                self.ready_at = _now_iso()
+                self.ready_at = now_iso()
                 self._set_state("ready")
                 log.info("session %s: claude ready pid=%s", self.spec.session_id, self.pty.pid)
                 return resume
@@ -470,6 +514,11 @@ class Session:
             self.last_fatal = pattern
             log.warning("session %s: fatal pattern %r on screen", self.spec.session_id, pattern)
             self._notify("on_fatal", pattern, self.tail())
+            record = self._turn
+            # claude sits at its prompt after a fatal error: fail the turn, or the slot wedges.
+            # A prompt that quotes the pattern is echoed on screen; that is not the error.
+            if record is not None and _squash(pattern) not in _squash(record.text):
+                self._end_turn(record, "failed", error=pattern)
 
     def _on_exit(self, pty: PtyProcess, code: int) -> None:
         if pty is not self.pty:
@@ -477,18 +526,27 @@ class Session:
         self._exited.set()  # a booting claude: the boot wait sees this
         if self._stopping or self.state not in ("ready", "busy"):
             return
-        self._recovery = asyncio.ensure_future(self._recover(pty, code))
-        self._tasks.add(self._recovery)
-        self._recovery.add_done_callback(self._task_done)
-
-    async def _recover(self, old: PtyProcess, code: int) -> None:
-        """claude exited on its own after boot: relaunch within the budget, else dead."""
+        record = self._turn
+        if record is not None:  # never re-pasted: the client decides whether to retry
+            self._end_turn(record, "failed", error="claude_exited", next_state=None)
         log.warning(
             "session %s: claude exited unexpectedly code=%s tail=%r",
             self.spec.session_id,
             code,
             self.tail(),
         )
+        # Leave ready/busy at once, so nothing is written to the dead claude meanwhile. A
+        # relaunch starts from an empty screen; a dead session keeps its last one for debugging.
+        if self.restarts < self.spec.max_restarts:
+            self.ring.reset()
+            self._set_state("booting")
+        else:
+            self._set_state("dead")
+        self._recovery = asyncio.ensure_future(self._recover(pty, code))
+        self._track(self._recovery)
+
+    async def _recover(self, old: PtyProcess, code: int) -> None:
+        """claude exited on its own after boot: relaunch within the budget, else dead."""
         await old.close(DEAD_CLOSE_GRACE)
         if self._stopping:
             return
@@ -519,6 +577,9 @@ class Session:
         if self.state == "stopped":
             return
         self._stopping = True
+        record = self._turn
+        if record is not None:
+            self._end_turn(record, "failed", error="session_stopped", next_state=None)
         self._set_state("stopping")
         if self.pty is not None:
             await self.pty.close(grace)
@@ -529,3 +590,328 @@ class Session:
         if self.pty is not None:  # a relaunch that raced the stop is closed too
             await self.pty.close(grace)
         self._set_state("stopped")
+
+    # -- turns -----------------------------------------------------------------------------
+
+    @property
+    def current_turn(self) -> TurnRecord | None:
+        """The running turn's live record, if any."""
+        return self._turn
+
+    def _writable_pty(self) -> PtyProcess:
+        """The PTY a turn or probe may be written to, else `TurnRejected(booting|dead)`."""
+        if self.state == "booting":
+            raise TurnRejected("booting")
+        if self.state not in ("ready", "busy") or self.pty is None:
+            raise TurnRejected("dead")
+        return self.pty
+
+    async def submit(
+        self, text: str, *, origin: Origin = "client", callback_url: str | None = None
+    ) -> TurnRecord:
+        """Start a turn: reserve the slot, persist the record, then paste and CR.
+
+        Raises `TurnRejected` (booting, dead, busy). A claude that exits under the write fails
+        the turn with `claude_exited`; the record is returned either way.
+        """
+        pty = self._writable_pty()
+        if self.state == "busy" or self._turn is not None:
+            raise TurnRejected("busy")
+        now = now_iso()
+        record = TurnRecord(
+            turn_id=new_turn_id(),
+            session_id=self.spec.session_id,
+            origin=origin,
+            state="running",
+            text=text,
+            callback_url=callback_url,
+            started_at=now,
+            last_activity_at=now,
+        )
+        # Reserve before the first byte: a second submit racing this one sees busy.
+        self._turn = record
+        self._last_activity = self._activity_persisted = self.clock()
+        self._set_state("busy")
+        self._persist(record)
+        self._arm_watch(record)
+        prompt = text
+        if self.spec.sessions.turn_marker:
+            prompt += f"\n\n<!-- ccw turn: {record.turn_id} -->"
+        log.info("session %s: turn %s submitted (%s)", self.spec.session_id, record.turn_id, origin)
+        try:
+            await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
+        except PtyClosed:
+            # A claude that died is handled by the exit path (relaunch or dead); a live one
+            # whose write failed gets its slot back here.
+            self._end_turn(
+                record, "failed", error="claude_exited", next_state="ready" if pty.alive else None
+            )
+        return record
+
+    def _arm_watch(self, record: TurnRecord) -> None:
+        if self.spec.sessions.turn_stall_seconds > 0 or self.spec.limits.turn_max_seconds > 0:
+            self._turn_watch = self._track(asyncio.ensure_future(self._watch_turn(record)))
+
+    async def _watch_turn(self, record: TurnRecord) -> None:
+        """Report a quiet turn once per quiet period; end it as `timeout` at the hard limit."""
+        stall = self.spec.sessions.turn_stall_seconds
+        limit = self.spec.limits.turn_max_seconds
+        started = self.clock()
+        while self._turn is record:
+            now = self.clock()
+            if limit > 0 and now - started >= limit:
+                log.warning(
+                    "session %s: turn %s hit turn_max_seconds=%g, interrupting",
+                    self.spec.session_id,
+                    record.turn_id,
+                    limit,
+                )
+                await self._interrupt(record, "timeout")
+                return
+            wait = TURN_WATCH_MAX_SLEEP
+            if limit > 0:
+                wait = min(wait, started + limit - now)
+            if stall > 0 and record.stall_suspected_since is None:
+                quiet = now - self._last_activity
+                if quiet >= stall:
+                    self._suspect_stall(record)
+                else:
+                    wait = min(wait, stall - quiet)
+            await asyncio.sleep(max(wait, 0.0))
+
+    def _suspect_stall(self, record: TurnRecord) -> None:
+        record.stall_suspected_since = now_iso()
+        log.warning(
+            "session %s: turn %s quiet for %gs (stall suspected, not failed)",
+            self.spec.session_id,
+            record.turn_id,
+            self.spec.sessions.turn_stall_seconds,
+        )
+        self._persist(record)
+        self._notify("on_stall", record.turn_id)
+
+    def note_activity(self) -> None:
+        """Something happened (a hook, a transcript line): reset the stall timer."""
+        now = self.clock()
+        self._last_activity = now
+        record = self._turn
+        if record is None:
+            return
+        record.last_activity_at = now_iso()
+        if record.stall_suspected_since is not None:
+            record.stall_suspected_since = None  # re-armed: a new quiet period reports again
+        elif now - self._activity_persisted < ACTIVITY_PERSIST_SECONDS:
+            return  # the hot path; the timestamp lands with the next change
+        self._activity_persisted = now
+        self._persist(record)
+
+    def record_tool_call(self) -> None:
+        """Count one finished tool call on the running turn (no-op when idle)."""
+        record = self._turn
+        if record is None:
+            return
+        record.tool_calls += 1
+        self._persist(record)
+
+    def complete(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        usage: dict[str, Any] | None = None,
+        model_tokens: dict[str, Any] | None = None,
+        marker_turn_id: str | None = None,
+    ) -> TurnRecord | None:
+        """Apply a Stop hook payload; the completed record, or None when it was stale.
+
+        A Stop for another claude session, a booting or dead session, or (while busy) carrying
+        the marker of another turn changes nothing. A Stop while ready with no turn running is
+        a background completion (Workflow, Monitor) and becomes an `origin="agent"` record.
+        """
+        if payload.get("session_id") != self.spec.claude_session_id:
+            log.info(
+                "session %s: ignoring Stop for claude session %r",
+                self.spec.session_id,
+                payload.get("session_id"),
+            )
+            return None
+        record = self._turn
+        if self.state == "busy" and record is not None:
+            if marker_turn_id is not None and marker_turn_id != record.turn_id:
+                log.info(
+                    "session %s: ignoring stale Stop of %s while %s runs",
+                    self.spec.session_id,
+                    marker_turn_id,
+                    record.turn_id,
+                )
+                return None
+        elif self.state == "ready" and record is None:
+            now = now_iso()
+            record = TurnRecord(
+                turn_id=new_turn_id(),
+                session_id=self.spec.session_id,
+                origin="agent",
+                started_at=now,
+                last_activity_at=now,
+            )
+        else:
+            return None
+        message = payload.get("last_assistant_message")
+        record.final_text = message if isinstance(message, str) else None
+        record.stop_reason = "end_turn"
+        record.usage = usage
+        record.model_tokens = model_tokens
+        self._end_turn(record, "completed")
+        return record
+
+    def _end_turn(
+        self,
+        record: TurnRecord,
+        state: TurnState,
+        *,
+        error: str | None = None,
+        next_state: str | None = "ready",
+    ) -> bool:
+        """The single terminal transition: free the slot, persist, notify. Once per turn."""
+        if record.terminal:
+            return False
+        if self._turn is record:
+            self._turn = None
+            watch, self._turn_watch = self._turn_watch, None
+            if watch is not None and watch is not asyncio.current_task():
+                watch.cancel()
+        record.state = state
+        record.error = error
+        record.completed_at = now_iso()
+        pending = self._interrupting
+        if pending is not None and pending.record is record:
+            pending.done.set()
+        if next_state is not None and self.state == "busy":
+            self._set_state(next_state)
+        log.info(
+            "session %s: turn %s %s%s",
+            self.spec.session_id,
+            record.turn_id,
+            state,
+            f" ({error})" if error else "",
+        )
+        self._persist(record)
+        self._notify("on_turn_end", record)
+        return True
+
+    def _persist(self, record: TurnRecord) -> None:
+        if self.turn_store is None:
+            return
+        try:
+            self.turn_store.put(record)
+        except Exception:
+            log.exception("session %s: persisting turn %s failed", self.spec.session_id, record)
+
+    # -- interrupt -------------------------------------------------------------------------
+
+    async def interrupt(self) -> str | None:
+        """Interrupt the running turn; its id once it has ended, None when idle.
+
+        One ESC, then up to `interrupt_settle_seconds` for the transcript interrupt line
+        (`on_interrupted`); without it a second ESC. claude runs no Stop hook for an
+        interrupted turn, so the turn is ended here either way and the slot freed.
+        """
+        record = self._turn
+        if record is None or self.state != "busy":
+            return None
+        return await self._interrupt(record, "interrupted")
+
+    async def _interrupt(self, record: TurnRecord, final: TurnState) -> str:
+        pending = self._interrupting
+        if pending is None or pending.record is not record:
+            pending = _PendingInterrupt(record, final)
+            self._interrupting = pending
+            pending.task = self._track(asyncio.ensure_future(self._run_interrupt(pending)))
+        assert pending.task is not None
+        # Shielded: a caller that goes away (a dropped request) cannot strand the slot.
+        await asyncio.shield(pending.task)
+        return record.turn_id
+
+    async def _run_interrupt(self, pending: _PendingInterrupt) -> None:
+        record = pending.record
+        try:
+            await self._send_key(ESC)
+            try:
+                await asyncio.wait_for(
+                    pending.done.wait(), self.spec.sessions.interrupt_settle_seconds
+                )
+            except TimeoutError:
+                if not record.terminal:
+                    log.warning(
+                        "session %s: no interrupt line for %s after %gs, second ESC",
+                        self.spec.session_id,
+                        record.turn_id,
+                        self.spec.sessions.interrupt_settle_seconds,
+                    )
+                    await self._send_key(ESC)
+            self._end_turn(record, pending.final)
+        finally:
+            if self._interrupting is pending:
+                self._interrupting = None
+
+    async def _send_key(self, key: bytes) -> None:
+        pty = self.pty
+        if pty is None:
+            return
+        with contextlib.suppress(PtyClosed):  # the exit path ends the turn
+            await pty.write(key)
+
+    def on_interrupted(self) -> None:
+        """The transcript shows an interrupt: end the running turn (pending or unprompted)."""
+        record = self._turn
+        if record is None:
+            return
+        pending = self._interrupting
+        final: TurnState = "interrupted"
+        if pending is not None and pending.record is record:
+            final = pending.final
+        self._end_turn(record, final)
+
+    # -- probes ----------------------------------------------------------------------------
+
+    async def probe(self, text: str | None = None) -> Probe:
+        """Write a liveness probe without taking the slot (ready or busy).
+
+        The probe is pending until the router sees its marker in the transcript
+        (`probe_delivered`) and answered once assistant text with `CCW-ALIVE` follows
+        (`probe_answered`). Raises `TurnRejected` (booting, dead).
+        """
+        pty = self._writable_pty()
+        probe = Probe(
+            probe_id=new_probe_id(), text=text or DEFAULT_PROBE_TEXT, created_at=now_iso()
+        )
+        self._probes[probe.probe_id] = probe
+        while len(self._probes) > MAX_PROBES:
+            del self._probes[next(iter(self._probes))]
+        prompt = f"{probe.text}\n\n<!-- ccw probe: {probe.probe_id} -->"
+        try:
+            await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
+        except PtyClosed as exc:
+            self._probes.pop(probe.probe_id, None)
+            raise TurnRejected("dead") from exc
+        log.info("session %s: probe %s written", self.spec.session_id, probe.probe_id)
+        return probe
+
+    def get_probe(self, probe_id: str) -> Probe | None:
+        return self._probes.get(probe_id)
+
+    def probe_delivered(self, probe_id: str) -> Probe | None:
+        """The probe's marker reached the transcript; the probe, or None when unknown."""
+        probe = self._probes.get(probe_id)
+        if probe is not None and probe.state == "pending":
+            probe.state = "delivered"
+            probe.delivered_at = now_iso()
+        return probe
+
+    def probe_answered(self) -> list[Probe]:
+        """Assistant text with `CCW-ALIVE` arrived: every delivered probe is answered."""
+        answered = [p for p in self._probes.values() if p.state == "delivered"]
+        now = now_iso()
+        for probe in answered:
+            probe.state = "answered"
+            probe.answered_at = now
+        return answered
