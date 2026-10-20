@@ -289,3 +289,9 @@ def test_empty_auth_vars_are_unset(monkeypatch):
     cfg = load_config(ROOT / "config.example.yaml")
     assert cfg.claude.env.to_env() == {}
     assert cfg.claude.env.redacted() == {}
+
+
+def test_hook_events_match_hooks_config_fields():
+    from claude_code_wrapper.config import HOOK_EVENTS, HooksConfig
+
+    assert tuple(HooksConfig.model_fields) == HOOK_EVENTS
