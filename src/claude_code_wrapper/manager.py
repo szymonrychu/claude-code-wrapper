@@ -816,15 +816,16 @@ class SessionManager:
     # ------------------------------------------------------------------ service lifecycle
 
     async def load_persisted(self) -> None:
-        """After a service start: sessions persisted as live are stopped (their claude died
-        with the old process), and resumed when `sessions.resume_on_start`."""
+        """After a service start: sessions persisted as live (creating, ready, busy) are
+        stopped (their claude died with the old process), and resumed when
+        `sessions.resume_on_start`. A create cut short before claude took a turn has no
+        transcript, so its resume is refused as unavailable and it stays stopped."""
         to_resume: list[str] = []
         for meta in self._scan():
             session_id = meta["session_id"]
             if session_id in self._active or meta.get("state") not in LIVE_STATES:
                 continue
-            if meta["state"] != "creating":
-                to_resume.append(session_id)
+            to_resume.append(session_id)
             meta.update(state="stopped", updated_at=now_iso())
             self._write_meta(session_id, meta)
         if self.cfg.sessions.resume_on_start:

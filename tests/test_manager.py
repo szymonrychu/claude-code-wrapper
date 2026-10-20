@@ -823,6 +823,27 @@ async def test_load_persisted_resumes_with_resume_on_start(world: World) -> None
     assert argv[argv.index("--resume") + 1] == live["claude_session_id"]
 
 
+async def test_load_persisted_resumes_interrupted_creating(world: World) -> None:
+    m1 = world.manager(world.cfg())
+    resuming = await m1.create(CreateSessionRequest(prompt="hi"))
+    await wait_turn(m1, resuming["session_id"])
+    unstarted = await m1.create(CreateSessionRequest())  # no transcript: cannot resume
+    await m1.shutdown()
+    for sid in (resuming["session_id"], unstarted["session_id"]):
+        meta = world.meta(sid)
+        meta["state"] = "creating"  # a resume (or create) cut short by a service crash
+        (world.session_dir(sid) / "session.json").write_text(json.dumps(meta))
+
+    m2 = world.manager(world.cfg(sessions={"resume_on_start": True}))
+    await m2.load_persisted()
+    assert m2.get(resuming["session_id"])["state"] == "ready"
+    assert m2.get(unstarted["session_id"])["state"] == "stopped"
+    assert world.meta(unstarted["session_id"])["state"] == "stopped"
+    argv = world.interactive_argvs()[-1]
+    assert argv[argv.index("--resume") + 1] == resuming["claude_session_id"]
+    await m2.shutdown()
+
+
 async def test_open_event_log_and_turns_for_stopped_session(world: World) -> None:
     m = world.manager(world.cfg())
     snap = await m.create(CreateSessionRequest(prompt="hi"))
