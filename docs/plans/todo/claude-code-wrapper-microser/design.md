@@ -600,6 +600,7 @@ No cross-epic contracts: this is the only epic in the repo and `ticket.py contra
 
 none
 - Q1: Keep session files and the workdir on DELETE by default, deleting them only with ?purge=true? [recommended: yes]
+- Q2: Forward AskUserQuestion to the HTTP client as a question event by default (the agent asks in plain text and waits for the next turn) instead of denying it outright? [recommended: yes]
 
 ## Irreversible operations in scope
 
