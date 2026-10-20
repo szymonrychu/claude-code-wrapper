@@ -43,7 +43,7 @@ def jl(obj: dict) -> str:
 
 
 # ---------------------------------------------------------------- paths
-def test_transcript_path_and_mangle(tmp_path):
+def test_transcript_path_pinned_dir(tmp_path):
     assert PROJECT_DIR_NAME == "workdir"
     assert transcript_path(tmp_path, "abc") == tmp_path / "projects" / "workdir" / "abc.jsonl"
     assert transcript_path(tmp_path, "abc", "x") == tmp_path / "projects" / "x" / "abc.jsonl"
@@ -52,7 +52,7 @@ def test_transcript_path_and_mangle(tmp_path):
 
 
 # ---------------------------------------------------------------- parse_line
-def test_parse_real_basic_fixture():
+def test_real_fixture_lines_parse():
     events = parse_file(FIX / "basic.jsonl")
     kinds = {type(e) for e in events}
     assert {UserPrompt, AssistantText, Thinking, ToolUse, ToolResult, Usage, Interrupted} <= kinds
@@ -93,7 +93,7 @@ def test_line_flags_set_sidechain_and_agent_id():
     assert ev.sidechain is True and ev.agent_id == "zz"
 
 
-def test_unknown_types_and_malformed_yield_nothing(caplog):
+def test_malformed_line_skipped(caplog):
     for t in ("attachment", "system", "queue-operation", "file-history-snapshot", "summary", "x"):
         assert parse_line(jl({"type": t, "message": {"content": "hi"}})) == []
     with caplog.at_level("DEBUG"):
@@ -104,7 +104,7 @@ def test_unknown_types_and_malformed_yield_nothing(caplog):
     assert parse_line(jl({"type": "assistant", "message": {"content": [7, {"type": "new"}]}})) == []
 
 
-def test_tool_result_flatten_and_truncate():
+def test_parse_tool_result_error_truncated():
     blocks = [{"type": "text", "text": "a"}, {"type": "image"}, {"type": "text", "text": "b"}]
     line = jl(
         {
@@ -122,7 +122,7 @@ def test_tool_result_flatten_and_truncate():
     assert r2.text == "x" * 4000 + "...[truncated]"
 
 
-def test_interrupt_string_and_blocks():
+def test_interrupt_line_detected():
     s = jl({"type": "user", "message": {"content": "[Request interrupted by user]"}})
     b = jl(
         {
@@ -136,7 +136,7 @@ def test_interrupt_string_and_blocks():
     assert parse_line(b) == [Interrupted()]
 
 
-def test_turn_marker_and_probe_marker():
+def test_turn_marker_extracted():
     p = jl({"type": "user", "message": {"content": "hello\n<!-- ccw turn: turn-0007 -->"}})
     (ev,) = parse_line(p)
     assert ev == UserPrompt(text="hello\n<!-- ccw turn: turn-0007 -->", turn_marker="turn-0007")
@@ -146,7 +146,7 @@ def test_turn_marker_and_probe_marker():
     assert probe == [ProbeMarker(probe_id="p-1")]
 
 
-def test_redactor_applied_to_text_input_and_results():
+def test_text_redacted():
     red = Redactor(["supersecret-value"])
     line = jl(
         {
@@ -216,7 +216,7 @@ def test_usage_emitted_once_per_line_with_message_fields():
 
 
 # ---------------------------------------------------------------- UsageTotals
-def test_usage_totals_dedupe_and_per_model():
+def test_usage_deduped_by_message_id():
     t = UsageTotals()
     assert t.last_usage is None and t.as_dict() == {}
     a = Usage("m1", "opus", 10, 5, 100, 7)
@@ -265,7 +265,7 @@ def _load_fake():
     return mod
 
 
-def test_fake_claude_lines_parse_to_same_event_kinds(tmp_path):
+def test_fake_claude_lines_parse(tmp_path):
     mod = _load_fake()
     fake = object.__new__(mod.Fake)
     fake.cwd = "/work"
@@ -335,7 +335,7 @@ async def start(tailer: TranscriptTailer) -> asyncio.Task:
     return asyncio.create_task(tailer.run())
 
 
-async def test_tailer_waits_for_file_then_follows(tmp_path):
+async def test_tailer_waits_for_file(tmp_path):
     path = tmp_path / "p" / "s.jsonl"
     sink = Sink()
     t = TranscriptTailer(path, sink, poll_interval=0.01)
@@ -352,7 +352,7 @@ async def test_tailer_waits_for_file_then_follows(tmp_path):
     await asyncio.wait_for(task, 2)
 
 
-async def test_tailer_buffers_partial_trailing_line(tmp_path):
+async def test_tailer_follows_appends_and_partial_lines(tmp_path):
     path = tmp_path / "s.jsonl"
     path.write_text("")
     sink = Sink()
@@ -372,7 +372,7 @@ async def test_tailer_buffers_partial_trailing_line(tmp_path):
     await asyncio.wait_for(task, 2)
 
 
-async def test_tailer_reopens_on_truncate_and_inode_change(tmp_path):
+async def test_tailer_reopens_on_truncate(tmp_path):
     path = tmp_path / "s.jsonl"
     path.write_text(text_line("aaaaaaaaaaaaaaaaaaaaaaaa") + text_line("bbbbbbbbbbbbbbbbbbbbbb"))
     sink = Sink()
@@ -406,7 +406,7 @@ async def test_tailer_switch_follows_other_file_from_start(tmp_path):
     await asyncio.wait_for(task, 2)
 
 
-async def test_tailer_flush_delivers_pending_complete_lines(tmp_path):
+async def test_flush_delivers_pending_lines(tmp_path):
     path = tmp_path / "s.jsonl"
     path.write_text(text_line("x"))
     sink = Sink()
@@ -474,7 +474,7 @@ async def test_tailer_async_callback_and_callback_error_survives(tmp_path):
 
 
 # ---------------------------------------------------------------- subagent watcher
-async def test_subagent_watcher_starts_sidechain_tailer_per_file(tmp_path):
+async def test_subagent_watcher_tags_sidechain(tmp_path):
     main = tmp_path / "projects" / "workdir" / "sid.jsonl"
     main.parent.mkdir(parents=True)
     main.write_text("")
@@ -512,3 +512,24 @@ async def test_subagent_watcher_flush_and_real_fixture(tmp_path):
         e.agent_id == "a04c938e71f35e132" and e.sidechain for e in sink.events
     )
     w.stop()
+
+
+def test_parse_assistant_text_and_tool_use():
+    line = jl(
+        {
+            "type": "assistant",
+            "message": {
+                "id": "m1",
+                "model": "claude-opus-4-8",
+                "content": [
+                    {"type": "text", "text": "hello"},
+                    {"type": "tool_use", "id": "tu1", "name": "Bash", "input": {"command": "ls"}},
+                ],
+            },
+        }
+    )
+    events = parse_line(line)
+    text = next(e for e in events if isinstance(e, AssistantText))
+    assert (text.text, text.message_id, text.model) == ("hello", "m1", "claude-opus-4-8")
+    use = next(e for e in events if isinstance(e, ToolUse))
+    assert (use.id, use.name, use.input) == ("tu1", "Bash", {"command": "ls"})
