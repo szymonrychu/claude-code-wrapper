@@ -131,7 +131,7 @@ def test_create_rejects_snake_case_callback_url(client: TestClient) -> None:
     assert r.status_code == 422
 
 
-def test_create_unknown_env_var_names_it(client: TestClient) -> None:
+def test_create_env_override_validated_422(client: TestClient) -> None:
     r = client.post("/v1/sessions", json={"env": {"not_a_var": "1"}})
     assert r.status_code == 422
     err = r.json()["error"]
@@ -181,7 +181,7 @@ def test_error_messages_are_redacted(client: TestClient, stub: StubManager) -> N
     assert OAUTH not in msg and TOKEN not in msg and "***" in msg
 
 
-def test_list_with_state_filter(client: TestClient, stub: StubManager) -> None:
+def test_list_and_get(client: TestClient, stub: StubManager) -> None:
     r = client.get("/v1/sessions", params={"state": "busy"})
     assert r.status_code == 200 and r.json() == {"sessions": [snap()]}
     assert stub.calls[-1] == ("list", "busy")
@@ -207,7 +207,7 @@ def test_get_snapshot_and_404(client: TestClient, stub: StubManager) -> None:
     assert client.get("/v1/sessions/ses_zz").status_code == 404
 
 
-def test_delete_default_keeps_files_and_purge(client: TestClient, stub: StubManager) -> None:
+def test_delete_and_purge(client: TestClient, stub: StubManager) -> None:
     r = client.delete("/v1/sessions/ses_000000000001")
     assert r.status_code == 200 and r.json()["state"] == "stopped"
     assert stub.calls[-1] == ("destroy", "ses_000000000001", False)
@@ -216,7 +216,7 @@ def test_delete_default_keeps_files_and_purge(client: TestClient, stub: StubMana
     assert stub.calls[-1] == ("destroy", "ses_000000000001", True)
 
 
-def test_resume_passes_env_and_defaults_empty(client: TestClient, stub: StubManager) -> None:
+def test_resume_endpoint(client: TestClient, stub: StubManager) -> None:
     assert client.post("/v1/sessions/ses_000000000001/resume").status_code == 200
     assert stub.calls[-1][2] is None
     r = client.post(
@@ -228,18 +228,66 @@ def test_resume_passes_env_and_defaults_empty(client: TestClient, stub: StubMana
     assert OAUTH not in r.text
 
 
-def test_config_is_redacted(client: TestClient) -> None:
+def test_config_redacted(client: TestClient) -> None:
     r = client.get("/v1/config")
     assert r.status_code == 200
     assert OAUTH not in r.text and TOKEN not in r.text and "cb-secret-0123456789" not in r.text
 
 
-def test_prompts_lists_templates(client: TestClient) -> None:
+def test_prompts_listed(client: TestClient) -> None:
     body = client.get("/v1/prompts").json()
     assert [t["name"] for t in body["templates"]] == ["greet"]
 
 
-def test_snapshot_secret_never_leaks(client: TestClient, stub: StubManager) -> None:
+def test_secrets_never_in_responses(client: TestClient, stub: StubManager) -> None:
     stub.redactor.add([OAUTH])
     stub.get = lambda sid: snap(sid, last_fatal=f"boom {OAUTH}")  # type: ignore[method-assign]
     assert OAUTH not in client.get("/v1/sessions/ses_000000000001").text
+
+
+def test_get_unknown_404(client: TestClient, stub: StubManager) -> None:
+    stub.raise_on = SessionNotFound("ses_zz")
+    r = client.get("/v1/sessions/ses_zz")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "not_found"
+
+
+def test_resume_not_resumable_409(client: TestClient, stub: StubManager) -> None:
+    stub.raise_on = ResumeUnavailable("ses_x", "no transcript")
+    r = client.post("/v1/sessions/ses_x/resume")
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "not_resumable"
+
+
+def test_too_many_sessions_429(client: TestClient, stub: StubManager) -> None:
+    stub.raise_on = TooManySessions(2)
+    r = client.post("/v1/sessions", json={})
+    assert r.status_code == 429
+    assert r.json()["error"]["code"] == "too_many_sessions"
+
+
+def test_veto_403(client: TestClient, stub: StubManager) -> None:
+    stub.raise_on = CreateVetoed("no")
+    r = client.post("/v1/sessions", json={})
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "vetoed"
+
+
+def test_text_or_template_400(client: TestClient, stub: StubManager) -> None:
+    stub.raise_on = PromptError("text_or_template")
+    r = client.post("/v1/sessions", json={})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "text_or_template"
+
+
+def test_create_accepts_callback_url_camel_case(client: TestClient) -> None:
+    r = client.post("/v1/sessions", json={"callbackUrl": "https://x/y"})
+    assert r.status_code == 201
+    assert r.json()["callbackUrl"] == "https://x/y"
+
+
+def test_delete_default_keeps_files(client: TestClient, stub: StubManager) -> None:
+    r = client.delete("/v1/sessions/ses_000000000001")
+    assert r.status_code == 200
+    assert "purged" not in r.json()
+    assert stub.calls[-1] == ("destroy", "ses_000000000001", False)

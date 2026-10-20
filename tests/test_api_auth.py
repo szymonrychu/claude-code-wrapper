@@ -28,7 +28,7 @@ def client(token: str = TOKEN, started: bool = True) -> TestClient:
     return TestClient(create_app(StubManager(started), cfg))
 
 
-def test_missing_token_is_401_with_envelope_and_challenge() -> None:
+def test_missing_token_401() -> None:
     r = client().get("/v1/sessions")
     assert r.status_code == 401
     assert r.headers["www-authenticate"] == "Bearer"
@@ -37,7 +37,7 @@ def test_missing_token_is_401_with_envelope_and_challenge() -> None:
 
 
 @pytest.mark.parametrize("header", ["Bearer wrong", "Basic " + TOKEN, TOKEN, "Bearer "])
-def test_wrong_token_is_401(header: str) -> None:
+def test_wrong_token_401(header: str) -> None:
     r = client().get("/v1/sessions", headers={"Authorization": header})
     assert r.status_code == 401
     assert r.headers["www-authenticate"] == "Bearer"
@@ -48,7 +48,7 @@ def test_right_token_passes() -> None:
     assert r.status_code == 200
 
 
-def test_probes_are_open() -> None:
+def test_health_unauthenticated() -> None:
     c = client()
     assert c.get("/healthz").json() == {"status": "ok"}
     assert c.get("/readyz").json() == {"status": "ready"}
@@ -60,7 +60,7 @@ def test_readyz_503_until_started() -> None:
     assert r.json()["error"]["code"] == "not_ready"
 
 
-def test_empty_token_disables_auth_and_warns_once(caplog: pytest.LogCaptureFixture) -> None:
+def test_open_mode_when_no_token(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
         c = client(token="")
         assert c.get("/v1/sessions").status_code == 200
@@ -68,7 +68,7 @@ def test_empty_token_disables_auth_and_warns_once(caplog: pytest.LogCaptureFixtu
     assert len([r for r in caplog.records if "auth_token" in r.getMessage()]) == 1
 
 
-def test_docs_and_openapi_are_off() -> None:
+def test_no_openapi_routes() -> None:
     c = client()
     for path in ("/docs", "/redoc", "/openapi.json"):
         assert c.get(path).status_code == 404

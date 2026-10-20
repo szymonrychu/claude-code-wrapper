@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 
 def create_app(manager: Any, cfg: Config) -> FastAPI:
-    """Build the public API around `manager`. Later tasks include their routers on `v1`."""
+    """Build the public API around `manager`. Routers are included on the `/v1` router."""
     app = FastAPI(title="claude-code-wrapper", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.manager = manager
     app.state.cfg = cfg
