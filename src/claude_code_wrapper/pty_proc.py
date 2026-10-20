@@ -85,6 +85,7 @@ class PtyProcess:
         self._closed = False
         self._exit_fired = False
         self._close_task: asyncio.Future[None] | None = None
+        self._kill_at = float("inf")  # loop time of the SIGKILL of a close in progress
         self._watch_task: asyncio.Task[None] | None = None
         self._write_waiter: asyncio.Future[None] | None = None
         self._on_output: OutputCallback | None = None
@@ -280,12 +281,14 @@ class PtyProcess:
         """Stop the child: SIGTERM its group, close the master, SIGKILL after `grace`.
 
         Idempotent and concurrency-safe; never raises because the child is already gone.
+        A later call with a shorter grace hurries a close in progress (never delays it).
         """
+        self._kill_at = min(self._kill_at, asyncio.get_running_loop().time() + max(grace, 0.0))
         if self._close_task is None:
-            self._close_task = asyncio.ensure_future(self._close(grace))
+            self._close_task = asyncio.ensure_future(self._close())
         await asyncio.shield(self._close_task)
 
-    async def _close(self, grace: float) -> None:
+    async def _close(self) -> None:
         self._closed = True
         self._stop_reading()
         self._fail_write_waiter()
@@ -295,8 +298,7 @@ class PtyProcess:
         self._signal_group(signal.SIGTERM)
         self._close_fd()
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + grace
-        while self._group_alive() and loop.time() < deadline:
+        while self._group_alive() and loop.time() < self._kill_at:
             await asyncio.sleep(0.02)
         if self._group_alive():
             self._signal_group(signal.SIGKILL)

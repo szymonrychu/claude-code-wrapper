@@ -232,6 +232,27 @@ async def test_close_stops_term_respecting_child_without_kill(spawn, monkeypatch
     assert p.returncode == -signal.SIGTERM
 
 
+async def test_close_shorter_grace_escalates(spawn):
+    # A close already waiting out a long grace is hurried by a later close with a short one.
+    p = await spawn(["/bin/sh", "-c", 'trap "" TERM HUP; sleep 60 & echo CHILD=$!; wait'])
+    await wait_until(lambda: p.ring.contains("CHILD="))
+    slow = asyncio.ensure_future(p.close(grace=30.0))
+    await asyncio.sleep(0.2)
+    assert not slow.done()
+    started = time.monotonic()
+    await p.close(grace=0)
+    assert time.monotonic() - started < 1.5
+    await asyncio.wait_for(slow, 1.0)
+    assert not p.alive
+    assert p.returncode == -signal.SIGKILL
+    # A longer grace never postpones a kill already due.
+    q = await spawn(["/bin/sh", "-c", 'trap "" TERM HUP; sleep 60 & echo CHILD=$!; wait'])
+    await wait_until(lambda: q.ring.contains("CHILD="))
+    started = time.monotonic()
+    await asyncio.gather(q.close(grace=0.3), q.close(grace=30.0))
+    assert time.monotonic() - started < 1.5
+
+
 async def test_close_idempotent(spawn):
     exits: list[int] = []
     p = await spawn(["/bin/sh", "-c", "exit 0"], on_exit=exits.append)

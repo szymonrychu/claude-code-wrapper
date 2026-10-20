@@ -586,6 +586,17 @@ async def test_close_emits_session_closed_once(h):
     assert len(h.events("session_closed")) == 1
 
 
+async def test_close_drain_is_bounded(tmp_path):
+    slow = {"type": "command", "run": "sleep 30", "blocking": True, "timeout_seconds": 30}
+    h = Harness(tmp_path, hooks={"onError": [slow]})
+    h.router.on_exit(137)  # a background onError fire that would hold close for 30 s
+    started = time.monotonic()
+    await h.router.close(drain_timeout=0.2)
+    assert time.monotonic() - started < 1.0
+    assert len(h.events("session_closed")) == 1
+    await h.dispatcher.drain(0)
+
+
 async def test_callback_url_receives_record(tmp_path):
     h = Harness(tmp_path)
     h.session.complete_result = completed_record(callbackUrl="http://turn.cb/rec")
