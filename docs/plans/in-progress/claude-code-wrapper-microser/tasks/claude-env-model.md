@@ -1,6 +1,6 @@
 ---
 title: Claude env model
-status: escalated
+status: done
 repo: claude-code-wrapper
 value: "Every Claude Code env var configurable as a validated, redacted field (D2)"
 files: [src/claude_code_wrapper/claude_env.py, src/claude_code_wrapper/redact.py, tests/test_claude_env.py, tests/test_redact.py]
@@ -82,6 +82,10 @@ A config author writes `claude: {env: {claude_code_oauth_token: ${CLAUDE_CODE_OA
 - Implement redact.py; its tests pass.
 - Implement claude_env.py field by field; run the tests to green.
 - Check the official env-vars doc, add missing documented vars with tests still green; `mise run lint`.
+
+## Ruling
+
+- 2026-10-20 accepted: gate-repeat caused by workflow passing --prev-head unknown to verify-task (harness bug). Orchestrator re-ran verify-task.py on HEAD 922b155 base f89bd24: passed, clean, tdd failedOnBase=true passedOnHead=true (scratchpad/verify-env-model.json)
 
 ## Notes
 

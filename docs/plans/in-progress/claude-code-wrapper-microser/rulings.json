@@ -1,0 +1,8 @@
+[
+  {
+    "task": "claude-env-model",
+    "accept": true,
+    "reason": "gate-repeat caused by workflow passing --prev-head unknown to verify-task (harness bug). Orchestrator re-ran verify-task.py on HEAD 922b155 base f89bd24: passed, clean, tdd failedOnBase=true passedOnHead=true (scratchpad/verify-env-model.json)",
+    "at": "2026-10-20T12:06:52Z"
+  }
+]
