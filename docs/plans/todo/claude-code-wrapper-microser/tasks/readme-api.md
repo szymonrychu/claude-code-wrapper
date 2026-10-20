@@ -50,17 +50,17 @@ Tests (read README.md, build the apps with stub managers): `test_every_public_ro
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Reads `create_app`, `create_internal_app`, `EVENT_TYPES`, `HOOK_EVENTS`, the error handlers; writes only README.md and its test.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A client author can integrate with the service from the README alone, and adding a route, event or hook without documenting it turns the suite red.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_readme_api.py`; red (README absent); write the sections; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Use the real snapshot, turn record and event field names from the code, not from memory; run the e2e test with logging to capture example payloads.
+- readme-config adds the configuration, docker and workbench sections afterwards; leave room, do not write those.

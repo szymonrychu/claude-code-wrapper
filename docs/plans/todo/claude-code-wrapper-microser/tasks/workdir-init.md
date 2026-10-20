@@ -57,17 +57,19 @@ Build session workdir preparation and the turn file guard (D4, D11) in `src/clau
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `workdir-init`: `claude_code_wrapper.workdir` (`prepare_workdir`, `write_gitconfig`, `run_setup_commands`, `safe_write_files`, `sanitize_name`, `WorkdirError`, `FileWriteError`). Consumers: session-manager, event-router (turn files).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A session can start in an empty dir, a mounted workbench tree at its fixed absolute path, or a fresh clone with submodules, with setup commands run once and turn file uploads confined to the workdir.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_workdir.py` using real local git repos (`git init --bare` origins, a submodule repo) built with subprocess; red.
+- Implement; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: tatara `W/internal/bootstrap/bootstrap.go:591-894` (clone, submodules, git stderr never logged raw), magic `M/api.py:46-80` (file guard, 256 KiB).
+- Workbench needs the tree root as cwd and a fixed absolute path (task files store absolute worktree paths); never move a mounted workdir.
+- Use `git -c protocol.file.allow=always` for local submodule clones in tests (git blocks file transport for submodules by default).

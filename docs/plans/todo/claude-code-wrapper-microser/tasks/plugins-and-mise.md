@@ -63,17 +63,21 @@ tooling.py:
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `plugin-installer`: `claude_code_wrapper.plugins.install_plugins`, `PluginReport`, `PluginInstallError`.
+- Part `mise-tooling`: `claude_code_wrapper.tooling.render_global_mise`, `install_global`, `install_workdir`, `mise_env`, `ToolingError`.
+- Consumers: session-manager (per session), service-main (global install at start).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A session's config dir gets the configured marketplaces and plugins (the workbench plugin from a mounted dir) before claude starts, and tools from config and the tree's mise.toml are installed and visible to claude's Bash tool.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_plugins.py` against the `fake_claude_bin` plugin subcommands (FAKE_CLAUDE_LOG to count commands); red; implement plugins.py; green.
+- Write `tests/test_tooling.py` with a fake `mise` shell script on a tmp PATH that records argv and env; red; implement tooling.py; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- CLI shapes probed on 2.1.304: `plugin list --json` -> `[{id, version, scope, enabled, installPath, ...}]`; `plugin marketplace list --json` -> `[{name, source, repo|path, installLocation}]`; `install` has `-s/--scope`, `-y/--yes`, `--json`.
+- The workbench plugin repo has no remote: it is always a directory source.
+- mise facts: `mise install` trusts its active config; `MISE_TRUSTED_CONFIG_PATHS` covers workdirs; keep MISE_DATA_DIR outside a mounted HOME.

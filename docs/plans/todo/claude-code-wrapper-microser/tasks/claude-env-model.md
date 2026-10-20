@@ -67,17 +67,22 @@ Build the typed Claude Code environment model (user decision D2) and the shared 
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `claude_code_wrapper.claude_env.ClaudeEnv` with `catalogue()`, `to_env()`, `merged()`, `redacted()`, `secret_values()`, `warnings()`; `EnvVarSpec` dataclass. Part `claude-env`, consumed by config-models (`claude.env`), session-boot (child env), session-manager (override merge), api-sessions (create body), readme-config (reference table).
+- `claude_code_wrapper.redact.Redactor` with `redact()`, `redact_obj()`, `add()`; `DEFAULT_PATTERNS`. Part `redactor`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A config author writes `claude: {env: {claude_code_oauth_token: ${CLAUDE_CODE_OAUTH_TOKEN}, disable_autoupdater: true, extra: {WORKBENCH_ROOT: /workdir/workbench}}}` and gets a validated model that renders the right env and never leaks the token when dumped.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_claude_env.py` and `tests/test_redact.py` first; run `uv run pytest tests/test_claude_env.py tests/test_redact.py -q` and see import failures.
+- Implement redact.py; its tests pass.
+- Implement claude_env.py field by field; run the tests to green.
+- Check the official env-vars doc, add missing documented vars with tests still green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: tatara `W/internal/transcript/redact.go` (longest-first, env-derived secrets), magic `M/pty_proc.py:133-152` (OAuth wins, MAX_THINKING_TOKENS set or popped), ros2 `R/runner.py:234-255` (explicit child env).
+- `DISABLE_NON_ESSENTIAL_MODEL_CALLS` is not in the 2.1.304 binary; do not add it unless the doc lists it.
+- Field metadata (`json_schema_extra` or `Field(..., description=...)`) is what readme-config's coverage test reads; keep descriptions short and ASCII.

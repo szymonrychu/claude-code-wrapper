@@ -58,17 +58,20 @@ PtyProcess (asyncio):
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `claude_code_wrapper.ring.Ring`; `claude_code_wrapper.pty_proc.PtyProcess`, `PtyClosed`. Consumed by session-boot (the only spawner).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+The session layer can spawn claude, see its screen as clean text, write keystrokes, and stop it reliably on both macOS and Linux.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_ring.py`; red; implement ring.py; green.
+- Write `tests/test_pty_proc.py` with `/bin/cat`, `sh -c 'exit 3'`, `sh -c 'trap "" TERM; sleep 60'` and the `fake_claude_bin` fixture; red; implement pty_proc.py; green.
+- `uv run pytest tests/test_ring.py tests/test_pty_proc.py -q` then `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: magic `M/pty_proc.py:73-95, 122-162` (close order, spawn), `M/ring.py`; tatara `W/internal/session/ring.go`.
+- Use asyncio's loop reader, not a thread, so there is no reader thread to deadlock on fd close.
+- Tests must not leave processes behind: close every PtyProcess in a fixture finalizer.

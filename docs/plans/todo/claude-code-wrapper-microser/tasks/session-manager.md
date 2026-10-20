@@ -69,17 +69,21 @@ manager.py, `SessionManager(cfg, *, internal_url, service_env, redactor)`:
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `session-manager`: `claude_code_wrapper.manager` (`SessionManager`, `CreateSessionRequest`, `TooManySessions`, `CreateVetoed`, `CreateFailed`, `ResumeUnavailable`, `ResumeVetoed`, `SessionNotFound`, `InvalidState`).
+- Part `prompt-templates`: `claude_code_wrapper.prompts` (`render_template`, `resolve_prompt`, `list_templates`, `PromptError`).
+- Consumers: internal-api, api-sessions, api-turns-events, service-main.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+The service can hold several independent claude sessions, each fully prepared from config before claude starts, destroyable without losing data, and resumable by id after a restart.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_prompts.py`; red; implement prompts.py; green.
+- Write `tests/test_manager.py` with real components, the fake claude as `claude.binary`, tmp `paths`, command hooks writing to tmp files; red; implement create, then destroy, resume, list/load, reaper, shutdown; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- The manager is the only place that composes the parts; keep each step a small function so failures name their step.
+- The internal URL comes from service-main (`http://127.0.0.1:<internal_port>`); tests pass any URL (the relay is not exercised here).
+- Mounted mode: several sessions may share one mounted workdir (the workbench uses git worktrees); do not lock it.

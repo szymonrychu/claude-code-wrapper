@@ -68,17 +68,18 @@ Build the public API app, auth, error envelope and session routes (D4, D9, D2) u
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `public-api`: `claude_code_wrapper.api.app.create_app(manager, cfg)`; `api.errors` envelope helpers; `api.auth.require_auth`. Consumers: api-turns-events (adds routers), metrics (adds /metrics), service-main (serves it), readme-api (route walk).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A client with the bearer token can create, inspect, list, destroy and resume sessions with predictable status codes and an error envelope, and never sees a secret.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_api_auth.py` and `tests/test_api_sessions.py` with `httpx.AsyncClient(transport=ASGITransport(app))` and a manager double; red.
+- Implement app, auth, errors, sessions; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Keep handlers thin: all behaviour lives in the manager.
+- Snapshot field names are the README contract; keep them snake_case as listed.

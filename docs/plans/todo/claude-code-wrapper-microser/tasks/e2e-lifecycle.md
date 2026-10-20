@@ -58,17 +58,19 @@ Scenarios (one test each):
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Test-only; uses `run_service` (part `service-cli`) and the fake claude (part `fake-claude`).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+One command proves create -> turn -> response -> tool call -> gate -> hooks -> SSE -> interrupt -> destroy -> resume works across every real component, without real Claude.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the scenario, the hook script and the tests; run `uv run pytest tests/test_e2e_lifecycle.py tests/test_e2e_resume.py -q`; a failure in a production module outside this task's files is returned as `discovered` (module, failing scenario, observed vs expected) so the run adds a fix task; failures in the test harness itself are fixed here.
+- `mise run test` and `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- The relay must be the venv's `ccw-hook` (settings-render resolves it next to `sys.executable`).
+- Bound every wait (poll with deadlines of a few seconds); a hung test is a failure, not a slow pass.
+- This task changes only its four files; production defects it finds go to `discovered`.

@@ -57,17 +57,16 @@ Build the per-session event log (D5) in `src/claude_code_wrapper/events.py`.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `event-log`: `claude_code_wrapper.events.EventLog`, `Event`, `EVENT_TYPES`, `Subscription`. Consumers: event-router (writer), api-turns-events (history and SSE), readme-api (event reference).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Every session has a durable, pageable, streamable event history whose seq numbers are safe to use as SSE ids across service restarts.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_event_log.py`; red; implement; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Source: ros2 `R/events.py:54-226` (seq across restarts, ring, paging, half-drop rotation, subscriber fan-out).

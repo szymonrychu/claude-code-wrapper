@@ -53,17 +53,17 @@ Tests: `test_every_config_key_documented` (walks the pydantic models recursively
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Reads `Config` models, `ClaudeEnv.catalogue()`, `Dockerfile`, compose files and examples; writes only README.md and its test.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Every config.yaml key and every Claude Code env var the service models is documented with type, default and env mapping, and the README explains running it with docker and with the workbench.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_readme_config.py`; red; write the sections (generate the tables from the models once, then edit descriptions by hand); green; `mise run test` and `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Render defaults the way the test does (for example `""`, `[]`, `{}`, `true`, numbers as written); agree the rendering in one helper inside the test.
+- Keep sections written by readme-api untouched except for a table of contents if you add one.

@@ -55,17 +55,18 @@ Render `<config_dir>/settings.json` for a session (D7, D11, D13) in `src/claude_
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `claude_code_wrapper.bootstrap.settings.render_settings`. Part `settings-renderer`; consumed by session-manager. Uses `CLAUDE_HOOK_EVENTS` from `hook_relay.py` (part `hook-relay-protocol`).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A session's claude calls `ccw-hook <Event>` for every lifecycle point the service needs, with permission mode and deny list from config, while plugin enablement written by the CLI and user overlay hooks stay intact.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_bootstrap_settings.py`; red; implement settings.py; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: tatara `W/internal/bootstrap/settings.go:10-73`, magic `M/bootstrap.py:75-93`.
+- Do not copy any workbench plugin hook into settings (double-fire, design anti-goal); the plugin registers its own.
+- `bootstrap/__init__.py` belongs to home-seed; re-export `render_settings` from there only if home-seed already does it, otherwise import from the module path.

@@ -65,17 +65,19 @@ Build the per-session event router (D6, D7, D11) in `src/claude_code_wrapper/rou
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `event-router`: `claude_code_wrapper.router.SessionRouter`, `TurnVetoed`. Consumers: session-manager (one router per session), internal-api (via the manager), metrics (instrumentation).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Every Claude hook call and transcript line becomes the right SSE event and user hook invocation, the tool gate answers within the hook timeout, and nothing the router does can wedge claude.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_router.py` with a real EventLog in tmp, a recording dispatcher double (scripted decisions) and a session double; red.
+- Implement branch by branch; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- PreToolUse output format per Claude Code hooks: `hookSpecificOutput.permissionDecision` deny with `permissionDecisionReason`; PostToolUse `hookSpecificOutput.additionalContext` (ros2 `R/runner.py:514-526`).
+- The plugin's bash-output-filter rewrites Bash commands via `updatedInput`; the router reports `tool_input` as Claude sent it to PreToolUse (documented in README by readme-api).
+- `deny_output` and `RelayResponse` come from `hook_relay.py`; do not redefine them.

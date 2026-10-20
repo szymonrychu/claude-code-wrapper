@@ -64,17 +64,21 @@ Build the config.yaml models, loader and interpolation (D8), exactly per design.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `claude_code_wrapper.config`: `Config` and section models, `load_config(path) -> Config`, `ConfigError`, `HOOK_EVENTS`, `VETO_EVENTS`, `TOOL_EVENTS`, `CommandAction`, `WebhookAction`. Part `config-schema`; nearly every later task imports it.
+- `claude_code_wrapper.interpolation.interpolate`, `InterpolationError`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`load_config("config.example.yaml")` returns a fully defaulted `Config`; a typo like `sesions:` fails with `sesions: Extra inputs are not permitted`.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_interpolation.py`; run it red; implement interpolation.py; green.
+- Write `tests/test_config.py` one behaviour at a time, each red then green, against config.py.
+- Write config.example.yaml last and make `test_full_example_loads` green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- The schema in design.md is the contract other tasks code against; do not rename keys. If a key genuinely has to change, update design.md "Config schema" in the same commit.
+- Hook action defaults: command timeout 30 s, webhook timeout 10 s, retries 3, blocking false, on_error allow.
+- Prior art: ros2 pydantic config with `extra="forbid"` (`/Users/szymonri/Documents/ros2-lerobot-sverve-platform/nodes/claude_agent/claude_agent/config.py`).

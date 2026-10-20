@@ -57,17 +57,19 @@ Dockerfile (multi-stage):
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `container-image`: `Dockerfile` and `docker-compose.yml` (service `ccw`, volumes `workdir`, `sessions`, `mise`, config at `/etc/ccw/config.yaml`). Consumers: workbench-example (compose override), readme-config (docs).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`docker compose up` gives a running, healthy, non-root service with persistent workdirs, sessions and tools.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_container.py`; red; write Dockerfile, compose, .dockerignore, .env.example; green.
+- Run the docker command ACs in order (config, build, run checks, compose smoke); fix until each exits 0; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- claude refuses bypassPermissions as root (magic `Dockerfile.agent:31-47`); tatara runs uid 10001, magic uid 1000.
+- mise in Bash-tool shells needs shims on PATH via image ENV (tatara pitfall); keep MISE_DATA_DIR on the `mise` volume, outside HOME.
+- The compose smoke uses project `ccw-smoke` and port 18080 so it never touches a user's running stack; `down -v` removes only that project's volumes.

@@ -58,17 +58,23 @@ Create the Python project skeleton for `claude-code-wrapper` (package `claude_co
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `claude_code_wrapper.__version__: str`.
+- Console scripts `ccw` -> `claude_code_wrapper.cli:main` (built by service-main) and `ccw-hook` -> `claude_code_wrapper.hook_relay:main` (built by hook-relay).
+- `mise run test` and `mise run lint` are the repo verify commands every later task uses.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`uv sync` creates `.venv`; `mise run test` passes two tests; `mise run lint` is clean; the repo has a CLAUDE.md, workbench.json and a complete .gitignore.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_scaffold.py` first; run `uv run pytest tests/test_scaffold.py -q` and see it fail (package missing).
+- Add pyproject.toml, `src/claude_code_wrapper/__init__.py`, `uv lock`, `uv sync`; rerun: version test passes, gitignore test fails.
+- Add .gitignore; rerun: both pass.
+- Add mise.toml, CLAUDE.md, .claude/workbench.json; run `mise run lint` and `mise run test` (expect `2 passed`).
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- The repo has an untracked `.claude/scheduled_tasks.lock`; it must end up ignored, never committed.
+- Exemplar shapes: `/Users/szymonri/Documents/magic-trainer/code/magic-cards-model-api/mise.toml` and `pyproject.toml`.
+- `ccw`/`ccw-hook` entry points reference modules that do not exist yet; that is expected and harmless until invoked.

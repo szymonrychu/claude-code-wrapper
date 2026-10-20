@@ -59,17 +59,18 @@ Build the session process lifecycle (D1, D4, D9, D13) in `src/claude_code_wrappe
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `session`: `claude_code_wrapper.session` (`SessionSpec`, `build_argv`, `build_env`, `SessionListener`, `Session`, `BootError`, states). session-turns extends `Session` in the same module; event-router and session-manager drive it.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`await Session(spec, listener).start()` returns with claude idle at its prompt, having answered the bypass dialog, with a child env that carries exactly what claude needs; crashes and boot hangs recover within the budget or end in a clear dead state.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_session_boot.py` with the fake claude (fast boot settings: min_boot 0.2 s, idle 0.2 s, timeout 3 s; scenarios for no-ready output, exit, fatal print); red.
+- Implement argv/env builders, then boot wait, then relaunch and fatal detection; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: tatara `W/internal/session/session.go:641-707` (bootWait), `:734-907` (watch, relaunch, shouldResume), `W/cmd/wrapper/app.go:667-686` (claudeEnv); magic `M/session.py:292-387` (boot, ready markers, one relaunch), `:45-68` (fatal needles).
+- Pitfalls: a submit during the first seconds of paint exits claude (min_boot); the bypass dialog default is "No, exit"; `--continue`/`--resume` with no transcript exits immediately and burns the budget (hence the transcript-exists guard); stale ring text after relaunch caused false matches.

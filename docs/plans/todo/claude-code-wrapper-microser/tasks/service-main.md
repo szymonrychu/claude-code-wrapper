@@ -55,17 +55,18 @@ cli.py (`main(argv=None) -> int`, also `python -m claude_code_wrapper`):
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `service-cli`: `claude_code_wrapper.service.run_service`, `claude_code_wrapper.cli.main` (`ccw serve|check-config|version`). Consumers: e2e-lifecycle (in-process service), container (CMD).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`ccw serve --config config.example.yaml` serves the API and the loopback hook endpoint, and stops cleanly on SIGTERM without orphaned claude processes.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_cli.py` (subprocess `uv run ccw ...` or `[sys.executable, "-m", "claude_code_wrapper", ...]`) and `tests/test_service.py` (in-loop `run_service` with port 0; the SIGTERM test runs `ccw serve` as a subprocess with the fake claude, creates a session over HTTP, sends SIGTERM, asserts exit 0 within the bound and session.json state stopped); red.
+- Implement; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Shutdown order (tatara `W/cmd/wrapper/app.go:523-556`): stop accepting, stop sessions, drain hooks, close servers. ros2 sets uvicorn `timeout_graceful_shutdown=3` so open SSE streams cannot hold shutdown.
+- Exit 78 (EX_CONFIG) mirrors ros2 so supervisors do not restart-loop on a bad config.

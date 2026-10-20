@@ -61,17 +61,18 @@ Build the user hook dispatcher (D6) in `src/claude_code_wrapper/hooks.py`.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `hook-dispatcher`: `claude_code_wrapper.hooks.HookDispatcher`, `HookOutcome`, `ActionResult`, `build_payload`, `post_json`. Consumers: event-router, session-manager (via the router), readme-api (payload schema and semantics).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Any config.yaml hook runs as a shell command or webhook with a documented payload, can veto where veto makes sense, and can never crash or hang the service.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_hooks_command.py` (real `sh` commands writing to tmp files) and `tests/test_hooks_webhook.py` (`httpx.MockTransport`); red.
+- Implement command actions, then webhooks; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: tatara `W/internal/bootstrap/hooks_lifecycle.go:22-59` (best-effort runner), `W/internal/webhook/webhook.go` (HMAC, retries, drain); ros2 `R/tools.py:319-340` (failures become explicit decisions, never exceptions into claude).
+- Exit 2 = deny mirrors Claude Code's own hook convention, which users already know.

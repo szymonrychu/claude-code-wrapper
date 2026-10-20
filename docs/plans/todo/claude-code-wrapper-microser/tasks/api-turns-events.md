@@ -63,17 +63,18 @@ events.py:
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Routers in `claude_code_wrapper.api.turns` and `claude_code_wrapper.api.events`, mounted by `create_app`. Uses `EventLog.page/subscribe`, `SessionRouter.submit_turn/interrupt`, `Session.probe/get_probe`, `resolve_prompt`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A client can drive turns and follow everything a session does either by polling or by one SSE connection that survives reconnects without gaps or duplicates.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_api_turns.py` and `tests/test_api_events.py` with ASGITransport, a real EventLog and router/session doubles; red.
+- Implement; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Source: ros2 history-on-connect plus seq de-dup (`R/api.py:170-189`); 202-then-events (`R/api.py:141-156`); tatara `GET /v1/transcript` NDJSON.
+- Small heartbeat values in tests (0.1 s) keep the suite fast.

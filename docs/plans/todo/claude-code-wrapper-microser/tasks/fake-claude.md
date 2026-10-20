@@ -67,17 +67,22 @@ Scenario (`FAKE_CLAUDE_SCENARIO` = JSON file): `{"boot": {...}, "turns": [{"matc
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `fake-claude`: `tests/fake_claude/fake_claude.py` (CLI, scenario schema in its docstring) and fixtures `fake_claude_bin`, `scenario_file`, `claude_config_dir` in `tests/conftest.py`. Consumed by pty-process, transcript-tailer, plugins-and-mise, session-boot, session-turns, session-manager, e2e-lifecycle.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A test can spawn `<fake_claude_bin>` under a PTY, answer the dialog, paste a prompt, and observe a real-shaped transcript and hook invocations driven by a settings.json, all in well under a second per turn.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_fake_claude.py` (drives the fake with `pty.fork`/`os.openpty` directly, settings.json hooks that `cat >> <file>`); run red.
+- Implement the fake incrementally (CLI and plugins, boot, input parsing, transcript, hooks, scenario steps), turning tests green one by one.
+- `uv run pytest tests/test_fake_claude.py -q` then `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Model after magic's stub `/Users/szymonri/Documents/magic-trainer/code/magic-cards-model-api/tests/testdata/stubclaude.py` and tatara's `W/cmd/wrapper/testdata/stubclaude/main.go` (read `git -C /Users/szymonri/Documents/tatara-new/code/tatara-claude-code-wrapper show origin/main:cmd/wrapper/testdata/stubclaude/main.go`).
+- Real hook payload example: `git -C /Users/szymonri/Documents/tatara-new/code/tatara-claude-code-wrapper show origin/main:cmd/cc-stop-hook/testdata/hook_payload.json`.
+- Real transcript lines: tatara `internal/transcript/testdata/*.jsonl` (same git show form) and magic `tests/wrapper/fixtures/`. Copy shapes, not secrets.
+- You own `tests/conftest.py`; no other task edits it.
+- Keep it deterministic and fast: default boot 0.3 s; no network.

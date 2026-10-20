@@ -66,17 +66,19 @@ Nothing is ever written into the workdir.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `claude_code_wrapper.bootstrap`: `ensure_config_dir`, `seed_claude_json`, `write_instructions`, `copy_config_files`, `BootstrapError`. Part `home-seed`; consumed by session-manager.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A fresh config dir boots claude without onboarding or trust prompts, with the configured MCP servers and user-level instructions, and the workbench tree in the workdir stays untouched.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_bootstrap_home.py` one behaviour per test; run `uv run pytest tests/test_bootstrap_home.py -q` red.
+- Implement claude_json.py, then instructions.py, to green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: tatara `W/internal/bootstrap/claudejson.go:16-69` (resolved path, key suffix), magic `M/bootstrap.py:36-72, 96-128`.
+- MCP servers go to `.claude.json` (user scope) instead of a workdir `.mcp.json` so a workbench tree is not dirtied (design anti-goal).
+- The `bypassPermissionsModeAccepted` key exists in the 2.1.304 binary; the boot dialog handler stays regardless.

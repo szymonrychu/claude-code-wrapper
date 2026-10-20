@@ -59,17 +59,19 @@ Build the Claude transcript reader (D4, D7, D13) in `src/claude_code_wrapper/tra
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `transcript-tailer`: `claude_code_wrapper.transcript` (`transcript_path`, `mangle_cwd`, `PROJECT_DIR_NAME`, `parse_line`, event dataclasses, `UsageTotals`, `TranscriptTailer`, `SubagentWatcher`). Consumers: event-router, session-turns (via router callbacks), session-manager (paths for resume checks).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Assistant text, thinking, tool use/results, usage, interrupt lines and markers stream out of the main and subagent transcripts as typed, redacted events within a poll interval of being written.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Copy and scrub real fixture lines; write `tests/test_transcript.py`; red.
+- Implement parse_line and UsageTotals; then the tailer and watcher; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: tatara `W/internal/transcript/tailer.go:530, 750-1010`, `result.go:179, 238`, testdata via `git -C /Users/szymonri/Documents/tatara-new/code/tatara-claude-code-wrapper show origin/main:internal/transcript/testdata/<file>`; magic `M/transcript.py:124-148`, `M/activity.py:809-860`, fixtures `/Users/szymonri/Documents/magic-trainer/code/magic-cards-model-api/tests/wrapper/fixtures/`.
+- Pitfall: subagent files live under `subagents/` and are invisible to a non-recursive glob; the parent transcript can be silent for over 30 minutes during a subagent run.
+- The Claude docs say the JSONL format is internal; keep the parser tolerant (unknown types and fields ignored) and pinned by the real fixtures.

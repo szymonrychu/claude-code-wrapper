@@ -47,17 +47,17 @@ Add Prometheus metrics (D18): `src/claude_code_wrapper/metrics.py`, instrumentat
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `metrics`: `claude_code_wrapper.metrics.Metrics`. Consumer: service-main (one instance per process).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+An operator can scrape session, turn, tool, hook, restart and token metrics from `/metrics`.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_metrics.py`; red; implement metrics.py and the instrumentation points; green; `mise run lint`; run the router and manager tests too (`uv run pytest tests/test_router.py tests/test_manager.py -q`) to confirm nothing regressed.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: tatara `ccw_*` families and the tool-label clamp (`W/internal/transcript/tailer.go:94`), magic `M/metrics.py:85-160`.
+- Do not change router or manager behaviour; only add metric calls.

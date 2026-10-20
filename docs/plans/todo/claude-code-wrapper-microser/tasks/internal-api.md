@@ -47,17 +47,17 @@ Build the loopback internal API (D7, D9) in `src/claude_code_wrapper/internal_ap
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `internal-api`: `claude_code_wrapper.internal_api.create_internal_app`. Consumer: service-main (binds it on 127.0.0.1).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Only the claude processes the service started (holding their session token, on loopback) can drive session hooks.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_internal_api.py` with `httpx.ASGITransport` and a manager double; the round-trip test runs uvicorn on 127.0.0.1:0 in the test loop and the real relay via `[sys.executable, "-m", "claude_code_wrapper.hook_relay", "PreToolUse"]`; red; implement; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: magic's separate loopback app so a bad bind cannot expose the hook route (`M/api.py:1-7, 317-325`); tatara `/internal/turn-complete` on 127.0.0.1:8090.
+- `ASGITransport` lets you set the client address for the loopback test.

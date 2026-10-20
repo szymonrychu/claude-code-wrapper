@@ -54,17 +54,18 @@ Protocol constants (part `hook-relay-protocol`): `CLAUDE_HOOK_EVENTS = ("UserPro
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `hook-relay-protocol` in `claude_code_wrapper.hook_relay`: constants above, `RelayResponse`, `deny_output`, `main`. Consumers: settings-render (event list, command), event-router (response shape), internal-api (path, headers).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Claude's hooks reach the service in milliseconds; when the service is down claude is never blocked (Stop exits 0) and the tool gate fails open or closed as configured.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_hook_relay.py`: start an `http.server` stub on 127.0.0.1:0 in a thread (scripted responses), run `[sys.executable, "-m", "claude_code_wrapper.hook_relay", "<Event>"]` with env and stdin; red.
+- Implement; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: tatara `W/cmd/cc-stop-hook/main.go` (5 x 5 s, always exit 0), magic `M/stop_hook.py:33-104`.
+- Keep test retry delays short via an env override such as `CCW_RELAY_BACKOFF` (document it in the module docstring) so the suite stays fast.

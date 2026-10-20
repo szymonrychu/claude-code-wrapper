@@ -70,17 +70,19 @@ Session additions:
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `turn-store`: `claude_code_wrapper.turns` (`TurnRecord`, `TurnStore`, `new_turn_id`).
+- `Session.submit`, `complete`, `interrupt`, `on_interrupted`, `probe`, `probe_delivered`, `probe_answered`, `get_probe`, `note_activity`; listener additions `on_stall`, `on_turn_end`; `TurnRejected(reason)`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Every way a turn can end (Stop hook, interrupt with or without the transcript line, fatal screen text, claude exit, hard limit) frees the slot exactly once and leaves a persisted record; a late Stop can never end the wrong turn.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_turns.py`; red; implement turns.py; green.
+- Write `tests/test_session_turns.py` with the fake claude; its settings.json Stop hook is `cat >> <tmp>/hooks.jsonl`, and the test feeds those payloads to `session.complete` (the real relay path is covered by internal-api and e2e); red; implement; green; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Sources: tatara `session.go:1154-1235` (slot reserved before write, two writes), `:1538-1646` (stale rejection), `interrupt.go:55`, `probe.go:15`; magic `M/session.py:505-547, 591-684, 728-809`, `M/turns.py:21-64`.
+- Pitfalls: claude runs no Stop hook for an interrupted turn (magic incident HO1: 5523 consecutive 409s); Stop payloads carry no turn id (the marker exists for that); silence is not a stall.

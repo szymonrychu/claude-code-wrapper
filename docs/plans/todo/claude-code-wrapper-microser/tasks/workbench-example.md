@@ -54,17 +54,17 @@ tests/test_examples.py: every `config.example.yaml` and `examples/*.yaml` config
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `examples/workbench.config.yaml` (a `config-schema` instance) and `examples/docker-compose.workbench.yml` (an override of the `container-image` compose file).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`WORKBENCH_TREE=<tree> docker compose -f docker-compose.yml -f examples/docker-compose.workbench.yml up` gives sessions that start at the tree root with the workbench plugin, rules and tools in place.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_examples.py`; red; write the two example files; green; run the compose config AC; `mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Plugin facts: marketplace name `szymonrychu-workbench`, plugin `workbench`, source `/Users/szymonri/Documents/claude-infra-plugin` on the host (no git remote, so it is mounted read-only); its hooks need bash, python3 >= 3.11, git, jq, node, mise, uv (all in the image).
+- Never enable two plugins named `workbench`; disable superpowers.
