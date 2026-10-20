@@ -131,3 +131,60 @@ async def test_timeout(tmp_path):
         await install_plugins(
             c, claude_binary=str(slow), config_dir=tmp_path, workdir=tmp_path, env={}
         )
+
+
+def _stub(path: Path, body: str) -> Path:
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+    return path
+
+
+# plugin list never contains the installed plugin; install itself succeeds
+_OMITTING_STUB = """\
+case "$*" in
+  "plugin marketplace list --json") echo '[{"name":"wb"}]' ;;
+  "plugin list --json") echo '[]' ;;
+  *) echo '{}' ;;
+esac
+"""
+
+
+async def test_post_install_check_required_missing_raises_optional_warns(tmp_path):
+    stub = _stub(tmp_path / "claude", _OMITTING_STUB)
+    mk = marketplace(tmp_path)
+    with pytest.raises(PluginInstallError) as exc:
+        await go(cfg(str(mk)), stub, tmp_path)
+    assert exc.value.plugin_id == ID
+    assert exc.value.exit_code == 0
+
+    report, _ = await go(cfg(str(mk), required=False), stub, tmp_path)
+    assert report.installed == []
+    assert len(report.warnings) == 1 and ID in report.warnings[0]
+
+
+async def test_subprocess_stdin_is_closed(tmp_path, monkeypatch):
+    seen = tmp_path / "stdin.log"
+    stub = _stub(
+        tmp_path / "claude",
+        f'if read -r _l; then echo open >> "{seen}"; else echo eof >> "{seen}"; fi\n'
+        + _OMITTING_STUB,
+    )
+    with pytest.raises(PluginInstallError):
+        await go(cfg(str(marketplace(tmp_path))), stub, tmp_path)
+    lines = seen.read_text().split()
+    assert len(lines) >= 3 and set(lines) == {"eof"}
+
+    # the mise subprocesses are spawned the same way
+    from claude_code_wrapper.config import MiseConfig
+    from claude_code_wrapper.tooling import install_global, render_global_mise
+
+    mseen = tmp_path / "mise.log"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    probe = f'if read -r _l; then echo open >> "{mseen}"; else echo eof >> "{mseen}"; fi\n'
+    _stub(bindir / "mise", probe)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    mcfg = MiseConfig(tools={"node": "22"}, global_config_path=str(tmp_path / "g.toml"))
+    render_global_mise(mcfg)
+    await install_global(mcfg, {"PATH": os.environ["PATH"]})
+    assert mseen.read_text().split() == ["eof"]
