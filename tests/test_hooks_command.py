@@ -55,7 +55,7 @@ def test_build_payload_envelope():
     assert p["data"] == {"text": "hi"}
 
 
-async def test_command_gets_stdin_env_cwd_and_redaction(tmp_path):
+async def test_command_receives_payload_on_stdin_and_env(tmp_path):
     out = tmp_path / "out.txt"
     d, results = make(
         tmp_path,
@@ -89,7 +89,7 @@ async def test_cwd_override(tmp_path):
     assert (sub / "here").exists()
 
 
-async def test_exit2_denies_with_stderr_and_first_reason_wins(tmp_path):
+async def test_exit_2_denies_with_stderr_reason(tmp_path):
     d, results = make(
         tmp_path,
         {
@@ -114,7 +114,7 @@ async def test_stderr_capped(tmp_path):
     assert len(o.reason) == 2000
 
 
-async def test_json_stdout_decision_and_contexts(tmp_path):
+async def test_stdout_json_decision(tmp_path):
     d, _ = make(
         tmp_path,
         {
@@ -133,7 +133,7 @@ async def test_json_stdout_decision_and_contexts(tmp_path):
     assert o.additional_context == "A\n\nB"
 
 
-async def test_deny_on_non_veto_event_recorded_but_allowed(tmp_path):
+async def test_deny_ignored_for_non_veto_events(tmp_path):
     d, _ = make(tmp_path, {"onTurnComplete": [cmd("exit 2", blocking=True)]})
     o = await d.fire("onTurnComplete", payload("onTurnComplete"))
     assert o.decision == "allow" and o.results[0].decision == "deny"
@@ -148,7 +148,7 @@ async def test_error_exit_on_error_policy(tmp_path):
     assert o.decision == "allow" and not o.results[0].ok
 
 
-async def test_timeout_kills_process_group(tmp_path):
+async def test_timeout_kills_and_applies_on_error(tmp_path):
     marker = tmp_path / "survived"
     d, _ = make(
         tmp_path,
@@ -171,7 +171,7 @@ async def test_timeout_kills_process_group(tmp_path):
     assert not marker.exists()
 
 
-async def test_matcher_full_match(tmp_path):
+async def test_matcher_filters_tool_name(tmp_path):
     d, _ = make(
         tmp_path,
         {
@@ -197,7 +197,7 @@ async def test_blocking_run_concurrently(tmp_path):
     assert time.monotonic() - t0 < 1.9
 
 
-async def test_nonblocking_does_not_delay_and_drain_waits(tmp_path):
+async def test_non_blocking_does_not_delay(tmp_path):
     marker = tmp_path / "done"
     d, results = make(tmp_path, {"onTurn": [cmd(f"sleep 0.5; touch {marker}")]})
     t0 = time.monotonic()
@@ -229,3 +229,39 @@ async def test_no_hooks_allows(tmp_path):
 
 def test_json_payload_roundtrip():
     assert json.loads(json.dumps(payload()))["event"] == "onTurn"
+
+
+async def test_deny_wins_across_actions(tmp_path):
+    d, _ = make(
+        tmp_path,
+        {
+            "onTurn": [
+                cmd("exit 0", blocking=True),
+                cmd("echo blocked >&2; exit 2", blocking=True),
+                cmd('echo \'{"decision":"allow"}\'', blocking=True),
+            ]
+        },
+    )
+    o = await d.fire("onTurn", payload())
+    assert o.decision == "deny" and o.reason == "blocked"
+    assert [r.decision for r in o.results] == ["allow", "deny", "allow"]
+
+
+async def test_drain_waits_pending(tmp_path):
+    marker = tmp_path / "late"
+    d, results = make(tmp_path, {"onTurn": [cmd(f"sleep 0.4; touch {marker}")]})
+    await d.fire("onTurn", payload())
+    assert not marker.exists() and results == []
+    await d.drain(5)
+    assert marker.exists() and len(results) == 1 and results[0].ok
+
+
+async def test_config_dir_env(tmp_path):
+    out = tmp_path / "cfg.txt"
+    d, _ = make(
+        tmp_path,
+        {"onTurn": [cmd(f"echo $CCW_CLAUDE_CONFIG_DIR > {out}", blocking=True)]},
+        config_dir="/some/claude/home",
+    )
+    await d.fire("onTurn", payload())
+    assert out.read_text().strip() == "/some/claude/home"

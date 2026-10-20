@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import time
 
 import httpx
 
@@ -43,7 +44,7 @@ def make(tmp_path, hooks_cfg, handler):
     return d, results
 
 
-async def test_signed_post_headers_and_redacted_body(tmp_path):
+async def test_webhook_signature_hmac_sha256(tmp_path):
     seen = []
 
     def handler(req: httpx.Request):
@@ -69,7 +70,7 @@ async def test_no_signature_without_secret(tmp_path):
     assert "x-ccw-signature" not in seen[0].headers
 
 
-async def test_json_response_decision(tmp_path):
+async def test_blocking_webhook_deny_response(tmp_path):
     body = {"decision": "deny", "reason": "no", "additional_context": "ctx"}
     d, _ = make(tmp_path, [wh()], lambda req: httpx.Response(200, json=body))
     o = await d.fire("onTurn", payload())
@@ -81,7 +82,7 @@ async def test_non_json_2xx_allows(tmp_path):
     assert (await d.fire("onTurn", payload())).decision == "allow"
 
 
-async def test_retries_then_success(tmp_path, monkeypatch):
+async def test_webhook_retries_on_5xx(tmp_path, monkeypatch):
     sleeps = []
 
     async def fake_sleep(s):
@@ -102,7 +103,7 @@ async def test_retries_then_success(tmp_path, monkeypatch):
     assert sleeps == [0.5, 1.0]
 
 
-async def test_final_failure_uses_on_error(tmp_path, monkeypatch):
+async def test_webhook_failure_on_error_deny(tmp_path, monkeypatch):
     async def fake_sleep(s):
         pass
 
@@ -138,3 +139,33 @@ async def test_post_json_signed(tmp_path):
 async def test_dispatcher_post_json_and_failure(tmp_path, monkeypatch):
     d, _ = make(tmp_path, [], lambda req: httpx.Response(500))
     assert await d.post_json("http://cb.test/", {"a": 1}, retries=0) is False
+
+
+async def test_payload_redacted(tmp_path):
+    seen = []
+    d, _ = make(tmp_path, [wh()], lambda req: seen.append(req) or httpx.Response(200))
+    await d.fire("onTurn", payload())
+    assert b"supersecretvalue" not in seen[0].content
+    assert json.loads(seen[0].content)["data"]["k"] == "***"
+
+
+async def test_on_result_called(tmp_path):
+    d, results = make(
+        tmp_path,
+        [wh(), wh(retries=0, on_error="deny")],
+        lambda req: httpx.Response(200),
+    )
+    await d.fire("onTurn", payload())
+    assert sorted(r.index for r in results) == [0, 1]
+    assert all(r.type == "webhook" and r.event == "onTurn" for r in results)
+
+
+async def test_webhook_total_time_bounded_by_timeout(tmp_path):
+    def handler(req):
+        return httpx.Response(503)
+
+    d, results = make(tmp_path, [wh(retries=5, timeout_seconds=1, on_error="deny")], handler)
+    t0 = time.monotonic()
+    o = await d.fire("onTurn", payload())
+    assert time.monotonic() - t0 < 2.5
+    assert o.decision == "deny" and not results[0].ok and "timeout" in results[0].error

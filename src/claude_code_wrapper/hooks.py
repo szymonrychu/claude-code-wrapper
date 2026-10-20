@@ -262,7 +262,12 @@ class HookDispatcher:
             if isinstance(action, CommandAction):
                 fields = await self._command(action, event, payload, cwd)
             else:
-                fields = await self._webhook(action, event, payload)
+                try:
+                    fields = await asyncio.wait_for(
+                        self._webhook(action, event, payload), action.timeout_seconds
+                    )
+                except TimeoutError:
+                    raise RuntimeError(f"timeout after {action.timeout_seconds}s") from None
             res.decision = fields.get("decision", "allow")
             res.reason = fields.get("reason")
             res.additional_context = fields.get("additional_context")
