@@ -1,6 +1,6 @@
 ---
 title: Audit fixes container home-seed
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: "Image ships a valid example config again and home-seed ACs have their evidence tests (A2, A5, A6)"
 files: [Dockerfile, tests/test_container.py, tests/test_bootstrap_home.py]
@@ -12,8 +12,8 @@ model: ""
 estimate: 45
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--audit-fixes-container-home-s
+branch: claude-code-wrapper-microser--audit-fixes-container-home-s
 verified_head: ""
 run: ""
 provides: []

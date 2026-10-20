@@ -1,6 +1,6 @@
 ---
 title: Review fixes dedupe helpers
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: One timestamp format and no duplicated helpers or example configs
 files: [src/claude_code_wrapper/turns.py, src/claude_code_wrapper/events.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/api/turns.py, src/claude_code_wrapper/data/config.example.yaml, config.example.yaml, tests/test_timestamps.py]
@@ -12,8 +12,8 @@ model: ""
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--review-fixes-dedupe-helpers
+branch: claude-code-wrapper-microser--review-fixes-dedupe-helpers
 verified_head: ""
 run: ""
 provides: []
