@@ -207,7 +207,8 @@ async def _run(
             _server(create_internal_app(manager), level),
         ]
         tasks = [
-            asyncio.create_task(srv.serve(sockets=[sock])) for srv, sock in zip(servers, socks)
+            asyncio.create_task(srv.serve(sockets=[sock]))
+            for srv, sock in zip(servers, socks, strict=True)
         ]
         await _wait_listening(servers, tasks)
         manager.started = True
