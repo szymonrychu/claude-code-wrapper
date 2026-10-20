@@ -320,3 +320,14 @@ async def test_setup_signalled_is_not_timeout(tmp_path: Path) -> None:
     with pytest.raises(WorkdirError) as ei:
         await run_setup_commands([cmd], wd, {"PATH": os.environ["PATH"]}, tmp_path / "m")
     assert "timed out" not in str(ei.value)
+
+
+def test_safe_write_files_directory_and_file_parent_are_invalid_path(tmp_path: Path) -> None:
+    wd = tmp_path / "wd"
+    (wd / "adir").mkdir(parents=True)
+    (wd / "afile").write_text("x")
+    for path in ("adir", "afile/child.txt"):
+        with pytest.raises(FileWriteError) as exc:
+            safe_write_files(wd, {"ok.txt": "1", path: "x"}, max_bytes=10, max_files=5)
+        assert exc.value.code == "invalid_path"
+        assert not (wd / "ok.txt").exists()

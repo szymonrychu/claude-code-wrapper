@@ -186,8 +186,13 @@ def safe_write_files(
         resolved = Path(os.path.realpath(root / rel))
         if resolved == root or not resolved.is_relative_to(root):
             raise FileWriteError("invalid_path", f"path escapes workdir: {rel!r}")
+        if resolved.is_dir() or any(p.exists() and not p.is_dir() for p in resolved.parents):
+            raise FileWriteError("invalid_path", f"path conflicts with existing entry: {rel!r}")
         planned.append((rel, resolved, data))
-    for _, resolved, data in planned:
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_bytes(data)
+    for rel, resolved, data in planned:
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.write_bytes(data)
+        except OSError as exc:
+            raise FileWriteError("invalid_path", f"cannot write {rel!r}: {exc.strerror}") from exc
     return [rel for rel, _, _ in planned]
