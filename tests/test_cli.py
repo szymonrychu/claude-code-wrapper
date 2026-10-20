@@ -33,7 +33,7 @@ def test_version(capsys) -> None:
     assert capsys.readouterr().out.strip() == __version__
 
 
-def test_check_config_prints_redacted(tmp_path: Path, capsys) -> None:
+def test_check_config_ok_prints_redacted(tmp_path: Path, capsys) -> None:
     assert cli.main(["check-config", "--config", str(write_cfg(tmp_path))]) == 0
     out = capsys.readouterr().out
     data = json.loads(out)
@@ -41,13 +41,13 @@ def test_check_config_prints_redacted(tmp_path: Path, capsys) -> None:
     assert "secret-token-123" not in out
 
 
-def test_check_config_invalid_exits_78(tmp_path: Path, capsys) -> None:
+def test_check_config_invalid_exit_78(tmp_path: Path, capsys) -> None:
     bad = write_cfg(tmp_path, "server: {port: nope}\n")
     assert cli.main(["check-config", "--config", str(bad)]) == 78
     assert "server.port" in capsys.readouterr().err
 
 
-def test_serve_invalid_config_exits_78(tmp_path: Path, capsys) -> None:
+def test_serve_invalid_config_exit_78(tmp_path: Path, capsys) -> None:
     bad = write_cfg(tmp_path, "bogus: 1\n")
     assert cli.main(["serve", "--config", str(bad)]) == 78
     assert "bogus" in capsys.readouterr().err
@@ -57,7 +57,7 @@ def test_serve_missing_config_exits_78(tmp_path: Path) -> None:
     assert cli.main(["serve", "--config", str(tmp_path / "none.yaml")]) == 78
 
 
-def test_config_path_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_config_path_from_ccw_config_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen = []
 
     async def fake(cfg, **kw):

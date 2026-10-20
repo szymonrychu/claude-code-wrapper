@@ -145,7 +145,7 @@ def _stop_on_signals(stop: asyncio.Event) -> Iterator[None]:
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             loop.add_signal_handler(sig, stop.set)
-        except (NotImplementedError, RuntimeError, ValueError):
+        except (RuntimeError, ValueError):  # includes NotImplemented
             continue  # not the main thread, or no signal support
         installed.append(sig)
     try:

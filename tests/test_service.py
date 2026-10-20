@@ -70,7 +70,7 @@ async def test_serves_both_ports_and_stops_cleanly(tmp_path: Path) -> None:
             await c.get(f"http://127.0.0.1:{handle.public_port}/healthz")
 
 
-async def test_manager_internal_url_uses_bound_internal_port(
+async def test_port_zero_handle_and_internal_url(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from claude_code_wrapper import service
@@ -91,7 +91,9 @@ async def test_manager_internal_url_uses_bound_internal_port(
     await asyncio.wait_for(task, 10)
 
 
-async def test_readyz_503_until_started(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_readyz_only_after_init_and_bind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from claude_code_wrapper import service
 
     gate = asyncio.Event()
@@ -117,7 +119,7 @@ async def test_readyz_503_until_started(tmp_path: Path, monkeypatch: pytest.Monk
     await asyncio.wait_for(task, 10)
 
 
-async def test_required_mise_failure_raises_tooling_error(
+async def test_required_mise_failure_aborts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))  # no mise binary
@@ -186,3 +188,94 @@ def test_json_formatter_and_redacting_filter() -> None:
     assert line["msg"] == "hello ***"
     assert line["session"] == "s1" and line["tok"] == "***"
     assert "supersecretvalue" not in buf.getvalue()
+
+
+async def test_run_service_binds_public_and_internal_loopback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from claude_code_wrapper import service
+
+    hosts = []
+    real = service._bind
+
+    def spy(host: str, port: int):
+        hosts.append(host)
+        return real(host, port)
+
+    monkeypatch.setattr(service, "_bind", spy)
+    task, stop, handle = await start(make_cfg(tmp_path))
+    try:
+        assert hosts == ["127.0.0.1", "127.0.0.1"]
+        for port in (handle.public_port, handle.internal_port):
+            _, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.close()
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 10)
+
+
+async def test_sigterm_shuts_down_sessions_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import signal
+    import time
+
+    from claude_code_wrapper import service
+
+    calls = []
+    real = service.SessionManager.shutdown
+
+    async def spy(self):
+        t0 = time.monotonic()
+        await real(self)
+        calls.append(time.monotonic() - t0)
+
+    monkeypatch.setattr(service.SessionManager, "shutdown", spy)
+    ready, handle = asyncio.Event(), ServiceHandle()
+    cfg = make_cfg(tmp_path)
+    task = asyncio.create_task(run_service(cfg, ready=ready, handle=handle))
+    await asyncio.wait_for(ready.wait(), 15)
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.wait_for(task, cfg.limits.shutdown_timeout_seconds + 5)
+    assert len(calls) == 1 and calls[0] <= cfg.limits.shutdown_timeout_seconds + 1
+
+
+async def test_logs_redacted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    from claude_code_wrapper import service
+
+    real = service.SessionManager.load_persisted
+
+    async def noisy(self):
+        self.redactor.add(["hunter2-secret-value"])
+        logging.getLogger("t.noisy").warning("leak %s", "hunter2-secret-value")
+        await real(self)
+
+    monkeypatch.setattr(service.SessionManager, "load_persisted", noisy)
+    task, stop, _ = await start(make_cfg(tmp_path))
+    stop.set()
+    await asyncio.wait_for(task, 10)
+    out = capsys.readouterr().out
+    assert "hunter2-secret-value" not in out
+    lines = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+    assert any(line["msg"] == "leak ***" for line in lines)
+    assert all({"ts", "level", "logger", "msg"} <= line.keys() for line in lines)
+
+
+async def test_shutdown_grace_from_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from claude_code_wrapper import service
+
+    seen = []
+    real = service.SessionManager.shutdown
+
+    async def spy(self):
+        seen.append(self.cfg.limits.shutdown_timeout_seconds)
+        await real(self)
+
+    monkeypatch.setattr(service.SessionManager, "shutdown", spy)
+    cfg = make_cfg(tmp_path)
+    cfg.limits.shutdown_timeout_seconds = 7
+    task, stop, _ = await start(cfg)
+    stop.set()
+    await asyncio.wait_for(task, 10)
+    assert seen == [7]
