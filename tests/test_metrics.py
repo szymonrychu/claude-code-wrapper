@@ -52,7 +52,7 @@ def test_instances_are_isolated() -> None:
     assert sample(b, "ccw_sessions_created_total", result="ok") == 0
 
 
-def test_tool_label_clamped_after_fifty_names() -> None:
+def test_tool_label_cardinality_clamped() -> None:
     m = Metrics()
     for i in range(MAX_TOOL_LABELS):
         m.tool_call(f"tool{i}", "allow")
@@ -119,7 +119,7 @@ def test_metrics_route_without_metrics_is_empty() -> None:
     assert r.status_code == 200 and r.text == ""
 
 
-async def test_router_tool_and_hook_metrics(tmp_path: Path) -> None:
+async def test_turn_and_tool_counters_increment(tmp_path: Path) -> None:
     m = Metrics()
     h = with_metrics(Harness(tmp_path, hooks={"onAgentToolCall": [webhook()]}), m)
     await h.router.handle_claude_hook("PreToolUse", {"tool_name": "Read", "tool_input": {}})
@@ -155,7 +155,7 @@ async def test_router_stop_records_turn_and_tokens(tmp_path: Path) -> None:
     await h.router.close()
 
 
-async def test_manager_session_metrics(world: World) -> None:  # noqa: F811
+async def test_session_gauge_follows_lifecycle(world: World) -> None:  # noqa: F811
     m = Metrics()
     mgr = world.manager(world.cfg(), metrics=m)
     snap = await mgr.create(CreateSessionRequest())
@@ -175,3 +175,54 @@ async def test_manager_session_metrics(world: World) -> None:  # noqa: F811
         await bad.create(CreateSessionRequest())
     assert sample(m, "ccw_sessions_created_total", result="failed") == 1
     assert sample(m, "ccw_sessions_active") == 0
+
+
+async def test_hook_action_counter(tmp_path: Path) -> None:
+    m = Metrics()
+    h = with_metrics(Harness(tmp_path), m)
+    h.router.on_hook_result(ActionResult("onTurn", 0, "command", ok=True))
+    h.router.on_hook_result(ActionResult("onTurn", 1, "command", ok=False, error="boom"))
+    assert sample(m, "ccw_hook_actions_total", event="onTurn", type="command", result="ok") == 1
+    assert sample(m, "ccw_hook_actions_total", event="onTurn", type="command", result="error") == 1
+    await h.router.close()
+
+
+def test_metrics_endpoint_exposes_families() -> None:
+    m = Metrics()
+    m.sessions_created("ok")
+    m.tool_call("Read", "allow")
+
+    class Stub:
+        started = True
+        redactor = Redactor()
+
+    client = TestClient(create_app(Stub(), Config.model_validate({}), metrics=m))
+    text = client.get("/metrics").text
+    for family in (
+        "ccw_sessions_active",
+        "ccw_sessions_created_total",
+        "ccw_turns_total",
+        "ccw_turn_duration_seconds",
+        "ccw_tool_calls_total",
+        "ccw_hook_actions_total",
+        "ccw_claude_restarts_total",
+        "ccw_turn_tokens_total",
+    ):
+        assert f"# TYPE {family} " in text, family
+
+
+async def test_metrics_optional_kwarg(tmp_path: Path, world: World) -> None:  # noqa: F811
+    h = Harness(tmp_path)
+    await h.router.handle_claude_hook("PreToolUse", {"tool_name": "Read", "tool_input": {}})
+    h.router.on_restart(1, True)
+    await h.router.close()
+    mgr = world.manager(world.cfg(), metrics=None)
+    snap = await mgr.create(CreateSessionRequest())
+    await mgr.destroy(snap["session_id"])
+
+    class Stub:
+        started = True
+        redactor = Redactor()
+
+    client = TestClient(create_app(Stub(), Config.model_validate({}), metrics=None))
+    assert client.get("/metrics").status_code == 200
