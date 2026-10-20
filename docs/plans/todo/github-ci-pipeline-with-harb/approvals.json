@@ -1,0 +1,5 @@
+[
+  {"id": "A", "text": "Pre-commit gate (hikvision-modelled config, mise precommit task) precedes the tests, and the tree passes it.", "decisions": [], "tasks": ["ci-pre-commit-gate"], "status": "approved"},
+  {"id": "B", "text": "Integration tests against the real container (compose, fake claude) run by mise run test:integration.", "decisions": [], "tasks": ["ci-integration-tests"], "status": "approved"},
+  {"id": "C", "text": "GitHub pipeline pre-commit -> unit -> integration -> build/push to Harbor only (no Docker Hub, no PyPI), release by tag, renovate, README CI section.", "decisions": [], "tasks": ["ci-workflows-and-readme"], "status": "approved"}
+]

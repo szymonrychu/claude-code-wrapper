@@ -5,7 +5,7 @@ repo: .
 value: "Merges to main build, test and push the image to Harbor; tags release it"
 files: [.github/workflows/build.yaml, .github/workflows/release.yaml, renovate.json, tests/test_ci_workflows.py, README.md]
 verify: "uv run pytest tests/test_ci_workflows.py && mise run lint"
-depends_on: [ci-precommit, ci-integration-tests]
+depends_on: [ci-pre-commit-gate, ci-integration-tests]
 owns: []
 uses: []
 model: ""
@@ -52,17 +52,19 @@ Add the GitHub Actions pipeline, release flow, renovate config, a test pinning t
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+Workflows `main` (build.yaml) and `release` (release.yaml); secrets HARBOR_USERNAME, HARBOR_PASSWORD; image ref harbor.szymonrichert.pl/containers/claude-code-wrapper:<tag>; calls `mise run precommit`, `lint`, `test`, `test:integration`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Pushing to main runs pre-commit, unit, integration, then pushes :<shortsha> to Harbor; PRs run the same chain and build without pushing; a vX.Y.Z tag retags that image as X.Y.Z and latest. README documents all of it.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+1. Write tests/test_ci_workflows.py per the AC names; run it; expect failures (no workflows).
+2. Add build.yaml, release.yaml, renovate.json; rerun; expect pass.
+3. Add the README `## CI` section; verify with `grep -n '^## CI' README.md`.
+4. Run `uv run pytest tests/test_ci_workflows.py && mise run lint && mise run test`; expect green.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Harbor `containers` project has tag immutability: push :<shortsha> once, only on push to main; a rerun of a main build may 412, so treat it as fatal-free only by gating, never by re-pushing. GITHUB_TOKEN tag pushes do not trigger workflows (irrelevant: tags are pushed by the user). Username `robot$gitlab` must be passed through secrets, never an unquoted shell. HARBOR_URL is a bare host with no scheme. Reference: hikvision-doorbell build.yaml/release.yaml; mise steps from magic-cards-model ci.yml (mise install, mise run install).

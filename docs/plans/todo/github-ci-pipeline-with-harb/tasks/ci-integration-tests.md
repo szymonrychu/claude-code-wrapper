@@ -5,7 +5,7 @@ repo: .
 value: The built container is proven to serve and run a full session before any image is pushed
 files: [mise.toml, pyproject.toml, scripts/integration.sh, docker-compose.ci.yml, tests/integration/config.ci.yaml, tests/integration/conftest.py, tests/integration/test_container_http.py]
 verify: "mise run test:integration && mise run lint && mise run test"
-depends_on: [ci-precommit]
+depends_on: [ci-pre-commit-gate]
 owns: []
 uses: []
 model: ""
@@ -51,17 +51,19 @@ Add integration tests that exercise the real container over HTTP, run by a singl
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+mise task `test:integration`; scripts/integration.sh; docker-compose.ci.yml (override of docker-compose.yml service `ccw`); env var CCW_BASE_URL (default http://127.0.0.1:8080) and CCW_TOKEN (default ci-token) read by tests/integration/conftest.py; pytest marker `integration`. CI task ci-workflows-and-readme calls `mise run test:integration`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`mise run test:integration` builds the image, starts it with the fake claude, passes all integration tests and removes the stack and volumes; `mise run test` does not collect tests/integration.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+1. Read src/claude_code_wrapper/api and tests/test_e2e_lifecycle.py for routes and the fake claude scenario format.
+2. Write tests/integration/ tests and conftest (base URL, token, httpx client); run with the stack down; expect connection failures (red).
+3. Add docker-compose.ci.yml, tests/integration/config.ci.yaml, the claude shim and scripts/integration.sh, the mise task, the marker and addopts; run `mise run test:integration`; expect all pass and `docker compose -p ccw-it ps -q` empty afterwards.
+4. Run `shellcheck scripts/integration.sh && mise run lint && mise run test`; expect green with integration tests not collected.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Fake claude runs inside the container with /app/.venv/bin/python; the container user is uid 1000. Compose already has ccw-ready gating on health; the script still polls. Reference: magic-cards-model-api test:pg. Use -p ccw-it. No real credentials anywhere.

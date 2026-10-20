@@ -36,7 +36,7 @@ Add a pre-commit gate to the repo and make the whole tree pass it.
 
 - AC1: .pre-commit-config.yaml declares the pre-commit-hooks, ruff, shellcheck and conventional-pre-commit repos at pinned revs and the uv lock check local hook [evidence: test:tests/test_precommit_config.py::test_config_hooks_and_pinned_revs]
 - AC2: mise.toml defines a precommit task that runs pre-commit over all files [evidence: test:tests/test_precommit_config.py::test_mise_precommit_task]
-- AC3: the whole tracked tree passes pre-commit with no modification left behind [evidence: command:mise run precommit && git diff --quiet]
+- AC3: the whole tracked tree passes pre-commit with no modification left behind [evidence: command:mise run precommit]
 - AC4: lint and the default test suite stay green [evidence: command:mise run lint && mise run test]
 
 ## Files
@@ -48,17 +48,19 @@ Add a pre-commit gate to the repo and make the whole tree pass it.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+mise task `precommit` (mise.toml); config `.pre-commit-config.yaml`; test module tests/test_precommit_config.py. CI task ci-workflows-and-readme calls `mise run precommit`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`mise run precommit` exits 0 on a clean checkout; the tree contains no whitespace, EOF, ruff or shellcheck findings; the config pins every rev.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+1. Write tests/test_precommit_config.py (parse YAML with pyyaml, tomllib for mise.toml); run `uv run pytest tests/test_precommit_config.py`; expect failures (no config).
+2. Add .pre-commit-config.yaml and the mise `precommit` task; rerun; expect pass.
+3. Run `mise run precommit`; fix every flagged file (re-run until it exits 0); `git diff` shows only formatting/lint fixes.
+4. Run `mise run lint && mise run test`; expect green.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Reference: hikvision-doorbell .pre-commit-config.yaml. Blocker epic (microservice) provides Dockerfile/compose/mise.toml. No .py scratch files. README edits belong to ci-workflows-and-readme.
