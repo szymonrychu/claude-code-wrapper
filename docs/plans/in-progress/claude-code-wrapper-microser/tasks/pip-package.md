@@ -1,6 +1,6 @@
 ---
 title: Pip package
-status: escalated
+status: done
 repo: claude-code-wrapper
 value: "Install the service with pip and run ccw from PATH, in a Dockerfile or on a containerless host (D25)"
 files: [pyproject.toml, src/claude_code_wrapper/cli.py, src/claude_code_wrapper/bootstrap/settings.py, src/claude_code_wrapper/data/__init__.py, Dockerfile, README.md, tests/test_packaging.py]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--pip-package
 branch: "current worktree branch (claude-code-wrapper-microser--pip-package)"
-verified_head: unknown
+verified_head: 1cca7a235a70401d1339c346d7ac0d5a03a7f6ed
 run: claude-code-wrapper-microser
 provides: []
 acs_for_audit: []
