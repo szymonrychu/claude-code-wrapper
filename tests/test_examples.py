@@ -19,27 +19,38 @@ def stub_env(monkeypatch):
         monkeypatch.setenv(k, v)
 
 
+WORKBENCH = ROOT / "examples" / "workbench.config.yaml"
+
+
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
-def test_example_config_loads(path, stub_env):
+def test_every_example_config_loads(path, stub_env):
     assert load_config(path) is not None
 
 
-def test_workbench_config(stub_env):
-    cfg = load_config(ROOT / "examples" / "workbench.config.yaml")
+def test_workbench_example_plugin(stub_env):
+    cfg = load_config(WORKBENCH)
     assert [p.plugin for p in cfg.plugins.install] == ["workbench@szymonrychu-workbench"]
     assert cfg.plugins.install[0].required
     (market,) = cfg.plugins.marketplaces
     assert market.name == "szymonrychu-workbench"
     assert market.source.startswith("/")
     assert "superpowers@claude-plugins-official" in cfg.plugins.disable
+
+
+def test_workbench_example_workdir_and_questions(stub_env):
+    cfg = load_config(WORKBENCH)
     assert cfg.init.workdir.mode == "mounted"
     assert cfg.init.workdir.path == "/workdir/workbench"
     assert cfg.sessions.ask_user_question == "forward"
-    assert [(f.source, f.target) for f in cfg.claude.config_files] == [
-        ("/opt/plugins/claude-infra-plugin/rules", "rules")
-    ]
     assert cfg.init.git.user_name == "Test User"
     assert cfg.claude.permission_mode == "bypassPermissions"
     assert cfg.claude.env.extra["WORKBENCH_ROOT"] == "/workdir/workbench"
     (hook,) = cfg.hooks.onAgentToolCall
     assert hook.matcher == "Bash"
+
+
+def test_workbench_example_rules_copied(stub_env):
+    cfg = load_config(WORKBENCH)
+    assert [(f.source, f.target) for f in cfg.claude.config_files] == [
+        ("/opt/plugins/claude-infra-plugin/rules", "rules")
+    ]
