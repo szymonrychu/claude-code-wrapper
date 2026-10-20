@@ -50,14 +50,14 @@ def _run(bindir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_version_flag_matches_pyproject(installed):
+def test_wheel_installs_and_ccw_version(installed):
     _, bindir = installed
     res = _run(bindir, "ccw", "--version")
     assert res.returncode == 0, res.stderr
     assert VERSION in res.stdout
 
 
-def test_config_example_is_valid_config(installed, tmp_path):
+def test_config_example_from_installed_wheel(installed, tmp_path):
     _, bindir = installed
     res = _run(bindir, "ccw", "config", "example")
     assert res.returncode == 0, res.stderr
@@ -67,7 +67,7 @@ def test_config_example_is_valid_config(installed, tmp_path):
     assert load_config(path).server.port == 8080
 
 
-def test_hook_relay_on_venv_path(installed):
+def test_hook_relay_installed_and_referenced(installed):
     _, bindir = installed
     assert (bindir / "ccw-hook").is_file()
     res = _run(
@@ -87,7 +87,7 @@ def test_wheel_contains_data_files(installed):
     assert "claude_code_wrapper/hook_relay.py" in names
 
 
-def test_serve_fails_clearly_without_claude_and_git(tmp_path):
+def test_serve_preflight_missing_binaries(tmp_path):
     cfg = tmp_path / "c.yaml"
     cfg.write_text("claude:\n  binary: definitely-not-claude-xyz\n")
     res = subprocess.run(
@@ -99,3 +99,31 @@ def test_serve_fails_clearly_without_claude_and_git(tmp_path):
     assert res.returncode != 0
     assert "definitely-not-claude-xyz" in res.stderr
     assert "PATH" in res.stderr
+
+
+def test_dockerfile_installs_wheel_via_pip():
+    text = (ROOT / "Dockerfile").read_text()
+    assert "uv build" in text or "pip wheel" in text
+    assert "pip install" in text and ".whl" in text
+    assert 'CMD ["ccw", "serve"]' in text
+    assert "COPY .venv" not in text and "COPY --from=builder /app/.venv" not in text
+    assert "COPY src" in text.split("FROM", 2)[1] or "COPY src" in text  # source only in builder
+    runtime = text.rsplit("\nFROM ", 1)[1]
+    assert "COPY src" not in runtime
+
+
+def test_readme_installation_section():
+    text = (ROOT / "README.md").read_text()
+    assert "## Installation" in text
+    section = text.split("## Installation", 1)[1].split("\n## ", 1)[0]
+    for needle in (
+        "pip install",
+        "pipx",
+        "uv tool install",
+        "git",
+        "claude",
+        "mise",
+        "ccw config example",
+        "ccw serve --config",
+    ):
+        assert needle in section, needle
