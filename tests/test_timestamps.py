@@ -39,3 +39,38 @@ def test_example_config_single_source_and_guard_is_self_contained():
     cfg = yaml.safe_load(packaged.read_text())
     for action in cfg["hooks"]["onAgentToolCall"]:
         assert "guard.sh" not in action["run"]
+
+
+def test_turns_and_events_share_timestamp_format(tmp_path):
+    log = events.EventLog(tmp_path / "events.jsonl", "ses_0123456789ab")
+    ev = (
+        log.append("session.created")
+        if "session.created" in events.EVENT_TYPES
+        else log.append(sorted(events.EVENT_TYPES)[0])
+    )
+    log.close()
+    record = turns.TurnRecord(
+        turn_id="t1",
+        session_id="ses_0123456789ab",
+        origin="client",
+        state="running",
+        text="x",
+        started_at=turns.now_iso(),
+    )
+    assert RFC3339_Z.match(ev.ts)
+    assert RFC3339_Z.match(record.started_at)
+    assert turns.now_iso is events.now_iso
+
+
+def test_no_duplicate_helpers():
+    import subprocess
+
+    src = ROOT / "src" / "claude_code_wrapper"
+    for name in ("now_iso", "_squash", "_out"):
+        out = subprocess.run(
+            ["grep", "-rn", "--include=*.py", rf"^\s*def {name}(", str(src)],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.splitlines()
+        assert len(out) == 1, (name, out)

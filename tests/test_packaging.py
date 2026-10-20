@@ -158,3 +158,14 @@ def test_readme_installation_section():
         "ccw serve --config",
     ):
         assert needle in section, needle
+
+
+def test_single_example_config_source():
+    packaged = ROOT / "src/claude_code_wrapper/data/config.example.yaml"
+    root_copy = ROOT / "config.example.yaml"
+    assert packaged.is_file() and not packaged.is_symlink()
+    assert (
+        not root_copy.exists()
+        or root_copy.is_symlink()
+        or root_copy.read_bytes() == packaged.read_bytes()
+    )

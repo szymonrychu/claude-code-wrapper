@@ -302,3 +302,22 @@ def test_allow_anonymous_default_false(tmp_path):
     assert cfg.server.allow_anonymous is False
     bad = "server:\n  allow_anonymous: maybe\n  auth_token: t\n"
     assert "allow_anonymous" in err(tmp_path, bad)
+
+
+def test_example_hooks_reference_existing_commands():
+    import re
+    import shlex
+
+    import yaml
+
+    packaged = (
+        Path(__file__).resolve().parent.parent / "src/claude_code_wrapper/data/config.example.yaml"
+    )
+    cfg = yaml.safe_load(packaged.read_text())
+    for action in cfg["hooks"]["onAgentToolCall"]:
+        if action.get("type") != "command":
+            continue
+        run = action["run"]
+        # Inline shell or an already-present program; never a relative script that ships nowhere.
+        assert not re.match(r"^\./\S+", run.strip()), run
+        assert shlex.split(run)
