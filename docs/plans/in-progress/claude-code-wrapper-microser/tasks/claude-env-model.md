@@ -1,6 +1,6 @@
 ---
 title: Claude env model
-status: done
+status: escalated
 repo: claude-code-wrapper
 value: "Every Claude Code env var configurable as a validated, redacted field (D2)"
 files: [src/claude_code_wrapper/claude_env.py, src/claude_code_wrapper/redact.py, tests/test_claude_env.py, tests/test_redact.py]
