@@ -47,9 +47,15 @@ Signatures, schemas and contracts this task builds or must keep, with file:symbo
 
 ## Expected outcome
 
+Every acceptance condition above passes on main after merge; full `mise run test` and `mise run lint` stay green.
+
 What is true and observable when the task is done.
 
 ## Steps
+
+1. Red: add/rename the evidence tests and see the new ones fail for the stated reason.
+2. Green: smallest change that passes them.
+3. Refactor with the suite green; run `mise run test` and `mise run lint`.
 
 Test first. One step per bullet, with the exact command and the output to expect.
 A retirement test asserts on `git ls-files <path>`, never on the filesystem.

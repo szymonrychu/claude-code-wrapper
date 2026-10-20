@@ -5,7 +5,7 @@ repo: claude-code-wrapper
 value: "The API never runs unauthenticated by accident; compose is safe by default"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/api/app.py, src/claude_code_wrapper/service.py, docker-compose.yml, .env.example, src/claude_code_wrapper/data/config.example.yaml, README.md, tests/test_api_auth.py]
 verify: "uv run pytest tests/test_api_auth.py tests/test_config.py tests/test_container.py tests/test_readme_config.py -q && mise run lint"
-depends_on: [audit-fixes-container-home-seed]
+depends_on: [audit-fixes-container-home-s]
 owns: []
 uses: []
 model: ""
@@ -54,9 +54,15 @@ Signatures, schemas and contracts this task builds or must keep, with file:symbo
 
 ## Expected outcome
 
+Every acceptance condition above passes on main after merge; full `mise run test` and `mise run lint` stay green.
+
 What is true and observable when the task is done.
 
 ## Steps
+
+1. Red: add/rename the evidence tests and see the new ones fail for the stated reason.
+2. Green: smallest change that passes them.
+3. Refactor with the suite green; run `mise run test` and `mise run lint`.
 
 Test first. One step per bullet, with the exact command and the output to expect.
 A retirement test asserts on `git ls-files <path>`, never on the filesystem.
