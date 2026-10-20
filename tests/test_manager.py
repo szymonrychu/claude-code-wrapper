@@ -971,35 +971,77 @@ async def test_idle_reaper_destroys_idle(world: World, tmp_path: Path) -> None:
     assert time.monotonic() - started < 2
 
 
+def group_alive(pid: int) -> bool:
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 async def test_shutdown_stops_all(world: World, tmp_path: Path) -> None:
-    out = tmp_path / "on_destroy.jsonl"
+    # The worst case: every claude keeps a TERM/HUP-ignoring child in its group (so only
+    # SIGKILL ends it), onDestroy has a blocking action that sleeps, one session has a slow
+    # onTurnComplete in flight, one is busy, one is mid-destroy with its caller gone, and
+    # one is still creating.
+    stubborn = tmp_path / "stubborn-claude"
+    stubborn.write_text(
+        "#!/bin/sh\n"
+        "if [ -t 0 ]; then ( trap '' TERM HUP; exec sleep 60 ) </dev/null >/dev/null 2>&1 & fi\n"
+        f"exec '{world.bin}' \"$@\"\n"
+    )
+    stubborn.chmod(0o755)
+    out = tmp_path / "on_destroy"
+    out.mkdir()
+    record_each = {"type": "command", "run": f"cat > '{out}/'$$.json"}  # concurrent-safe
     gate = tmp_path / "gate"
     gate.write_text("open")
+    slow_hook = {"type": "command", "run": "cat > /dev/null; sleep 30", "blocking": True}
     cfg = world.cfg(
-        hooks={"onDestroy": [record_hook(out)]},
+        {"turns": [{"match": "slow", "steps": [{"sleep": 30}]}]},
+        claude={"binary": str(stubborn)},
+        hooks={
+            "onDestroy": [record_each, {**slow_hook, "timeout_seconds": 30}],
+            "onTurnComplete": [{**slow_hook, "timeout_seconds": 30}],  # holds the router
+        },
         init={"setup_commands": [f"[ -f '{gate}' ] || sleep 30"]},
-        sessions={"max_sessions": 4},
+        sessions={"max_sessions": 6},
     )
+    budget = cfg.limits.shutdown_timeout_seconds
     m = world.manager(cfg)
-    snaps = [await m.create(CreateSessionRequest()) for _ in range(3)]
+    snaps = [await m.create(CreateSessionRequest()) for _ in range(4)]
+    ids = [s["session_id"] for s in snaps]
+    pids = [m.router(sid).session.snapshot()["pid"] for sid in ids]
+    assert all(pid_alive(p) for p in pids)
+    await m.router(ids[0]).submit_turn("quick")
+    await wait_turn(m, ids[0])
+    await m.router(ids[1]).submit_turn("slow")
+    await wait_until(lambda: m.get(ids[1])["state"] == "busy")
+    closing = asyncio.ensure_future(m.destroy(ids[2]))  # waits out the full grace
+    await asyncio.sleep(0.3)
+    closing.cancel()  # the DELETE caller went away; the destroy itself carries on
     gate.unlink()
     stuck = asyncio.ensure_future(m.create(CreateSessionRequest()))
     await wait_until(lambda: m.list(state="creating"))
     [creating] = m.list(state="creating")
-    pids = [m.router(s["session_id"]).session.snapshot()["pid"] for s in snaps]
-    assert all(pid_alive(p) for p in pids)
     started = time.monotonic()
     await m.shutdown()
-    assert time.monotonic() - started < 2 + 1  # shutdown_timeout_seconds plus slack
+    assert time.monotonic() - started < budget + 0.25  # the bound, plus scheduling slack
     assert not m.active_ids()
+    assert not any(group_alive(p) for p in pids)  # the stubborn children are gone too
+    with pytest.raises(asyncio.CancelledError):
+        await closing
     with pytest.raises(asyncio.CancelledError):
         await stuck
     cancelled = m.get(creating["session_id"])
     assert cancelled["state"] == "failed"
     assert cancelled["error"] == {"step": "run_setup_commands", "message": "cancelled"}
-    for s in snaps:
-        assert m.get(s["session_id"])["state"] == "stopped"
-    await wait_until(lambda: not any(pid_alive(p) for p in pids), 5)
-    assert sorted(p["session_id"] for p in jsonl(out)) == sorted(s["session_id"] for s in snaps)
+    for sid in ids:
+        assert m.get(sid)["state"] == "stopped"
+        assert world.meta(sid)["state"] == "stopped"
+    fired = [json.loads(f.read_text()) for f in out.iterdir()]
+    assert sorted(p["session_id"] for p in fired) == sorted(ids)
     with pytest.raises(InvalidState):
         await m.create(CreateSessionRequest())

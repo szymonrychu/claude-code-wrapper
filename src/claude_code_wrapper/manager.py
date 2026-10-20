@@ -68,6 +68,12 @@ log = logging.getLogger(__name__)
 
 #: How often the idle reaper looks for sessions idle longer than `idle_timeout_seconds`.
 REAPER_INTERVAL_SECONDS = 30.0
+# Shares of `limits.shutdown_timeout_seconds` (see SessionManager.shutdown).
+SHUTDOWN_GRACE_SHARE = 0.3
+SHUTDOWN_CLOSE_SHARE = 0.15
+SHUTDOWN_HOOK_SHARE = 0.25
+SHUTDOWN_STOP_SHARE = 0.75
+SHUTDOWN_KILL_CLOSE_SHARE = 0.1
 SESSION_ID_RE = re.compile(r"^ses_[0-9a-f]{12}$")
 META_FILE = "session.json"
 #: Persisted states whose claude died with the previous service process.
@@ -638,10 +644,13 @@ class SessionManager:
         self._finish(ctx)
         return CreateFailed(exc.step, message)
 
-    async def _abandon(self, ctx: _Active) -> None:
-        """A create/resume was cancelled (service shutdown): stop and record it."""
-        await self._teardown(ctx, 0)
-        if ctx.meta.get("claude_started"):
+    async def _abandon(self, ctx: _Active, close_timeout: float = 0.0) -> None:
+        """A create/resume was cancelled, or a session outlived the shutdown bound: kill
+        claude and record it (a failed or dead state is kept)."""
+        await self._teardown(ctx, 0, close_timeout=close_timeout)
+        if ctx.meta.get("state") in ("failed", "dead"):
+            pass
+        elif ctx.meta.get("claude_started"):
             ctx.meta.update(state="stopped")
         else:
             step = ctx.meta.get("step") or "session_dir"
@@ -659,10 +668,13 @@ class SessionManager:
             if ctx.phase == "closing":
                 await ctx.closed.wait()
             else:
-                await self._destroy_active(
-                    ctx,
-                    grace=self.cfg.limits.shutdown_timeout_seconds,
-                    hook_timeout=self._hook_bound("onDestroy"),
+                # Shielded: a caller that goes away never leaves a session half destroyed.
+                await asyncio.shield(
+                    self._start_destroy(
+                        ctx,
+                        grace=self.cfg.limits.shutdown_timeout_seconds,
+                        hook_timeout=self._hook_bound("onDestroy"),
+                    )
                 )
         snapshot = self._persisted_snapshot(self._read_meta(session_id))
         if purge:
@@ -670,26 +682,56 @@ class SessionManager:
             snapshot["purged"] = True
         return snapshot
 
-    async def _destroy_active(self, ctx: _Active, *, grace: float, hook_timeout: float) -> None:
-        await self._teardown(ctx, grace)
-        ctx.meta.update(state="stopped")
-        self._save(ctx)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + max(hook_timeout, 0.0)
-        try:
-            await asyncio.wait_for(
-                self._fire(ctx, "onDestroy", self._snapshot(ctx, state="stopped")),
-                max(hook_timeout, 0.0),
+    def _start_destroy(
+        self,
+        ctx: _Active,
+        *,
+        grace: float,
+        hook_timeout: float,
+        close_timeout: float | None = None,
+    ) -> asyncio.Task[None]:
+        """Run the destroy as a tracked task (shutdown awaits, and past its bound cancels)."""
+        ctx.phase = "closing"
+        return self._spawn(
+            self._destroy_active(
+                ctx, grace=grace, hook_timeout=hook_timeout, close_timeout=close_timeout
             )
-        except TimeoutError:
-            log.warning("session %s: onDestroy exceeded %gs", ctx.session_id, hook_timeout)
-        if ctx.dispatcher is not None:
-            # Awaited: non-blocking actions (and other hooks still running) finish too.
-            await ctx.dispatcher.drain(max(deadline - loop.time(), 0.0))
-        self._finish(ctx)
+        )
 
-    async def _teardown(self, ctx: _Active, grace: float) -> None:
-        """Stop claude (if started) and close the router; the slot is free afterwards."""
+    async def _destroy_active(
+        self,
+        ctx: _Active,
+        *,
+        grace: float,
+        hook_timeout: float,
+        close_timeout: float | None = None,
+    ) -> None:
+        try:
+            await self._teardown(ctx, grace, close_timeout=close_timeout)
+            ctx.meta.update(state="stopped")
+            self._save(ctx)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + max(hook_timeout, 0.0)
+            try:
+                await asyncio.wait_for(
+                    self._fire(ctx, "onDestroy", self._snapshot(ctx, state="stopped")),
+                    max(hook_timeout, 0.0),
+                )
+            except TimeoutError:
+                log.warning("session %s: onDestroy exceeded %gs", ctx.session_id, hook_timeout)
+            if ctx.dispatcher is not None:
+                # Awaited: non-blocking actions (and other hooks still running) finish too.
+                await ctx.dispatcher.drain(max(deadline - loop.time(), 0.0))
+        finally:
+            # Cancelled by shutdown before claude was down: its kill path finishes the ctx.
+            if self._active.get(ctx.session_id) is not ctx:
+                self._finish(ctx)
+
+    async def _teardown(
+        self, ctx: _Active, grace: float, *, close_timeout: float | None = None
+    ) -> None:
+        """Stop claude (if started) and close the router (its drain bounded by
+        `close_timeout`, else the router default); the slot is free afterwards."""
         ctx.phase = "closing"
         for task in list(ctx.background):
             task.cancel()
@@ -701,7 +743,10 @@ class SessionManager:
             ctx.meta["transcript_path"] = ctx.session.transcript_path
         if ctx.router is not None:
             try:
-                await ctx.router.close()
+                if close_timeout is None:
+                    await ctx.router.close()
+                else:
+                    await ctx.router.close(drain_timeout=close_timeout)
             except Exception:
                 log.exception("session %s: closing the router failed", ctx.session_id)
         if self._active.get(ctx.session_id) is ctx:
@@ -869,46 +914,61 @@ class SessionManager:
         return reaped
 
     async def shutdown(self) -> None:
-        """Destroy every active session concurrently within `shutdown_timeout_seconds`, then
-        drain the hook dispatchers."""
+        """Stop every active session concurrently within `shutdown_timeout_seconds`, then
+        drain the hook dispatchers.
+
+        The bound is split: claude stops (SIGKILL after 30% of it), the router drains (15%)
+        and onDestroy runs (25%) inside the first 75%, destroys already in flight are
+        hurried to the same grace, and creates are cancelled. Whatever is still running
+        then is cancelled and killed outright, and the dispatchers drain in the rest."""
         self._closing = True
         budget = self.cfg.limits.shutdown_timeout_seconds
         loop = asyncio.get_running_loop()
         deadline = loop.time() + budget
+        grace = budget * SHUTDOWN_GRACE_SHARE
         if self._reaper is not None:
-            self._reaper.cancel()
+            self._reaper.cancel()  # a reap in progress carries on in its destroy task
             await asyncio.gather(self._reaper, return_exceptions=True)
             self._reaper = None
-        waits: list[asyncio.Future[Any]] = []
-        for ctx in list(self._active.values()):
-            if ctx.phase == "creating":
-                if ctx.task is not None and not ctx.task.done():
-                    ctx.task.cancel()
-                waits.append(asyncio.ensure_future(ctx.closed.wait()))
-            elif ctx.phase == "closing":
-                waits.append(asyncio.ensure_future(ctx.closed.wait()))
-            else:
-                waits.append(
-                    asyncio.ensure_future(
-                        self._destroy_active(
-                            ctx,
-                            grace=budget / 2,
-                            hook_timeout=min(self._hook_bound("onDestroy"), budget * 0.4),
-                        )
-                    )
+        contexts = list(self._active.values())
+        for ctx in contexts:
+            if ctx.phase == "running":
+                self._start_destroy(
+                    ctx,
+                    grace=grace,
+                    hook_timeout=min(self._hook_bound("onDestroy"), budget * SHUTDOWN_HOOK_SHARE),
+                    close_timeout=budget * SHUTDOWN_CLOSE_SHARE,
                 )
-        waits.extend(self._tasks)  # dead sessions being released
+                continue
+            if ctx.phase == "creating" and ctx.task is not None and not ctx.task.done():
+                ctx.task.cancel()
+            elif ctx.session is not None:  # already closing: hurry claude to the same grace
+                self._spawn(ctx.session.stop(grace))
+        waits: list[asyncio.Future[Any]] = [
+            asyncio.ensure_future(ctx.closed.wait()) for ctx in contexts
+        ]
+        waits.extend(self._tasks)
         if waits:
-            _, pending = await asyncio.wait(waits, timeout=budget)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-        for ctx in list(self._active.values()):  # past the bound: kill what is left
-            log.warning("session %s: not stopped within %gs, killing", ctx.session_id, budget)
-            await self._teardown(ctx, 0)
-            ctx.meta.update(state="stopped")
-            self._finish(ctx)
-        remaining = max(deadline - loop.time(), 0.1)
+            await asyncio.wait(waits, timeout=budget * SHUTDOWN_STOP_SHARE)
+        # Past the stop share: cancel what is left, then kill whatever claude still runs.
+        late = [
+            task
+            for task in (*waits, *(ctx.task for ctx in contexts if ctx.task is not None))
+            if not task.done()
+        ]
+        for task in late:
+            task.cancel()
+        await asyncio.gather(*late, return_exceptions=True)
+        leftovers = list(self._active.values())
+        for ctx in leftovers:
+            log.warning(
+                "session %s: not stopped within the shutdown bound, killing", ctx.session_id
+            )
+        close_timeout = budget * SHUTDOWN_KILL_CLOSE_SHARE
+        await asyncio.gather(
+            *(self._abandon(ctx, close_timeout) for ctx in leftovers), return_exceptions=True
+        )
+        remaining = max(deadline - loop.time(), 0.0)
         await asyncio.gather(
             *(d.drain(remaining) for d in self._dispatchers), return_exceptions=True
         )
@@ -995,9 +1055,14 @@ class SessionManager:
         with contextlib.suppress(Exception):
             self._save(ctx)
         if state == "dead":  # out of restarts: release the slot, keep the files
-            task = asyncio.ensure_future(self._retire(ctx))
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            self._spawn(self._retire(ctx))
+
+    def _spawn(self, coro: Any) -> asyncio.Task[Any]:
+        """A manager-level task (destroy, release, hurry) that shutdown waits for."""
+        task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     def _track(self, ctx: _Active, coro: Any) -> None:
         task = asyncio.ensure_future(coro)
