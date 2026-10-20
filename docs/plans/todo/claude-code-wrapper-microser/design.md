@@ -659,7 +659,7 @@ Container ACs that run docker are mandatory (Docker 29.8.2 is available on the b
 ## Open questions
 
 - Q1: Keep session files and the workdir on DELETE by default, deleting them only with ?purge=true? [answer: yes (user)]
-- Q2: Forward AskUserQuestion to the HTTP client as a question event by default (the agent asks in plain text and waits for the next turn) instead of denying it outright? [recommended: yes]
+- Q2: Forward AskUserQuestion to the HTTP client as a question event by default (the agent asks in plain text and waits for the next turn) instead of denying it outright? [answer: yes, and the question event is also POSTed to callbackUrl (user)]
 - Q3: Add a third named volume mise for runtime-installed tools next to workdir and sessions? [recommended: yes]
 
 ## Irreversible operations in scope
