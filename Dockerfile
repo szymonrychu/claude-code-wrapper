@@ -63,6 +63,10 @@ RUN groupadd --gid 1000 agent \
 RUN --mount=type=bind,from=builder,source=/dist,target=/tmp/dist \
     pip install --no-cache-dir /tmp/dist/*.whl
 
+# The bundled example config, so `ccw check-config --config /app/config.example.yaml` works in the image.
+RUN mkdir -p /app && ccw config example > /app/config.example.yaml \
+ && chown -R agent:agent /app
+
 # Shims on PATH via image ENV so mise tools resolve in Bash-tool shells; data dir sits on
 # the `mise` volume, outside HOME.
 ENV HOME=/home/agent \
