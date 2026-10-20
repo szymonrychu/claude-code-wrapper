@@ -1,6 +1,6 @@
 ---
 title: Service main
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: ccw serve runs the service and shuts down cleanly
 files: [src/claude_code_wrapper/service.py, src/claude_code_wrapper/cli.py, src/claude_code_wrapper/__main__.py, tests/test_cli.py, tests/test_service.py]

@@ -1,6 +1,6 @@
 ---
 title: README config
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: "Every config key and Claude env var is documented with type, default and mapping"
 files: [README.md, tests/test_readme_config.py]

@@ -1,6 +1,6 @@
 ---
 title: Pip package
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: "Install the service with pip and run ccw from PATH, in a Dockerfile or on a containerless host (D25)"
 files: [pyproject.toml, src/claude_code_wrapper/cli.py, src/claude_code_wrapper/bootstrap/settings.py, src/claude_code_wrapper/data/__init__.py, Dockerfile, README.md, tests/test_packaging.py]
@@ -12,8 +12,8 @@ model: ""
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--pip-package
+branch: claude-code-wrapper-microser--pip-package
 verified_head: ""
 run: ""
 provides: []

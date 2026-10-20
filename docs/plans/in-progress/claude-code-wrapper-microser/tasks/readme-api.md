@@ -1,6 +1,6 @@
 ---
 title: README API
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: Client authors can integrate from the README alone
 files: [README.md, tests/test_readme_api.py]
