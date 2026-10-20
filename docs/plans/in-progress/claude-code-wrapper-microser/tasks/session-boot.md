@@ -1,6 +1,6 @@
 ---
 title: Session boot
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: "claude boots unattended, recovers from crashes and never sees service secrets"
 files: [src/claude_code_wrapper/session.py, tests/test_session_boot.py]

@@ -1,6 +1,6 @@
 ---
 title: Workdir init
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: "Sessions start in an empty dir, a mounted tree or a fresh clone"
 files: [src/claude_code_wrapper/workdir.py, tests/test_workdir.py]

@@ -1,6 +1,6 @@
 ---
 title: Workbench example
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: The workbench plugin flow runs inside the service out of the box
 files: [examples/workbench.config.yaml, examples/docker-compose.workbench.yml, tests/test_examples.py]

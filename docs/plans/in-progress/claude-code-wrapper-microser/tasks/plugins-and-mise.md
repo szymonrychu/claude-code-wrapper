@@ -1,6 +1,6 @@
 ---
 title: Plugins and mise
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: "Plugins and tools pre-installed per config, the workbench plugin included"
 files: [src/claude_code_wrapper/plugins.py, src/claude_code_wrapper/tooling.py, tests/test_plugins.py, tests/test_tooling.py]

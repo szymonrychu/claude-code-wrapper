@@ -1,6 +1,6 @@
 ---
 title: Settings render
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: Every Claude lifecycle point is wired to the service with config permissions
 files: [src/claude_code_wrapper/bootstrap/settings.py, tests/test_bootstrap_settings.py]

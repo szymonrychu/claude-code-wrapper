@@ -1,6 +1,6 @@
 ---
 title: Session turns
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: "Turns submit, complete, interrupt and time out without ever wedging the slot"
 files: [src/claude_code_wrapper/session.py, src/claude_code_wrapper/turns.py, tests/test_session_turns.py, tests/test_turns.py]

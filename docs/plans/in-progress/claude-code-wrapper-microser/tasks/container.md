@@ -1,6 +1,6 @@
 ---
 title: Container
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: docker compose up gives a healthy non-root service with persistent volumes
 files: [Dockerfile, docker-compose.yml, .dockerignore, .env.example, tests/test_container.py]

@@ -1,6 +1,6 @@
 ---
 title: Config models
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: One validated config.yaml drives the whole service
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/interpolation.py, tests/test_config.py, tests/test_interpolation.py, config.example.yaml]

@@ -1,6 +1,6 @@
 ---
 title: Transcript tailer
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: "Assistant text, tool use and usage stream out of claude transcripts"
 files: [src/claude_code_wrapper/transcript.py, tests/test_transcript.py, tests/fixtures/transcripts/basic.jsonl, tests/fixtures/transcripts/subagent.jsonl]

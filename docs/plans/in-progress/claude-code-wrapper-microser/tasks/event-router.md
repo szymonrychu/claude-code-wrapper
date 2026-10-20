@@ -1,6 +1,6 @@
 ---
 title: Event router
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: Every hook call and transcript line becomes SSE events and user hook calls
 files: [src/claude_code_wrapper/router.py, tests/test_router.py]

@@ -1,6 +1,6 @@
 ---
 title: Home seed
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: "Sessions boot without onboarding or trust prompts, with MCP and instructions"
 files: [src/claude_code_wrapper/bootstrap/__init__.py, src/claude_code_wrapper/bootstrap/claude_json.py, src/claude_code_wrapper/bootstrap/instructions.py, tests/test_bootstrap_home.py]

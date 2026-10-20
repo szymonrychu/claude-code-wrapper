@@ -1,6 +1,6 @@
 ---
 title: Hook dispatcher
-status: todo
+status: in-progress
 repo: claude-code-wrapper
 value: User hooks as commands or signed webhooks that can veto safely
 files: [src/claude_code_wrapper/hooks.py, tests/test_hooks_command.py, tests/test_hooks_webhook.py]
