@@ -32,12 +32,17 @@ Epic-review remediation (whole-diff review, quality). Remove duplicated contract
 5. There are two copies of the example config (repo root config.example.yaml and src/claude_code_wrapper/data/config.example.yaml). Keep exactly one source of truth (the packaged data copy) and update every reference (README, Dockerfile, compose, tests); or, if a root copy must stay, a test asserts the two are byte-identical. Prefer one copy.
 No behaviour change beyond the unified timestamp format; existing tests stay green.
 
+
+6. Regression from review-fixes-auth-compose (already on this branch at 9e8e8ea): `tests/test_packaging.py::test_serve_preflight_missing_binaries` now fails because its config has no `server.auth_token`, so startup stops at the auth policy before the binary preflight. Fix the test fixture config (set an auth_token, or allow_anonymous: true) so it again proves the preflight names the missing binary; do not reorder production checks unless the preflight should logically run first (decide and state why). Also add the git-missing branch of the preflight (only the claude-missing path is tested today). The full suite `uv run pytest` must be green.
+
 ## Acceptance conditions
 
 - AC1: Turn records and events for one session use the same Z-suffixed RFC3339 format from one helper [evidence: test:tests/test_timestamps.py::test_turns_and_events_share_timestamp_format]
 - AC2: There is exactly one definition each of now_iso, _squash and the api _out helper in src [evidence: test:tests/test_timestamps.py::test_no_duplicate_helpers]
 - AC3: The example config's onAgentToolCall hook is runnable as shipped (no missing script) [evidence: test:tests/test_config.py::test_example_hooks_reference_existing_commands]
 - AC4: Only one example config source exists, or the copies are asserted identical [evidence: test:tests/test_packaging.py::test_single_example_config_source]
+- AC5: The serve preflight tests pass with a valid auth config and cover both the missing claude binary and missing git [evidence: test:tests/test_packaging.py::test_serve_preflight_missing_binaries]
+- AC6: The full suite is green on this branch [evidence: command:uv run pytest -q]
 
 ## Files
 
@@ -72,3 +77,5 @@ A retirement test asserts on `git ls-files <path>`, never on the filesystem.
 ## Notes
 
 Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+
+- 2026-10-20 amended: run6: full-suite regression in test_packaging preflight from auth change; verify agent died
