@@ -191,3 +191,90 @@ def test_garbage_200_body_is_failure(
     assert _run(monkeypatch, capsys, ["h", "Stop"]) == (0, "", "")
     s.close()
     assert len(s.requests) == 2
+
+
+def test_forwards_payload_and_headers(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    s = _Srv([_ok()])
+    monkeypatch.setenv("CCW_INTERNAL_URL", s.url)
+    _run(monkeypatch, capsys, ["h", "PostToolUse"], b'{"x": [1]}')
+    s.close()
+    r = s.requests[0]
+    assert r["path"] == "/internal/hooks/PostToolUse"
+    assert r["body"] == b'{"x": [1]}'
+    assert r["headers"]["x-ccw-session"] == "s1"
+    assert r["headers"]["x-ccw-hook-token"] == "tok"
+
+
+def test_prints_stdout_and_exit_code(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    s = _Srv([_ok("OUT", "ERR", 2)])
+    monkeypatch.setenv("CCW_INTERNAL_URL", s.url)
+    assert _run(monkeypatch, capsys, ["h", "PreToolUse"]) == (2, "OUT", "ERR")
+    s.close()
+
+
+def test_retries_then_succeeds(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    s = _Srv([(503, b""), (503, b""), _ok("fine")])
+    monkeypatch.setenv("CCW_INTERNAL_URL", s.url)
+    rc, out, _ = _run(monkeypatch, capsys, ["h", "UserPromptSubmit"])
+    s.close()
+    assert (rc, out) == (0, "fine")
+    assert len(s.requests) == 3
+
+
+def test_unreachable_exits_0_silently(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CCW_INTERNAL_URL", "http://127.0.0.1:1")
+    assert _run(monkeypatch, capsys, ["h", "PreToolUse"]) == (0, "", "")
+
+
+def test_pretooluse_fail_closed_prints_deny(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CCW_INTERNAL_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("CCW_TOOL_GATE_FAIL", "deny")
+    rc, out, _ = _run(monkeypatch, capsys, ["h", "PreToolUse"])
+    assert rc == 0
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_missing_env_exits_0(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("CCW_INTERNAL_URL", raising=False)
+    assert _run(monkeypatch, capsys, ["h", "Stop"]) == (0, "", "")
+    monkeypatch.setenv("CCW_INTERNAL_URL", "http://127.0.0.1:1")
+    monkeypatch.delenv("CCW_SESSION_ID")
+    assert _run(monkeypatch, capsys, ["h", "Stop"]) == (0, "", "")
+
+
+def test_stdlib_only() -> None:
+    import ast
+    import sys
+    from pathlib import Path
+
+    tree = ast.parse(Path(hr.__file__).read_text())
+    mods: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            mods.add(node.module.split(".")[0])
+    assert mods <= set(sys.stdlib_module_names)
+
+
+def test_delivery_id_stable_across_retries(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    s = _Srv([(503, b""), (503, b""), _ok()])
+    monkeypatch.setenv("CCW_INTERNAL_URL", s.url)
+    _run(monkeypatch, capsys, ["h", "UserPromptSubmit"])
+    s.close()
+    ids = [r["headers"]["x-ccw-delivery"] for r in s.requests]
+    assert len(ids) == 3 and len(set(ids)) == 1 and ids[0]
