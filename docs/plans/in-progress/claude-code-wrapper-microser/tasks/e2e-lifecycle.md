@@ -1,6 +1,6 @@
 ---
 title: E2E lifecycle
-status: escalated
+status: done
 repo: claude-code-wrapper
 value: Proof the whole lifecycle works end to end without real Claude
 files: [tests/test_e2e_lifecycle.py, tests/test_e2e_resume.py, tests/fixtures/scenarios/e2e.json, tests/fixtures/hooks/record_hook.sh]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--e2e-lifecycle
 branch: claude-code-wrapper-microser--e2e-lifecycle
-verified_head: unknown
+verified_head: 415c68016f7c8c98e47eebe81355fa7dfa119603
 run: claude-code-wrapper-microser
 provides: []
 acs_for_audit: []
