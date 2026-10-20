@@ -42,6 +42,9 @@ Build the per-session event log (D5) in `src/claude_code_wrapper/events.py`.
 Settled by the builder check (binding):
 - `EventLog(..., readonly=False)`: with `readonly=True` it reads the file for `page`/`last` (and `subscribe` ends immediately) while `append` raises; used for stopped sessions.
 
+
+- Rotation fix (run 2): `_rotate` must decode the existing file with the same tolerant decoding as `_read_file` (`errors="replace"`), so a crash-truncated mid-multibyte tail line never disables rotation (AC12).
+
 ## Acceptance conditions
 
 - AC1: append assigns strictly increasing seq and persists JSONL [evidence: test:tests/test_event_log.py::test_append_assigns_increasing_seq]
@@ -54,8 +57,8 @@ Settled by the builder check (binding):
 - AC8: A write failure does not raise and is logged once [evidence: test:tests/test_event_log.py::test_write_failure_does_not_raise]
 - AC9: Unknown event types are rejected [evidence: test:tests/test_event_log.py::test_unknown_event_type_rejected]
 - AC10: close ends subscriptions [evidence: test:tests/test_event_log.py::test_close_ends_subscriptions]
-
 - AC11: A read-only log pages from disk and rejects appends [evidence: test:tests/test_event_log.py::test_readonly_log_pages_and_rejects_append]
+- AC12: Rotation survives a corrupt (mid-multibyte) tail line: _rotate reads with the same tolerant decoding as _read_file (errors=replace), so after a crash-truncated tail the file still rotates once it passes max_bytes and never grows unbounded [evidence: test:tests/test_event_log.py::test_rotation_survives_corrupt_tail]
 
 ## Files
 
@@ -77,3 +80,5 @@ Every session has a durable, pageable, streamable event history whose seq number
 ## Notes
 
 - Source: ros2 `R/events.py:54-226` (seq across restarts, ring, paging, half-drop rotation, subscriber fan-out).
+
+- 2026-10-20 amended: run1 round-cap: reviewer medium finding (rotation disabled after corrupt tail) is real; fix in run2
