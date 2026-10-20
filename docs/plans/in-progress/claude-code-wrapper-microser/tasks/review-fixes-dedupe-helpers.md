@@ -1,0 +1,68 @@
+---
+title: Review fixes dedupe helpers
+status: todo
+repo: claude-code-wrapper
+value: One timestamp format and no duplicated helpers or example configs
+files: [src/claude_code_wrapper/turns.py, src/claude_code_wrapper/events.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/api/turns.py, src/claude_code_wrapper/data/config.example.yaml, config.example.yaml, tests/test_timestamps.py]
+verify: "uv run pytest -q && mise run lint"
+depends_on: [review-fixes-auth-compose]
+owns: []
+uses: []
+model: ""
+estimate: 60
+actual: ""
+review: ""
+worktree: ""
+branch: ""
+verified_head: ""
+run: ""
+provides: []
+---
+
+# Review fixes dedupe helpers
+
+## Requirement
+
+Epic-review remediation (whole-diff review, quality). Remove duplicated contracts and helpers found across modules on main cdc33c2:
+
+1. Timestamps: one helper produces every service timestamp. turns.py:47 `now_iso()` returns `+00:00`, while events.py:64 and hooks.py:48 build their own and use `Z`. Make a single `now_iso()` (in one module, e.g. a small `timeutil.py` or turns.py) that returns RFC3339 UTC with `Z`, use it in turns, events and hooks, and make metrics parsing accept it. Turn records and events of one session then carry the same format.
+2. `_squash` / `_WS` exist identically in ring.py:26/37 and session.py:77/267; keep one (ring.py) and import it in session.py.
+3. `_out` (redactor wrapper) exists in api/sessions.py:29 and api/turns.py:50; keep one shared helper in the api package.
+4. The example config hook `run: "./guard.sh"` (onAgentToolCall) points at a file that ships nowhere: replace it with a self-contained example (e.g. an inline `sh -c`-style command reading the payload from stdin) or ship the script under examples/ and reference it correctly.
+5. There are two copies of the example config (repo root config.example.yaml and src/claude_code_wrapper/data/config.example.yaml). Keep exactly one source of truth (the packaged data copy) and update every reference (README, Dockerfile, compose, tests); or, if a root copy must stay, a test asserts the two are byte-identical. Prefer one copy.
+No behaviour change beyond the unified timestamp format; existing tests stay green.
+
+## Acceptance conditions
+
+- AC1: Turn records and events for one session use the same Z-suffixed RFC3339 format from one helper [evidence: test:tests/test_timestamps.py::test_turns_and_events_share_timestamp_format]
+- AC2: There is exactly one definition each of now_iso, _squash and the api _out helper in src [evidence: test:tests/test_timestamps.py::test_no_duplicate_helpers]
+- AC3: The example config's onAgentToolCall hook is runnable as shipped (no missing script) [evidence: test:tests/test_config.py::test_example_hooks_reference_existing_commands]
+- AC4: Only one example config source exists, or the copies are asserted identical [evidence: test:tests/test_packaging.py::test_single_example_config_source]
+
+## Files
+
+- `src/claude_code_wrapper/turns.py`
+- `src/claude_code_wrapper/events.py`
+- `src/claude_code_wrapper/hooks.py`
+- `src/claude_code_wrapper/session.py`
+- `src/claude_code_wrapper/api/turns.py`
+- `src/claude_code_wrapper/data/config.example.yaml`
+- `config.example.yaml`
+- `tests/test_timestamps.py`
+
+## Interfaces
+
+Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+
+## Expected outcome
+
+What is true and observable when the task is done.
+
+## Steps
+
+Test first. One step per bullet, with the exact command and the output to expect.
+A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+
+## Notes
+
+Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
