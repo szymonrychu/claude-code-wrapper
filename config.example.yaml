@@ -1,0 +1,159 @@
+# claude-code-wrapper example configuration.
+# Every string value supports ${VAR}, ${VAR:-default} and $$ (literal $) interpolation from the
+# service environment. An unset ${VAR} without a default is a startup error.
+# This file loads cleanly with no environment variables set.
+
+server:
+  host: 0.0.0.0              # public API bind address (the internal hook API is always 127.0.0.1)
+  port: 8080                 # public API port (0 = pick a free port, used by tests)
+  internal_port: 8090        # loopback hook relay port; must differ from port
+  auth_token: ${CCW_AUTH_TOKEN:-}   # bearer token for the public API; empty = open (warning logged)
+  log_level: info            # debug | info | warning | error | critical
+  callback_secret: ""        # HMAC secret for question callbacks (callbackUrl)
+
+paths:
+  workdir_root: /workdir     # per-session workdirs live here (volume)
+  sessions_root: /sessions   # per-session state and CLAUDE_CONFIG_DIR live here (volume)
+
+claude:
+  binary: claude             # claude executable
+  model: ""                  # --model; empty = claude default
+  effort: ""                 # --effort; empty = claude default
+  permission_mode: bypassPermissions   # settings.json permissions.defaultMode
+  extra_args: []             # appended to argv; --dangerously-skip-permissions is rejected
+  env:                       # typed Claude Code env vars (field = env var name lowercased)
+    claude_code_oauth_token: ${CLAUDE_CODE_OAUTH_TOKEN:-}   # subscription auth, wins over the key
+    anthropic_api_key: ${ANTHROPIC_API_KEY:-}               # API key auth
+    # claude_code_disable_nonessential_traffic: true
+    # extra:                  # any other env var, uppercase names only
+    #   MY_VAR: value
+  passthrough_env: []        # names copied from the service env when present, e.g. [GH_TOKEN, SSH_AUTH_SOCK]
+  permissions:
+    allow: []                # e.g. ["Bash(git status:*)"]
+    deny: [EnterPlanMode, ExitPlanMode]
+  settings: {}               # deep-merged into settings.json (hook lists are appended)
+  claude_json: {}            # deep-merged into .claude.json
+  mcp_servers: {}            # name -> server definition
+    # fs:
+    #   type: stdio          # stdio | http | sse
+    #   command: npx
+    #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/workdir"]
+    #   env: {}
+    # remote:
+    #   type: http
+    #   url: https://mcp.example.com/mcp
+    #   headers: {Authorization: "Bearer ${MCP_TOKEN:-}"}
+  config_files: []           # [{source: /etc/ccw/agents/x.md, target: agents/x.md}] copied into CLAUDE_CONFIG_DIR
+  boot:
+    timeout_seconds: 60      # give up on boot after this long
+    min_boot_seconds: 4.0    # never report ready sooner than this
+    idle_ready_seconds: 1.5  # output quiescence that counts as ready
+    submit_delay_seconds: 0.4   # gap between bracketed paste and Enter
+    dialogs:                 # pattern seen on screen -> keys to send
+      - {pattern: "Bypass Permissions mode", keys: ["\u001b[B", "\r"], delay_seconds: 0.6}
+      - {pattern: "Do you trust the files in this folder", keys: ["\r"]}
+    ready_markers: ["? for shortcuts", "bypass permissions on"]
+    fatal_patterns:          # screen text that fails the session
+      - "API Error: 401"
+      - "API Error: 403"
+      - "Please run /login"
+      - "Credit balance is too low"
+      - "OAuth token has expired"
+
+init:
+  workdir:
+    mode: empty              # empty | mounted | clone
+    path: ""                 # mounted: absolute path of the mounted workdir
+    name: ""                 # workdir directory name under workdir_root (default: session id)
+    repo_url: ""             # clone: repository URL
+    branch: ""               # clone: branch
+    depth: 0                 # clone: shallow depth (0 = full)
+    submodules: false        # clone: init submodules
+  git:
+    user_name: ""            # git user.name for the workdir
+    user_email: ""           # git user.email for the workdir
+  setup_commands: []         # run in the workdir before claude starts
+    # - echo hello
+    # - {run: make bootstrap, timeout_seconds: 600}
+
+prompts:
+  global_claude_md: ""       # file whose content starts <config>/CLAUDE.md
+  system_append: ""          # text appended to <config>/CLAUDE.md
+  initial_prompt: ""         # a string, or {template: name, variables: {k: v}}
+  templates: {}              # name -> {description, variables: {name: {required, default}}, text}
+    # greet:
+    #   description: Greeting prompt
+    #   variables: {who: {required: true}}
+    #   text: "Hello {{who}}, please review the repository."
+
+mise:
+  tools: {}                  # tool -> version, e.g. {node: "22", python: "3.12"}
+  config_file: ""            # mise.toml copied in as the global config
+  install_on_start: true     # run mise install at service start
+  install_workdir: true      # run mise install in each new workdir
+  trusted_paths: [/workdir]  # mise trusted_config_paths
+  required: true             # fail startup when installation fails
+  install_timeout_seconds: 900
+  global_config_path: /home/agent/.config/mise/config.toml
+
+plugins:
+  marketplaces: []           # [{name, source}]
+    # - {name: team, source: "github:acme/claude-plugins"}
+  install: []                # [{plugin: name@marketplace, scope: user, required: true}]
+    # - {plugin: "workbench@team", scope: user, required: true}
+  disable: []                # plugin ids to disable
+  timeout_seconds: 180
+
+# Hook actions. command: {type, run, timeout_seconds: 30, blocking: false, on_error: allow, matcher, env}
+# webhook: {type, url, secret, headers, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}
+# matcher (regex, full match on the tool name) is only valid on onAgentToolCall and onToolResult.
+hooks:
+  onCreate:                  # after claude is ready; a blocking deny aborts creation
+    - {type: command, run: "echo created $CCW_SESSION_ID >> /sessions/audit.log"}
+  onResume: []               # after a resumed claude is ready; a blocking deny aborts resume
+    # - {type: command, run: ./check-resume.sh, blocking: true, on_error: deny}
+  onDestroy:                 # after claude stopped
+    - {type: command, run: "echo destroyed $CCW_SESSION_ID >> /sessions/audit.log"}
+  onTurn: []                 # before the prompt is pasted; a blocking deny vetoes the turn
+    # - {type: webhook, url: "https://policy.example.com/turn", secret: "${HOOK_SECRET:-}", blocking: true}
+  onTurnComplete: []         # every terminal turn state
+    # - {type: webhook, url: "https://example.com/turn-done", secret: "${HOOK_SECRET:-}"}
+  onAgentResponse: []        # assistant text from the transcript
+    # - {type: command, run: "jq -r .data.text >> /sessions/replies.log"}
+  onAgentToolCall:           # PreToolUse; a blocking deny blocks the tool call
+    - type: command
+      run: "./guard.sh"
+      matcher: "Bash"
+      blocking: true
+      on_error: allow
+  onToolResult: []           # PostToolUse / PostToolUseFailure
+    # - {type: command, run: ./after-edit.sh, matcher: "Edit|Write"}
+  onSubagentStart: []
+    # - {type: command, run: "echo subagent started"}
+  onSubagentStop: []
+    # - {type: command, run: "echo subagent stopped"}
+  onInterrupt: []
+    # - {type: command, run: "echo interrupted"}
+  onError: []                # fatal pattern, crash, boot timeout, step failure, relay error
+    # - {type: webhook, url: "https://alerts.example.com/ccw"}
+
+sessions:
+  max_sessions: 4            # concurrent sessions (>= 1)
+  idle_timeout_seconds: 0    # stop idle sessions after this long (0 = never)
+  turn_stall_seconds: 1800   # silence before a turn is reported as possibly stalled
+  interrupt_settle_seconds: 20   # wait for an interrupt to settle
+  max_restarts: 3            # claude crash restarts per session
+  ask_user_question: forward # forward | deny | allow
+  turn_marker: true          # tag each turn so completion can be correlated
+  resume_on_start: false     # resume known sessions when the service starts
+
+limits:
+  max_prompt_bytes: 1048576
+  max_file_bytes: 262144
+  max_files_per_turn: 16
+  turn_max_seconds: 0        # hard cap per turn (0 = none)
+  event_ring_size: 1000      # in-memory events kept per session
+  event_log_max_bytes: 52428800   # on-disk event log cap per session
+  sse_replay: 100            # events replayed to a new SSE subscriber
+  sse_heartbeat_seconds: 15
+  shutdown_timeout_seconds: 10
