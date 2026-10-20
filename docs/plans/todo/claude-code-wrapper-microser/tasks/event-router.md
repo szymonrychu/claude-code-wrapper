@@ -46,6 +46,10 @@ Settled by the builder check (binding):
 - PostToolUse/PostToolUseFailure use `session.record_tool_call()`.
 - The `metrics=None` constructor kwarg is added by the metrics task.
 
+Settled at the gate (D19-D24, binding):
+- Forwarded AskUserQuestion: besides the `question` event, the event envelope is POSTed with `post_json` (signed with `server.callback_secret`) to the running turn's `callbackUrl`, else the session's `callbackUrl`; none set -> no POST.
+- onTurnComplete fires for EVERY terminal turn state (completed, failed, interrupted, timeout) with `state` in its data (the turn record), and the turn's callback (turn `callbackUrl`, else session `callbackUrl`) is delivered for every terminal state too; `turn_failed` is still emitted for the non-completed states.
+
 ## Acceptance conditions
 
 - AC1: An allowed PreToolUse emits tool_call and returns empty stdout [evidence: test:tests/test_router.py::test_pretooluse_allow_emits_tool_call]
@@ -66,6 +70,9 @@ Settled by the builder check (binding):
 
 - AC16: Stop flushes the tailer before reading the turn marker [evidence: test:tests/test_router.py::test_stop_flushes_tailer_before_marker]
 - AC17: The router exposes session, event_log and turns [evidence: test:tests/test_router.py::test_router_exposes_parts]
+
+- AC18: A forwarded question is POSTed to the turn or session callbackUrl [evidence: test:tests/test_router.py::test_question_posted_to_callback_url]
+- AC19: onTurnComplete fires with state for failed, interrupted and timeout turns [evidence: test:tests/test_router.py::test_on_turn_complete_fires_for_every_terminal_state]
 
 ## Files
 

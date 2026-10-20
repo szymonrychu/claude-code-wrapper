@@ -34,6 +34,10 @@ README sections (exact H2 headings, added after the readme-api sections): `## Qu
 - Development: `mise run install|test|lint|fmt`, the fake claude, TDD, and a manual real-Claude smoke recipe.
 Tests: `test_every_config_key_documented` (walks the pydantic models recursively and asserts a table row for every dotted key), `test_defaults_match_model` (each row's Default cell equals the model default rendered the same way), `test_every_claude_env_var_documented_with_field` (each catalogue entry has a row with its field and env var), `test_secret_env_vars_marked`, `test_sections_present`.
 
+Settled at the gate (D19-D24, binding):
+- Add `## Running in Kubernetes` (no chart): `/healthz` liveness and `/readyz` readiness semantics, SIGTERM grace via `limits.shutdown_timeout_seconds`, JSON logs on stdout, `CCW_CONFIG`, the volumes to back with persistent storage, and the trust model reference.
+- Document that secret env overrides are not persisted and must be resent on resume, and that DELETE keeps files unless `purge=true`.
+
 ## Acceptance conditions
 
 - AC1: Every config key has a reference row [evidence: test:tests/test_readme_config.py::test_every_config_key_documented]
@@ -45,6 +49,9 @@ Tests: `test_every_config_key_documented` (walks the pydantic models recursively
 - AC7: The workbench usage section exists [evidence: doc-section:README.md#Workbench usage]
 - AC8: README.md is plain ASCII [evidence: command:LC_ALL=C grep -q '[^ -~]' README.md && exit 1 || exit 0]
 - AC9: The full suite and lint pass [evidence: command:mise run test && mise run lint]
+
+- AC10: The README covers running in Kubernetes [evidence: doc-section:README.md#Running in Kubernetes]
+- AC11: The README says secret overrides must be resent on resume [evidence: command:grep -qi 'resent' README.md]
 
 ## Files
 

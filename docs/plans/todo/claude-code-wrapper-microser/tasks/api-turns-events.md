@@ -26,7 +26,7 @@ provides: []
 Add turn, control, transcript, history and SSE routes (D5, D14) in `src/claude_code_wrapper/api/turns.py` and `api/events.py`, registered in `api/app.py`.
 
 turns.py:
-- `POST /v1/sessions/{id}/turns` body `{text?, template?, variables?, files?: {path: content}, callback_url?}` -> 202 `{turn_id, state}`. Exactly one of text/template (else 400 `text_or_template`); template rendered via `resolve_prompt` (422 PromptError codes); prompt bytes over `limits.max_prompt_bytes` -> 413 `too_large`; file caps -> 413 `too_large`, bad path -> 400 `invalid_path`; `callback_url` must be http(s) (400); busy -> 409 `busy`; booting -> 503 `booting`; dead/stopped -> 503 `dead`; onTurn veto -> 403 `vetoed`. Delegates to `router.submit_turn`.
+- `POST /v1/sessions/{id}/turns` body `{text?, template?, variables?, files?: {path: content}, callbackUrl?}` -> 202 `{turn_id, state}`. Exactly one of text/template (else 400 `text_or_template`); template rendered via `resolve_prompt` (422 PromptError codes); prompt bytes over `limits.max_prompt_bytes` -> 413 `too_large`; file caps -> 413 `too_large`, bad path -> 400 `invalid_path`; `callbackUrl` must be http(s) (400); busy -> 409 `busy`; booting -> 503 `booting`; dead/stopped -> 503 `dead`; onTurn veto -> 403 `vetoed`. Delegates to `router.submit_turn`.
 - `GET /v1/sessions/{id}/turns` -> `{"turns": [summary]}`; `GET /v1/sessions/{id}/turns/{turn_id}` -> full record (redacted); unknown -> 404.
 - `POST /v1/sessions/{id}/interrupt` -> 200 `{interrupted: bool, turn_id}`.
 - `POST /v1/sessions/{id}/probe` body `{text?}` -> 202 `{probe_id, state}`; `GET /v1/sessions/{id}/probe/{probe_id}` -> `{probe_id, state, created_at, delivered_at, answered_at}`.
@@ -40,6 +40,10 @@ events.py:
 Settled by the builder check (binding):
 - History, turns listing/fetch and SSE use `manager.open_event_log(id)` / `manager.open_turns(id)`, so they work for stopped sessions from disk; SSE on a stopped session replays and then sends `session_closed`.
 - `text_or_template` is 400 (shared mapping from api/errors.py).
+
+Settled at the gate (D19-D24, binding):
+- The turn body field is `callbackUrl` (camelCase); `callback_url` is rejected as an unknown field (422).
+- No callback host policy (trust model D23).
 
 ## Acceptance conditions
 
@@ -58,6 +62,8 @@ Settled by the builder check (binding):
 - AC13: SSE ends with session_closed when the session stops [evidence: test:tests/test_api_events.py::test_sse_closes_when_session_stops]
 
 - AC14: History and turns are served for a stopped session from disk [evidence: test:tests/test_api_events.py::test_history_and_turns_for_stopped_session]
+
+- AC15: The turn body uses camelCase callbackUrl [evidence: test:tests/test_api_turns.py::test_turn_body_uses_callback_url_camel_case]
 
 ## Files
 

@@ -41,13 +41,18 @@ manager.py, `SessionManager(cfg, *, internal_url, service_env, redactor)`:
 - `async shutdown()`: destroys all active sessions concurrently within `shutdown_timeout_seconds`, then drains the dispatcher.
 
 Settled by the builder check (binding):
-- `started: bool` attribute, true after `load_persisted()` completes (readyz uses it).
+- `started: bool` attribute, set by service-main only after config load, global mise install, `load_persisted()` and both listeners bound (readyz uses it).
 - `open_event_log(id)` and `open_turns(id)`: the live router's EventLog/TurnStore for active sessions, else read-only instances opened from the session dir (history, turns and SSE work on stopped sessions from disk); unknown id -> `SessionNotFound`.
 - Snapshot and `list(state=...)` use exactly `creating, ready, busy, stopped, failed, dead`.
 - `create` returns once claude is ready and onCreate passed; it does NOT wait for the initial turn, which is submitted in a tracked background task. A veto (or rejection) of the initial turn emits an `error` event `{kind: "initial_turn_rejected", reason}` and the session stays ready.
 - Gate env comes from `relay_timeouts` only (see above).
 - Tests deliver `FAKE_CLAUDE_*` via `claude.env.extra` or `claude.passthrough_env`.
 - The `metrics=None` constructor kwarg is added by the metrics task.
+
+Settled at the gate (D19-D24, binding):
+- `CreateSessionRequest.callbackUrl` (camelCase in the API) is the session default callback, persisted in session.json and used by the router when a turn has none.
+- `destroy(id, purge=False)`: files are kept unless purge is requested (D19).
+- Secret env override fields are never written to session.json; `resume(id, env)` applies the env given in the resume request, so secret overrides must be resent there (D24).
 
 ## Acceptance conditions
 
@@ -73,6 +78,9 @@ Settled by the builder check (binding):
 - AC19: create returns before the initial turn completes [evidence: test:tests/test_manager.py::test_create_does_not_wait_for_initial_turn]
 - AC20: A vetoed initial turn emits an error event and the session stays ready [evidence: test:tests/test_manager.py::test_initial_turn_veto_keeps_session_ready]
 - AC21: Snapshots and the state filter use the public state vocabulary [evidence: test:tests/test_manager.py::test_snapshot_state_vocabulary]
+
+- AC22: A secret override is absent after resume unless it is resent in the resume env [evidence: test:tests/test_manager.py::test_secret_override_must_be_resent_on_resume]
+- AC23: The session callbackUrl is persisted and used as the default callback [evidence: test:tests/test_manager.py::test_session_callback_url_default]
 
 ## Files
 

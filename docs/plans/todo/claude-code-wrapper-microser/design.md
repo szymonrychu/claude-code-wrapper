@@ -27,7 +27,7 @@ hardcoded domain glue.
 
 - G1 `docker compose up` (repo root) builds and starts the service as a non-root user, with named
   volumes `workdir` (mounted at `/workdir`), `sessions` (mounted at `/sessions`) and `mise`
-  (`/opt/mise`), and `config.example.yaml` (or `$CCW_CONFIG`) mounted at `/etc/ccw/config.yaml`.
+  (`/opt/mise`), and `config.example.yaml` (or `$CCW_CONFIG_FILE`) mounted at `/etc/ccw/config.yaml`.
 - G2 Session lifecycle over HTTP: create, submit turn, poll turn, SSE events, interrupt, probe,
   transcript, destroy, list past sessions, resume by id after a service restart.
 - G3 config.yaml with every section in "Config schema" below, `${VAR}` interpolation, strict
@@ -182,7 +182,7 @@ Default boot dialogs: `{pattern: "Bypass Permissions mode", keys: ["\u001b[B", "
 | onResume | manager, after resumed claude is ready | deny aborts resume | session snapshot |
 | onDestroy | manager, after claude stopped | awaited, cannot veto | session snapshot |
 | onTurn | router, before paste | deny vetoes the turn (403 `vetoed`) | `{text, files, origin}` |
-| onTurnComplete | Stop relay | awaited, cannot veto | turn record |
+| onTurnComplete | Stop relay, and every other terminal turn state (failed, interrupted, timeout) | awaited, cannot veto | turn record incl. `state` |
 | onAgentResponse | transcript assistant text (main thread) | awaited, cannot veto | `{text, message_id, model}` |
 | onAgentToolCall | PreToolUse relay | deny blocks the tool call | `{tool_name, tool_input, tool_use_id}` |
 | onToolResult | PostToolUse / PostToolUseFailure relay | additional_context returned to Claude | `{tool_name, tool_input, tool_response, tool_use_id, is_error}` |
@@ -236,7 +236,7 @@ Internal (127.0.0.1 only): `POST /internal/hooks/{ClaudeEvent}` with `X-CCW-Sess
 `X-CCW-Hook-Token`; response `{"stdout", "stderr", "exit_code"}`; `GET /internal/healthz`.
 
 Turn record: `turn_id, session_id, origin (client|initial|agent), state (running|completed|failed|
-interrupted|timeout), text, final_text, stop_reason, usage, model_tokens, error, callback_url,
+interrupted|timeout), text, final_text, stop_reason, usage, model_tokens, error, callbackUrl,
 started_at, completed_at, last_activity_at, stall_suspected_since, tool_calls`.
 
 ## Source findings
@@ -380,9 +380,9 @@ build-essential, shellcheck, node 24, pinned `@anthropic-ai/claude-code` (ARG
 `CLAUDE_CODE_VERSION`, default 2.1.304), mise (pinned, `MISE_DATA_DIR=/opt/mise`, shims on PATH,
 `MISE_TRUSTED_CONFIG_PATHS=/workdir`), uv, ruff, gh, glab; app venv from `uv sync --frozen --no-dev`;
 user `agent` uid 1000, `HOME=/home/agent`; `DISABLE_AUTOUPDATER=1`; healthcheck on /healthz;
-`CMD ccw serve --config /etc/ccw/config.yaml`. Compose: service `ccw`, port `${CCW_PORT:-8080}`,
+`ENV CCW_CONFIG=/etc/ccw/config.yaml`, `CMD ccw serve`. Compose: service `ccw`, port `${CCW_PORT:-8080}`,
 named volumes `workdir`, `sessions`, `mise` (third volume is my call: runtime mise installs survive
-container recreation), config mount `${CCW_CONFIG:-./config.example.yaml}:/etc/ccw/config.yaml:ro`,
+container recreation), config mount `${CCW_CONFIG_FILE:-./config.example.yaml}:/etc/ccw/config.yaml:ro`,
 env passthrough for auth vars, `.env.example`. Serves A5.
 
 ### D11: Workbench compatibility
@@ -463,7 +463,7 @@ docker-compose.yml declares a third named volume mise mounted at /opt/mise next 
 onTurnComplete fires for every terminal turn state (completed, failed, interrupted, timeout) with state in its data; turn completion callbacks follow the same rule. Orchestrator call, the user did not object. (user decision)
 
 ### D23: Trust model: one instance per project, trusted callers
-Trust model: one wrapper instance per project or assignment; bearer-token callers are fully trusted. No workdir allowlist and no callback host policy. The service must not be exposed to untrusted callers, and the README says so. (user decision)
+Trust model: one wrapper instance per project or assignment; bearer-token callers are fully trusted. No workdir allowlist and no callback host policy. The service must not be exposed to untrusted callers, and the README says so. User context: "This is a backend microservice, it will eventually be running internally in kubernetes, so it won't ever be directly exposed to vertical traffic." README wording: an internal backend service, cluster-internal only, never behind a public ingress. Kubernetes-friendly operation per "Kubernetes friendliness" below; no Helm chart or manifests (non-goal). (user decision)
 
 ### D24: Secret env overrides are not persisted
 Per-session secret env overrides are never persisted; resuming such a session requires resending them in the resume request body. (user decision)
@@ -655,6 +655,16 @@ the task files):
     the initial turn emits an `error` event and the session stays ready.
 
 Container ACs that run docker are mandatory (Docker 29.8.2 is available on the build machine).
+
+## Kubernetes friendliness
+
+Per D23 (user context: internal backend in Kubernetes), with no chart or manifests in scope:
+
+- `GET /healthz`: unauthenticated liveness, 200 whenever the process serves HTTP.
+- `GET /readyz`: unauthenticated readiness, 200 only after the config loaded, global mise install finished, persisted sessions loaded and both listeners bound (`manager.started`, set by `run_service`), else 503. Per-session plugin installs happen at session create and do not gate readiness.
+- SIGTERM: graceful shutdown bounded by `limits.shutdown_timeout_seconds` (stop sessions, drain hooks, close listeners), exit 0; compose `stop_grace_period` exceeds it.
+- Logs: JSON lines on stdout, redacted.
+- Config path: `ccw serve` reads `--config`, else `$CCW_CONFIG`, else `/etc/ccw/config.yaml`; the image sets `CCW_CONFIG=/etc/ccw/config.yaml` (compose uses `CCW_CONFIG_FILE` for the host-side file).
 
 ## Open questions
 

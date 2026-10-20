@@ -40,6 +40,10 @@ Settled by the builder check (binding):
 - `FAKE_CLAUDE_SCENARIO` and `FAKE_CLAUDE_LOG` reach the fake via `claude.env.extra` (or `claude.passthrough_env`); ports come from `ServiceHandle` with both ports 0.
 - create returns before the initial turn; tests poll for turn completion.
 
+Settled at the gate (D19-D24, binding):
+- The AskUserQuestion scenario sets a turn `callbackUrl` pointing at the test receiver and asserts the `question` envelope arrives there signed.
+- The interrupt and fatal scenarios assert onTurnComplete fired with `state` interrupted and failed.
+
 ## Acceptance conditions
 
 - AC1: The full lifecycle emits the expected SSE events and fires every turn-related hook [evidence: test:tests/test_e2e_lifecycle.py::test_full_lifecycle_events_and_hooks]
@@ -52,6 +56,9 @@ Settled by the builder check (binding):
 - AC8: Purge deletes the session dir and the empty-mode workdir [evidence: test:tests/test_e2e_resume.py::test_purge_removes_files]
 - AC9: No secret appears in responses, SSE, hook payloads or session.json [evidence: test:tests/test_e2e_lifecycle.py::test_no_secret_leaks]
 - AC10: The full suite passes [evidence: command:mise run test]
+
+- AC11: The question event is POSTed to the turn callbackUrl [evidence: test:tests/test_e2e_lifecycle.py::test_question_posted_to_callback]
+- AC12: onTurnComplete fires for interrupted and failed turns with their state [evidence: test:tests/test_e2e_lifecycle.py::test_on_turn_complete_for_terminal_states]
 
 ## Files
 

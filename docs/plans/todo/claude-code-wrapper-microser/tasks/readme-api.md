@@ -32,6 +32,10 @@ README sections (exact H2 headings): `## Overview` (what the service is, the PTY
 - Errors: the envelope and a table of every error code with its status.
 Tests (read README.md, build the apps with stub managers): `test_every_public_route_documented`, `test_every_internal_route_documented`, `test_every_event_type_documented`, `test_every_hook_event_documented`, `test_error_codes_documented` (every code raised in `api/errors.py` and the route modules appears in the Errors table).
 
+Settled at the gate (D19-D24, binding):
+- Add `## Trust model`: an internal backend service, cluster-internal only (Kubernetes), never behind a public ingress; one instance per project or assignment; bearer-token callers fully trusted; no workdir allowlist and no callback host policy; it must not be exposed to untrusted callers.
+- Document `callbackUrl` (session and turn level, camelCase), the question callback POST, and that onTurnComplete fires for every terminal state with `state`.
+
 ## Acceptance conditions
 
 - AC1: Every public route has its own README heading [evidence: test:tests/test_readme_api.py::test_every_public_route_documented]
@@ -42,6 +46,9 @@ Tests (read README.md, build the apps with stub managers): `test_every_public_ro
 - AC6: The API reference section exists [evidence: doc-section:README.md#API reference]
 - AC7: The hooks section exists [evidence: doc-section:README.md#Hooks]
 - AC8: Route docs give request and response bodies with examples and status codes accurate to the implementation [evidence: judgement:]
+
+- AC9: The README states the trust model [evidence: doc-section:README.md#Trust model]
+- AC10: The trust model says cluster-internal only and never behind a public ingress [evidence: command:grep -qi 'cluster-internal' README.md && grep -qi 'public ingress' README.md]
 
 ## Files
 

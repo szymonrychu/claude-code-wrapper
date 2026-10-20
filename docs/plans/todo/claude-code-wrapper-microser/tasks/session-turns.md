@@ -47,6 +47,9 @@ Settled by the builder check (binding):
 - `Session.record_tool_call()` increments the running turn's `tool_calls` and persists it (no-op when idle).
 - `probe` also writes through `pty.send_prompt`.
 
+Settled at the gate (D19-D24, binding):
+- `TurnRecord.callback_url` serialises as `callbackUrl` (pydantic alias, `populate_by_name`) in every API-facing dump and in turns.jsonl.
+
 ## Acceptance conditions
 
 - AC1: submit writes the paste and a separate CR with the turn marker [evidence: test:tests/test_session_turns.py::test_submit_writes_paste_then_cr_and_marker]
@@ -68,6 +71,8 @@ Settled by the builder check (binding):
 
 - AC17: record_tool_call counts tool calls on the running turn [evidence: test:tests/test_session_turns.py::test_record_tool_call_counts]
 - AC18: A read-only turn store serves records and rejects writes [evidence: test:tests/test_turns.py::test_readonly_store]
+
+- AC19: TurnRecord serialises callbackUrl in camelCase [evidence: test:tests/test_turns.py::test_turn_record_serializes_callback_url_camel_case]
 
 ## Files
 

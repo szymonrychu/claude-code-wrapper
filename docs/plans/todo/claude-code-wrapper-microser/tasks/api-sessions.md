@@ -45,6 +45,12 @@ Settled by the builder check (binding):
 - `/readyz` reads `manager.started`.
 - The `metrics=None` kwarg on `create_app` is added by the metrics task.
 
+Settled at the gate (D19-D24, binding):
+- `POST /v1/sessions` accepts `callbackUrl` (http or https, else 400); snapshots expose `callbackUrl`. camelCase `callbackUrl` is the only spelling in the API.
+- `DELETE` without `purge` keeps the session dir and workdir.
+- `POST /v1/sessions/{id}/resume` body `{env?}` is where secret overrides are resent.
+- Trust model (D23): bearer-token callers are fully trusted; no workdir allowlist and no callback host policy; `workdir` in the create body is used as given.
+
 ## Acceptance conditions
 
 - AC1: POST /v1/sessions returns 201 with a snapshot [evidence: test:tests/test_api_sessions.py::test_create_returns_201_snapshot]
@@ -65,6 +71,9 @@ Settled by the builder check (binding):
 
 - AC16: The public app exposes no OpenAPI or docs routes [evidence: test:tests/test_api_auth.py::test_no_openapi_routes]
 - AC17: text_or_template maps to 400 [evidence: test:tests/test_api_sessions.py::test_text_or_template_400]
+
+- AC18: Create accepts camelCase callbackUrl and the snapshot returns it [evidence: test:tests/test_api_sessions.py::test_create_accepts_callback_url_camel_case]
+- AC19: DELETE without purge keeps the session files [evidence: test:tests/test_api_sessions.py::test_delete_default_keeps_files]
 
 ## Files
 
