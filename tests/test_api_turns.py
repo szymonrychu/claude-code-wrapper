@@ -109,14 +109,14 @@ def post(client: TestClient, body: dict[str, Any], sid: str = SID):
     return client.post(f"/v1/sessions/{sid}/turns", json=body)
 
 
-def test_submit_text_returns_202(client: TestClient, stub: StubManager) -> None:
+def test_submit_turn_202(client: TestClient, stub: StubManager) -> None:
     r = post(client, {"text": "hello", "files": {"a.txt": "x"}, "callbackUrl": "http://h/cb"})
     assert r.status_code == 202
     assert r.json() == {"turn_id": "turn-1", "state": "running"}
     assert stub.router_obj.calls == [("submit", "hello", {"a.txt": "x"}, "http://h/cb")]
 
 
-def test_submit_template_rendered(client: TestClient, stub: StubManager) -> None:
+def test_template_turn_rendered(client: TestClient, stub: StubManager) -> None:
     r = post(client, {"template": "greet", "variables": {"who": "bob"}})
     assert r.status_code == 202
     assert stub.router_obj.calls[0][1] == "hi bob"
@@ -143,7 +143,7 @@ def test_callback_url_must_be_http(client: TestClient) -> None:
     assert r.status_code == 400
 
 
-def test_snake_case_callback_url_rejected(client: TestClient) -> None:
+def test_turn_body_uses_callback_url_camel_case(client: TestClient) -> None:
     assert post(client, {"text": "a", "callback_url": "http://x/y"}).status_code == 422
 
 
@@ -178,7 +178,7 @@ def test_requires_auth(stub: StubManager) -> None:
     assert r.status_code == 401
 
 
-def test_list_and_get_turns_redacted(client: TestClient, stub: StubManager) -> None:
+def test_list_and_get_turn(client: TestClient, stub: StubManager) -> None:
     stub.redactor.add([SECRET])
     rec = TurnRecord(turn_id="turn-1", session_id=SID, text=f"use {SECRET}", started_at=now_iso())
     stub.turns.put(rec)
@@ -190,7 +190,7 @@ def test_list_and_get_turns_redacted(client: TestClient, stub: StubManager) -> N
     assert client.get("/v1/sessions/ses_x/turns").status_code == 404
 
 
-def test_interrupt(client: TestClient, stub: StubManager) -> None:
+def test_interrupt_endpoint(client: TestClient, stub: StubManager) -> None:
     r = client.post(f"/v1/sessions/{SID}/interrupt")
     assert r.json() == {"interrupted": False, "turn_id": None}
     stub.router_obj.interrupted = "turn-1"
@@ -198,7 +198,7 @@ def test_interrupt(client: TestClient, stub: StubManager) -> None:
     assert r.status_code == 200 and r.json() == {"interrupted": True, "turn_id": "turn-1"}
 
 
-def test_probe_flow(client: TestClient, stub: StubManager) -> None:
+def test_probe_endpoints(client: TestClient, stub: StubManager) -> None:
     r = client.post(f"/v1/sessions/{SID}/probe", json={"text": "alive?"})
     assert r.status_code == 202 and r.json() == {"probe_id": "probe-1", "state": "pending"}
     assert client.post(f"/v1/sessions/{SID}/probe").status_code == 202
@@ -209,7 +209,7 @@ def test_probe_flow(client: TestClient, stub: StubManager) -> None:
     assert client.post(f"/v1/sessions/{SID}/probe").status_code == 503
 
 
-def test_transcript_streams_redacted_ndjson(client: TestClient, stub: StubManager) -> None:
+def test_transcript_ndjson_redacted(client: TestClient, stub: StubManager) -> None:
     stub.redactor.add([SECRET])
     stub.transcript.write_text(
         json.dumps({"n": 1, "t": SECRET}) + "\n" + json.dumps({"n": 2}) + "\n"
@@ -225,3 +225,30 @@ def test_transcript_streams_redacted_ndjson(client: TestClient, stub: StubManage
 def test_transcript_missing_404(client: TestClient) -> None:
     r = client.get(f"/v1/sessions/{SID}/transcript")
     assert r.status_code == 404 and r.json()["error"]["code"] == "no_transcript"
+
+
+def test_submit_validation_400_413(client: TestClient, stub: StubManager) -> None:
+    assert post(client, {}).status_code == 400
+    assert post(client, {"text": "a", "template": "greet"}).status_code == 400
+    assert post(client, {"text": "a", "callbackUrl": "ftp://x"}).status_code == 400
+    assert post(client, {"text": "x" * 65}).status_code == 413
+    stub.router_obj.raise_on = FileWriteError("too_large", "big")
+    assert post(client, {"text": "a"}).status_code == 413
+    stub.router_obj.raise_on = FileWriteError("invalid_path", "bad")
+    r = post(client, {"text": "a"})
+    assert r.status_code == 400 and r.json()["error"]["code"] == "invalid_path"
+
+
+def test_submit_busy_409_and_booting_503(client: TestClient, stub: StubManager) -> None:
+    stub.router_obj.raise_on = TurnRejected("busy")
+    assert post(client, {"text": "a"}).status_code == 409
+    for reason in ("booting", "dead"):
+        stub.router_obj.raise_on = TurnRejected(reason)
+        r = post(client, {"text": "a"})
+        assert r.status_code == 503 and r.json()["error"]["code"] == reason
+
+
+def test_submit_vetoed_403(client: TestClient, stub: StubManager) -> None:
+    stub.router_obj.raise_on = TurnVetoed("not now")
+    r = post(client, {"text": "a"})
+    assert r.status_code == 403 and r.json()["error"]["code"] == "vetoed"

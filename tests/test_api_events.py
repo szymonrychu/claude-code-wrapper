@@ -104,7 +104,7 @@ async def test_events_requires_auth(tmp_path: Path) -> None:
     assert r.status_code == 401
 
 
-async def test_stopped_session_replays_then_closes(tmp_path: Path) -> None:
+async def test_sse_closes_when_session_stops(tmp_path: Path) -> None:
     _, _, client = make(tmp_path, readonly=True, n=3, sse_replay=2)
     r = await client.get(f"/v1/sessions/{SID}/events")
     assert r.headers["content-type"].startswith("text/event-stream")
@@ -132,7 +132,7 @@ async def test_stopped_without_closed_event_gets_synthetic(tmp_path: Path) -> No
     assert [f["event"] for f in fs] == ["assistant_text", "session_closed"]
 
 
-async def test_after_seq_and_last_event_id(tmp_path: Path) -> None:
+async def test_sse_replay_from_last_event_id(tmp_path: Path) -> None:
     _, _, client = make(tmp_path, readonly=True, n=5)
     fs = frames((await client.get(f"/v1/sessions/{SID}/events", params={"after_seq": 4})).text)
     assert [f["id"] for f in fs] == ["5", "6"]
@@ -146,7 +146,7 @@ async def test_after_seq_and_last_event_id(tmp_path: Path) -> None:
     assert r.status_code == 400
 
 
-async def test_live_events_deduped_and_heartbeat(tmp_path: Path) -> None:
+async def test_sse_live_events_and_heartbeat(tmp_path: Path) -> None:
     _, log, client = make(tmp_path, n=3)
     task = asyncio.create_task(close_later(log, 0.35, extra=2))
     r = await client.get(f"/v1/sessions/{SID}/events")
@@ -171,3 +171,33 @@ async def test_events_redacted(tmp_path: Path) -> None:
 async def test_unknown_session_404(tmp_path: Path) -> None:
     _, _, client = make(tmp_path)
     assert (await client.get("/v1/sessions/ses_x/events")).status_code == 404
+
+
+async def test_history_and_turns_for_stopped_session(tmp_path: Path) -> None:
+    from claude_code_wrapper.turns import TurnRecord, TurnStore, now_iso
+
+    class Mgr(StubManager):
+        def __init__(self, log: EventLog, turns: TurnStore) -> None:
+            super().__init__(log)
+            self.turns = turns
+
+        def open_turns(self, sid):
+            if sid != SID:
+                raise SessionNotFound(sid)
+            return self.turns
+
+    seed = EventLog(tmp_path / "events.jsonl", SID)
+    seed.append("assistant_text", {"i": 0})
+    seed.append("session_closed", {})
+    seed.close()
+    turns = TurnStore(tmp_path / "turns.jsonl")
+    turns.put(TurnRecord(turn_id="turn-1", session_id=SID, text="hi", started_at=now_iso()))
+    cfg = Config.model_validate({"server": {"auth_token": TOKEN}})
+    mgr = Mgr(EventLog(tmp_path / "events.jsonl", SID, readonly=True), turns)
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(mgr, cfg)), base_url="http://t", headers=H
+    )
+    h = (await client.get(f"/v1/sessions/{SID}/history")).json()
+    assert [e["seq"] for e in h["events"]] == [1, 2]
+    t = (await client.get(f"/v1/sessions/{SID}/turns")).json()["turns"]
+    assert [x["turn_id"] for x in t] == ["turn-1"]
