@@ -1,0 +1,71 @@
+---
+title: Service main
+status: todo
+repo: claude-code-wrapper
+value: ccw serve runs the service and shuts down cleanly
+files: [src/claude_code_wrapper/service.py, src/claude_code_wrapper/cli.py, src/claude_code_wrapper/__main__.py, tests/test_cli.py, tests/test_service.py]
+verify: "uv run pytest tests/test_cli.py tests/test_service.py -q && mise run lint"
+depends_on: [metrics, internal-api]
+owns: [service-cli]
+uses: [public-api, internal-api, session-manager, mise-tooling, metrics]
+model: ""
+estimate: 75
+actual: ""
+review: full
+worktree: ""
+branch: ""
+verified_head: ""
+run: ""
+provides: []
+---
+
+# Service main
+
+## Requirement
+
+Build the process entry point (D8, D9, D12) in `src/claude_code_wrapper/service.py`, `cli.py` and `__main__.py`.
+
+service.py:
+- `async run_service(cfg, *, ready=None, stop=None) -> None`: installs a global log redactor; runs `tooling.render_global_mise` + `install_global` when configured (ToolingError with `mise.required` aborts with exit code 1 at the CLI); creates `Metrics`, the redactor, `SessionManager` (internal URL `http://127.0.0.1:<internal_port>`), `await manager.load_persisted()`; builds `create_app` and `create_internal_app`; runs two `uvicorn.Server`s in this loop (public on `server.host:server.port`, internal on `127.0.0.1:server.internal_port`, `timeout_graceful_shutdown=3`, uvicorn's own signal handlers disabled); sets `ready` (an `asyncio.Event`, when given) once both are listening and exposes the bound ports (port 0 support for tests) on a returned/attached handle; on `stop` (event) or SIGTERM/SIGINT: `manager.shutdown()` bounded by `limits.shutdown_timeout_seconds`, dispatcher drain bounded, then both servers exit.
+- Logging: JSON lines on stderr (`ts, level, logger, msg` plus extras) at `server.log_level`; a logging filter redacts every message and arg with the global redactor.
+
+cli.py (`main(argv=None) -> int`, also `python -m claude_code_wrapper`):
+- `ccw serve --config PATH [--host H] [--port P]`: load config; `ConfigError` -> message on stderr, exit 78; otherwise run `run_service`; exit 0 after a clean shutdown.
+- `ccw check-config --config PATH`: prints `cfg.redacted()` as JSON and exits 0; invalid -> stderr message and exit 78.
+- `ccw version`: prints `__version__`.
+
+## Acceptance conditions
+
+- AC1: check-config prints the redacted config and exits 0 [evidence: test:tests/test_cli.py::test_check_config_ok_prints_redacted]
+- AC2: check-config with an invalid file exits 78 with the error path [evidence: test:tests/test_cli.py::test_check_config_invalid_exit_78]
+- AC3: serve with an invalid config exits 78 [evidence: test:tests/test_cli.py::test_serve_invalid_config_exit_78]
+- AC4: version prints the package version [evidence: test:tests/test_cli.py::test_version]
+- AC5: run_service binds the public port and the internal port on loopback only [evidence: test:tests/test_service.py::test_run_service_binds_public_and_internal_loopback]
+- AC6: SIGTERM stops sessions within the bound and the process exits 0 [evidence: test:tests/test_service.py::test_sigterm_shuts_down_sessions_bounded]
+- AC7: Log output is JSON and redacted [evidence: test:tests/test_service.py::test_logs_redacted]
+- AC8: A required global mise failure aborts startup with exit 1 [evidence: test:tests/test_service.py::test_required_mise_failure_aborts]
+
+## Files
+
+- `src/claude_code_wrapper/service.py`
+- `src/claude_code_wrapper/cli.py`
+- `src/claude_code_wrapper/__main__.py`
+- `tests/test_cli.py`
+- `tests/test_service.py`
+
+## Interfaces
+
+Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+
+## Expected outcome
+
+What is true and observable when the task is done.
+
+## Steps
+
+Test first. One step per bullet, with the exact command and the output to expect.
+A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+
+## Notes
+
+Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
