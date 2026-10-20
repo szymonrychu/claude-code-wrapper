@@ -30,7 +30,7 @@ def test_relay_hooks_for_every_event(tmp_path):
     assert json.loads((tmp_path / "settings.json").read_text()) == doc
 
 
-def test_timeouts_formula():
+def test_relay_timeouts_helper():
     assert relay_timeouts(Config()) == RelayTimeouts(30, 14)
     cfg = _cfg(
         hooks={
@@ -52,7 +52,7 @@ def test_timeouts_formula():
     assert tmp_path.exists()
 
 
-def test_existing_keys_survive_and_relay_not_duplicated(tmp_path):
+def test_existing_relay_entries_replaced_others_kept(tmp_path):
     (tmp_path / "settings.json").write_text(
         json.dumps(
             {
@@ -76,7 +76,7 @@ def test_existing_keys_survive_and_relay_not_duplicated(tmp_path):
     assert "other" in cmds
 
 
-def test_permissions_and_ask_user_question(tmp_path):
+def test_permissions_rendered(tmp_path):
     cfg = _cfg(
         claude={"permission_mode": "plan", "permissions": {"allow": ["Bash"], "deny": ["X"]}},
         sessions={"ask_user_question": "deny"},
@@ -91,11 +91,12 @@ def test_permissions_and_ask_user_question(tmp_path):
         claude={"permissions": {"deny": ["AskUserQuestion"]}},
         sessions={"ask_user_question": "deny"},
     )
-    assert _render(tmp_path, cfg)["permissions"]["deny"] == ["AskUserQuestion"]
+    deny = _render(tmp_path, cfg)["permissions"]["deny"]
+    assert deny.count("AskUserQuestion") == 1
     assert "AskUserQuestion" not in _render(tmp_path)["permissions"]["deny"]
 
 
-def test_mcp_plugins_and_overlay(tmp_path):
+def test_overlay_merged_hooks_appended(tmp_path):
     doc = _render(tmp_path)
     assert doc["enableAllProjectMcpServers"] is True
     cfg = _cfg(
@@ -122,7 +123,7 @@ def test_mcp_plugins_and_overlay(tmp_path):
     assert again == doc
 
 
-def test_atomic_mode_and_idempotent(tmp_path):
+def test_idempotent_rerender(tmp_path):
     _render(tmp_path)
     p = tmp_path / "settings.json"
     first = p.read_text()
@@ -131,8 +132,45 @@ def test_atomic_mode_and_idempotent(tmp_path):
     assert p.read_text() == first
 
 
-def test_default_relay_command(tmp_path):
+def test_relay_command_resolution(tmp_path):
     doc = render_settings(tmp_path, Config())
     cmd = doc["hooks"]["Stop"][0]["hooks"][0]["command"]
     sibling = Path(sys.executable).parent / "ccw-hook"
     assert cmd == f"{sibling if sibling.exists() else 'ccw-hook'} Stop"
+
+
+def test_gate_timeouts_from_blocking_hooks(tmp_path):
+    cfg = _cfg(
+        hooks={
+            "onAgentToolCall": [
+                {"type": "command", "run": "x", "blocking": True, "timeout_seconds": 60}
+            ]
+        }
+    )
+    doc = _render(tmp_path, cfg)
+    for event in ("PreToolUse", "PostToolUse"):
+        assert doc["hooks"][event][0]["hooks"][0]["timeout"] == 65
+
+
+def test_ask_user_question_deny_mode(tmp_path):
+    cfg = _cfg(
+        claude={"permissions": {"deny": ["AskUserQuestion"]}},
+        sessions={"ask_user_question": "deny"},
+    )
+    assert _render(tmp_path, cfg)["permissions"]["deny"] == ["AskUserQuestion"]
+    cfg = _cfg(sessions={"ask_user_question": "deny"})
+    deny = _render(tmp_path, cfg)["permissions"]["deny"]
+    assert deny.count("AskUserQuestion") == 1
+    assert "AskUserQuestion" not in _render(tmp_path)["permissions"]["deny"]
+
+
+def test_disabled_plugins_false(tmp_path):
+    cfg = _cfg(plugins={"disable": ["p@m", "q@m"]})
+    doc = _render(tmp_path, cfg)
+    assert doc["enabledPlugins"] == {"p@m": False, "q@m": False}
+
+
+def test_enabled_plugins_written_by_cli_preserved(tmp_path):
+    (tmp_path / "settings.json").write_text(json.dumps({"enabledPlugins": {"a@b": True}}))
+    doc = _render(tmp_path, _cfg(plugins={"disable": ["p@m"]}))
+    assert doc["enabledPlugins"] == {"a@b": True, "p@m": False}
