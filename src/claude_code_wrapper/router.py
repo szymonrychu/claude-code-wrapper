@@ -30,6 +30,7 @@ from .events import Event as LogEvent
 from .events import EventLog
 from .hook_relay import RelayResponse, deny_output
 from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload
+from .metrics import Metrics
 from .redact import Redactor
 from .session import Session, SessionListener
 from .transcript import (
@@ -129,7 +130,9 @@ class SessionRouter(SessionListener):
         cfg: Config,
         *,
         session_info: SessionInfo | Mapping[str, Any],
+        metrics: Metrics | None = None,
     ) -> None:
+        self._metrics = metrics
         self._session = session
         self._event_log = event_log
         self._dispatcher = dispatcher
@@ -323,6 +326,8 @@ class SessionRouter(SessionListener):
         data = {"tool_use_id": tool_use_id, "tool_name": tool_name, "tool_input": tool_input}
         self._emit("tool_call", data)
         outcome = await self._fire("onAgentToolCall", data, tool_name=tool_name)
+        if self._metrics is not None:
+            self._metrics.tool_call(tool_name, "deny" if outcome.decision == "deny" else "allow")
         if outcome.decision == "deny":
             reason = outcome.reason or DEFAULT_DENY_REASON
             self._emit(
@@ -373,7 +378,11 @@ class SessionRouter(SessionListener):
             marker_turn_id=self._last_marker,
         )
         self._usage.reset()
+        if self._metrics is not None:
+            self._metrics.tokens(per_model)
         if record is not None:
+            if self._metrics is not None:
+                self._metrics.turn_finished(record)
             event = self._emit_turn_event("turn_completed", record)
             await self._after_turn(record, event)
         return _allow()
@@ -506,6 +515,8 @@ class SessionRouter(SessionListener):
                 "restart": {"count": count, "resumed": resumed},
             },
         )
+        if self._metrics is not None:
+            self._metrics.claude_restart()
         message = f"claude restarted (restart {count}, {'resumed' if resumed else 'fresh'})"
         self._spawn(self._fire("onError", {"kind": "restart", "message": message, "count": count}))
 
@@ -520,10 +531,14 @@ class SessionRouter(SessionListener):
         # Completed turns are finished by the Stop hook handler, which also has the usage.
         if record.state == "completed" or record.state not in TERMINAL_STATES:
             return
+        if self._metrics is not None:
+            self._metrics.turn_finished(record)
         event = self._emit_turn_event("turn_failed", record)
         self._spawn(self._after_turn(record, event))
 
     def on_hook_result(self, result: ActionResult) -> None:
+        if self._metrics is not None:
+            self._metrics.hook_action(result.event, result.type, result.ok)
         self._emit(
             "hook_result",
             {
