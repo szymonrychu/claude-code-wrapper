@@ -162,7 +162,22 @@ async def test_post_install_check_required_missing_raises_optional_warns(tmp_pat
     assert len(report.warnings) == 1 and ID in report.warnings[0]
 
 
-async def test_subprocess_stdin_is_closed(tmp_path, monkeypatch):
+@pytest.fixture
+def live_stdin():
+    """Point fd 0 at a pipe that holds data and stays open, so an inherited stdin is observable."""
+    r, w = os.pipe()
+    os.write(w, b"data\n" * 50)
+    saved = os.dup(0)
+    os.dup2(r, 0)
+    try:
+        yield
+    finally:
+        os.dup2(saved, 0)
+        for fd in (saved, r, w):
+            os.close(fd)
+
+
+async def test_subprocess_stdin_is_closed(tmp_path, monkeypatch, live_stdin):
     seen = tmp_path / "stdin.log"
     stub = _stub(
         tmp_path / "claude",
