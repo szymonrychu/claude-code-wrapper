@@ -243,5 +243,18 @@
       "api-turns-events"
     ],
     "status": "approved"
+  },
+  {
+    "id": "A18",
+    "text": "Per-session secret env overrides are never persisted; resuming such a session requires resending them in the resume request body.",
+    "decisions": [
+      "D24"
+    ],
+    "tasks": [
+      "session-manager",
+      "api-sessions",
+      "readme-config"
+    ],
+    "status": "approved"
   }
 ]

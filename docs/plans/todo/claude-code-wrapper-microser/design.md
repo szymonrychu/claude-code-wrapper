@@ -465,6 +465,9 @@ onTurnComplete fires for every terminal turn state (completed, failed, interrupt
 ### D23: Trust model: one instance per project, trusted callers
 Trust model: one wrapper instance per project or assignment; bearer-token callers are fully trusted. No workdir allowlist and no callback host policy. The service must not be exposed to untrusted callers, and the README says so. (user decision)
 
+### D24: Secret env overrides are not persisted
+Per-session secret env overrides are never persisted; resuming such a session requires resending them in the resume request body. (user decision)
+
 ## Research
 
 | Lens | Ran or skipped | Adopted | Rejected |
@@ -558,6 +561,7 @@ Trust model: one wrapper instance per project or assignment; bearer-token caller
 | D21 Third named volume mise | container |
 | D22 onTurnComplete fires for every terminal turn state | event-router, readme-api, e2e-lifecycle |
 | D23 Trust model: one instance per project, trusted callers | readme-api, readme-config, api-sessions, api-turns-events |
+| D24 Secret env overrides are not persisted | session-manager, api-sessions, readme-config |
 
 ## Contracts
 
