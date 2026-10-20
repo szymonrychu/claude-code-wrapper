@@ -1,15 +1,14 @@
 # syntax=docker/dockerfile:1
 
-# ---- builder: resolve the project's locked dependencies into /app/.venv ----
+# ---- builder: build the wheel and its dependency wheels; the runtime pip-installs them ----
 FROM python:3.12-slim-bookworm AS builder
-# uv pinned so the lockfile resolves identically on every build (0.13.x reads uv.lock v1).
+# uv pinned so the build is reproducible.
 COPY --from=ghcr.io/astral-sh/uv:0.13.4 /uv /uvx /bin/
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
-WORKDIR /app
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+ENV UV_PYTHON_DOWNLOADS=never
+WORKDIR /src
+COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN uv sync --frozen --no-dev
+RUN uv build --wheel --out-dir /dist
 
 # ---- node source: official image, copied so node is exact and not an apt guess ----
 # Node 24 pinned: Claude Code requires a current LTS line; bump deliberately with the CLI.
@@ -60,8 +59,9 @@ RUN groupadd --gid 1000 agent \
  && mkdir -p /workdir /sessions /opt/mise /etc/ccw \
  && chown -R agent:agent /workdir /sessions /opt/mise /etc/ccw /home/agent
 
-COPY --from=builder --chown=agent:agent /app /app
-COPY config.example.yaml /app/config.example.yaml
+# Install the service from the wheel: ccw and ccw-hook land on PATH, no source tree or .venv.
+RUN --mount=type=bind,from=builder,source=/dist,target=/tmp/dist \
+    pip install --no-cache-dir /tmp/dist/*.whl
 
 # Shims on PATH via image ENV so mise tools resolve in Bash-tool shells; data dir sits on
 # the `mise` volume, outside HOME.
@@ -70,16 +70,14 @@ ENV HOME=/home/agent \
     MISE_TRUSTED_CONFIG_PATHS=/workdir \
     DISABLE_AUTOUPDATER=1 \
     CCW_CONFIG=/etc/ccw/config.yaml \
-    PATH=/app/.venv/bin:/opt/mise/shims:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH=/opt/mise/shims:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Debian's /etc/profile resets PATH in login shells (bash -l): expose ccw and the mise shims there too.
-USER root
-RUN ln -s /app/.venv/bin/ccw /usr/local/bin/ccw \
- && ln -s /app/.venv/bin/ccw-hook /usr/local/bin/ccw-hook \
- && printf 'export PATH=/opt/mise/shims:$PATH\n' > /etc/profile.d/mise-shims.sh
+# pip put ccw and ccw-hook in /usr/local/bin, which Debian's /etc/profile keeps in login shells;
+# the mise shims need re-adding there.
+RUN printf 'export PATH=/opt/mise/shims:$PATH\n' > /etc/profile.d/mise-shims.sh
 
 USER agent
-WORKDIR /app
+WORKDIR /home/agent
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --start-interval=1s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
