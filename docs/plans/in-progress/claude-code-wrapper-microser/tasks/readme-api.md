@@ -1,6 +1,6 @@
 ---
 title: README API
-status: todo
+status: done
 repo: claude-code-wrapper
 value: Client authors can integrate from the README alone
 files: [README.md, tests/test_readme_api.py]
@@ -14,10 +14,10 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--readme-api
 branch: claude-code-wrapper-microser--readme-api
-verified_head: ""
+verified_head: 5a4794b545033733e9c4d499cb312b9574fbc3c3
 run: claude-code-wrapper-microser
 provides: []
-acs_for_audit: []
+acs_for_audit: [AC8]
 process_gaps: []
 ---
 

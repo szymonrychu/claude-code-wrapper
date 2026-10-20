@@ -1,6 +1,6 @@
 ---
 title: Pip package
-status: todo
+status: escalated
 repo: claude-code-wrapper
 value: "Install the service with pip and run ccw from PATH, in a Dockerfile or on a containerless host (D25)"
 files: [pyproject.toml, src/claude_code_wrapper/cli.py, src/claude_code_wrapper/bootstrap/settings.py, src/claude_code_wrapper/data/__init__.py, Dockerfile, README.md, tests/test_packaging.py]
@@ -13,12 +13,12 @@ estimate: 60
 actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--pip-package
-branch: claude-code-wrapper-microser--pip-package
-verified_head: ""
+branch: "current worktree branch (claude-code-wrapper-microser--pip-package)"
+verified_head: unknown
 run: claude-code-wrapper-microser
 provides: []
 acs_for_audit: []
-process_gaps: []
+process_gaps: ["Red-green evidence missing: the new Dockerfile and README tests were never seen failing, and the TDD revert check was not completed (worktree left with merge-base files unstaged: README.md, LICENSE and the data files show as deleted)"]
 ---
 
 # Pip package

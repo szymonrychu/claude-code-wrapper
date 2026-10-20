@@ -1,6 +1,6 @@
 ---
 title: README config
-status: todo
+status: done
 repo: claude-code-wrapper
 value: "Every config key and Claude env var is documented with type, default and mapping"
 files: [README.md, tests/test_readme_config.py]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--readme-config
 branch: claude-code-wrapper-microser--readme-config
-verified_head: ""
+verified_head: a1bf8fee4a91fb90d03fe94a099e3a2b22940e38
 run: claude-code-wrapper-microser
 provides: []
 acs_for_audit: []
