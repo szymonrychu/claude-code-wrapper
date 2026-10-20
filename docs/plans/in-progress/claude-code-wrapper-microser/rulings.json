@@ -4,5 +4,11 @@
     "accept": true,
     "reason": "gate-repeat caused by workflow passing --prev-head unknown to verify-task (harness bug). Orchestrator re-ran verify-task.py on HEAD 922b155 base f89bd24: passed, clean, tdd failedOnBase=true passedOnHead=true (scratchpad/verify-env-model.json)",
     "at": "2026-10-20T12:06:52Z"
+  },
+  {
+    "task": "session-manager",
+    "accept": true,
+    "reason": "Only findings were tests-changed gates; diff of tests/test_pty_proc.py and tests/test_router.py is additive only (test_close_shorter_grace_escalates, test_close_drain_is_bounded) covering new pty/router close behaviour required by AC13; test_manager.py is the task's own file. Verified on b19eb96.",
+    "at": "2026-10-20T14:38:03Z"
   }
 ]

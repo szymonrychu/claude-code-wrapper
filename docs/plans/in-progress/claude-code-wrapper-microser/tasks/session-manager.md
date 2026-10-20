@@ -106,6 +106,10 @@ The service can hold several independent claude sessions, each fully prepared fr
 - Write `tests/test_prompts.py`; red; implement prompts.py; green.
 - Write `tests/test_manager.py` with real components, the fake claude as `claude.binary`, tmp `paths`, command hooks writing to tmp files; red; implement create, then destroy, resume, list/load, reaper, shutdown; green; `mise run lint`.
 
+## Ruling
+
+- 2026-10-20 accepted: Only findings were tests-changed gates; diff of tests/test_pty_proc.py and tests/test_router.py is additive only (test_close_shorter_grace_escalates, test_close_drain_is_bounded) covering new pty/router close behaviour required by AC13; test_manager.py is the task's own file. Verified on b19eb96.
+
 ## Notes
 
 - The manager is the only place that composes the parts; keep each step a small function so failures name their step.
