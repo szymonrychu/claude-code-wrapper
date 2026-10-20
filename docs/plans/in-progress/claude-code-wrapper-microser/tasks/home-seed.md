@@ -1,6 +1,6 @@
 ---
 title: Home seed
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: "Sessions boot without onboarding or trust prompts, with MCP and instructions"
 files: [src/claude_code_wrapper/bootstrap/__init__.py, src/claude_code_wrapper/bootstrap/claude_json.py, src/claude_code_wrapper/bootstrap/instructions.py, tests/test_bootstrap_home.py]
@@ -10,13 +10,13 @@ owns: [home-seed]
 uses: [config-schema]
 model: ""
 estimate: 60
-actual: ""
+actual: 1
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--home-seed
 branch: claude-code-wrapper-microser--home-seed
-verified_head: ""
+verified_head: 73639bb861ebece56a21b88a87522f8097dae351
 run: claude-code-wrapper-microser
-provides: []
+provides: [atomic-write, bootstrap-error]
 acs_for_audit: []
 process_gaps: []
 ---

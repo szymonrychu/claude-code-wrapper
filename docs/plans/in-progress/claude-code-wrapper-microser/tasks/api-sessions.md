@@ -1,6 +1,6 @@
 ---
 title: API sessions
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: Clients manage sessions over an authenticated HTTP API
 files: [src/claude_code_wrapper/api/__init__.py, src/claude_code_wrapper/api/app.py, src/claude_code_wrapper/api/auth.py, src/claude_code_wrapper/api/errors.py, src/claude_code_wrapper/api/sessions.py, tests/test_api_sessions.py, tests/test_api_auth.py]

@@ -1,6 +1,6 @@
 ---
 title: Session boot
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: "claude boots unattended, recovers from crashes and never sees service secrets"
 files: [src/claude_code_wrapper/session.py, tests/test_session_boot.py]
@@ -10,14 +10,14 @@ owns: [session]
 uses: [pty-process, config-schema, claude-env, fake-claude]
 model: opus
 estimate: 90
-actual: ""
+actual: 12
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--session-boot
 branch: claude-code-wrapper-microser--session-boot
-verified_head: ""
+verified_head: 9465f23edf3f84a6edeaabc6aace7721aa470293
 run: claude-code-wrapper-microser
-provides: []
-acs_for_audit: []
+provides: [fatal-scanner, public-state-mapping, transcript-path, redacted-screen-tail]
+acs_for_audit: [AC3]
 process_gaps: []
 ---
 

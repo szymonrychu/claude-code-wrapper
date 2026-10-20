@@ -1,6 +1,6 @@
 ---
 title: E2E lifecycle
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: Proof the whole lifecycle works end to end without real Claude
 files: [tests/test_e2e_lifecycle.py, tests/test_e2e_resume.py, tests/fixtures/scenarios/e2e.json, tests/fixtures/hooks/record_hook.sh]

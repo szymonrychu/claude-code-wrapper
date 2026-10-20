@@ -1,6 +1,6 @@
 ---
 title: Hook dispatcher
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: User hooks as commands or signed webhooks that can veto safely
 files: [src/claude_code_wrapper/hooks.py, tests/test_hooks_command.py, tests/test_hooks_webhook.py]
@@ -10,13 +10,13 @@ owns: [hook-dispatcher]
 uses: [config-schema, redactor]
 model: ""
 estimate: 90
-actual: ""
+actual: 2
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--hook-dispatcher
 branch: claude-code-wrapper-microser--hook-dispatcher
-verified_head: ""
+verified_head: 18169cfdb0a3a877c0e00de3f69093a38f97c1cb
 run: claude-code-wrapper-microser
-provides: []
+provides: [post-json-signed-delivery]
 acs_for_audit: []
 process_gaps: []
 ---

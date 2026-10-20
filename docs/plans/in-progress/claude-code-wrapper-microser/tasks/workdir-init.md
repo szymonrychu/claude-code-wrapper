@@ -1,6 +1,6 @@
 ---
 title: Workdir init
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: "Sessions start in an empty dir, a mounted tree or a fresh clone"
 files: [src/claude_code_wrapper/workdir.py, tests/test_workdir.py]
@@ -10,11 +10,11 @@ owns: [workdir-init]
 uses: [config-schema]
 model: ""
 estimate: 75
-actual: ""
+actual: 1
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--workdir-init
-branch: claude-code-wrapper-microser--workdir-init
-verified_head: ""
+branch: worktree branch of claude-code-wrapper-microser--workdir-init
+verified_head: 13910b5671f34876f04e3d8934c36dbda346fd15
 run: claude-code-wrapper-microser
 provides: []
 acs_for_audit: []

@@ -1,6 +1,6 @@
 ---
 title: API turns events
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: Clients drive turns and follow sessions by polling or SSE
 files: [src/claude_code_wrapper/api/turns.py, src/claude_code_wrapper/api/events.py, src/claude_code_wrapper/api/app.py, tests/test_api_turns.py, tests/test_api_events.py]

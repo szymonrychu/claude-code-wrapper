@@ -1,6 +1,6 @@
 ---
 title: Settings render
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: Every Claude lifecycle point is wired to the service with config permissions
 files: [src/claude_code_wrapper/bootstrap/settings.py, tests/test_bootstrap_settings.py]
@@ -10,13 +10,13 @@ owns: [settings-renderer]
 uses: [config-schema, hook-relay-protocol]
 model: ""
 estimate: 60
-actual: ""
+actual: 1
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--settings-render
-branch: claude-code-wrapper-microser--settings-render
-verified_head: ""
+branch: "HEAD (worktree claude-code-wrapper-microser--settings-render), commit 30752bd"
+verified_head: 30752bd2f34016b0974990255f25d7d9afa6c3f8
 run: claude-code-wrapper-microser
-provides: []
+provides: [relay-timeouts, settings-renderer]
 acs_for_audit: []
 process_gaps: []
 ---

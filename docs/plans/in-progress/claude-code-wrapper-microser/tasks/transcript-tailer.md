@@ -1,6 +1,6 @@
 ---
 title: Transcript tailer
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: "Assistant text, tool use and usage stream out of claude transcripts"
 files: [src/claude_code_wrapper/transcript.py, tests/test_transcript.py, tests/fixtures/transcripts/basic.jsonl, tests/fixtures/transcripts/subagent.jsonl]
@@ -10,13 +10,13 @@ owns: [transcript-tailer]
 uses: [redactor, fake-claude]
 model: ""
 estimate: 90
-actual: ""
+actual: 3
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--transcript-tailer
 branch: claude-code-wrapper-microser--transcript-tailer
-verified_head: ""
+verified_head: 3a16ca3363a4ebb72691ea030a0f0d436be07941
 run: claude-code-wrapper-microser
-provides: []
+provides: [agent-id-listing]
 acs_for_audit: []
 process_gaps: []
 ---

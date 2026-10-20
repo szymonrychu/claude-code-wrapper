@@ -1,6 +1,6 @@
 ---
 title: Metrics
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "Operators can scrape session, turn, tool and hook metrics"
 files: [src/claude_code_wrapper/metrics.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/api/app.py, tests/test_metrics.py]
