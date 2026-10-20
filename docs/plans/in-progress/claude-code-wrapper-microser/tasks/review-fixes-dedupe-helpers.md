@@ -1,6 +1,6 @@
 ---
 title: Review fixes dedupe helpers
-status: escalated
+status: done
 repo: claude-code-wrapper
 value: One timestamp format and no duplicated helpers or example configs
 files: [src/claude_code_wrapper/turns.py, src/claude_code_wrapper/events.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/api/turns.py, src/claude_code_wrapper/data/config.example.yaml, config.example.yaml, tests/test_timestamps.py]
@@ -14,11 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--review-fixes-dedupe-helpers
 branch: claude-code-wrapper-microser--review-fixes-dedupe-helpers
-verified_head: ""
+verified_head: a88682a7812754e6e8c0f2250967b258eae94fe9
 run: claude-code-wrapper-microser
 provides: []
 acs_for_audit: []
-process_gaps: []
+process_gaps: ["AC evidence tests for items 1-5 live in tests/test_timestamps.py, not tests/test_packaging.py, so the verifier's AC1-AC4 mapping to test_packaging.py does not resolve."]
 ---
 
 # Review fixes dedupe helpers
