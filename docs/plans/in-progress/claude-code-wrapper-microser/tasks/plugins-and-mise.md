@@ -1,6 +1,6 @@
 ---
 title: Plugins and mise
-status: escalated
+status: done
 repo: claude-code-wrapper
 value: "Plugins and tools pre-installed per config, the workbench plugin included"
 files: [src/claude_code_wrapper/plugins.py, src/claude_code_wrapper/tooling.py, tests/test_plugins.py, tests/test_tooling.py]
@@ -13,8 +13,8 @@ estimate: 75
 actual: 1
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--plugins-and-mise
-branch: claude-code-wrapper-microser--plugins-and-mise
-verified_head: 42cb214b56ecefb54ef31cc332c6738615b1f324
+branch: HEAD
+verified_head: b848b1cf4dc3043b5c116a3d8063ad2d63aae377
 run: claude-code-wrapper-microser
 provides: [plugin-installer, mise-tooling]
 acs_for_audit: []

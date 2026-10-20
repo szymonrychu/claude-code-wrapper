@@ -1,6 +1,6 @@
 ---
 title: Session manager
-status: todo
+status: escalated
 repo: claude-code-wrapper
 value: "Many independent sessions, destroyable and resumable by id"
 files: [src/claude_code_wrapper/manager.py, src/claude_code_wrapper/prompts.py, tests/test_manager.py, tests/test_prompts.py]
@@ -13,12 +13,12 @@ estimate: 90
 actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--session-manager
-branch: claude-code-wrapper-microser--session-manager
-verified_head: ""
+branch: "HEAD (worktree claude-code-wrapper-microser--session-manager), commits 83ef2de, b19eb96"
+verified_head: b19eb9605f84076f4321432c09003f7334418b5a
 run: claude-code-wrapper-microser
-provides: []
+provides: [session-snapshot, idle-reaper]
 acs_for_audit: []
-process_gaps: []
+process_gaps: ["Test files changed in the fix round (test_manager, test_pty_proc, test_router) are not named in tests.added; they do pin the new behaviour (pty hurry, bounded router drain, AC13 shutdown worst case)."]
 ---
 
 # Session manager
