@@ -160,3 +160,9 @@ def test_example_config_validates_in_image():
         timeout=120,
     )
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_compose_requires_token_and_binds_loopback():
+    svc = COMPOSE["services"]["ccw"]
+    assert svc["environment"]["CCW_AUTH_TOKEN"] == "${CCW_AUTH_TOKEN:?set CCW_AUTH_TOKEN}"
+    assert all(p.startswith("127.0.0.1:") for p in svc["ports"])

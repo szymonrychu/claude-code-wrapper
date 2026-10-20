@@ -60,7 +60,7 @@ def test_readyz_503_until_started() -> None:
     assert r.json()["error"]["code"] == "not_ready"
 
 
-def test_open_mode_when_no_token(caplog: pytest.LogCaptureFixture) -> None:
+def test_allow_anonymous_opens_v1(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
         c = client(token="")
         assert c.get("/v1/sessions").status_code == 200
@@ -80,7 +80,7 @@ def test_unknown_route_uses_envelope() -> None:
     assert r.json()["error"]["code"] == "not_found"
 
 
-def test_refuses_to_start_without_token_unless_anonymous() -> None:
+def test_empty_token_refused_without_allow_anonymous() -> None:
     from claude_code_wrapper.config import ConfigError
 
     with pytest.raises(ConfigError) as exc:

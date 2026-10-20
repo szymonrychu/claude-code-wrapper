@@ -295,3 +295,10 @@ def test_hook_events_match_hooks_config_fields():
     from claude_code_wrapper.config import HOOK_EVENTS, HooksConfig
 
     assert tuple(HooksConfig.model_fields) == HOOK_EVENTS
+
+
+def test_allow_anonymous_default_false(tmp_path):
+    cfg = load_config(write(tmp_path, "server:\n  auth_token: t\n"))
+    assert cfg.server.allow_anonymous is False
+    bad = "server:\n  allow_anonymous: maybe\n  auth_token: t\n"
+    assert "allow_anonymous" in err(tmp_path, bad)
