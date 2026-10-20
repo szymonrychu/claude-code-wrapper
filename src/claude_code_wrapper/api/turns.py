@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from claude_code_wrapper.api.errors import ApiError
+from claude_code_wrapper.api.redaction import _out
 from claude_code_wrapper.manager import InvalidState
 from claude_code_wrapper.prompts import resolve_prompt
 from claude_code_wrapper.router import SessionRouter, TurnVetoed
@@ -45,10 +46,6 @@ class ProbeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str | None = None
-
-
-def _out(request: Request, payload: Any) -> Any:
-    return request.app.state.manager.redactor.redact_obj(payload)
 
 
 def _live_router(request: Request, session_id: str) -> SessionRouter:

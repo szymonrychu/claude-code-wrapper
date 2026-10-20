@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from claude_code_wrapper.api.errors import ApiError
+from claude_code_wrapper.api.redaction import _out
 from claude_code_wrapper.claude_env import ClaudeEnv
 from claude_code_wrapper.manager import CreateSessionRequest
 from claude_code_wrapper.prompts import list_templates
@@ -24,10 +25,6 @@ class ResumeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     env: ClaudeEnv | None = None  # type: ignore[valid-type]
-
-
-def _out(request: Request, payload: Any) -> Any:
-    return request.app.state.manager.redactor.redact_obj(payload)
 
 
 @router.post("/sessions", status_code=201)

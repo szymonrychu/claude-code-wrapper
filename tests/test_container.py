@@ -73,7 +73,10 @@ def test_dockerfile_runtime_shape():
     assert "trixie" not in DOCKERFILE
     assert "uv build --wheel" in DOCKERFILE
     assert "pip install --no-cache-dir /tmp/dist/*.whl" in DOCKERFILE
-    assert not re.search(r"^(?:COPY|WORKDIR|ENV|RUN).*(?:/app\b|\.venv)", DOCKERFILE, re.M)
+    # no source tree or venv in the image; /app only holds the generated example config
+    stripped = DOCKERFILE.replace("/app/config.example.yaml", "").replace("mkdir -p /app", "")
+    stripped = stripped.replace("chown -R agent:agent /app", "")
+    assert not re.search(r"^(?:COPY|WORKDIR|ENV|RUN).*(?:/app\b|\.venv)", stripped, re.M)
     for d in ("/workdir", "/sessions", "/opt/mise", "/etc/ccw"):
         assert d in DOCKERFILE
     assert "EXPOSE 8080" in DOCKERFILE
@@ -98,7 +101,7 @@ def test_compose_service_and_ports():
     svc = COMPOSE["services"]["ccw"]
     assert svc["build"] == "."
     assert svc["image"] == "claude-code-wrapper:local"
-    assert "${CCW_PORT:-8080}:8080" in svc["ports"]
+    assert "127.0.0.1:${CCW_PORT:-8080}:8080" in svc["ports"]
     assert svc["restart"] == "unless-stopped"
     assert svc["stop_grace_period"] == "30s"
 
@@ -117,12 +120,12 @@ def test_compose_env_passthrough():
     names = [
         "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_API_KEY",
-        "CCW_AUTH_TOKEN",
         "GH_TOKEN",
         "GITLAB_TOKEN",
     ]
     for n in names:
         assert env[n] == f"${{{n}:-}}"
+    assert env["CCW_AUTH_TOKEN"] == "${CCW_AUTH_TOKEN:?set CCW_AUTH_TOKEN}"
 
 
 def test_env_example_lists_every_compose_variable():
@@ -141,3 +144,25 @@ def test_dockerignore_excludes_noise():
     ignore = (ROOT / ".dockerignore").read_text().split()
     for p in (".venv", ".git", "docs/plans", ".claude/worktrees", ".worktrees"):
         assert p in ignore, p
+
+
+def test_example_config_validates_in_image():
+    """AC10: the built image carries /app/config.example.yaml and ccw validates it."""
+    import subprocess
+
+    tag = "claude-code-wrapper:test"
+    subprocess.run(["docker", "build", "-t", tag, str(ROOT)], check=True, timeout=1800)
+    cmd = ["ccw", "check-config", "--config", "/app/config.example.yaml"]
+    r = subprocess.run(
+        ["docker", "run", "--rm", tag, *cmd],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_compose_requires_token_and_binds_loopback():
+    svc = COMPOSE["services"]["ccw"]
+    assert svc["environment"]["CCW_AUTH_TOKEN"] == "${CCW_AUTH_TOKEN:?set CCW_AUTH_TOKEN}"
+    assert all(p.startswith("127.0.0.1:") for p in svc["ports"])

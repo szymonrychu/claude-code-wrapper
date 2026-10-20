@@ -30,7 +30,7 @@ def test_ensure_config_dir_mode(tmp_path):
     assert stat.S_IMODE(cd.stat().st_mode) == 0o700
 
 
-def test_seed_basic(tmp_path):
+def test_seed_creates_onboarding_and_trust(tmp_path):
     cd, wd = tmp_path / "cfg", tmp_path / "wd"
     wd.mkdir()
     ensure_config_dir(cd)
@@ -46,13 +46,16 @@ def test_seed_basic(tmp_path):
     assert list(wd.iterdir()) == []
 
 
-def test_no_bypass_flag_other_mode(tmp_path):
+def test_bypass_accepted_only_in_bypass_mode(tmp_path):
     c = _cfg(permission_mode="default")
     seed_claude_json(tmp_path, tmp_path, c, c.env)
     assert "bypassPermissionsModeAccepted" not in _read(tmp_path)
+    b = _cfg(permission_mode="bypassPermissions")
+    seed_claude_json(tmp_path, tmp_path, b, b.env)
+    assert _read(tmp_path)["bypassPermissionsModeAccepted"] is True
 
 
-def test_symlinked_workdir_both_keys(tmp_path):
+def test_trust_uses_resolved_path(tmp_path):
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
@@ -64,7 +67,7 @@ def test_symlinked_workdir_both_keys(tmp_path):
     assert set(projects) == {os.path.realpath(real), str(link)}
 
 
-def test_merge_keeps_existing(tmp_path):
+def test_seed_merges_existing_keys(tmp_path):
     (tmp_path / ".claude.json").write_text(
         json.dumps({"userID": "x", "projects": {"/other": {"foo": 1}}})
     )
@@ -75,7 +78,7 @@ def test_merge_keeps_existing(tmp_path):
     assert data["projects"]["/other"] == {"foo": 1}
 
 
-def test_api_key_approved_once(tmp_path):
+def test_api_key_suffix_approved_once(tmp_path):
     c = _cfg(env={"anthropic_api_key": "sk-ant-" + "a" * 30 + "TAIL0123456789012345"})
     key = c.env.anthropic_api_key.get_secret_value()
     (tmp_path / ".claude.json").write_text(
@@ -94,7 +97,7 @@ def test_no_api_key_no_responses(tmp_path):
     assert "customApiKeyResponses" not in _read(tmp_path)
 
 
-def test_mcp_servers_and_keep(tmp_path):
+def test_mcp_servers_rendered(tmp_path):
     (tmp_path / ".claude.json").write_text(json.dumps({"mcpServers": {"old": {"type": "stdio"}}}))
     c = _cfg(
         mcp_servers={
@@ -109,7 +112,7 @@ def test_mcp_servers_and_keep(tmp_path):
     assert m["old"] == {"type": "stdio"}
 
 
-def test_claude_json_deep_merge_last(tmp_path):
+def test_overlay_deep_merge(tmp_path):
     c = _cfg(claude_json={"autoUpdates": True, "projects": {"/p": {"x": 1}}, "l": [1]})
     seed_claude_json(tmp_path, tmp_path, c, c.env)
     data = _read(tmp_path)
@@ -119,7 +122,7 @@ def test_claude_json_deep_merge_last(tmp_path):
     assert data["l"] == [1]
 
 
-def test_instructions_written(tmp_path):
+def test_instructions_concat_global_and_append(tmp_path):
     f = tmp_path / "g.md"
     f.write_text("GLOBAL")
     write_instructions(tmp_path, PromptsConfig(global_claude_md=str(f), system_append="APPEND"))
@@ -136,7 +139,7 @@ def test_instructions_missing_file(tmp_path):
         write_instructions(tmp_path, PromptsConfig(global_claude_md=str(tmp_path / "nope")))
 
 
-def test_instructions_removal_rules(tmp_path):
+def test_instructions_absent_when_empty(tmp_path):
     p = tmp_path / "CLAUDE.md"
     p.write_text(f"{MARKER}\nold")
     write_instructions(tmp_path, PromptsConfig())
@@ -146,7 +149,7 @@ def test_instructions_removal_rules(tmp_path):
     assert p.read_text() == "mine"
 
 
-def test_copy_files_and_dirs(tmp_path):
+def test_config_files_copied_and_escape_rejected(tmp_path):
     src = tmp_path / "src"
     (src / "d" / "e").mkdir(parents=True)
     (src / "d" / "e" / "f.txt").write_text("1")
@@ -166,14 +169,7 @@ def test_copy_files_and_dirs(tmp_path):
     copy_config_files(cd, c)
     assert (cd / "sub" / "one.txt").read_text() == "o"
     assert (cd / "dst" / "e" / "f.txt").read_text() == "1"
-
-
-def test_copy_errors(tmp_path):
-    from claude_code_wrapper.config import ConfigFile
-
-    cd = tmp_path / "cfg"
-    cd.mkdir()
-    c = _cfg()
+    # escape and missing-source rejection
     c.config_files = [ConfigFile(source=str(tmp_path / "missing"), target="a")]
     with pytest.raises(BootstrapError, match="missing"):
         copy_config_files(cd, c)
@@ -185,3 +181,25 @@ def test_copy_errors(tmp_path):
     c.config_files = [ConfigFile.model_construct(source=str(tmp_path / "s"), target="/abs")]
     with pytest.raises(BootstrapError):
         copy_config_files(cd, c)
+
+
+def test_file_mode_0600(tmp_path):
+    cd = tmp_path / "cfg"
+    ensure_config_dir(cd)
+    c = _cfg()
+    seed_claude_json(cd, tmp_path, c, c.env)
+    assert stat.S_IMODE((cd / ".claude.json").stat().st_mode) == 0o600
+
+
+def test_workdir_untouched(tmp_path):
+    cd, wd = tmp_path / "cfg", tmp_path / "wd"
+    wd.mkdir()
+    (wd / "keep.txt").write_text("k")
+    before = {p.name: p.stat().st_mtime_ns for p in wd.iterdir()}
+    ensure_config_dir(cd)
+    c = _cfg(mcp_servers={"s": {"type": "stdio", "command": "x"}})
+    seed_claude_json(cd, wd, c, c.env)
+    write_instructions(cd, PromptsConfig(system_append="A"))
+    copy_config_files(cd, c)
+    assert {p.name: p.stat().st_mtime_ns for p in wd.iterdir()} == before
+    assert (wd / "keep.txt").read_text() == "k"

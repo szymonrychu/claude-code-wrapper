@@ -41,7 +41,7 @@ from .claude_env import SECRET_KEY_RE, ClaudeEnv
 from .config import BootConfig, BootDialog, LimitsConfig, SessionsConfig
 from .pty_proc import PtyClosed, PtyProcess
 from .redact import Redactor
-from .ring import Ring, strip_ansi
+from .ring import Ring, _squash, strip_ansi
 from .turns import Origin, Probe, TurnRecord, TurnState, new_probe_id, new_turn_id, now_iso
 
 log = logging.getLogger(__name__)
@@ -74,7 +74,6 @@ STATES = ("booting", "ready", "busy", "stopping", "stopped", "dead")
 PUBLIC_STATES = ("creating", "ready", "busy", "stopped", "failed", "dead")
 _PUBLIC = {"booting": "creating", "stopping": "stopped"}
 
-_WS = re.compile(r"\s+")
 # A complete escape sequence starting at an ESC: CSI, terminated OSC, or a short escape whose
 # final byte is not "[" or "]" (those open a CSI or OSC that is still incomplete).
 _COMPLETE_ESC = re.compile(
@@ -262,10 +261,6 @@ class FatalScanner:
                 pos = window.find(needle, pos + len(needle))
         self._carry = window[-self._keep :] if self._keep else ""
         return [pattern for _, pattern in sorted(hits)]
-
-
-def _squash(text: str) -> str:
-    return _WS.sub("", text).casefold()
 
 
 def _split_partial_escape(text: str) -> tuple[str, str]:

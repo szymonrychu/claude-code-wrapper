@@ -3,11 +3,11 @@ services:
     build: .
     image: claude-code-wrapper:local
     ports:
-      - "${CCW_PORT:-8080}:8080"
+      - "127.0.0.1:${CCW_PORT:-8080}:8080"
     environment:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      CCW_AUTH_TOKEN: ${CCW_AUTH_TOKEN:-}
+      CCW_AUTH_TOKEN: ${CCW_AUTH_TOKEN:?set CCW_AUTH_TOKEN}
       GH_TOKEN: ${GH_TOKEN:-}
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
     volumes:

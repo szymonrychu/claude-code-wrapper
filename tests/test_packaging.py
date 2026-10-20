@@ -87,19 +87,42 @@ def test_wheel_contains_data_files(installed):
     assert "claude_code_wrapper/hook_relay.py" in names
 
 
-def test_serve_preflight_missing_binaries(tmp_path):
+def _serve(tmp_path, env=None):
     cfg = tmp_path / "c.yaml"
-    cfg.write_text("claude:\n  binary: definitely-not-claude-xyz\n")
-    res = subprocess.run(
+    # allow_anonymous so startup passes the auth policy and reaches the binary preflight
+    # (the auth policy is a config-validity check and rightly runs first).
+    cfg.write_text(
+        "server:\n  allow_anonymous: true\nclaude:\n  binary: "
+        + ("fake-claude" if env else "definitely-not-claude-xyz")
+        + "\n"
+    )
+    return subprocess.run(
         [sys.executable, "-m", "claude_code_wrapper", "serve", "--config", str(cfg)],
         capture_output=True,
         text=True,
         check=False,
         timeout=60,
+        env=env,
     )
+
+
+def test_serve_preflight_missing_binaries(tmp_path):
+    res = _serve(tmp_path)
     assert res.returncode != 0
     assert "definitely-not-claude-xyz" in res.stderr
     assert "PATH" in res.stderr
+
+
+def test_serve_preflight_missing_git(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "fake-claude"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    res = _serve(tmp_path, env={"PATH": str(bindir)})
+    assert res.returncode != 0
+    assert "git" in res.stderr and "PATH" in res.stderr
+    assert "fake-claude" not in res.stderr
 
 
 def test_example_config_has_no_hardcoded_container_paths():
@@ -135,3 +158,14 @@ def test_readme_installation_section():
         "ccw serve --config",
     ):
         assert needle in section, needle
+
+
+def test_single_example_config_source():
+    packaged = ROOT / "src/claude_code_wrapper/data/config.example.yaml"
+    root_copy = ROOT / "config.example.yaml"
+    assert packaged.is_file() and not packaged.is_symlink()
+    assert (
+        not root_copy.exists()
+        or root_copy.is_symlink()
+        or root_copy.read_bytes() == packaged.read_bytes()
+    )
