@@ -74,7 +74,7 @@ GROUPS = {
 }
 
 
-def test_catalogue_covers_required():
+def test_every_required_var_is_modelled():
     cat = {s.env: s for s in ClaudeEnv.catalogue()}
     assert set(REQUIRED) <= set(cat)
     for s in cat.values():
@@ -110,7 +110,7 @@ def test_secret_fields_are_secretstr():
     assert "tok-123456789" not in repr(e)
 
 
-def test_to_env_rendering():
+def test_to_env_maps_fields_to_env_names():
     e = ClaudeEnv(
         disable_telemetry=True,
         disable_autoupdater=False,
@@ -156,7 +156,7 @@ def test_word_values_ok():
     }
 
 
-def test_config_dir_managed():
+def test_claude_config_dir_is_service_managed():
     with pytest.raises(
         ValidationError, match=r"CLAUDE_CONFIG_DIR is set per session.*sessions_root"
     ):
@@ -179,7 +179,56 @@ def test_extra_rejected(key, msg):
         ClaudeEnv(extra={key: "v"})
 
 
-def test_oauth_wins_over_api_key():
+def test_extra_rejects_shadowing_modelled_var():
+    with pytest.raises(ValidationError, match="anthropic_model"):
+        ClaudeEnv(extra={"ANTHROPIC_MODEL": "x"})
+
+
+def test_extra_rejects_managed_and_ccw_vars():
+    for key in ("CLAUDE_CONFIG_DIR", "CCW_FOO", "TERM", "HOME", "lower", "1BAD"):
+        with pytest.raises(ValidationError):
+            ClaudeEnv(extra={key: "v"})
+
+
+def test_bool_true_is_1_false_omitted():
+    e = ClaudeEnv(
+        disable_telemetry=True,
+        disable_autoupdater=False,
+        disable_compact=True,
+        disable_prompt_caching=True,
+        claude_code_hide_cwd=True,
+        claude_code_subagent_model_force=True,
+    )
+    assert e.to_env() == {
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_COMPACT": "1",
+        "DISABLE_PROMPT_CACHING": "1",
+        "CLAUDE_CODE_HIDE_CWD": "1",
+        "CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1",
+    }
+    assert ClaudeEnv().to_env() == {}
+
+
+def test_documented_on_flags_are_bool():
+    cat = {s.env: s for s in ClaudeEnv.catalogue()}
+    for env in (
+        "DISABLE_COMPACT",
+        "DISABLE_AUTO_COMPACT",
+        "DISABLE_LOGIN_COMMAND",
+        "DISABLE_PROMPT_CACHING_OPUS",
+        "CLAUDE_CODE_USE_MANTLE",
+    ):
+        assert cat[env].type == "bool"
+
+
+@pytest.mark.parametrize("field", ["mcp_timeout", "bash_default_timeout_ms", "max_thinking_tokens"])
+def test_numeric_fields_reject_non_positive(field):
+    for bad in (0, -5):
+        with pytest.raises(ValidationError):
+            ClaudeEnv(**{field: bad})
+
+
+def test_oauth_token_wins_over_api_key():
     e = ClaudeEnv(claude_code_oauth_token="oauth-token-1", anthropic_api_key="sk-ant-xxxxxxxx")
     env = e.to_env()
     assert "ANTHROPIC_API_KEY" not in env and env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-token-1"
@@ -187,7 +236,7 @@ def test_oauth_wins_over_api_key():
     assert ClaudeEnv(anthropic_api_key="k" * 10).warnings() == []
 
 
-def test_provider_exclusive():
+def test_provider_flags_are_exclusive():
     ClaudeEnv(claude_code_use_bedrock=True, claude_code_use_vertex=False)
     with pytest.raises(ValidationError):
         ClaudeEnv(claude_code_use_bedrock=True, claude_code_use_vertex=True)
@@ -195,7 +244,7 @@ def test_provider_exclusive():
         ClaudeEnv(claude_code_use_foundry=True, claude_code_use_anthropic_aws=True)
 
 
-def test_merged():
+def test_override_merge_fieldwise_and_extra():
     base = ClaudeEnv(
         disable_telemetry=True, anthropic_model="a", mcp_timeout=1, extra={"A": "1", "B": "2"}
     )
@@ -205,7 +254,7 @@ def test_merged():
     assert base.to_env()["DISABLE_TELEMETRY"] == "1"  # originals untouched
 
 
-def test_redacted_and_secret_values():
+def test_redacted_masks_secrets():
     e = ClaudeEnv(
         claude_code_oauth_token="oauth-token-1",
         anthropic_model="m",

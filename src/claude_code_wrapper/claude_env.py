@@ -394,7 +394,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_AGENT_SDK_MCP_NO_PREFIX",
         "mcp",
-        "str",
+        "bool",
         "Set to 1 to skip the mcp__<server>__ prefix on tool names from SDK-created MCP servers",
     ),
     (
@@ -472,7 +472,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
         "model",
-        "str",
+        "bool",
         "Set to 1 to send the effort parameter with every request, even when Claude Code does not recognize the model ID as ef...",
     ),
     (
@@ -655,7 +655,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_DISABLE_AUTH_REFRESH_LOCK",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to make a Claude Code process run its gcpAuthRefresh or awsAuthRefresh command itself instead of waiting whi...",
     ),
     ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "privacy", "bool", "Set to 1 to disable auto memory"),
@@ -680,19 +680,19 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_DISABLE_BG_EXIT_HANDOFF",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to stop a background session's running background shell commands, dynamic workflows, and, as of v2.1.198, ba...",
     ),
     (
         "CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to stop Claude Code from terminating background shell commands under memory pressure",
     ),
     (
         "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to disable the skills and workflows included with Claude Code: bundled skills and workflows are removed enti...",
     ),
     (
@@ -716,7 +716,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to turn off the time limit on critical-path removal prompts",
     ),
     (
@@ -759,7 +759,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_DISABLE_INLINE_SHELL_RM_PROMPT",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to stop Claude Code from reading scripts passed to a shell with -c, such as bash -c 'rm -rf ~', for critical...",
     ),
     (
@@ -771,13 +771,13 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_DISABLE_MODEL_ACCESS_FALLBACK",
         "model",
-        "str",
+        "bool",
         "Set to 1 to stop Claude Code on Amazon Bedrock and Google Cloud's Agent Platform from switching to an older model whe...",
     ),
     (
         "CLAUDE_CODE_DISABLE_MOUNTED_DRIVE_RM_PROMPT",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to turn off the mounted drive prompt for paths such as /Volumes/USB. Set it in the environment that launches...",
     ),
     (
@@ -807,7 +807,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to disable the non-streaming fallback when a streaming request fails mid-stream",
     ),
     (
@@ -831,19 +831,19 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_DISABLE_POLICY_SKILLS",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to skip loading skills from the system-wide managed skills directory",
     ),
     (
         "CLAUDE_CODE_DISABLE_POWERSHELL_CMD_RM_DENY",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to turn off the PowerShell tool check that denies the cmd built-ins rd, rmdir, del, and erase on a system pa...",
     ),
     (
         "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to turn off the automatic model switch when a safety classifier flags a request, the behavior the switchMode...",
     ),
     (
@@ -855,7 +855,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to turn off the critical-path check for a recursive rm whose target is entirely the output of a command subs...",
     ),
     (
@@ -873,7 +873,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT",
         "model",
-        "str",
+        "bool",
         "Set to 1 to skip proactive auto-compaction when Claude Code doesn't recognize the model ID, such as an LLM gateway alias",
     ),
     (
@@ -891,7 +891,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_DISABLE_WINDOWS_SHELL_LAUNCHER",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to start PowerShell tool commands on Windows directly instead of through the cmd.exe launcher",
     ),
     ("CLAUDE_CODE_DISABLE_WORKFLOWS", "behaviour", "bool", "Set to 1 to disable workflows"),
@@ -936,7 +936,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
         "model",
-        "str",
+        "bool",
         "Set to 1 to populate the /model picker from your gateway's /v1/models endpoint when ANTHROPIC_BASE_URL points at an A...",
     ),
     (
@@ -966,7 +966,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_ENABLE_TODO_TOOLS",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to get the task-tracking tools on every model",
     ),
     (
@@ -991,7 +991,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to force transcript persistence, prompt history, and claude agents registration even when this claude was la...",
     ),
     (
@@ -1027,7 +1027,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_GATEWAY_HINT_HEADERS",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to send the gateway hint headers, such as x-claude-code-request-class and x-claude-code-compaction, on a cus...",
     ),
     (
@@ -1075,7 +1075,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_HIDE_CWD",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to hide the working directory in the startup logo",
     ),
     (
@@ -1087,13 +1087,13 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to skip auto-installation of IDE extensions",
     ),
     (
         "CLAUDE_CODE_IDE_SKIP_VALID_CHECK",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to skip validation of IDE lockfile entries during connection",
     ),
     (
@@ -1213,7 +1213,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_NONBLOCKING_STDOUT",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to write terminal output through a second non-blocking file descriptor, so a terminal that stops reading, su...",
     ),
     (
@@ -1297,7 +1297,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to let Claude Code run your package manager's upgrade command in the background when a new version is available",
     ),
     (
@@ -1346,7 +1346,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_POWERSHELL_RESPECT_EXECUTION_POLICY",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to stop Claude Code from passing -ExecutionPolicy Bypass when spawning PowerShell for tool calls, hooks, and...",
     ),
     (
@@ -1376,7 +1376,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_PROPAGATE_TRACEPARENT",
         "telemetry",
-        "str",
+        "bool",
         "Set to 1 to propagate W3C trace context when ANTHROPIC_BASE_URL points at a custom proxy",
     ),
     (
@@ -1412,7 +1412,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_RESUME_INTERRUPTED_TURN",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to automatically resume if the previous session ended mid-turn",
     ),
     (
@@ -1508,7 +1508,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_SKIP_AWS_CRED_CACHE",
         "model",
-        "str",
+        "bool",
         "Set to 1 to turn off the in-process cache of credentials resolved from the AWS default credential provider chain, so ...",
     ),
     (
@@ -1526,7 +1526,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK",
         "model",
-        "str",
+        "bool",
         "Set to 1 to skip the client-side fast mode availability check, for proxies that intercept the check's request rather ...",
     ),
     (
@@ -1580,7 +1580,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
         "model",
-        "str",
+        "bool",
         "Set to 1 to force one model onto subagents, teammates, and workflow agents",
     ),
     (
@@ -1592,7 +1592,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to strip credentials from the environments of the subprocesses Claude Code starts, such as Bash commands, ho...",
     ),
     (
@@ -1677,11 +1677,11 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     ("CLAUDE_CODE_USE_ANTHROPIC_AWS", "provider", "bool", "Use Claude Platform on AWS"),
     ("CLAUDE_CODE_USE_BEDROCK", "provider", "bool", "Use Amazon Bedrock"),
     ("CLAUDE_CODE_USE_FOUNDRY", "provider", "bool", "Use Microsoft Foundry"),
-    ("CLAUDE_CODE_USE_MANTLE", "provider", "str", "Use the Amazon Bedrock Mantle endpoint"),
+    ("CLAUDE_CODE_USE_MANTLE", "provider", "bool", "Use the Amazon Bedrock Mantle endpoint"),
     (
         "CLAUDE_CODE_USE_NATIVE_FILE_SEARCH",
         "provider",
-        "str",
+        "bool",
         "Set to 1 to discover custom commands, subagents, and output styles using Node.js file APIs instead of ripgrep",
     ),
     ("CLAUDE_CODE_USE_POWERSHELL_TOOL", "provider", "bool", "Controls the PowerShell tool"),
@@ -1749,13 +1749,13 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "CLAUDE_ENABLE_BYTE_WATCHDOG",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to force-enable the byte-level streaming idle watchdog, or set to 0 to force-disable it",
     ),
     (
         "CLAUDE_ENABLE_BYTE_WATCHDOG_BEDROCK",
         "provider",
-        "str",
+        "bool",
         "Set to 1 to enable the byte-level streaming idle watchdog on Amazon Bedrock vnd.amazon.eventstream responses, which a...",
     ),
     (
@@ -1812,20 +1812,20 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "DISABLE_AUTO_COMPACT",
         "model",
-        "str",
+        "bool",
         "Set to 1 to disable automatic compaction when approaching the context limit, along with idle compaction",
     ),
     (
         "DISABLE_COMPACT",
         "model",
-        "str",
+        "bool",
         "Set to 1 to disable all compaction: both automatic compaction and the manual /compact command",
     ),
     ("DISABLE_COST_WARNINGS", "privacy", "bool", "Set to 1 to disable cost warning messages"),
     (
         "DISABLE_DOCTOR_COMMAND",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to hide the /doctor setup checkup skill and its /checkup alias",
     ),
     (
@@ -1837,13 +1837,13 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "DISABLE_EXTRA_USAGE_COMMAND",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to hide the /usage-credits command that lets users purchase additional usage beyond rate limits",
     ),
     (
         "DISABLE_FEEDBACK_COMMAND",
         "privacy",
-        "str",
+        "bool",
         "Set to 1 to disable the /feedback command and Claude-drafted feedback",
     ),
     (
@@ -1861,7 +1861,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "DISABLE_INSTALL_GITHUB_APP_COMMAND",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to hide the /install-github-app command",
     ),
     (
@@ -1870,36 +1870,36 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
         "bool",
         "Set to 1 to prevent sending the interleaved-thinking beta header",
     ),
-    ("DISABLE_LOGIN_COMMAND", "auth", "str", "Set to 1 to hide the /login command"),
-    ("DISABLE_LOGOUT_COMMAND", "behaviour", "str", "Set to 1 to hide the /logout command"),
+    ("DISABLE_LOGIN_COMMAND", "auth", "bool", "Set to 1 to hide the /login command"),
+    ("DISABLE_LOGOUT_COMMAND", "behaviour", "bool", "Set to 1 to hide the /logout command"),
     (
         "DISABLE_PROMPT_CACHING",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to disable prompt caching for all models (takes precedence over per-model settings)",
     ),
     (
         "DISABLE_PROMPT_CACHING_FABLE",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to disable prompt caching for Fable models",
     ),
     (
         "DISABLE_PROMPT_CACHING_HAIKU",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to disable prompt caching for the default Haiku model, wherever it runs",
     ),
     (
         "DISABLE_PROMPT_CACHING_OPUS",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to disable prompt caching for the default Opus model",
     ),
     (
         "DISABLE_PROMPT_CACHING_SONNET",
         "behaviour",
-        "str",
+        "bool",
         "Set to 1 to disable prompt caching for the default Sonnet model",
     ),
     (
@@ -1914,7 +1914,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
         "bool",
         "Set to 1 to block all updates including manual claude update and claude install",
     ),
-    ("DISABLE_UPGRADE_COMMAND", "behaviour", "str", "Set to 1 to hide the /upgrade command"),
+    ("DISABLE_UPGRADE_COMMAND", "behaviour", "bool", "Set to 1 to hide the /upgrade command"),
     (
         "DO_NOT_TRACK",
         "behaviour",
@@ -2080,7 +2080,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "OTEL_LOG_ASSISTANT_RESPONSES",
         "telemetry",
-        "str",
+        "bool",
         "Set to 1 to include the model's response text on assistant_response OpenTelemetry log events",
     ),
     (
@@ -2104,7 +2104,7 @@ _TABLE: tuple[tuple[str, str, str, str], ...] = (
     (
         "OTEL_LOG_TOOL_DETAILS",
         "telemetry",
-        "str",
+        "bool",
         "Set to 1 to include tool input arguments; MCP server names; user-authored workflow names; raw error strings on tool f...",
     ),
     (
