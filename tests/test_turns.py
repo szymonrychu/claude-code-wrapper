@@ -198,3 +198,18 @@ def test_turn_record_serializes_callback_url_camel_case(tmp_path: Path) -> None:
         _record("turn-d", origin="robot")
     with pytest.raises(ValueError):
         _record("turn-e", state="paused")
+
+
+def test_refresh_updates_view_without_append(tmp_path: Path) -> None:
+    path = tmp_path / "turns.jsonl"
+    store = TurnStore(path)
+    record = _record("turn-a")
+    store.put(record)
+    record.last_activity_at = "2026-10-20T10:00:05.000+00:00"
+    store.refresh(record)
+    assert store.get("turn-a").last_activity_at == "2026-10-20T10:00:05.000+00:00"
+    assert len(_lines(path)) == 1  # the view moved; the file did not grow
+    record.last_activity_at = "2026-10-20T10:00:06.000+00:00"
+    assert store.get("turn-a").last_activity_at == "2026-10-20T10:00:05.000+00:00"  # a copy
+    with pytest.raises(StoreReadOnly):
+        TurnStore(path, readonly=True).refresh(record)

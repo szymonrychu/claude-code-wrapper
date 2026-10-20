@@ -174,6 +174,16 @@ class TurnStore:
         self._needs_newline = False
         self._records[record.turn_id] = record.model_copy(deep=True)
 
+    def refresh(self, record: TurnRecord) -> None:
+        """Make `record` the served state of its turn without appending a line.
+
+        For high-frequency fields (`last_activity_at`) whose every change need not reach
+        disk: readers see the new value at once, and the next `put` writes it.
+        """
+        if self.readonly:
+            raise StoreReadOnly(f"{self.path} is read-only")
+        self._records[record.turn_id] = record.model_copy(deep=True)
+
     def get(self, turn_id: str) -> TurnRecord | None:
         record = self._records.get(turn_id)
         return record.model_copy(deep=True) if record is not None else None

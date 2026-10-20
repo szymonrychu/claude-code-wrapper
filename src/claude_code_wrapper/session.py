@@ -64,7 +64,8 @@ ESC = b"\x1b"
 DEFAULT_PROBE_TEXT = "Reply with CCW-ALIVE and one sentence on what you are doing, then continue."
 #: The turn watchdog re-checks at least this often, so a cleared stall re-arms promptly.
 TURN_WATCH_MAX_SLEEP = 0.25
-#: `note_activity` persists `last_activity_at` at most this often (it runs on every event).
+#: `note_activity` appends `last_activity_at` to turns.jsonl at most this often (it runs on every
+#: event); the store serves every update at once.
 ACTIVITY_PERSIST_SECONDS = 5.0
 #: Probes remembered for `get_probe`; the oldest are forgotten first.
 MAX_PROBES = 100
@@ -701,7 +702,9 @@ class Session:
         if record.stall_suspected_since is not None:
             record.stall_suspected_since = None  # re-armed: a new quiet period reports again
         elif now - self._activity_persisted < ACTIVITY_PERSIST_SECONDS:
-            return  # the hot path; the timestamp lands with the next change
+            # Served at once; appended to turns.jsonl at most once per ACTIVITY_PERSIST_SECONDS.
+            self._persist(record, append=False)
+            return
         self._activity_persisted = now
         self._persist(record)
 
@@ -798,11 +801,14 @@ class Session:
         self._notify("on_turn_end", record)
         return True
 
-    def _persist(self, record: TurnRecord) -> None:
+    def _persist(self, record: TurnRecord, *, append: bool = True) -> None:
         if self.turn_store is None:
             return
         try:
-            self.turn_store.put(record)
+            if append:
+                self.turn_store.put(record)
+            else:
+                self.turn_store.refresh(record)
         except Exception:
             log.exception("session %s: persisting turn %s failed", self.spec.session_id, record)
 

@@ -664,3 +664,19 @@ async def test_record_tool_call_counts(harness: Harness) -> None:
     assert harness.store.get(record.turn_id).tool_calls == 2
     assert TurnStore(harness.turns_path).get(record.turn_id).tool_calls == 2
     assert session.current_turn is record and record.state == "running"
+
+
+async def test_note_activity_keeps_store_view_current(harness: Harness) -> None:
+    scenario = {"turns": [{"match": "busy", "steps": [{"sleep": 30}]}]}
+    session = await harness.start(scenario)
+    record = await session.submit("busy working")
+    lines_before = Path(harness.store.path).read_text().count("\n")
+    for _ in range(3):
+        await asyncio.sleep(0.01)
+        session.note_activity()
+        # Every activity is visible through the store at once ...
+        assert harness.store.get(record.turn_id).last_activity_at == record.last_activity_at
+        assert harness.store.current.last_activity_at == record.last_activity_at
+    # ... while the hot path appends at most one line per ACTIVITY_PERSIST_SECONDS.
+    assert Path(harness.store.path).read_text().count("\n") == lines_before
+    await session.interrupt()
