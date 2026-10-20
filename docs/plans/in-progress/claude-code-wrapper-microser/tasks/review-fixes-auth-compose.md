@@ -1,6 +1,6 @@
 ---
 title: Review fixes auth compose
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: "The API never runs unauthenticated by accident; compose is safe by default"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/api/app.py, src/claude_code_wrapper/service.py, docker-compose.yml, .env.example, src/claude_code_wrapper/data/config.example.yaml, README.md, tests/test_api_auth.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--review-fixes-auth-compose
 branch: claude-code-wrapper-microser--review-fixes-auth-compose
-verified_head: ""
-run: ""
+verified_head: ba14bccba3f463b769477a50afdab25538764a87
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Review fixes auth compose
