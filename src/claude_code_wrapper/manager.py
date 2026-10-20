@@ -311,6 +311,23 @@ class SessionManager:
             return False
         return hmac.compare_digest(ctx.hook_token.encode(), token.encode())
 
+    def transcript_path(self, session_id: str) -> str | None:
+        """The main transcript file: the live session's, else the persisted layout's."""
+        ctx = self._active.get(session_id)
+        if ctx is not None and ctx.session is not None:
+            return str(ctx.session.transcript_path)
+        meta = self._read_meta(session_id)
+        claude_sid = meta.get("claude_session_id")
+        if not claude_sid:
+            return None
+        return str(
+            self._session_dir(session_id)
+            / "config"
+            / "projects"
+            / PROJECT_DIR_NAME
+            / f"{claude_sid}.jsonl"
+        )
+
     def open_event_log(self, session_id: str) -> EventLog:
         """The live EventLog, else a read-only one opened from the session dir."""
         ctx = self._active.get(session_id)

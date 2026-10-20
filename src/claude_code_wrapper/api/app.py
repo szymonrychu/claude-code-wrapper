@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI
 
-from claude_code_wrapper.api import sessions
+from claude_code_wrapper.api import events, sessions, turns
 from claude_code_wrapper.api.auth import require_auth
 from claude_code_wrapper.api.errors import ApiError, install_handlers
 from claude_code_wrapper.config import Config
@@ -29,6 +29,8 @@ def create_app(manager: Any, cfg: Config) -> FastAPI:
 
     v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_auth)])
     v1.include_router(sessions.router)
+    v1.include_router(turns.router)
+    v1.include_router(events.router)
     app.state.v1 = v1
     app.include_router(v1)
 
