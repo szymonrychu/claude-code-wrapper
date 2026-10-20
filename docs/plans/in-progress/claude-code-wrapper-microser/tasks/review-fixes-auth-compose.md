@@ -5,7 +5,7 @@ repo: claude-code-wrapper
 value: "The API never runs unauthenticated by accident; compose is safe by default"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/api/app.py, src/claude_code_wrapper/service.py, docker-compose.yml, .env.example, src/claude_code_wrapper/data/config.example.yaml, README.md, tests/test_api_auth.py]
 verify: "uv run pytest tests/test_api_auth.py tests/test_config.py tests/test_container.py tests/test_readme_config.py -q && mise run lint"
-depends_on: [audit-fixes-container-home-s]
+depends_on: [audit-fixes-container-home-s, api-sessions, api-turns-events]
 owns: []
 uses: []
 model: ""

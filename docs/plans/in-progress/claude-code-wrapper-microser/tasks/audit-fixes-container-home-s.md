@@ -5,7 +5,7 @@ repo: claude-code-wrapper
 value: "Image ships a valid example config again and home-seed ACs have their evidence tests (A2, A5, A6)"
 files: [Dockerfile, tests/test_container.py, tests/test_bootstrap_home.py]
 verify: "uv run pytest tests/test_container.py tests/test_bootstrap_home.py -q && mise run lint"
-depends_on: []
+depends_on: [container, pip-package]
 owns: []
 uses: []
 model: ""
