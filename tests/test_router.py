@@ -188,14 +188,14 @@ def user(text: str) -> str:
 
 
 # ---------------------------------------------------------------- relay: pre tool use
-async def test_attrs_and_note_activity(h):
+async def test_router_exposes_parts(h):
     assert h.router.session is h.session and h.router.event_log is h.log
     r = await h.router.handle_claude_hook("UserPromptSubmit", {"prompt": "x"})
     assert r == {"stdout": "", "stderr": "", "exit_code": 0}
     assert h.calls("note_activity")
 
 
-async def test_transcript_path_switches_tailer(h, tmp_path):
+async def test_transcript_path_switch(h, tmp_path):
     await h.router.handle_claude_hook("UserPromptSubmit", {})
     assert h.router.tailer.path == h.transcript
     other = tmp_path / "other.jsonl"
@@ -203,7 +203,7 @@ async def test_transcript_path_switches_tailer(h, tmp_path):
     assert h.router.tailer.path == other and h.session.transcript_path == str(other)
 
 
-async def test_pre_tool_use_emits_tool_call_redacted_and_allows(h):
+async def test_pretooluse_allow_emits_tool_call(h):
     r = await h.router.handle_claude_hook(
         "PreToolUse",
         {"tool_use_id": "tu1", "tool_name": "Bash", "tool_input": {"command": f"echo {SECRET}"}},
@@ -214,7 +214,7 @@ async def test_pre_tool_use_emits_tool_call_redacted_and_allows(h):
     assert SECRET not in json.dumps(ev.data)
 
 
-async def test_pre_tool_use_deny_from_hook(tmp_path):
+async def test_pretooluse_deny_returns_deny_json_and_tool_denied(tmp_path):
     h = Harness(tmp_path, hooks={"onAgentToolCall": [webhook()]})
     h.reply = {"decision": "deny", "reason": "no bash"}
     r = await h.router.handle_claude_hook(
@@ -228,7 +228,7 @@ async def test_pre_tool_use_deny_from_hook(tmp_path):
     await h.router.close()
 
 
-async def test_pre_tool_use_additional_context(tmp_path):
+async def test_additional_context_returned(tmp_path):
     h = Harness(tmp_path, hooks={"onAgentToolCall": [webhook()]})
     h.reply = {"additional_context": "be careful"}
     r = await h.router.handle_claude_hook(
@@ -240,7 +240,7 @@ async def test_pre_tool_use_additional_context(tmp_path):
     await h.router.close()
 
 
-async def test_ask_user_question_forwarded_and_posted_to_turn_callback(h):
+async def test_ask_user_question_forwarded(h):
     h.session.turn = TurnRecord(
         turn_id="turn-1", session_id=SID, started_at=now_iso(), callbackUrl="http://turn.cb/q"
     )
@@ -261,7 +261,7 @@ async def test_ask_user_question_forwarded_and_posted_to_turn_callback(h):
     assert req.headers["x-ccw-signature"].startswith("sha256=")
 
 
-async def test_ask_user_question_falls_back_to_session_callback(h):
+async def test_question_posted_to_callback_url(h):
     await h.router.handle_claude_hook(
         "PreToolUse", {"tool_use_id": "q", "tool_name": "AskUserQuestion", "tool_input": {}}
     )
@@ -290,7 +290,7 @@ async def test_ask_user_question_not_forwarded_when_allow(tmp_path):
 
 
 # ---------------------------------------------------------------- relay: post tool use
-async def test_post_tool_use_result_truncated_and_counted(tmp_path):
+async def test_posttooluse_emits_tool_result_redacted(tmp_path):
     h = Harness(tmp_path, hooks={"onToolResult": [webhook()]})
     h.reply = {"additional_context": "more"}
     r = await h.router.handle_claude_hook(
@@ -323,7 +323,7 @@ def completed_record(**kw) -> TurnRecord:
     return TurnRecord(**{**base, **kw})
 
 
-async def test_stop_flushes_before_reading_marker_and_usage(h):
+async def test_stop_flushes_tailer_before_marker(h):
     h.transcript.write_text(
         user("hi\n\n<!-- ccw turn: turn-1 -->") + assistant("done", usage={"input_tokens": 7})
     )
@@ -352,7 +352,7 @@ async def test_stop_none_record_emits_nothing(h):
     assert not h.events("turn_completed") and h.posts == []
 
 
-async def test_stop_fires_on_turn_complete_and_delivers_callback(tmp_path):
+async def test_stop_completes_turn_and_fires_on_turn_complete(tmp_path):
     h = Harness(tmp_path, hooks={"onTurnComplete": [webhook()]})
     h.session.complete_result = completed_record(callbackUrl="http://turn.cb/done")
     await h.router.handle_claude_hook("Stop", {})
@@ -374,7 +374,7 @@ async def test_stop_callback_falls_back_to_session_url(h):
 
 
 @pytest.mark.parametrize("state", ["failed", "interrupted", "timeout"])
-async def test_non_completed_terminal_state_fires_hook_event_and_callback(tmp_path, state):
+async def test_on_turn_complete_fires_for_every_terminal_state(tmp_path, state):
     h = Harness(tmp_path, hooks={"onTurnComplete": [webhook()]})
     h.router.on_turn_end(completed_record(state=state, callbackUrl="http://turn.cb/d"))
     await h.router.drain()
@@ -392,7 +392,7 @@ async def test_on_turn_end_completed_does_nothing(h):
 
 
 # ---------------------------------------------------------------- relay: subagents, errors
-async def test_subagent_events_and_hooks(tmp_path):
+async def test_subagent_events(tmp_path):
     h = Harness(tmp_path, hooks={"onSubagentStart": [webhook()], "onSubagentStop": [webhook()]})
     await h.router.handle_claude_hook("SubagentStart", {"agent_id": "a1", "agent_type": "x"})
     await h.router.handle_claude_hook("SubagentStop", {"agent_id": "a1", "agent_type": "x"})
@@ -402,7 +402,7 @@ async def test_subagent_events_and_hooks(tmp_path):
     await h.router.close()
 
 
-async def test_exception_becomes_error_event_and_allow(tmp_path):
+async def test_exception_in_handler_returns_allow(tmp_path):
     h = Harness(tmp_path, hooks={"onError": [webhook()]})
 
     def boom(*a, **k):
@@ -519,7 +519,7 @@ async def test_submit_turn_writes_files_and_emits(h):
     assert h.router.tailer is not None
 
 
-async def test_submit_turn_veto(tmp_path):
+async def test_on_turn_veto_rejects_submit(tmp_path):
     h = Harness(tmp_path, hooks={"onTurn": [webhook()]})
     h.reply = {"decision": "deny", "reason": "not now"}
     with pytest.raises(TurnVetoed) as ei:
@@ -538,7 +538,7 @@ async def test_submit_turn_busy_propagates(h):
     assert not h.events("turn_started")
 
 
-async def test_interrupt_emits_and_fires(tmp_path):
+async def test_interrupt_fires_on_interrupt(tmp_path):
     h = Harness(tmp_path, hooks={"onInterrupt": [webhook()]})
     h.session.interrupt_result = "turn-1"
     assert await h.router.interrupt() == "turn-1"
@@ -571,7 +571,7 @@ async def test_listener_callbacks(tmp_path):
     await r.close()
 
 
-async def test_dispatcher_results_become_hook_result_events(tmp_path):
+async def test_hook_results_emitted(tmp_path):
     h = Harness(tmp_path, hooks={"onTurn": [webhook()]})
     await h.router.submit_turn("hi")
     (ev,) = h.events("hook_result")
@@ -584,3 +584,37 @@ async def test_close_emits_session_closed_once(h):
     await h.router.close()
     await h.router.close()
     assert len(h.events("session_closed")) == 1
+
+
+async def test_callback_url_receives_record(tmp_path):
+    h = Harness(tmp_path)
+    h.session.complete_result = completed_record(callbackUrl="http://turn.cb/rec")
+    await h.router.handle_claude_hook("Stop", {})
+    await h.router.drain()
+    (req,) = [r for r in h.posts if r.url.host == "turn.cb"]
+    assert json.loads(req.content)["data"]["record"]["state"] == "completed"
+    assert req.headers["x-ccw-signature"].startswith("sha256=")
+    await h.router.close()
+
+
+async def test_assistant_text_fires_on_agent_response(tmp_path):
+    h = Harness(tmp_path, hooks={"onAgentResponse": [webhook()]})
+    h.router.ensure_tailing()
+    h.transcript.write_text(
+        tx_line(
+            type="assistant",
+            message={"id": "m1", "model": "x", "content": [{"type": "text", "text": "hello"}]},
+        )
+    )
+    await wait_until(lambda: h.hook_posts)
+    assert h.hook_posts[0]["event"] == "onAgentResponse"
+    await h.router.close()
+
+
+async def test_fatal_fires_on_error(tmp_path):
+    h = Harness(tmp_path, hooks={"onError": [webhook()]})
+    h.router.on_fatal("auth failed", "tail")
+    await h.router.drain()
+    assert h.events("error")[0].data["kind"] == "fatal"
+    assert h.hook_posts[0]["event"] == "onError" and h.hook_posts[0]["data"]["kind"] == "fatal"
+    await h.router.close()
