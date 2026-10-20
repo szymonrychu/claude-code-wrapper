@@ -1,6 +1,6 @@
 ---
 title: Session boot
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "claude boots unattended, recovers from crashes and never sees service secrets"
 files: [src/claude_code_wrapper/session.py, tests/test_session_boot.py]
@@ -15,8 +15,10 @@ review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--session-boot
 branch: claude-code-wrapper-microser--session-boot
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Session boot
@@ -83,3 +85,5 @@ Settled by the builder check (binding):
 
 - Sources: tatara `W/internal/session/session.go:641-707` (bootWait), `:734-907` (watch, relaunch, shouldResume), `W/cmd/wrapper/app.go:667-686` (claudeEnv); magic `M/session.py:292-387` (boot, ready markers, one relaunch), `:45-68` (fatal needles).
 - Pitfalls: a submit during the first seconds of paint exits claude (min_boot); the bypass dialog default is "No, exit"; `--continue`/`--resume` with no transcript exits immediately and burns the budget (hence the transcript-exists guard); stale ring text after relaunch caused false matches.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on config-models

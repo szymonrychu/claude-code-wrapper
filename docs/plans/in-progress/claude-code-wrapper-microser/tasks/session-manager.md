@@ -1,6 +1,6 @@
 ---
 title: Session manager
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "Many independent sessions, destroyable and resumable by id"
 files: [src/claude_code_wrapper/manager.py, src/claude_code_wrapper/prompts.py, tests/test_manager.py, tests/test_prompts.py]
@@ -15,8 +15,10 @@ review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--session-manager
 branch: claude-code-wrapper-microser--session-manager
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Session manager
@@ -109,3 +111,5 @@ The service can hold several independent claude sessions, each fully prepared fr
 - The manager is the only place that composes the parts; keep each step a small function so failures name their step.
 - The internal URL comes from service-main (`http://127.0.0.1:<internal_port>`); tests pass any URL (the relay is not exercised here).
 - Mounted mode: several sessions may share one mounted workdir (the workbench uses git worktrees); do not lock it.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on event-router, home-seed, settings-render, plugins-and-mise, workdir-init

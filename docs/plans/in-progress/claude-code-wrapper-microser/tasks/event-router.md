@@ -1,6 +1,6 @@
 ---
 title: Event router
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: Every hook call and transcript line becomes SSE events and user hook calls
 files: [src/claude_code_wrapper/router.py, tests/test_router.py]
@@ -15,8 +15,10 @@ review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--event-router
 branch: claude-code-wrapper-microser--event-router
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Event router
@@ -97,3 +99,5 @@ Every Claude hook call and transcript line becomes the right SSE event and user 
 - PreToolUse output format per Claude Code hooks: `hookSpecificOutput.permissionDecision` deny with `permissionDecisionReason`; PostToolUse `hookSpecificOutput.additionalContext` (ros2 `R/runner.py:514-526`).
 - The plugin's bash-output-filter rewrites Bash commands via `updatedInput`; the router reports `tool_input` as Claude sent it to PreToolUse (documented in README by readme-api).
 - `deny_output` and `RelayResponse` come from `hook_relay.py`; do not redefine them.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on session-turns, event-log, hook-dispatcher, transcript-tailer, workdir-init

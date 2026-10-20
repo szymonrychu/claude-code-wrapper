@@ -1,6 +1,6 @@
 ---
 title: Home seed
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "Sessions boot without onboarding or trust prompts, with MCP and instructions"
 files: [src/claude_code_wrapper/bootstrap/__init__.py, src/claude_code_wrapper/bootstrap/claude_json.py, src/claude_code_wrapper/bootstrap/instructions.py, tests/test_bootstrap_home.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--home-seed
 branch: claude-code-wrapper-microser--home-seed
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Home seed
@@ -82,3 +84,5 @@ A fresh config dir boots claude without onboarding or trust prompts, with the co
 - Sources: tatara `W/internal/bootstrap/claudejson.go:16-69` (resolved path, key suffix), magic `M/bootstrap.py:36-72, 96-128`.
 - MCP servers go to `.claude.json` (user scope) instead of a workdir `.mcp.json` so a workbench tree is not dirtied (design anti-goal).
 - The `bypassPermissionsModeAccepted` key exists in the 2.1.304 binary; the boot dialog handler stays regardless.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on config-models

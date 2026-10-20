@@ -1,6 +1,6 @@
 ---
 title: Fake claude
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: Full lifecycle tests without real Claude
 files: [tests/fake_claude/fake_claude.py, tests/conftest.py, tests/test_fake_claude.py, tests/fixtures/scenarios/basic.json]
@@ -10,13 +10,15 @@ owns: [fake-claude]
 uses: []
 model: ""
 estimate: 90
-actual: ""
+actual: 4
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--fake-claude
 branch: claude-code-wrapper-microser--fake-claude
-verified_head: ""
-run: ""
-provides: []
+verified_head: 9e8bb0d41046224ba3dad61d80e3d2ca56e4f153
+run: claude-code-wrapper-microser
+provides: [fake-claude-pty-test-driver]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Fake claude

@@ -1,6 +1,6 @@
 ---
 title: Container
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: docker compose up gives a healthy non-root service with persistent volumes
 files: [Dockerfile, docker-compose.yml, .dockerignore, .env.example, tests/test_container.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--container
 branch: claude-code-wrapper-microser--container
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Container
@@ -81,3 +83,5 @@ Settled at the gate (D19-D24, binding):
 - claude refuses bypassPermissions as root (magic `Dockerfile.agent:31-47`); tatara runs uid 10001, magic uid 1000.
 - mise in Bash-tool shells needs shims on PATH via image ENV (tatara pitfall); keep MISE_DATA_DIR on the `mise` volume, outside HOME.
 - The compose smoke uses project `ccw-smoke` and port 18080 so it never touches a user's running stack; `down -v` removes only that project's volumes.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on service-main

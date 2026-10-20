@@ -1,6 +1,6 @@
 ---
 title: Claude env model
-status: in-progress
+status: escalated
 repo: claude-code-wrapper
 value: "Every Claude Code env var configurable as a validated, redacted field (D2)"
 files: [src/claude_code_wrapper/claude_env.py, src/claude_code_wrapper/redact.py, tests/test_claude_env.py, tests/test_redact.py]
@@ -10,13 +10,15 @@ owns: [claude-env, redactor]
 uses: []
 model: ""
 estimate: 75
-actual: ""
+actual: 3
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--claude-env-model
 branch: claude-code-wrapper-microser--claude-env-model
-verified_head: ""
-run: ""
-provides: []
+verified_head: unknown
+run: claude-code-wrapper-microser
+provides: [claude-env, redactor]
+acs_for_audit: []
+process_gaps: ["The implementer applied the bool fix before its tests. I ran the red/green check for them: with the pre-fix claude_env.py from b25ce46 and the current tests, test_bool_true_is_1_false_omitted and test_documented_on_flags_are_bool fail. With HEAD, tests/test_claude_env.py and tests/test_redact.py pass and lint passes. The orchestrator can record this as the tests.red evidence.", "The earlier independent verification run exited with code 144 and gave no verdict, so it needs a rerun."]
 ---
 
 # Claude env model

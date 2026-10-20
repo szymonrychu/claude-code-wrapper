@@ -1,6 +1,6 @@
 ---
 title: Internal API
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "Only the service's own claude processes can drive session hooks"
 files: [src/claude_code_wrapper/internal_api.py, tests/test_internal_api.py]
@@ -15,8 +15,10 @@ review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--internal-api
 branch: claude-code-wrapper-microser--internal-api
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Internal API
@@ -68,3 +70,5 @@ Only the claude processes the service started (holding their session token, on l
 
 - Sources: magic's separate loopback app so a bad bind cannot expose the hook route (`M/api.py:1-7, 317-325`); tatara `/internal/turn-complete` on 127.0.0.1:8090.
 - `ASGITransport` lets you set the client address for the loopback test.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on session-manager

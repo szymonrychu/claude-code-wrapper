@@ -1,6 +1,6 @@
 ---
 title: Source analysis
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: A record of what each source project uses and how it maps to the service
 files: [docs/source-analysis.md]
@@ -10,13 +10,15 @@ owns: []
 uses: []
 model: ""
 estimate: 75
-actual: ""
+actual: 4
 review: skip
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--source-analysis
 branch: claude-code-wrapper-microser--source-analysis
-verified_head: ""
-run: ""
+verified_head: 0d25f5af360cbc5c3e02b16f7045eb30e4ea2134
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: [AC8]
+process_gaps: []
 ---
 
 # Source analysis

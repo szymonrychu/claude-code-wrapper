@@ -1,6 +1,6 @@
 ---
 title: PTY process
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: Reliable control of an interactive claude process
 files: [src/claude_code_wrapper/ring.py, src/claude_code_wrapper/pty_proc.py, tests/test_ring.py, tests/test_pty_proc.py]
@@ -10,13 +10,15 @@ owns: [pty-process]
 uses: [fake-claude]
 model: opus
 estimate: 60
-actual: ""
+actual: 6
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--pty-process
 branch: claude-code-wrapper-microser--pty-process
-verified_head: ""
-run: ""
-provides: []
+verified_head: c1ab4d3a69f0374baa1bd22b06da0ea1ae6f1883
+run: claude-code-wrapper-microser
+provides: [ring-written-counter, strip-ansi, paste-bytes]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # PTY process

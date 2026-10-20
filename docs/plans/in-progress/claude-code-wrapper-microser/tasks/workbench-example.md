@@ -1,6 +1,6 @@
 ---
 title: Workbench example
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: The workbench plugin flow runs inside the service out of the box
 files: [examples/workbench.config.yaml, examples/docker-compose.workbench.yml, tests/test_examples.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--workbench-example
 branch: claude-code-wrapper-microser--workbench-example
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Workbench example
@@ -68,3 +70,5 @@ tests/test_examples.py: every `config.example.yaml` and `examples/*.yaml` config
 
 - Plugin facts: marketplace name `szymonrychu-workbench`, plugin `workbench`, source `/Users/szymonri/Documents/claude-infra-plugin` on the host (no git remote, so it is mounted read-only); its hooks need bash, python3 >= 3.11, git, jq, node, mise, uv (all in the image).
 - Never enable two plugins named `workbench`; disable superpowers.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on container

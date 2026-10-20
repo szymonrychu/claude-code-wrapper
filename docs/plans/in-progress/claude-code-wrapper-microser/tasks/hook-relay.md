@@ -1,6 +1,6 @@
 ---
 title: Hook relay
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: Claude hooks reach the service without ever blocking claude
 files: [src/claude_code_wrapper/hook_relay.py, tests/test_hook_relay.py]
@@ -10,13 +10,15 @@ owns: [hook-relay-protocol]
 uses: []
 model: ""
 estimate: 45
-actual: ""
+actual: 1
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--hook-relay
 branch: claude-code-wrapper-microser--hook-relay
-verified_head: ""
-run: ""
-provides: []
+verified_head: dae5b4ea2a156317d147ed21da4a0c4fd1d6897f
+run: claude-code-wrapper-microser
+provides: [hook-relay-protocol]
+acs_for_audit: []
+process_gaps: ["Implementer reports tests were written with the code and not seen failing first (TDD red step skipped)"]
 ---
 
 # Hook relay

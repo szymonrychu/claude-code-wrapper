@@ -1,6 +1,6 @@
 ---
 title: Repo scaffold
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: A working uv/mise Python project every later task builds on
 files: [pyproject.toml, uv.lock, mise.toml, .gitignore, CLAUDE.md, .claude/workbench.json, src/claude_code_wrapper/__init__.py, tests/test_scaffold.py]
@@ -10,13 +10,15 @@ owns: [project-scaffold]
 uses: []
 model: ""
 estimate: 45
-actual: ""
+actual: 1
 review: light
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--repo-scaffold
 branch: claude-code-wrapper-microser--repo-scaffold
-verified_head: ""
-run: ""
+verified_head: f89bd241c48c39bd652913872cdda2985e4e28ee
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Repo scaffold

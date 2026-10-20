@@ -1,6 +1,6 @@
 ---
 title: Config models
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: One validated config.yaml drives the whole service
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/interpolation.py, tests/test_config.py, tests/test_interpolation.py, config.example.yaml]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--config-models
 branch: claude-code-wrapper-microser--config-models
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Config models
@@ -82,3 +84,5 @@ Build the config.yaml models, loader and interpolation (D8), exactly per design.
 - The schema in design.md is the contract other tasks code against; do not rename keys. If a key genuinely has to change, update design.md "Config schema" in the same commit.
 - Hook action defaults: command timeout 30 s, webhook timeout 10 s, retries 3, blocking false, on_error allow.
 - Prior art: ros2 pydantic config with `extra="forbid"` (`/Users/szymonri/Documents/ros2-lerobot-sverve-platform/nodes/claude_agent/claude_agent/config.py`).
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on claude-env-model

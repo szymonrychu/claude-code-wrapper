@@ -1,6 +1,6 @@
 ---
 title: E2E lifecycle
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: Proof the whole lifecycle works end to end without real Claude
 files: [tests/test_e2e_lifecycle.py, tests/test_e2e_resume.py, tests/fixtures/scenarios/e2e.json, tests/fixtures/hooks/record_hook.sh]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--e2e-lifecycle
 branch: claude-code-wrapper-microser--e2e-lifecycle
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # E2E lifecycle
@@ -85,3 +87,5 @@ One command proves create -> turn -> response -> tool call -> gate -> hooks -> S
 - The relay must be the venv's `ccw-hook` (settings-render resolves it next to `sys.executable`).
 - Bound every wait (poll with deadlines of a few seconds); a hung test is a failure, not a slow pass.
 - This task changes only its four files; production defects it finds go to `discovered`.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on service-main

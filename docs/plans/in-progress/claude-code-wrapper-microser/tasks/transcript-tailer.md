@@ -1,6 +1,6 @@
 ---
 title: Transcript tailer
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "Assistant text, tool use and usage stream out of claude transcripts"
 files: [src/claude_code_wrapper/transcript.py, tests/test_transcript.py, tests/fixtures/transcripts/basic.jsonl, tests/fixtures/transcripts/subagent.jsonl]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--transcript-tailer
 branch: claude-code-wrapper-microser--transcript-tailer
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Transcript tailer
@@ -81,3 +83,5 @@ Assistant text, thinking, tool use/results, usage, interrupt lines and markers s
 - Sources: tatara `W/internal/transcript/tailer.go:530, 750-1010`, `result.go:179, 238`, testdata via `git -C /Users/szymonri/Documents/tatara-new/code/tatara-claude-code-wrapper show origin/main:internal/transcript/testdata/<file>`; magic `M/transcript.py:124-148`, `M/activity.py:809-860`, fixtures `/Users/szymonri/Documents/magic-trainer/code/magic-cards-model-api/tests/wrapper/fixtures/`.
 - Pitfall: subagent files live under `subagents/` and are invisible to a non-recursive glob; the parent transcript can be silent for over 30 minutes during a subagent run.
 - The Claude docs say the JSONL format is internal; keep the parser tolerant (unknown types and fields ignored) and pinned by the real fixtures.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on claude-env-model

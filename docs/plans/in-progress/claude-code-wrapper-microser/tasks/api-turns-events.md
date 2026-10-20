@@ -1,6 +1,6 @@
 ---
 title: API turns events
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: Clients drive turns and follow sessions by polling or SSE
 files: [src/claude_code_wrapper/api/turns.py, src/claude_code_wrapper/api/events.py, src/claude_code_wrapper/api/app.py, tests/test_api_turns.py, tests/test_api_events.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--api-turns-events
 branch: claude-code-wrapper-microser--api-turns-events
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # API turns events
@@ -90,3 +92,5 @@ A client can drive turns and follow everything a session does either by polling 
 
 - Source: ros2 history-on-connect plus seq de-dup (`R/api.py:170-189`); 202-then-events (`R/api.py:141-156`); tatara `GET /v1/transcript` NDJSON.
 - Small heartbeat values in tests (0.1 s) keep the suite fast.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on api-sessions

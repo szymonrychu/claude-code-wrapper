@@ -1,6 +1,6 @@
 ---
 title: Metrics
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "Operators can scrape session, turn, tool and hook metrics"
 files: [src/claude_code_wrapper/metrics.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/api/app.py, tests/test_metrics.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--metrics
 branch: claude-code-wrapper-microser--metrics
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Metrics
@@ -66,3 +68,5 @@ An operator can scrape session, turn, tool, hook, restart and token metrics from
 
 - Sources: tatara `ccw_*` families and the tool-label clamp (`W/internal/transcript/tailer.go:94`), magic `M/metrics.py:85-160`.
 - Do not change router or manager behaviour; only add metric calls.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on api-turns-events

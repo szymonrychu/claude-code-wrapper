@@ -1,6 +1,6 @@
 ---
 title: Plugins and mise
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "Plugins and tools pre-installed per config, the workbench plugin included"
 files: [src/claude_code_wrapper/plugins.py, src/claude_code_wrapper/tooling.py, tests/test_plugins.py, tests/test_tooling.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--plugins-and-mise
 branch: claude-code-wrapper-microser--plugins-and-mise
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Plugins and mise
@@ -84,3 +86,5 @@ A session's config dir gets the configured marketplaces and plugins (the workben
 - CLI shapes probed on 2.1.304: `plugin list --json` -> `[{id, version, scope, enabled, installPath, ...}]`; `plugin marketplace list --json` -> `[{name, source, repo|path, installLocation}]`; `install` has `-s/--scope`, `-y/--yes`, `--json`.
 - The workbench plugin repo has no remote: it is always a directory source.
 - mise facts: `mise install` trusts its active config; `MISE_TRUSTED_CONFIG_PATHS` covers workdirs; keep MISE_DATA_DIR outside a mounted HOME.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on config-models

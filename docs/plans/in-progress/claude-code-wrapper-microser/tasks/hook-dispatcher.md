@@ -1,6 +1,6 @@
 ---
 title: Hook dispatcher
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: User hooks as commands or signed webhooks that can veto safely
 files: [src/claude_code_wrapper/hooks.py, tests/test_hooks_command.py, tests/test_hooks_webhook.py]
@@ -15,8 +15,10 @@ review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--hook-dispatcher
 branch: claude-code-wrapper-microser--hook-dispatcher
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Hook dispatcher
@@ -81,3 +83,5 @@ Any config.yaml hook runs as a shell command or webhook with a documented payloa
 
 - Sources: tatara `W/internal/bootstrap/hooks_lifecycle.go:22-59` (best-effort runner), `W/internal/webhook/webhook.go` (HMAC, retries, drain); ros2 `R/tools.py:319-340` (failures become explicit decisions, never exceptions into claude).
 - Exit 2 = deny mirrors Claude Code's own hook convention, which users already know.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on config-models

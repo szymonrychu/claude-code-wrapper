@@ -39,7 +39,7 @@ The service (`claude-code-wrapper`, CLI `ccw`) manages sessions. A session is on
 
 ## Time
 
-Estimate: 2085 min | Actual: 0 min | Remaining estimate: 2085 min
+Estimate: 2085 min | Actual: 20 min | Remaining estimate: 1770 min
 
 ## Review
 

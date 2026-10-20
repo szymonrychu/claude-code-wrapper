@@ -1,6 +1,6 @@
 ---
 title: Session turns
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "Turns submit, complete, interrupt and time out without ever wedging the slot"
 files: [src/claude_code_wrapper/session.py, src/claude_code_wrapper/turns.py, tests/test_session_turns.py, tests/test_turns.py]
@@ -15,8 +15,10 @@ review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--session-turns
 branch: claude-code-wrapper-microser--session-turns
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Session turns
@@ -99,3 +101,5 @@ Every way a turn can end (Stop hook, interrupt with or without the transcript li
 
 - Sources: tatara `session.go:1154-1235` (slot reserved before write, two writes), `:1538-1646` (stale rejection), `interrupt.go:55`, `probe.go:15`; magic `M/session.py:505-547, 591-684, 728-809`, `M/turns.py:21-64`.
 - Pitfalls: claude runs no Stop hook for an interrupted turn (magic incident HO1: 5523 consecutive 409s); Stop payloads carry no turn id (the marker exists for that); silence is not a stall.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on session-boot

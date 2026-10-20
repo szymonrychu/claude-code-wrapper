@@ -1,6 +1,6 @@
 ---
 title: Settings render
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: Every Claude lifecycle point is wired to the service with config permissions
 files: [src/claude_code_wrapper/bootstrap/settings.py, tests/test_bootstrap_settings.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--settings-render
 branch: claude-code-wrapper-microser--settings-render
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Settings render
@@ -75,3 +77,5 @@ A session's claude calls `ccw-hook <Event>` for every lifecycle point the servic
 - Sources: tatara `W/internal/bootstrap/settings.go:10-73`, magic `M/bootstrap.py:75-93`.
 - Do not copy any workbench plugin hook into settings (double-fire, design anti-goal); the plugin registers its own.
 - `bootstrap/__init__.py` belongs to home-seed; re-export `render_settings` from there only if home-seed already does it, otherwise import from the module path.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on home-seed

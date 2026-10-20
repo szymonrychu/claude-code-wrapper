@@ -1,6 +1,6 @@
 ---
 title: API sessions
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: Clients manage sessions over an authenticated HTTP API
 files: [src/claude_code_wrapper/api/__init__.py, src/claude_code_wrapper/api/app.py, src/claude_code_wrapper/api/auth.py, src/claude_code_wrapper/api/errors.py, src/claude_code_wrapper/api/sessions.py, tests/test_api_sessions.py, tests/test_api_auth.py]
@@ -15,8 +15,10 @@ review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--api-sessions
 branch: claude-code-wrapper-microser--api-sessions
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # API sessions
@@ -102,3 +104,5 @@ A client with the bearer token can create, inspect, list, destroy and resume ses
 
 - Keep handlers thin: all behaviour lives in the manager.
 - Snapshot field names are the README contract; keep them snake_case as listed.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on session-manager

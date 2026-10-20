@@ -1,6 +1,6 @@
 ---
 title: Service main
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: ccw serve runs the service and shuts down cleanly
 files: [src/claude_code_wrapper/service.py, src/claude_code_wrapper/cli.py, src/claude_code_wrapper/__main__.py, tests/test_cli.py, tests/test_service.py]
@@ -15,8 +15,10 @@ review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--service-main
 branch: claude-code-wrapper-microser--service-main
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Service main
@@ -84,3 +86,5 @@ Settled at the gate (D19-D24, binding):
 
 - Shutdown order (tatara `W/cmd/wrapper/app.go:523-556`): stop accepting, stop sessions, drain hooks, close servers. ros2 sets uvicorn `timeout_graceful_shutdown=3` so open SSE streams cannot hold shutdown.
 - Exit 78 (EX_CONFIG) mirrors ros2 so supervisors do not restart-loop on a bad config.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on metrics, internal-api

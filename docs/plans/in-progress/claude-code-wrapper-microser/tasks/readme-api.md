@@ -1,6 +1,6 @@
 ---
 title: README API
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: Client authors can integrate from the README alone
 files: [README.md, tests/test_readme_api.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--readme-api
 branch: claude-code-wrapper-microser--readme-api
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # README API
@@ -71,3 +73,5 @@ A client author can integrate with the service from the README alone, and adding
 
 - Use the real snapshot, turn record and event field names from the code, not from memory; run the e2e test with logging to capture example payloads.
 - readme-config adds the configuration, docker and workbench sections afterwards; leave room, do not write those.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on e2e-lifecycle

@@ -1,6 +1,6 @@
 ---
 title: README config
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "Every config key and Claude env var is documented with type, default and mapping"
 files: [README.md, tests/test_readme_config.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--readme-config
 branch: claude-code-wrapper-microser--readme-config
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # README config
@@ -74,3 +76,5 @@ Every config.yaml key and every Claude Code env var the service models is docume
 
 - Render defaults the way the test does (for example `""`, `[]`, `{}`, `true`, numbers as written); agree the rendering in one helper inside the test.
 - Keep sections written by readme-api untouched except for a table of contents if you add one.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on readme-api, workbench-example, container

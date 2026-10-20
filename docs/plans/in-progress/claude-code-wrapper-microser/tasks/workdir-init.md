@@ -1,6 +1,6 @@
 ---
 title: Workdir init
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "Sessions start in an empty dir, a mounted tree or a fresh clone"
 files: [src/claude_code_wrapper/workdir.py, tests/test_workdir.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--workdir-init
 branch: claude-code-wrapper-microser--workdir-init
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Workdir init
@@ -73,3 +75,5 @@ A session can start in an empty dir, a mounted workbench tree at its fixed absol
 - Sources: tatara `W/internal/bootstrap/bootstrap.go:591-894` (clone, submodules, git stderr never logged raw), magic `M/api.py:46-80` (file guard, 256 KiB).
 - Workbench needs the tree root as cwd and a fixed absolute path (task files store absolute worktree paths); never move a mounted workdir.
 - Use `git -c protocol.file.allow=always` for local submodule clones in tests (git blocks file transport for submodules by default).
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on config-models
