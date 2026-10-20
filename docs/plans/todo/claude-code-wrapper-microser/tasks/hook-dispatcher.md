@@ -26,7 +26,7 @@ provides: []
 Build the user hook dispatcher (D6) in `src/claude_code_wrapper/hooks.py`.
 
 - `build_payload(event, *, session_id, claude_session_id, turn_id, workdir, data) -> dict`: the envelope `{event, session_id, claude_session_id, turn_id, ts (ISO 8601 UTC), workdir, data}`.
-- `HookDispatcher(hooks_cfg, redactor, *, base_env, default_cwd, transport=None, on_result=None)`.
+- `HookDispatcher(hooks_cfg, redactor, *, base_env, default_cwd, config_dir=None, transport=None, on_result=None)`.
 - `async fire(event, payload, *, tool_name=None, cwd=None) -> HookOutcome`: picks the actions configured for `event` whose `matcher` (regex full match) matches `tool_name` (actions without matcher always match). The payload is redacted with the redactor before it leaves the process. Blocking actions run concurrently and are awaited, each bounded by its timeout; non-blocking actions are started as tracked tasks and never delay the caller. `HookOutcome` has `decision` (`allow`/`deny`), `reason`, `additional_context` (blocking actions' contexts joined by blank lines) and `results: list[ActionResult]` (event, index, type, ok, decision, duration_ms, error). Deny wins; the first deny's reason is kept. For events not in VETO_EVENTS a deny is recorded in results but `decision` stays `allow`.
 - Command action: `sh -c <run>` in its own process group, cwd = `cwd` or `default_cwd`, stdin = payload JSON, env = `base_env` + action `env` + `CCW_EVENT`, `CCW_SESSION_ID`, `CCW_TURN_ID`, `CCW_WORKDIR`, `CCW_CLAUDE_CONFIG_DIR` (from the payload and caller). Exit 0 = ok/allow; stdout that parses as a JSON object may carry `decision`, `reason`, `additional_context`. Exit 2 = deny with stripped stderr (capped at 2000 chars) as reason. Any other exit or a timeout (process group killed) = error: the action's `on_error` decides allow or deny for blocking actions; logged for non-blocking ones.
 - Webhook action: POST the payload JSON via `httpx.AsyncClient` (injectable `transport` for tests) with headers `Content-Type: application/json`, `X-CCW-Event`, `X-CCW-Delivery` (uuid4), action `headers`, and `X-CCW-Signature: sha256=<hex HMAC-SHA256(secret, raw body)>` when `secret` is set. Retries (`retries`, 0.5 s doubling) on connection errors and non-2xx. A 2xx JSON object body may carry the same decision fields; an empty or non-JSON 2xx body = allow. Final failure = error handled by `on_error`.
@@ -34,6 +34,9 @@ Build the user hook dispatcher (D6) in `src/claude_code_wrapper/hooks.py`.
 - `async post_json(url, body, *, secret=None, retries=3)`: the same signed delivery used for per-turn `callback_url`s.
 - `async drain(timeout)`: awaits pending non-blocking tasks up to `timeout`, then cancels the rest.
 - Nothing in the dispatcher raises to the caller; every failure becomes an ActionResult.
+
+Settled by the builder check (binding):
+- One dispatcher per session; constructor kwarg `config_dir` is exported to command actions as `CCW_CLAUDE_CONFIG_DIR`.
 
 ## Acceptance conditions
 
@@ -52,6 +55,8 @@ Build the user hook dispatcher (D6) in `src/claude_code_wrapper/hooks.py`.
 - AC13: A failing blocking webhook with on_error deny denies [evidence: test:tests/test_hooks_webhook.py::test_webhook_failure_on_error_deny]
 - AC14: Secrets are redacted from payloads before delivery [evidence: test:tests/test_hooks_webhook.py::test_payload_redacted]
 - AC15: on_result is called for every finished action [evidence: test:tests/test_hooks_webhook.py::test_on_result_called]
+
+- AC16: config_dir reaches command actions as CCW_CLAUDE_CONFIG_DIR [evidence: test:tests/test_hooks_command.py::test_config_dir_env]
 
 ## Files
 

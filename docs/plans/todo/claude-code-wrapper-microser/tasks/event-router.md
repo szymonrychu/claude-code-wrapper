@@ -40,6 +40,12 @@ Build the per-session event router (D6, D7, D11) in `src/claude_code_wrapper/rou
 - Dispatcher `on_result` -> `hook_result` events.
 - `async close()`: stops tailers; emits `session_closed`.
 
+Settled by the builder check (binding):
+- `SessionRouter` exposes read-only attributes `session`, `event_log` and `turns` (the TurnStore); it calls `listener.bind` via the Session it is attached to (it subclasses the `SessionListener` base).
+- Stop: `await tailer.flush()` BEFORE reading the last turn marker and usage totals, so the marker of the finishing turn is never missed.
+- PostToolUse/PostToolUseFailure use `session.record_tool_call()`.
+- The `metrics=None` constructor kwarg is added by the metrics task.
+
 ## Acceptance conditions
 
 - AC1: An allowed PreToolUse emits tool_call and returns empty stdout [evidence: test:tests/test_router.py::test_pretooluse_allow_emits_tool_call]
@@ -57,6 +63,9 @@ Build the per-session event router (D6, D7, D11) in `src/claude_code_wrapper/rou
 - AC13: A fatal screen pattern fires onError [evidence: test:tests/test_router.py::test_fatal_fires_on_error]
 - AC14: A changed transcript_path in a hook payload switches the tailer [evidence: test:tests/test_router.py::test_transcript_path_switch]
 - AC15: Hook action outcomes are emitted as hook_result events [evidence: test:tests/test_router.py::test_hook_results_emitted]
+
+- AC16: Stop flushes the tailer before reading the turn marker [evidence: test:tests/test_router.py::test_stop_flushes_tailer_before_marker]
+- AC17: The router exposes session, event_log and turns [evidence: test:tests/test_router.py::test_router_exposes_parts]
 
 ## Files
 

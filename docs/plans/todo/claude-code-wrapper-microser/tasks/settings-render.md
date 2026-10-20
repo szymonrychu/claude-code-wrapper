@@ -27,13 +27,16 @@ Render `<config_dir>/settings.json` for a session (D7, D11, D13) in `src/claude_
 
 `render_settings(config_dir, cfg: Config, relay_command: str | None = None) -> dict` (returns the written document):
 - Loads and merges an existing settings.json (claude and `claude plugin install` write `enabledPlugins` and `extraKnownMarketplaces` there; those keys survive).
-- Relay hooks: for every event in `CLAUDE_HOOK_EVENTS` from `hook_relay.py` (UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop, SubagentStart, SubagentStop) a matcher group `{"matcher": "", "hooks": [{"type": "command", "command": "<relay> <Event>", "timeout": T}]}`. Previously rendered relay entries (command starting with the relay path) are replaced, never duplicated; any other hook entries are kept. Timeouts: PreToolUse = max(timeout_seconds of blocking onAgentToolCall actions, default 10) + 5; PostToolUse and PostToolUseFailure = max(blocking onToolResult timeouts, 10) + 5; Stop 30; others 15.
+- Relay hooks: for every event in `CLAUDE_HOOK_EVENTS` from `hook_relay.py` (UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop, SubagentStart, SubagentStop) a matcher group `{"matcher": "", "hooks": [{"type": "command", "command": "<relay> <Event>", "timeout": T}]}`. Previously rendered relay entries (command starting with the relay path) are replaced, never duplicated; any other hook entries are kept. Timeouts come from the shared helper `relay_timeouts(cfg)` defined in this module (see Settled below): every relay hook except UserPromptSubmit uses `hook_timeout`; UserPromptSubmit uses 15.
 - `relay_command` default: the absolute path of `ccw-hook` next to `sys.executable` when that file exists, else `ccw-hook`.
 - `permissions.defaultMode = claude.permission_mode`; `permissions.allow = claude.permissions.allow`; `permissions.deny = claude.permissions.deny` plus `AskUserQuestion` when `sessions.ask_user_question == "deny"` (no duplicates).
 - `enableAllProjectMcpServers: true` unless the overlay sets it.
 - `enabledPlugins[<id>] = false` for every `plugins.disable` id.
 - `claude.settings` overlay deep-merged last, except `hooks`: overlay matcher groups are appended per event, so an overlay can add hooks but cannot remove the relay hooks.
 - Atomic write, mode 0600. Rendering twice with the same inputs produces identical files.
+
+Settled by the builder check (binding):
+- `relay_timeouts(cfg) -> RelayTimeouts(hook_timeout, attempt_timeout)` is the ONE place this formula lives: `hook_timeout = max(30, max(timeout_seconds of blocking actions on onAgentToolCall, onToolResult, onTurnComplete, onSubagentStart, onSubagentStop) + 5)`, `attempt_timeout = (hook_timeout - 2) / 2` (two relay attempts fit inside the hook timeout). render_settings and session-manager both import it.
 
 ## Acceptance conditions
 
@@ -47,6 +50,8 @@ Render `<config_dir>/settings.json` for a session (D7, D11, D13) in `src/claude_
 - AC8: Re-rendering is idempotent [evidence: test:tests/test_bootstrap_settings.py::test_idempotent_rerender]
 - AC9: enabledPlugins written by the plugin CLI is preserved [evidence: test:tests/test_bootstrap_settings.py::test_enabled_plugins_written_by_cli_preserved]
 - AC10: The relay command resolves next to sys.executable when present [evidence: test:tests/test_bootstrap_settings.py::test_relay_command_resolution]
+
+- AC11: relay_timeouts computes hook and attempt timeouts from blocking actions [evidence: test:tests/test_bootstrap_settings.py::test_relay_timeouts_helper]
 
 ## Files
 

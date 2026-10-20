@@ -33,9 +33,13 @@ Protocol constants (part `hook-relay-protocol`): `CLAUDE_HOOK_EVENTS = ("UserPro
 - Missing `CCW_INTERNAL_URL` or `CCW_SESSION_ID` -> exit 0, no output.
 - POSTs the stdin bytes verbatim to `<url>/internal/hooks/<Event>` with the two headers and `Content-Type: application/json`.
 - 200 with a RelayResponse JSON: writes `stdout` to stdout, `stderr` to stderr, exits `exit_code`.
-- Retries on connection errors, timeouts and non-200: Stop and SubagentStop 5 attempts with 5 s timeout; PreToolUse 2 attempts with timeout `CCW_GATE_TIMEOUT` seconds (default 60); others 3 attempts with 5 s; 0.5 s backoff doubling.
+- Retries on connection errors, timeouts and non-200: UserPromptSubmit 3 attempts with 5 s timeout; every other event 2 attempts, each with timeout `CCW_GATE_TIMEOUT` seconds (default 14; the session sets it from `relay_timeouts`), 0.5 s backoff doubling. Every attempt of one invocation sends the same `X-CCW-Delivery` id (uuid4 generated once per invocation; constant `HEADER_DELIVERY = "X-CCW-Delivery"`) so the service can dedupe retries.
 - After the last failure: exit 0 with no output, except PreToolUse when `CCW_TOOL_GATE_FAIL=deny`, which prints `deny_output("claude-code-wrapper is unreachable")` and exits 0.
 - Never raises; any unexpected exception ends in the failure path above.
+
+Settled by the builder check (binding):
+- `HEADER_DELIVERY = "X-CCW-Delivery"` is part of the protocol; one uuid4 per invocation, identical on every retry.
+- Long per-attempt timeout (`CCW_GATE_TIMEOUT`) applies to every event whose user hooks may block (all but UserPromptSubmit).
 
 ## Acceptance conditions
 
@@ -46,6 +50,8 @@ Protocol constants (part `hook-relay-protocol`): `CLAUDE_HOOK_EVENTS = ("UserPro
 - AC5: PreToolUse with CCW_TOOL_GATE_FAIL=deny prints a deny when unreachable [evidence: test:tests/test_hook_relay.py::test_pretooluse_fail_closed_prints_deny]
 - AC6: Missing env vars give exit 0 and no output [evidence: test:tests/test_hook_relay.py::test_missing_env_exits_0]
 - AC7: The relay imports no third-party module [evidence: test:tests/test_hook_relay.py::test_stdlib_only]
+
+- AC8: The delivery id is identical across retries of one invocation [evidence: test:tests/test_hook_relay.py::test_delivery_id_stable_across_retries]
 
 ## Files
 

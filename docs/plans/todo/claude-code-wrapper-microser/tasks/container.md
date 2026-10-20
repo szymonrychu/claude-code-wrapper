@@ -33,6 +33,9 @@ Dockerfile (multi-stage):
 - `.env.example`: every compose variable with an empty or example value and a comment.
 - tests/test_container.py (static, no docker needed): Dockerfile has `USER agent`, a non-root uid, a pinned `CLAUDE_CODE_VERSION` (not `latest`), each required tool, the CMD; compose has the three named volumes mounted at `/workdir`, `/sessions`, `/opt/mise`, the config mount and the env passthrough.
 
+Settled by the builder check (binding):
+- Docker 29.8.2 is available on the build machine; every docker command AC is mandatory.
+
 ## Acceptance conditions
 
 - AC1: The Dockerfile pins claude, runs as non-root agent and serves ccw [evidence: test:tests/test_container.py::test_dockerfile_non_root_pinned_and_cmd]

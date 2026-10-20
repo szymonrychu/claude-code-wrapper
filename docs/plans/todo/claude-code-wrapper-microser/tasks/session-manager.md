@@ -31,7 +31,7 @@ prompts.py:
 
 manager.py, `SessionManager(cfg, *, internal_url, service_env, redactor)`:
 - `CreateSessionRequest`: `name`, `workdir` (mounted path or name), `model`, `effort`, `env` (partial `ClaudeEnv`), `prompt`, `template`, `variables`.
-- `async create(req) -> snapshot`: active sessions >= `max_sessions` -> `TooManySessions`. Ids per design.md. Steps in this order, each recorded in session.json (`state: creating`, `step`): session dir -> `prepare_workdir` -> `write_gitconfig` -> `run_setup_commands` (marker `setup.done`) -> `tooling.install_workdir` -> `ensure_config_dir`, `seed_claude_json`, `write_instructions`, `copy_config_files` -> `install_plugins` -> `render_settings` -> child env (`build_env` with `cfg.claude.env.merged(req.env)`; `CCW_TOOL_GATE_FAIL=deny` when any blocking onAgentToolCall action has `on_error: deny`; `CCW_GATE_TIMEOUT` = PreToolUse timeout) -> EventLog, TurnStore, Session, SessionRouter -> `session.start()` -> fire `onCreate` (blocking deny -> stop claude, state `stopped`, raise `CreateVetoed(reason)`) -> initial prompt (request prompt/template, else `prompts.initial_prompt`) submitted with `origin="initial"` -> state `ready`. A step failure: state `failed` with `{step, message}` (redacted) in session.json, `error` event, `onError` `{kind: "create_failed", step}`, claude stopped if started, `CreateFailed(step, message)` raised. The redactor gets every secret value of the merged env.
+- `async create(req) -> snapshot`: active sessions >= `max_sessions` -> `TooManySessions`. Ids per design.md. Steps in this order, each recorded in session.json (`state: creating`, `step`): session dir -> `prepare_workdir` -> `write_gitconfig` -> `run_setup_commands` (marker `setup.done`) -> `tooling.install_workdir` -> `ensure_config_dir`, `seed_claude_json`, `write_instructions`, `copy_config_files` -> `install_plugins` -> `render_settings` -> child env (`build_env` with `cfg.claude.env.merged(req.env)`; `CCW_TOOL_GATE_FAIL=deny` when any blocking onAgentToolCall action has `on_error: deny`; `CCW_GATE_TIMEOUT` = `relay_timeouts(cfg).attempt_timeout` imported from `bootstrap/settings.py`, never recomputed here) -> EventLog, TurnStore, Session, SessionRouter -> `session.start()` -> fire `onCreate` (blocking deny -> stop claude, state `stopped`, raise `CreateVetoed(reason)`) -> initial prompt (request prompt/template, else `prompts.initial_prompt`) submitted with `origin="initial"` -> state `ready`. A step failure: state `failed` with `{step, message}` (redacted) in session.json, `error` event, `onError` `{kind: "create_failed", step}`, claude stopped if started, `CreateFailed(step, message)` raised. The redactor gets every secret value of the merged env.
 - session.json holds: ids, name, workdir, workdir_mode, model, effort, env override as `redacted()` minus secret fields (non-secret override fields kept for resume), created_at, updated_at, state, step, error, last_activity_at. Never a secret value.
 - `get(id)`, `list()`: active sessions plus every `<sessions_root>/*/session.json` not active (state as persisted); `router(id)` and `hook_token_matches(id, token)` (constant-time) for the internal API.
 - `async destroy(id, purge=False)`: stop claude (`limits.shutdown_timeout_seconds`), close the router, fire `onDestroy` (awaited, bounded), state `stopped`; `purge=True` additionally deletes the session dir and, for modes empty and clone only, the workdir; a mounted workdir is never deleted.
@@ -39,6 +39,15 @@ manager.py, `SessionManager(cfg, *, internal_url, service_env, redactor)`:
 - `async load_persisted()`: sessions persisted as creating/ready/busy become `stopped` (their processes died with the service); with `sessions.resume_on_start` they are resumed.
 - Idle reaper task: every 30 s destroys (without purge) sessions idle longer than `idle_timeout_seconds` (0 disables).
 - `async shutdown()`: destroys all active sessions concurrently within `shutdown_timeout_seconds`, then drains the dispatcher.
+
+Settled by the builder check (binding):
+- `started: bool` attribute, true after `load_persisted()` completes (readyz uses it).
+- `open_event_log(id)` and `open_turns(id)`: the live router's EventLog/TurnStore for active sessions, else read-only instances opened from the session dir (history, turns and SSE work on stopped sessions from disk); unknown id -> `SessionNotFound`.
+- Snapshot and `list(state=...)` use exactly `creating, ready, busy, stopped, failed, dead`.
+- `create` returns once claude is ready and onCreate passed; it does NOT wait for the initial turn, which is submitted in a tracked background task. A veto (or rejection) of the initial turn emits an `error` event `{kind: "initial_turn_rejected", reason}` and the session stays ready.
+- Gate env comes from `relay_timeouts` only (see above).
+- Tests deliver `FAKE_CLAUDE_*` via `claude.env.extra` or `claude.passthrough_env`.
+- The `metrics=None` constructor kwarg is added by the metrics task.
 
 ## Acceptance conditions
 
@@ -59,6 +68,11 @@ manager.py, `SessionManager(cfg, *, internal_url, service_env, redactor)`:
 - AC15: A missing required or unknown variable raises PromptError [evidence: test:tests/test_prompts.py::test_missing_and_unknown_variables]
 - AC16: Exactly one of text or template is required [evidence: test:tests/test_prompts.py::test_text_or_template]
 - AC17: The tool gate fail mode and timeout reach the child env [evidence: test:tests/test_manager.py::test_gate_env_from_hooks]
+
+- AC18: Stopped sessions expose history and turns read from disk [evidence: test:tests/test_manager.py::test_open_event_log_and_turns_for_stopped_session]
+- AC19: create returns before the initial turn completes [evidence: test:tests/test_manager.py::test_create_does_not_wait_for_initial_turn]
+- AC20: A vetoed initial turn emits an error event and the session stays ready [evidence: test:tests/test_manager.py::test_initial_turn_veto_keeps_session_ready]
+- AC21: Snapshots and the state filter use the public state vocabulary [evidence: test:tests/test_manager.py::test_snapshot_state_vocabulary]
 
 ## Files
 

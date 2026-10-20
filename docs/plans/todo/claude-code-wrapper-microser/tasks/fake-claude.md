@@ -37,9 +37,13 @@ Transcript: `$CLAUDE_CONFIG_DIR/projects/<CLAUDE_CODE_PROJECT_DIR_NAME or cwd wi
 
 Hooks: read `$CLAUDE_CONFIG_DIR/settings.json` `hooks.<Event>` = `[{matcher, hooks:[{type:"command", command, timeout}]}]`; run matching commands via `sh -c` with the JSON payload on stdin, env inherited plus `CLAUDE_PROJECT_DIR=<cwd>`, honouring timeout. Payloads carry `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `permission_mode` plus: UserPromptSubmit `prompt`; PreToolUse `tool_name`, `tool_input`, `tool_use_id`; PostToolUse/PostToolUseFailure also `tool_response`; SubagentStart `agent_id`, `agent_type`; SubagentStop `agent_id`, `agent_type`, `agent_transcript_path`, `stop_hook_active`; Stop `stop_hook_active: false`, `last_assistant_message`. PreToolUse deny = stdout JSON `hookSpecificOutput.permissionDecision == "deny"` or exit code 2 (reason from `permissionDecisionReason` or stderr); `additionalContext` from PreToolUse/PostToolUse is recorded into the transcript as a system line.
 
-Scenario (`FAKE_CLAUDE_SCENARIO` = JSON file): `{"boot": {...}, "turns": [{"match": "<regex>", "steps": [...]}]}`; first turn whose regex matches the prompt runs, else default steps `[{"text": "echo: <prompt>"}]`. Steps: `{"text": s}`, `{"thinking": s}`, `{"tool": name, "input": {...}, "result": s, "fail": false}`, `{"subagent": {"id", "type", "text"}}` (writes `<session dir>/subagents/agent-<id>.jsonl` with `isSidechain: true` and runs SubagentStart/SubagentStop), `{"sleep": seconds}` (ESC during it writes the user line `[Request interrupted by user]`, prints it, returns to idle and runs NO Stop hook), `{"print": s}` (raw PTY output, used for fatal text, then idle without Stop), `{"exit": code}`, `{"background": {"after": seconds, "text": s}}` (after the turn ends, waits, appends an assistant line and runs Stop again). After the last step: run Stop hooks with the last assistant text, then print the footer.
+Scenario (`FAKE_CLAUDE_SCENARIO` = JSON file): `{"boot": {...}, "turns": [{"match": "<regex>", "steps": [...]}]}`; first turn whose regex matches the prompt runs, else default steps `[{"text": "echo: <prompt>"}]`. Steps: `{"text": s}`, `{"thinking": s}`, `{"tool": name, "input": {...}, "result": s, "fail": false}`, `{"subagent": {"id", "type", "text"}}` (writes `$CLAUDE_CONFIG_DIR/projects/<project dir>/<session id>/subagents/agent-<id>.jsonl`, the real claude layout, with `isSidechain: true` and runs SubagentStart/SubagentStop), `{"sleep": seconds}` (ESC during it writes the user line `[Request interrupted by user]`, prints it, returns to idle and runs NO Stop hook), `{"print": s}` (raw PTY output, used for fatal text, then idle without Stop), `{"exit": code}`, `{"background": {"after": seconds, "text": s}}` (after the turn ends, waits, appends an assistant line and runs Stop again). After the last step: run Stop hooks with the last assistant text, then print the footer.
 
 `tests/conftest.py`: fixtures `fake_claude_bin(tmp_path)` (writes an executable shim `claude` that runs `sys.executable -I <path>/fake_claude.py "$@"`, returns its path), `scenario_file(tmp_path)` (factory writing a scenario dict to JSON) and `claude_config_dir(tmp_path)`. Fixture scenario `tests/fixtures/scenarios/basic.json` (text, thinking, one tool).
+
+Settled by the builder check (binding):
+- The fake reads `FAKE_CLAUDE_SCENARIO`, `FAKE_CLAUDE_LOG` and `FAKE_CLAUDE_PLUGIN_FAIL` from its own env; service-level tests pass them via `claude.env.extra` or `claude.passthrough_env`.
+- Subagent path as stated above matches the transcript-tailer watcher.
 
 ## Acceptance conditions
 
@@ -57,6 +61,8 @@ Scenario (`FAKE_CLAUDE_SCENARIO` = JSON file): `{"boot": {...}, "turns": [{"matc
 - AC12: A background step runs Stop again after the turn ended [evidence: test:tests/test_fake_claude.py::test_background_stop_after_turn]
 - AC13: Early input before boot.min_seconds exits 1 [evidence: test:tests/test_fake_claude.py::test_early_input_exits]
 - AC14: fake_claude.py imports only the standard library [evidence: test:tests/test_fake_claude.py::test_stdlib_only]
+
+- AC15: Subagent transcripts are written under the session id directory of the project dir [evidence: test:tests/test_fake_claude.py::test_subagent_path_matches_real_layout]
 
 ## Files
 

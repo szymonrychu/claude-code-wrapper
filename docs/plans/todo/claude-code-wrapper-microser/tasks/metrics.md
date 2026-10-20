@@ -29,6 +29,9 @@ Add Prometheus metrics (D18): `src/claude_code_wrapper/metrics.py`, instrumentat
 - The manager updates session gauges/counters; the router updates turn, tool, hook and token metrics; both take an optional `Metrics` (None = no-op).
 - `GET /metrics` returns the text exposition format (`text/plain; version=0.0.4`), unauthenticated.
 
+Settled by the builder check (binding):
+- Adds the kwarg `metrics: Metrics | None = None` to `SessionRouter`, `SessionManager` (which passes it to each router) and `create_app`; None means no-op.
+
 ## Acceptance conditions
 
 - AC1: /metrics exposes every ccw_ family unauthenticated [evidence: test:tests/test_metrics.py::test_metrics_endpoint_exposes_families]
@@ -36,6 +39,8 @@ Add Prometheus metrics (D18): `src/claude_code_wrapper/metrics.py`, instrumentat
 - AC3: The tool label is clamped after 50 distinct names [evidence: test:tests/test_metrics.py::test_tool_label_cardinality_clamped]
 - AC4: Hook action outcomes are counted [evidence: test:tests/test_metrics.py::test_hook_action_counter]
 - AC5: Session gauges follow create and destroy [evidence: test:tests/test_metrics.py::test_session_gauge_follows_lifecycle]
+
+- AC6: Router, manager and create_app accept metrics=None and work without metrics [evidence: test:tests/test_metrics.py::test_metrics_optional_kwarg]
 
 ## Files
 

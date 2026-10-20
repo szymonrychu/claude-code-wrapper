@@ -39,6 +39,9 @@ tooling.py:
 - `mise_env(mise_cfg) -> dict[str, str]`: `MISE_GLOBAL_CONFIG_FILE` (when rendered), `MISE_TRUSTED_CONFIG_PATHS` (trusted_paths joined with `:`), `MISE_YES=1`, and `MISE_DATA_DIR` copied from the service env when present, so the claude child's Bash tool sees the same tools.
 - The mise binary is resolved from PATH (`mise`); a missing binary when mise work is configured raises `ToolingError`.
 
+Settled by the builder check (binding):
+- A plugin counts as installed and enabled when its id is present in `claude plugin list --json` (the `enabled` field is not consulted).
+
 ## Acceptance conditions
 
 - AC1: Missing marketplaces are added and plugins installed with -y --json [evidence: test:tests/test_plugins.py::test_adds_missing_marketplace_and_installs]

@@ -35,6 +35,9 @@ PtyProcess (asyncio):
 - `async close(grace=5.0)`: idempotent; remove the reader; send SIGTERM to the process group; close the master fd; wait up to `grace` seconds; then SIGKILL the group; never raises when the process is already gone. This order (signal group, then close fd, then kill) is load-bearing on macOS.
 - Attributes `pid`, `returncode`, `ring`, `alive`.
 
+Settled by the builder check (binding):
+- `async send_prompt(text, delay)`: acquires the write lock ONCE, writes the bracketed paste, sleeps `delay`, then writes `\r` as a second write, and releases the lock; no other writer can interleave. Session submit and probe use only this.
+
 ## Acceptance conditions
 
 - AC1: Ring text strips ANSI sequences and collapses whitespace [evidence: test:tests/test_ring.py::test_ring_strips_ansi_and_whitespace]
@@ -48,6 +51,8 @@ PtyProcess (asyncio):
 - AC9: close is idempotent and safe after exit [evidence: test:tests/test_pty_proc.py::test_close_idempotent]
 - AC10: The fake claude boots under PtyProcess and its dialog is visible in the ring [evidence: test:tests/test_pty_proc.py::test_fake_claude_boots_under_pty]
 - AC11: write after close raises PtyClosed [evidence: test:tests/test_pty_proc.py::test_write_after_close_raises]
+
+- AC12: send_prompt writes paste and CR as two writes under one lock hold [evidence: test:tests/test_pty_proc.py::test_send_prompt_two_writes_under_one_lock]
 
 ## Files
 

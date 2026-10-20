@@ -30,6 +30,10 @@ Build the loopback internal API (D7, D9) in `src/claude_code_wrapper/internal_ap
   - `GET /internal/healthz` -> `{"status": "ok"}`.
 - No public route is mounted on this app and it never logs hook tokens.
 
+Settled by the builder check (binding):
+- `docs_url`, `redoc_url` and `openapi_url` are None.
+- Dedupe: a bounded per-session cache (last 256 `X-CCW-Delivery` ids) maps a delivery id to its in-flight or finished result; a retry with a known id awaits or returns the same RelayResponse and never runs the router twice. A request without the header is handled normally.
+
 ## Acceptance conditions
 
 - AC1: A hook POST is routed to the session router and its response returned [evidence: test:tests/test_internal_api.py::test_routes_hook_to_session_router]
@@ -39,6 +43,9 @@ Build the loopback internal API (D7, D9) in `src/claude_code_wrapper/internal_ap
 - AC5: A non-loopback client is rejected [evidence: test:tests/test_internal_api.py::test_non_loopback_client_rejected]
 - AC6: A real ccw-hook relay process gets a PreToolUse deny back through uvicorn [evidence: test:tests/test_internal_api.py::test_pretooluse_deny_round_trip_through_relay]
 - AC7: A non-object JSON body gives 400 [evidence: test:tests/test_internal_api.py::test_bad_body_400]
+
+- AC8: A retried delivery id runs the router once and returns the same response [evidence: test:tests/test_internal_api.py::test_duplicate_delivery_deduped]
+- AC9: The internal app exposes no OpenAPI or docs routes [evidence: test:tests/test_internal_api.py::test_no_openapi_routes]
 
 ## Files
 

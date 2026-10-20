@@ -31,7 +31,7 @@ turns.py:
 - `TurnStore(path)`: `put(record)` appends the full record as a JSON line on every change; on open it loads the file keeping the last line per turn_id (corrupt lines skipped); `get(id)`, `list()` (in start order), `current` (the running one, if any).
 
 Session additions:
-- `async submit(text, *, origin="client", callback_url=None) -> TurnRecord`: state must be `ready` (booting -> `TurnRejected("booting")`, dead or stopped -> `TurnRejected("dead")`, busy -> `TurnRejected("busy")`); the record is created and the slot reserved BEFORE any write; when `sessions.turn_marker` the pasted text is `text + "\n\n<!-- ccw turn: <turn_id> -->"`; under the PTY write lock: `paste(...)`, sleep `submit_delay_seconds`, write `\r` (two separate writes); state busy; arms the stall timer and the optional hard limit.
+- `async submit(text, *, origin="client", callback_url=None) -> TurnRecord`: state must be `ready` (booting -> `TurnRejected("booting")`, dead or stopped -> `TurnRejected("dead")`, busy -> `TurnRejected("busy")`); the record is created and the slot reserved BEFORE any write; when `sessions.turn_marker` the pasted text is `text + "\n\n<!-- ccw turn: <turn_id> -->"`; via `pty.send_prompt(prompt, submit_delay_seconds)` (paste, sleep, CR as two separate writes under one hold of the write lock); state busy; arms the stall timer and the optional hard limit.
 - `note_activity()`: resets the stall timer and updates `last_activity_at`.
 - Stall: no activity for `turn_stall_seconds` sets `stall_suspected_since` and calls `listener.on_stall(turn_id)` once; it never fails the turn.
 - Hard limit: `limits.turn_max_seconds > 0` expiring -> interrupt, then the turn ends with state `timeout`.
@@ -41,6 +41,11 @@ Session additions:
 - `async probe(text=None) -> Probe`: writes paste + delay + CR without taking the slot (busy or ready); default text `Reply with CCW-ALIVE and one sentence on what you are doing, then continue.`; text gets `<!-- ccw probe: <probe_id> -->`; probe states `pending -> delivered` (router calls `probe_delivered(id)` on the transcript marker) `-> answered` (router calls `probe_answered()` when assistant text containing `CCW-ALIVE` follows); `get_probe(id)`.
 - Fatal pattern while busy -> the turn fails with `error = <pattern>`, state ready. claude exiting while busy -> the turn fails with `error = "claude_exited"` (no automatic re-paste).
 - Every terminal transition persists the record and calls `listener.on_turn_end(record)`.
+
+Settled by the builder check (binding):
+- The store comes from the constructor kwarg `turn_store=`; `TurnStore(path, readonly=False)`: with `readonly=True` it loads and serves `get`/`list` but `put` raises (used for stopped sessions).
+- `Session.record_tool_call()` increments the running turn's `tool_calls` and persists it (no-op when idle).
+- `probe` also writes through `pty.send_prompt`.
 
 ## Acceptance conditions
 
@@ -60,6 +65,9 @@ Session additions:
 - AC14: Turn ids are strictly increasing under a repeating clock [evidence: test:tests/test_turns.py::test_turn_ids_monotonic_unique]
 - AC15: The turn store persists and reloads the last state per turn [evidence: test:tests/test_turns.py::test_store_persists_and_reloads_last_state]
 - AC16: The turn store lists summaries in start order [evidence: test:tests/test_turns.py::test_list_summaries]
+
+- AC17: record_tool_call counts tool calls on the running turn [evidence: test:tests/test_session_turns.py::test_record_tool_call_counts]
+- AC18: A read-only turn store serves records and rejects writes [evidence: test:tests/test_turns.py::test_readonly_store]
 
 ## Files
 

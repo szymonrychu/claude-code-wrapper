@@ -33,6 +33,10 @@ Build the Claude transcript reader (D4, D7, D13) in `src/claude_code_wrapper/tra
 - `SubagentWatcher(session_transcript_path, on_events, poll_interval=1.0, redactor=None)`: polls `<transcript dir>/<session id>/subagents/agent-*.jsonl` and starts one sidechain tailer per new file with `agent_id` from the file name; `stop()` stops all.
 - Fixtures: `tests/fixtures/transcripts/basic.jsonl` and `tests/fixtures/transcripts/subagent.jsonl` built from REAL Claude Code lines (copied and secret-scrubbed from the tatara and magic test data), plus a test that the fake claude's lines parse to the same event kinds.
 
+Settled by the builder check (binding):
+- Subagent transcripts live at `<config>/projects/<project dir>/<claude_session_id>/subagents/agent-<id>.jsonl` (the real claude layout; with the pinned dir name that is `<transcript dir>/<claude_session_id>/subagents/`); the fake claude writes the same path.
+- `async TranscriptTailer.flush()`: reads every complete line currently in the file and delivers it through `on_events` before returning (used by the router on Stop).
+
 ## Acceptance conditions
 
 - AC1: Assistant text and tool_use blocks parse into typed events [evidence: test:tests/test_transcript.py::test_parse_assistant_text_and_tool_use]
@@ -49,6 +53,8 @@ Build the Claude transcript reader (D4, D7, D13) in `src/claude_code_wrapper/tra
 - AC12: Real Claude Code fixture lines parse [evidence: test:tests/test_transcript.py::test_real_fixture_lines_parse]
 - AC13: Lines written by the fake claude parse to the same event kinds [evidence: test:tests/test_transcript.py::test_fake_claude_lines_parse]
 - AC14: transcript_path uses the pinned project dir name [evidence: test:tests/test_transcript.py::test_transcript_path_pinned_dir]
+
+- AC15: flush delivers every complete pending line before returning [evidence: test:tests/test_transcript.py::test_flush_delivers_pending_lines]
 
 ## Files
 

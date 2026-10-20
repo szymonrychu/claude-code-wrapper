@@ -596,6 +596,42 @@ No cross-epic contracts: this is the only epic in the repo and `ticket.py contra
 - A real-Claude smoke needs a user token; it is not part of the automated suite. README documents a
   manual smoke recipe (create, one turn, destroy) for the user.
 
+## Builder check settlements
+
+Binding answers to the builder check (minor items, settled with the proposed answers; mirrored in
+the task files):
+
+1. `SessionRouter` exposes `.session`, `.event_log`, `.turns`; `SessionManager` has `started` and
+   read-only `open_event_log(id)` / `open_turns(id)` for persisted (stopped) sessions; history, turns
+   and SSE work on stopped sessions from disk (EventLog and TurnStore get `readonly=True`).
+2. `Session(..., turn_store=...)` kwarg; `listener.bind(session)`; `Session.record_tool_call()`.
+3. `metrics=None` kwarg on `SessionRouter`, `SessionManager` and `create_app` (metrics task).
+4. `PromptError("text_or_template")` maps to 400 everywhere; other PromptError codes 422.
+5. `PtyProcess.send_prompt(text, delay)` holds the write lock once: paste, sleep, CR.
+6. Both ports may be 0; sockets bind first; `ServiceHandle(public_port, internal_port)` is set on
+   ready; the internal URL is derived after bind.
+7. Tests pass `FAKE_CLAUDE_*` via `claude.env.extra` or `claude.passthrough_env`.
+8. One shared helper `relay_timeouts(cfg)` in `bootstrap/settings.py`:
+   `hook_timeout = max(30, max blocking timeout on onAgentToolCall, onToolResult, onTurnComplete,
+   onSubagentStart, onSubagentStop + 5)`, `CCW_GATE_TIMEOUT = attempt_timeout = (hook_timeout - 2) / 2`;
+   the manager imports it, no duplicated formula.
+9. The relay sends one `X-CCW-Delivery` id per invocation (same on retries); the internal API dedupes
+   by it (bounded cache per session); every event except UserPromptSubmit uses the long per-attempt
+   timeout with 2 attempts (UserPromptSubmit: 3 x 5 s).
+10. On Stop the router awaits `tailer.flush()` before reading the turn marker and usage.
+11. Both FastAPI apps set `docs_url`, `redoc_url`, `openapi_url` to None.
+12. `HookDispatcher(..., config_dir=...)` exports `CCW_CLAUDE_CONFIG_DIR`; one dispatcher per session.
+13. A plugin is installed/enabled when its id is present in `claude plugin list --json`.
+14. Public session state vocabulary (snapshots and the `state` filter): `creating, ready, busy,
+    stopped, failed, dead` (internal booting -> creating, stopping -> stopped).
+15. `SessionListener` is a base class with no-op defaults.
+16. Subagent transcripts: `<config>/projects/<encoded workdir>/<claude_session_id>/subagents/agent-<id>.jsonl`
+    (with the pinned dir name: `projects/workdir/<claude_session_id>/subagents/`); fake and tailer agree.
+17. `create` does not wait for the initial turn (tracked background submit); a veto or rejection of
+    the initial turn emits an `error` event and the session stays ready.
+
+Container ACs that run docker are mandatory (Docker 29.8.2 is available on the build machine).
+
 ## Open questions
 
 - Q1: Keep session files and the workdir on DELETE by default, deleting them only with ?purge=true? [recommended: yes]

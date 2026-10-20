@@ -37,6 +37,12 @@ Build the session process lifecycle (D1, D4, D9, D13) in `src/claude_code_wrappe
   - `snapshot() -> dict`: state, pid, restarts, last_fatal, started_at, ready_at.
   - Provide `pty` (the PtyProcess) and `transcript_path` attributes for session-turns.
 
+Settled by the builder check (binding):
+- `SessionListener` is a base class with no-op defaults for every callback (`on_state`, `on_output`, `on_fatal`, `on_restart`, `on_exit`, `on_stall`, `on_turn_end`) plus `bind(session)`, which the `Session` constructor calls with itself.
+- `Session(spec, listener, *, turn_store=None, clock=time.monotonic)`: the `turn_store` kwarg exists from this task on (session-turns uses it).
+- Public state vocabulary: `snapshot()["state"]` is one of `creating, ready, busy, stopped, failed, dead`; internal `booting` maps to `creating` and `stopping` to `stopped`.
+- Tests deliver `FAKE_CLAUDE_*` variables to the fake through `claude.env.extra` or `claude.passthrough_env` (the child env is minimal by design).
+
 ## Acceptance conditions
 
 - AC1: A new session's argv uses --session-id with model and effort [evidence: test:tests/test_session_boot.py::test_argv_new_session_uses_session_id]
@@ -51,6 +57,9 @@ Build the session process lifecycle (D1, D4, D9, D13) in `src/claude_code_wrappe
 - AC10: A fatal pattern on screen is reported to the listener [evidence: test:tests/test_session_boot.py::test_fatal_pattern_reported]
 - AC11: stop terminates claude and prevents relaunch [evidence: test:tests/test_session_boot.py::test_stop_kills_process]
 - AC12: The ring is reset before a relaunch so stale dialog text cannot match [evidence: test:tests/test_session_boot.py::test_ring_reset_on_relaunch]
+
+- AC13: The listener base class has no-op defaults and bind receives the session [evidence: test:tests/test_session_boot.py::test_listener_base_noop_and_bind]
+- AC14: Snapshot state uses the public vocabulary [evidence: test:tests/test_session_boot.py::test_snapshot_state_vocabulary]
 
 ## Files
 

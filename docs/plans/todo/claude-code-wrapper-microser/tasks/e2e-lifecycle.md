@@ -36,6 +36,10 @@ Scenarios (one test each):
 6. Purge (test_e2e_resume.py): DELETE ?purge=true removes the session dir and the empty-mode workdir.
 7. Secrets: across every response body, SSE frame, hook payload log line and session.json, the fake OAuth token and the hook token never appear.
 
+Settled by the builder check (binding):
+- `FAKE_CLAUDE_SCENARIO` and `FAKE_CLAUDE_LOG` reach the fake via `claude.env.extra` (or `claude.passthrough_env`); ports come from `ServiceHandle` with both ports 0.
+- create returns before the initial turn; tests poll for turn completion.
+
 ## Acceptance conditions
 
 - AC1: The full lifecycle emits the expected SSE events and fires every turn-related hook [evidence: test:tests/test_e2e_lifecycle.py::test_full_lifecycle_events_and_hooks]

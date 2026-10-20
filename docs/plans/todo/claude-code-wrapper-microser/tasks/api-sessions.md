@@ -38,6 +38,13 @@ Build the public API app, auth, error envelope and session routes (D4, D9, D2) u
   - `GET /v1/prompts` -> `{"templates": list_templates(cfg)}`.
 - No response body anywhere contains a secret value (OAuth token, API key, hook token, webhook or callback secret, auth token).
 
+Settled by the builder check (binding):
+- `create_app` passes `docs_url=None, redoc_url=None, openapi_url=None`.
+- `PromptError("text_or_template")` maps to 400 `text_or_template` everywhere; other PromptError codes stay 422.
+- The `state` filter accepts only `creating, ready, busy, stopped, failed, dead` (else 422).
+- `/readyz` reads `manager.started`.
+- The `metrics=None` kwarg on `create_app` is added by the metrics task.
+
 ## Acceptance conditions
 
 - AC1: POST /v1/sessions returns 201 with a snapshot [evidence: test:tests/test_api_sessions.py::test_create_returns_201_snapshot]
@@ -55,6 +62,9 @@ Build the public API app, auth, error envelope and session routes (D4, D9, D2) u
 - AC13: A wrong bearer token gives 401 [evidence: test:tests/test_api_auth.py::test_wrong_token_401]
 - AC14: Health and readiness are unauthenticated and readyz reflects manager start [evidence: test:tests/test_api_auth.py::test_health_unauthenticated]
 - AC15: An empty auth_token leaves the API open [evidence: test:tests/test_api_auth.py::test_open_mode_when_no_token]
+
+- AC16: The public app exposes no OpenAPI or docs routes [evidence: test:tests/test_api_auth.py::test_no_openapi_routes]
+- AC17: text_or_template maps to 400 [evidence: test:tests/test_api_sessions.py::test_text_or_template_400]
 
 ## Files
 

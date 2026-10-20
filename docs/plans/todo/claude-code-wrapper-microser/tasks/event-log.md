@@ -37,6 +37,9 @@ Build the per-session event log (D5) in `src/claude_code_wrapper/events.py`.
   - `append_threadsafe(type, data)` for callers outside the loop thread (uses `loop.call_soon_threadsafe`).
   - `close()`: ends every subscription.
 
+Settled by the builder check (binding):
+- `EventLog(..., readonly=False)`: with `readonly=True` it reads the file for `page`/`last` (and `subscribe` ends immediately) while `append` raises; used for stopped sessions.
+
 ## Acceptance conditions
 
 - AC1: append assigns strictly increasing seq and persists JSONL [evidence: test:tests/test_event_log.py::test_append_assigns_increasing_seq]
@@ -49,6 +52,8 @@ Build the per-session event log (D5) in `src/claude_code_wrapper/events.py`.
 - AC8: A write failure does not raise and is logged once [evidence: test:tests/test_event_log.py::test_write_failure_does_not_raise]
 - AC9: Unknown event types are rejected [evidence: test:tests/test_event_log.py::test_unknown_event_type_rejected]
 - AC10: close ends subscriptions [evidence: test:tests/test_event_log.py::test_close_ends_subscriptions]
+
+- AC11: A read-only log pages from disk and rejects appends [evidence: test:tests/test_event_log.py::test_readonly_log_pages_and_rejects_append]
 
 ## Files
 

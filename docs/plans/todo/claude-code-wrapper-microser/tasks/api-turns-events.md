@@ -37,6 +37,10 @@ events.py:
 - `GET /v1/sessions/{id}/events` -> `text/event-stream`. Replay start: the `Last-Event-ID` header, else the `after_seq` query, else the last `limits.sse_replay` events. Then live events from `EventLog.subscribe()`, de-duplicated by seq against the replay. Frame: `id: <seq>\nevent: <type>\ndata: <json envelope>\n\n`. A `: ping` comment every `limits.sse_heartbeat_seconds`. When the session stops (or is already stopped) the stream sends `session_closed` and ends. Headers `Cache-Control: no-cache` and `X-Accel-Buffering: no`.
 - All routes use the auth dependency and the error envelope from api-sessions.
 
+Settled by the builder check (binding):
+- History, turns listing/fetch and SSE use `manager.open_event_log(id)` / `manager.open_turns(id)`, so they work for stopped sessions from disk; SSE on a stopped session replays and then sends `session_closed`.
+- `text_or_template` is 400 (shared mapping from api/errors.py).
+
 ## Acceptance conditions
 
 - AC1: Submitting a turn returns 202 with a turn id [evidence: test:tests/test_api_turns.py::test_submit_turn_202]
@@ -52,6 +56,8 @@ events.py:
 - AC11: SSE replays from Last-Event-ID [evidence: test:tests/test_api_events.py::test_sse_replay_from_last_event_id]
 - AC12: SSE streams live events without duplicates and sends heartbeats [evidence: test:tests/test_api_events.py::test_sse_live_events_and_heartbeat]
 - AC13: SSE ends with session_closed when the session stops [evidence: test:tests/test_api_events.py::test_sse_closes_when_session_stops]
+
+- AC14: History and turns are served for a stopped session from disk [evidence: test:tests/test_api_events.py::test_history_and_turns_for_stopped_session]
 
 ## Files
 

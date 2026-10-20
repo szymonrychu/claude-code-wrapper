@@ -34,6 +34,9 @@ cli.py (`main(argv=None) -> int`, also `python -m claude_code_wrapper`):
 - `ccw check-config --config PATH`: prints `cfg.redacted()` as JSON and exits 0; invalid -> stderr message and exit 78.
 - `ccw version`: prints `__version__`.
 
+Settled by the builder check (binding):
+- Both `server.port` and `server.internal_port` may be 0. Sockets are bound first; then `ServiceHandle(public_port, internal_port)` is filled with the real ports and `ready` is set; the manager's internal URL is derived from the bound internal port after binding.
+
 ## Acceptance conditions
 
 - AC1: check-config prints the redacted config and exits 0 [evidence: test:tests/test_cli.py::test_check_config_ok_prints_redacted]
@@ -44,6 +47,8 @@ cli.py (`main(argv=None) -> int`, also `python -m claude_code_wrapper`):
 - AC6: SIGTERM stops sessions within the bound and the process exits 0 [evidence: test:tests/test_service.py::test_sigterm_shuts_down_sessions_bounded]
 - AC7: Log output is JSON and redacted [evidence: test:tests/test_service.py::test_logs_redacted]
 - AC8: A required global mise failure aborts startup with exit 1 [evidence: test:tests/test_service.py::test_required_mise_failure_aborts]
+
+- AC9: With both ports 0 the handle reports the bound ports and the internal URL uses the bound internal port [evidence: test:tests/test_service.py::test_port_zero_handle_and_internal_url]
 
 ## Files
 
