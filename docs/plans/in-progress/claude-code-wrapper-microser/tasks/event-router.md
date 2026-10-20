@@ -14,7 +14,7 @@ actual: 4
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--event-router
 branch: claude-code-wrapper-microser--event-router
-verified_head: 0d1b30404432f46db7d9c769fd555455032e2e96
+verified_head: bdd80afb60b253046c1969c19d5f007d5e8be448
 run: claude-code-wrapper-microser
 provides: [session-info, turn-vetoed, router-drain]
 acs_for_audit: []
