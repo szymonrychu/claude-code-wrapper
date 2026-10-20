@@ -1,0 +1,13 @@
+{
+  "boot": {"bypass_dialog": true, "min_seconds": 0.3},
+  "turns": [
+    {
+      "match": ".*",
+      "steps": [
+        {"thinking": "Considering the request."},
+        {"tool": "Bash", "input": {"command": "echo hi"}, "result": "hi", "fail": false},
+        {"text": "All done."}
+      ]
+    }
+  ]
+}
