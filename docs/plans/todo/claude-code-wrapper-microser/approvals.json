@@ -188,5 +188,22 @@
       "api-sessions"
     ],
     "status": "approved"
+  },
+  {
+    "id": "A14",
+    "text": "AskUserQuestion is forwarded by default: the PreToolUse relay denies it with guidance and emits a question event, and the question event envelope is also POSTed (signed with server.callback_secret) to the turn's callbackUrl, else the session's callbackUrl. The API uses camelCase callbackUrl consistently in request bodies, turn records and snapshots.",
+    "decisions": [
+      "D20"
+    ],
+    "tasks": [
+      "event-router",
+      "api-sessions",
+      "api-turns-events",
+      "session-turns",
+      "session-manager",
+      "readme-api",
+      "e2e-lifecycle"
+    ],
+    "status": "approved"
   }
 ]

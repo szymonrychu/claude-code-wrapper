@@ -453,6 +453,9 @@ routes. Serves A11.
 ### D19: DELETE keeps files unless purge=true
 DELETE /v1/sessions/{id} keeps the session dir and the workdir by default; only ?purge=true deletes them, and a mounted workdir is never deleted. (user decision)
 
+### D20: Forward AskUserQuestion and POST it to callbackUrl
+AskUserQuestion is forwarded by default: the PreToolUse relay denies it with guidance and emits a question event, and the question event envelope is also POSTed (signed with server.callback_secret) to the turn's callbackUrl, else the session's callbackUrl. The API uses camelCase callbackUrl consistently in request bodies, turn records and snapshots. (user decision)
+
 ## Research
 
 | Lens | Ran or skipped | Adopted | Rejected |
@@ -542,6 +545,7 @@ DELETE /v1/sessions/{id} keeps the session dir and the workdir by default; only 
 | D17 local delivery | e2e-lifecycle |
 | D18 metrics | metrics |
 | D19 DELETE keeps files unless purge=true | session-manager, api-sessions |
+| D20 Forward AskUserQuestion and POST it to callbackUrl | event-router, api-sessions, api-turns-events, session-turns, session-manager, readme-api, e2e-lifecycle |
 
 ## Contracts
 
