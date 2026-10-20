@@ -3,7 +3,7 @@ title: Pip package
 status: todo
 repo: claude-code-wrapper
 value: "Install the service with pip and run ccw from PATH, in a Dockerfile or on a containerless host (D25)"
-files: [pyproject.toml, src/claude_code_wrapper/cli.py, src/claude_code_wrapper/settings_render.py, src/claude_code_wrapper/data/__init__.py, Dockerfile, README.md, tests/test_packaging.py]
+files: [pyproject.toml, src/claude_code_wrapper/cli.py, src/claude_code_wrapper/bootstrap/settings.py, src/claude_code_wrapper/data/__init__.py, Dockerfile, README.md, tests/test_packaging.py]
 verify: "uv run pytest tests/test_packaging.py -q && mise run lint"
 depends_on: [service-main, container, readme-config]
 owns: []
@@ -47,7 +47,7 @@ Tests (`tests/test_packaging.py`): build the wheel with `uv build --wheel` into 
 
 - `pyproject.toml`
 - `src/claude_code_wrapper/cli.py`
-- `src/claude_code_wrapper/settings_render.py`
+- `src/claude_code_wrapper/bootstrap/settings.py`
 - `src/claude_code_wrapper/data/__init__.py`
 - `Dockerfile`
 - `README.md`
@@ -59,9 +59,15 @@ Signatures, schemas and contracts this task builds or must keep, with file:symbo
 
 ## Expected outcome
 
+`pip install` of the built wheel into any venv gives working `ccw` and `ccw-hook` commands; the Docker image installs the same wheel; a containerless host can bootstrap config with `ccw config example` and run `ccw serve`.
+
 What is true and observable when the task is done.
 
 ## Steps
+
+1. Red: write tests/test_packaging.py (wheel build + fresh venv install + CLI checks + Dockerfile/README assertions) and see it fail.
+2. Green: package data, `--version`, `config example`, preflight, relay path resolution, Dockerfile wheel install, README Installation section.
+3. Refactor with the suite green; run `mise run test` and `mise run lint`.
 
 Test first. One step per bullet, with the exact command and the output to expect.
 A retirement test asserts on `git ls-files <path>`, never on the filesystem.
