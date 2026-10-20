@@ -12,8 +12,8 @@ model: ""
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--settings-render
+branch: claude-code-wrapper-microser--settings-render
 verified_head: ""
 run: ""
 provides: []

@@ -12,8 +12,8 @@ model: opus
 estimate: 90
 actual: ""
 review: full
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--session-boot
+branch: claude-code-wrapper-microser--session-boot
 verified_head: ""
 run: ""
 provides: []

@@ -12,8 +12,8 @@ model: ""
 estimate: 45
 actual: ""
 review: light
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--repo-scaffold
+branch: claude-code-wrapper-microser--repo-scaffold
 verified_head: ""
 run: ""
 provides: []

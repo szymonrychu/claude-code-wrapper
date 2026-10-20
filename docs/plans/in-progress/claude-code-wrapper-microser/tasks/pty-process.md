@@ -12,8 +12,8 @@ model: opus
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--pty-process
+branch: claude-code-wrapper-microser--pty-process
 verified_head: ""
 run: ""
 provides: []

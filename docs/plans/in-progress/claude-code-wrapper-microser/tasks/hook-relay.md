@@ -12,8 +12,8 @@ model: ""
 estimate: 45
 actual: ""
 review: full
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--hook-relay
+branch: claude-code-wrapper-microser--hook-relay
 verified_head: ""
 run: ""
 provides: []
