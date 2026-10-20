@@ -1,0 +1,39 @@
+[tools]
+python = "3.12"
+uv = "latest"
+
+[env]
+_.python.venv = { path = ".venv", create = true }
+UV_PYTHON_DOWNLOADS = "never"
+
+[tasks.install]
+description = "Install dependencies into the venv"
+run = "uv sync"
+
+[tasks.test]
+description = "Run the test suite"
+run = "uv run pytest"
+
+[tasks.lint]
+description = "Lint and check formatting"
+run = "uv run ruff check . && uv run ruff format --check ."
+
+[tasks.fmt]
+description = "Format and autofix"
+run = "uv run ruff format . && uv run ruff check --fix ."
+
+[tasks.run]
+description = "Serve locally with the example config"
+run = "uv run ccw serve --config config.example.yaml"
+
+[tasks.compose]
+description = "Build and start the docker compose stack"
+run = "docker compose up --build"
+
+[tasks."compose:down"]
+description = "Stop the docker compose stack"
+run = "docker compose down"
+
+[tasks."docker:build"]
+description = "Build the container image"
+run = "docker build -t claude-code-wrapper:local ."

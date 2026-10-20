@@ -1,0 +1,1 @@
+{"suites": ["mise run lint", "mise run test"]}
