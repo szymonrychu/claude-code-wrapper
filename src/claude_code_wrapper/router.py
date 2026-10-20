@@ -539,7 +539,8 @@ class SessionRouter(SessionListener):
 
     # ------------------------------------------------------------------ lifecycle
 
-    async def close(self) -> None:
+    async def close(self, drain_timeout: float = CLOSE_DRAIN_SECONDS) -> None:
+        """Stop tailing, wait up to `drain_timeout` for background fires, then cancel them."""
         if self._closed:
             return
         with contextlib.suppress(Exception):
@@ -553,7 +554,7 @@ class SessionRouter(SessionListener):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-        await self.drain(CLOSE_DRAIN_SECONDS)
+        await self.drain(max(drain_timeout, 0.0))
         for task in list(self._background):
             task.cancel()
         self._emit("session_closed", {})
