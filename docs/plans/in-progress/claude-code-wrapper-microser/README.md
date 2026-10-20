@@ -1,7 +1,7 @@
 ---
 title: claude-code wrapper microservice
 blockers: []
-stage: review
+stage: build
 owner: Szymon Richert
 repos: [claude-code-wrapper]
 created: 2026-10-20
