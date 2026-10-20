@@ -98,8 +98,12 @@ never put it behind a public ingress.
   turn `files`.
 - There is no callback host policy: `callbackUrl` may point at any `http` or `https` host the
   service can reach.
-- The service must not be exposed to untrusted callers. If `server.auth_token` is empty,
-  authentication on `/v1` is disabled and the service logs a warning at start.
+- The service must not be exposed to untrusted callers. If `server.auth_token` is empty the service
+  refuses to start unless `server.allow_anonymous` is `true`, in which case authentication on `/v1`
+  is disabled and a warning is logged at start.
+- `/healthz`, `/readyz` and `/metrics` are unauthenticated by design (cluster-internal probes and
+  Prometheus scrape); keep the port off untrusted networks. The compose file publishes it on
+  `127.0.0.1` only.
 - The internal hook API (`/internal/...`) is bound to `127.0.0.1` only and additionally requires a
   per-session token; it is not part of the client surface.
 
@@ -142,7 +146,7 @@ Modules (`src/claude_code_wrapper/`):
 ## API reference
 
 Public API: served on `server.host:server.port` (default `0.0.0.0:8080`). Every `/v1` route needs
-`Authorization: Bearer <server.auth_token>` (constant-time compare; an empty token disables auth).
+`Authorization: Bearer <server.auth_token>` (constant-time compare; an empty token is refused unless `server.allow_anonymous` is true).
 `/healthz`, `/readyz` and `/metrics` need no auth. Bodies are JSON (`Content-Type:
 application/json`); unknown body fields are rejected with `422 invalid_request`. All request and
 response keys are `snake_case`, except `callbackUrl` which is camelCase everywhere (request
@@ -1087,7 +1091,7 @@ API key.
 
 ```bash
 export CLAUDE_CODE_OAUTH_TOKEN=...      # or: export ANTHROPIC_API_KEY=...
-export CCW_AUTH_TOKEN=change-me         # bearer token for the API
+export CCW_AUTH_TOKEN=change-me         # REQUIRED: bearer token; compose refuses to start without it
 docker compose up -d --build            # uses ./config.example.yaml; returns once /healthz is ok
 ```
 
@@ -1150,6 +1154,7 @@ server:
   port: 8080
   internal_port: 8090
   auth_token: ${CCW_AUTH_TOKEN}
+  allow_anonymous: false
   log_level: info
   callback_secret: ${CCW_CALLBACK_SECRET:-}
 ```
@@ -1159,7 +1164,8 @@ server:
 | `server.host` | string | `"0.0.0.0"` | - | Public API bind address. The internal hook API always binds 127.0.0.1. |
 | `server.port` | integer | `8080` | - | Public API port, 0-65535 (0 picks a free port; used by tests). |
 | `server.internal_port` | integer | `8090` | - | Loopback port of the hook relay API, 0-65535. Must differ from `server.port` unless 0. |
-| `server.auth_token` | string | `""` | - | Bearer token required on `/v1`. Empty disables auth (a warning is logged). Secret: masked as `***` by `ccw check-config`. |
+| `server.auth_token` | string | `""` | - | Bearer token required on `/v1`. Empty is refused at start unless `server.allow_anonymous` is true. Secret: masked as `***` by `ccw check-config`. |
+| `server.allow_anonymous` | boolean | `false` | - | Permit an empty `server.auth_token`: `/v1` then runs unauthenticated and a warning is logged. `/healthz`, `/readyz` and `/metrics` are always unauthenticated. |
 | `server.log_level` | enum (debug, info, warning, error, critical) | `"info"` | - | Log level of the JSON logs on stdout. |
 | `server.callback_secret` | string | `""` | - | HMAC secret used to sign question callbacks (`callbackUrl`). Secret: masked. |
 

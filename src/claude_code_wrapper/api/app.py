@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> FastAPI:
     """Build the public API around `manager`. Routers are included on the `/v1` router."""
+    cfg.server.require_auth_policy()
     app = FastAPI(title="claude-code-wrapper", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.manager = manager
     app.state.cfg = cfg
@@ -26,7 +27,9 @@ def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> Fas
     install_handlers(app, manager.redactor)
 
     if not cfg.server.auth_token:
-        log.warning("server.auth_token is empty: authentication on /v1 is disabled")
+        log.warning(
+            "server.auth_token is empty (allow_anonymous): authentication on /v1 is disabled"
+        )
 
     v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_auth)])
     v1.include_router(sessions.router)

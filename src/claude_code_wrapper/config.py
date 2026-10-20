@@ -70,8 +70,17 @@ class ServerConfig(_Model):
     port: int = Field(8080, ge=0, le=65535)
     internal_port: int = Field(8090, ge=0, le=65535, validate_default=True)
     auth_token: str = ""
+    allow_anonymous: bool = False
     log_level: Literal["debug", "info", "warning", "error", "critical"] = "info"
     callback_secret: str = ""
+
+    def require_auth_policy(self) -> None:
+        """Refuse an unauthenticated public API unless `allow_anonymous` is set."""
+        if not self.auth_token and not self.allow_anonymous:
+            raise ConfigError(
+                "server.auth_token: empty; set server.auth_token, or set "
+                "server.allow_anonymous: true to run /v1 without authentication"
+            )
 
     @field_validator("internal_port")
     @classmethod

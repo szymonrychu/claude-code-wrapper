@@ -54,6 +54,7 @@ def _serve(args: argparse.Namespace) -> int:
             )
             cfg = cfg.model_copy(update={"server": server})
             type(cfg).model_validate(cfg.model_dump())  # re-check cross-field rules
+        cfg.server.require_auth_policy()
     except (ConfigError, ValueError) as exc:
         print(f"ccw: invalid config: {exc}", file=sys.stderr)
         return EX_CONFIG

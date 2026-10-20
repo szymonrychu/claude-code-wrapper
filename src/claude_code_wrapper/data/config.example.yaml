@@ -7,7 +7,8 @@ server:
   host: 0.0.0.0              # public API bind address (the internal hook API is always 127.0.0.1)
   port: 8080                 # public API port (0 = pick a free port, used by tests)
   internal_port: 8090        # loopback hook relay port; must differ from port
-  auth_token: ${CCW_AUTH_TOKEN:-}   # bearer token for the public API; empty = open (warning logged)
+  auth_token: ${CCW_AUTH_TOKEN:-}   # bearer token for the public API; empty refuses to start
+  allow_anonymous: false     # true = permit an empty auth_token (/v1 open, warning logged)
   log_level: info            # debug | info | warning | error | critical
   callback_secret: ""        # HMAC secret for question callbacks (callbackUrl)
 

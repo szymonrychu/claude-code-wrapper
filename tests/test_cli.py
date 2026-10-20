@@ -127,3 +127,16 @@ def test_python_m_serve_sigterm_clean_exit(tmp_path: Path) -> None:
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+def test_serve_refuses_empty_token_exit_78(tmp_path: Path, capsys) -> None:
+    cfg = write_cfg(
+        tmp_path,
+        f"""
+server: {{host: 127.0.0.1, port: 0, internal_port: 0}}
+paths: {{workdir_root: {tmp_path}/wd, sessions_root: {tmp_path}/ss}}
+""",
+    )
+    assert cli.main(["serve", "--config", str(cfg)]) == 78
+    err = capsys.readouterr().err
+    assert "server.auth_token" in err and "server.allow_anonymous" in err

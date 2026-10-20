@@ -70,7 +70,7 @@ def test_required_sections_exist() -> None:
 
 
 def test_every_public_route_documented() -> None:
-    app = create_app(_StubManager(), Config())
+    app = create_app(_StubManager(), Config.model_validate({"server": {"allow_anonymous": True}}))
     expected = route_headings(app)
     assert len(expected) >= 17
     missing = expected - h3_headings("API reference")

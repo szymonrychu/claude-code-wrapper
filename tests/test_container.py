@@ -101,7 +101,7 @@ def test_compose_service_and_ports():
     svc = COMPOSE["services"]["ccw"]
     assert svc["build"] == "."
     assert svc["image"] == "claude-code-wrapper:local"
-    assert "${CCW_PORT:-8080}:8080" in svc["ports"]
+    assert "127.0.0.1:${CCW_PORT:-8080}:8080" in svc["ports"]
     assert svc["restart"] == "unless-stopped"
     assert svc["stop_grace_period"] == "30s"
 
@@ -120,12 +120,12 @@ def test_compose_env_passthrough():
     names = [
         "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_API_KEY",
-        "CCW_AUTH_TOKEN",
         "GH_TOKEN",
         "GITLAB_TOKEN",
     ]
     for n in names:
         assert env[n] == f"${{{n}:-}}"
+    assert env["CCW_AUTH_TOKEN"] == "${CCW_AUTH_TOKEN:?set CCW_AUTH_TOKEN}"
 
 
 def test_env_example_lists_every_compose_variable():

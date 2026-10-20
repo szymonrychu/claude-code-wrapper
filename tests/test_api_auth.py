@@ -24,7 +24,7 @@ class StubManager:
 
 
 def client(token: str = TOKEN, started: bool = True) -> TestClient:
-    cfg = Config.model_validate({"server": {"auth_token": token}})
+    cfg = Config.model_validate({"server": {"auth_token": token, "allow_anonymous": not token}})
     return TestClient(create_app(StubManager(started), cfg))
 
 
@@ -78,3 +78,19 @@ def test_unknown_route_uses_envelope() -> None:
     r = client().get("/nope")
     assert r.status_code == 404
     assert r.json()["error"]["code"] == "not_found"
+
+
+def test_refuses_to_start_without_token_unless_anonymous() -> None:
+    from claude_code_wrapper.config import ConfigError
+
+    with pytest.raises(ConfigError) as exc:
+        create_app(StubManager(), Config.model_validate({}))
+    assert "server.auth_token" in str(exc.value)
+    assert "server.allow_anonymous" in str(exc.value)
+
+
+def test_probes_and_metrics_stay_open_with_token() -> None:
+    c = client()
+    assert c.get("/healthz").status_code == 200
+    assert c.get("/readyz").status_code == 200
+    assert c.get("/metrics").status_code == 200

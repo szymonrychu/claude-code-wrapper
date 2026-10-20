@@ -25,6 +25,8 @@ from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.router import SessionInfo, SessionRouter
 from claude_code_wrapper.turns import TurnRecord, now_iso
 
+ANON = Config.model_validate({"server": {"allow_anonymous": True}})
+
 
 def sample(m: Metrics, name: str, **labels: str) -> float:
     value = m.registry.get_sample_value(name, labels)
@@ -114,7 +116,7 @@ def test_metrics_route_without_metrics_is_empty() -> None:
         started = True
         redactor = Redactor()
 
-    client = TestClient(create_app(Stub(), Config.model_validate({})))
+    client = TestClient(create_app(Stub(), ANON))
     r = client.get("/metrics")
     assert r.status_code == 200 and r.text == ""
 
@@ -196,7 +198,7 @@ def test_metrics_endpoint_exposes_families() -> None:
         started = True
         redactor = Redactor()
 
-    client = TestClient(create_app(Stub(), Config.model_validate({}), metrics=m))
+    client = TestClient(create_app(Stub(), ANON, metrics=m))
     text = client.get("/metrics").text
     for family in (
         "ccw_sessions_active",
@@ -224,5 +226,5 @@ async def test_metrics_optional_kwarg(tmp_path: Path, world: World) -> None:  # 
         started = True
         redactor = Redactor()
 
-    client = TestClient(create_app(Stub(), Config.model_validate({}), metrics=None))
+    client = TestClient(create_app(Stub(), ANON, metrics=None))
     assert client.get("/metrics").status_code == 200
