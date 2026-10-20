@@ -1,6 +1,6 @@
 ---
 title: Event log
-status: escalated
+status: done
 repo: claude-code-wrapper
 value: "Durable, pageable, streamable session history"
 files: [src/claude_code_wrapper/events.py, tests/test_event_log.py]
@@ -14,7 +14,7 @@ actual: 1
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--event-log
 branch: claude-code-wrapper-microser--event-log
-verified_head: 065f26270e18dae6eefc90dfae47383b5da65a87
+verified_head: 1e097790658b366b38042a4b94fb9251020035ab
 run: claude-code-wrapper-microser
 provides: []
 acs_for_audit: []

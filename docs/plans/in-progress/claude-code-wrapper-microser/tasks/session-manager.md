@@ -113,3 +113,5 @@ The service can hold several independent claude sessions, each fully prepared fr
 - Mounted mode: several sessions may share one mounted workdir (the workbench uses git worktrees); do not lock it.
 
 - 2026-10-20 run claude-code-wrapper-microser: dependency-failed on event-router, home-seed, settings-render, plugins-and-mise, workdir-init
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on plugins-and-mise

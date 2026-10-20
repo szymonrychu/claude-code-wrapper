@@ -1,6 +1,6 @@
 ---
 title: Claude env model
-status: escalated
+status: done
 repo: claude-code-wrapper
 value: "Every Claude Code env var configurable as a validated, redacted field (D2)"
 files: [src/claude_code_wrapper/claude_env.py, src/claude_code_wrapper/redact.py, tests/test_claude_env.py, tests/test_redact.py]
@@ -14,7 +14,7 @@ actual: 3
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--claude-env-model
 branch: claude-code-wrapper-microser--claude-env-model
-verified_head: unknown
+verified_head: 922b1551c4d887cda1683551e5104737de8c7307
 run: claude-code-wrapper-microser
 provides: [claude-env, redactor]
 acs_for_audit: []

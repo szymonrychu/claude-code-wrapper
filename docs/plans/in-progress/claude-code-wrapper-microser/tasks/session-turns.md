@@ -1,6 +1,6 @@
 ---
 title: Session turns
-status: todo
+status: done
 repo: claude-code-wrapper
 value: "Turns submit, complete, interrupt and time out without ever wedging the slot"
 files: [src/claude_code_wrapper/session.py, src/claude_code_wrapper/turns.py, tests/test_session_turns.py, tests/test_turns.py]
@@ -10,13 +10,13 @@ owns: [turn-store]
 uses: [session, fake-claude]
 model: opus
 estimate: 90
-actual: ""
+actual: 20
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--session-turns
-branch: claude-code-wrapper-microser--session-turns
-verified_head: ""
+branch: "HEAD (detached in worktree claude-code-wrapper-microser--session-turns, at 6ded9e6)"
+verified_head: 6ded9e6e0e4995b782ed2020980bbbfd208cea0c
 run: claude-code-wrapper-microser
-provides: []
+provides: [turn-store, probe-model, now-iso, turn-rejected]
 acs_for_audit: []
 process_gaps: []
 ---

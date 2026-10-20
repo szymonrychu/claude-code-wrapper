@@ -1,6 +1,6 @@
 ---
 title: Event router
-status: todo
+status: done
 repo: claude-code-wrapper
 value: Every hook call and transcript line becomes SSE events and user hook calls
 files: [src/claude_code_wrapper/router.py, tests/test_router.py]
@@ -10,15 +10,15 @@ owns: [event-router]
 uses: [session, turn-store, event-log, hook-dispatcher, transcript-tailer, workdir-init, hook-relay-protocol, redactor]
 model: ""
 estimate: 90
-actual: ""
+actual: 4
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--event-router
 branch: claude-code-wrapper-microser--event-router
-verified_head: ""
+verified_head: bdd80afb60b253046c1969c19d5f007d5e8be448
 run: claude-code-wrapper-microser
-provides: []
+provides: [session-info, turn-vetoed, router-drain]
 acs_for_audit: []
-process_gaps: []
+process_gaps: ["No red run: the implementation was written before the tests and all 32 passed on first run, so the test-first rule was not followed. The tests may not pin the behaviour.", "The two new tests had no red run against the old code, so the TDD cycle was not followed for the round-2 fixes"]
 ---
 
 # Event router

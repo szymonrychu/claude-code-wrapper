@@ -1,6 +1,6 @@
 ---
 title: Config models
-status: todo
+status: done
 repo: claude-code-wrapper
 value: One validated config.yaml drives the whole service
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/interpolation.py, tests/test_config.py, tests/test_interpolation.py, config.example.yaml]
@@ -10,11 +10,11 @@ owns: [config-schema]
 uses: [claude-env]
 model: ""
 estimate: 90
-actual: ""
+actual: 2
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--config-models
 branch: claude-code-wrapper-microser--config-models
-verified_head: ""
+verified_head: 85e81dcbff4800c7aed61917eabcec618b0bbe02
 run: claude-code-wrapper-microser
 provides: []
 acs_for_audit: []
