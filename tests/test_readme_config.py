@@ -1,4 +1,4 @@
-"""README coverage of config keys and Claude env vars (D2, D16): undocumented ones fail the suite."""
+"""README coverage of config keys and Claude env vars (D2, D16)."""
 
 from __future__ import annotations
 
