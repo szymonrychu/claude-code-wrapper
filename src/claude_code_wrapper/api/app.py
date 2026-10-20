@@ -1,0 +1,45 @@
+"""`create_app`: the public FastAPI app (part `public-api`)."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Depends, FastAPI
+
+from claude_code_wrapper.api import sessions
+from claude_code_wrapper.api.auth import require_auth
+from claude_code_wrapper.api.errors import ApiError, install_handlers
+from claude_code_wrapper.config import Config
+
+log = logging.getLogger(__name__)
+
+
+def create_app(manager: Any, cfg: Config) -> FastAPI:
+    """Build the public API around `manager`. Later tasks include their routers on `v1`."""
+    app = FastAPI(title="claude-code-wrapper", docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.manager = manager
+    app.state.cfg = cfg
+    app.state.auth_token = cfg.server.auth_token
+    manager.redactor.add([cfg.server.auth_token, cfg.server.callback_secret])
+    install_handlers(app, manager.redactor)
+
+    if not cfg.server.auth_token:
+        log.warning("server.auth_token is empty: authentication on /v1 is disabled")
+
+    v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_auth)])
+    v1.include_router(sessions.router)
+    app.state.v1 = v1
+    app.include_router(v1)
+
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz() -> dict[str, str]:
+        if not manager.started:
+            raise ApiError(503, "not_ready", "service is not ready")
+        return {"status": "ready"}
+
+    return app
