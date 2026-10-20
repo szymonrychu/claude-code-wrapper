@@ -146,7 +146,7 @@ def test_dockerignore_excludes_noise():
         assert p in ignore, p
 
 
-def test_image_ships_valid_example_config():
+def test_example_config_validates_in_image():
     """AC10: the built image carries /app/config.example.yaml and ccw validates it."""
     import subprocess
 
