@@ -169,6 +169,17 @@ class ClaudeConfig(_Model):
     config_files: list[ConfigFile] = Field(default_factory=list)
     boot: BootConfig = Field(default_factory=BootConfig)
 
+    @field_validator("env", mode="before")
+    @classmethod
+    def _drop_empty_env(cls, value: Any) -> Any:
+        """Empty strings (e.g. from ${VAR:-}) mean unset, never an exported empty var."""
+        if not isinstance(value, dict):
+            return value
+        out = {k: v for k, v in value.items() if v != ""}
+        if isinstance(out.get("extra"), dict):
+            out["extra"] = {k: v for k, v in out["extra"].items() if v != ""}
+        return out
+
     @field_validator("extra_args")
     @classmethod
     def _no_skip_permissions(cls, value: list[str]) -> list[str]:
