@@ -208,8 +208,16 @@ class Fake:
     @staticmethod
     def _parse(argv: list[str]) -> tuple[str, str | None]:
         sid, resume = None, None
-        valued = {"--model", "--effort", "--append-system-prompt", "--permission-mode",
-                  "--settings", "--add-dir", "--allowedTools", "--disallowedTools"}
+        valued = {
+            "--model",
+            "--effort",
+            "--append-system-prompt",
+            "--permission-mode",
+            "--settings",
+            "--add-dir",
+            "--allowedTools",
+            "--disallowedTools",
+        }
         i = 0
         while i < len(argv):
             a = argv[i]
@@ -260,29 +268,53 @@ class Fake:
     def write_line(self, obj: dict, path: str | None = None, sidechain: bool = False) -> None:
         path = path or self.transcript
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        base = {"uuid": str(uuid.uuid4()), "sessionId": self.session_id,
-                "isSidechain": sidechain, "cwd": self.cwd, "timestamp": now()}
+        base = {
+            "uuid": str(uuid.uuid4()),
+            "sessionId": self.session_id,
+            "isSidechain": sidechain,
+            "cwd": self.cwd,
+            "timestamp": now(),
+        }
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps({**obj, **base}) + "\n")
 
     def user_line(self, content, path=None, sidechain=False) -> None:
-        self.write_line({"type": "user", "message": {"role": "user", "content": content}},
-                        path, sidechain)
+        self.write_line(
+            {"type": "user", "message": {"role": "user", "content": content}}, path, sidechain
+        )
 
     def assistant_line(self, block: dict, prompt_tokens=0, path=None, sidechain=False) -> None:
         out_tokens = len(str(block.get("text", block.get("thinking", ""))).split())
-        self.write_line({"type": "assistant", "message": {
-            "id": "msg_" + uuid.uuid4().hex[:24], "model": "fake-claude", "role": "assistant",
-            "content": [block],
-            "usage": {"input_tokens": prompt_tokens, "output_tokens": out_tokens,
-                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}},
-                        path, sidechain)
+        self.write_line(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "msg_" + uuid.uuid4().hex[:24],
+                    "model": "fake-claude",
+                    "role": "assistant",
+                    "content": [block],
+                    "usage": {
+                        "input_tokens": prompt_tokens,
+                        "output_tokens": out_tokens,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            },
+            path,
+            sidechain,
+        )
 
     # ---- hooks
     def run_hooks(self, event: str, extra: dict, tool: str | None = None) -> list[dict]:
-        payload = {"session_id": self.session_id, "transcript_path": self.transcript,
-                   "cwd": self.cwd, "hook_event_name": event, "permission_mode": "default",
-                   **extra}
+        payload = {
+            "session_id": self.session_id,
+            "transcript_path": self.transcript,
+            "cwd": self.cwd,
+            "hook_event_name": event,
+            "permission_mode": "default",
+            **extra,
+        }
         results = []
         for group in self.settings.get("hooks", {}).get(event, []):
             matcher = group.get("matcher") or ""
@@ -294,13 +326,21 @@ class Fake:
                 env = {**os.environ, "CLAUDE_PROJECT_DIR": self.cwd}
                 try:
                     p = subprocess.run(
-                        ["sh", "-c", h["command"]], input=json.dumps(payload).encode(),
-                        capture_output=True, env=env, cwd=self.cwd,
-                        timeout=h.get("timeout", 60), check=False)
+                        ["sh", "-c", h["command"]],
+                        input=json.dumps(payload).encode(),
+                        capture_output=True,
+                        env=env,
+                        cwd=self.cwd,
+                        timeout=h.get("timeout", 60),
+                        check=False,
+                    )
                 except subprocess.TimeoutExpired:
                     continue
-                res = {"code": p.returncode, "stderr": p.stderr.decode(errors="replace").strip(),
-                       "json": {}}
+                res = {
+                    "code": p.returncode,
+                    "stderr": p.stderr.decode(errors="replace").strip(),
+                    "json": {},
+                }
                 try:
                     parsed = json.loads(p.stdout.decode(errors="replace"))
                     if isinstance(parsed, dict):
@@ -314,8 +354,9 @@ class Fake:
         for r in results:
             ctx = (r["json"].get("hookSpecificOutput") or {}).get("additionalContext")
             if ctx:
-                self.write_line({"type": "system", "subtype": "hook_additional_context",
-                                 "content": ctx})
+                self.write_line(
+                    {"type": "system", "subtype": "hook_additional_context", "content": ctx}
+                )
 
     # ---- boot
     def boot(self) -> None:
@@ -326,8 +367,10 @@ class Fake:
             if self.read(left) is not None:
                 raise Exit(1)
         if cfg.get("bypass_dialog", True):
-            self.out("\n\x1b[1;31mWARNING: Bypass Permissions mode\x1b[0m\n"
-                     "  1. No, exit\n  2. Yes, I accept\n")
+            self.out(
+                "\n\x1b[1;31mWARNING: Bypass Permissions mode\x1b[0m\n"
+                "  1. No, exit\n  2. Yes, I accept\n"
+            )
             buf = b""
             while True:
                 buf += self.read(None) or b""
@@ -364,10 +407,10 @@ class Fake:
                         paste += data
                         break
                     paste += data[:idx]
-                    data = data[idx + len(PASTE_END):]
+                    data = data[idx + len(PASTE_END) :]
                     in_paste, pasted, ended_here = False, True, True
                 elif data.startswith(PASTE_START):
-                    data = data[len(PASTE_START):]
+                    data = data[len(PASTE_START) :]
                     in_paste, paste, pasted = True, b"", False
                 else:
                     ch, data = data[:1], data[1:]
@@ -420,8 +463,9 @@ class Fake:
                 self.last_text = step["text"]
                 self.out(f"\n{step['text']}\n")
             elif "thinking" in step:
-                self.assistant_line({"type": "thinking", "thinking": step["thinking"],
-                                     "signature": "fake"}, tokens)
+                self.assistant_line(
+                    {"type": "thinking", "thinking": step["thinking"], "signature": "fake"}, tokens
+                )
             elif "tool" in step:
                 self.tool_step(step, tokens)
             elif "subagent" in step:
@@ -436,8 +480,9 @@ class Fake:
                 raise Exit(int(step["exit"]))
             elif "background" in step:
                 bg.append(step["background"])
-        self.run_hooks("Stop", {"stop_hook_active": False,
-                                "last_assistant_message": self.last_text})
+        self.run_hooks(
+            "Stop", {"stop_hook_active": False, "last_assistant_message": self.last_text}
+        )
         self.footer()
         for b in bg:
             self.background.append((time.monotonic() + float(b.get("after", 0)), b["text"]))
@@ -447,8 +492,9 @@ class Fake:
         name, tinput = step["tool"], step.get("input", {})
         tid = "toolu_" + uuid.uuid4().hex[:24]
         self.assistant_line({"type": "tool_use", "id": tid, "name": name, "input": tinput}, tokens)
-        pre = self.run_hooks("PreToolUse", {"tool_name": name, "tool_input": tinput,
-                                            "tool_use_id": tid}, tool=name)
+        pre = self.run_hooks(
+            "PreToolUse", {"tool_name": name, "tool_input": tinput, "tool_use_id": tid}, tool=name
+        )
         self.context_from(pre)
         deny = None
         for r in pre:
@@ -460,11 +506,15 @@ class Fake:
         fail = bool(step.get("fail")) or deny is not None
         result = deny if deny is not None else step.get("result", "")
         event = "PostToolUseFailure" if fail else "PostToolUse"
-        post = self.run_hooks(event, {"tool_name": name, "tool_input": tinput,
-                                      "tool_use_id": tid, "tool_response": result}, tool=name)
+        post = self.run_hooks(
+            event,
+            {"tool_name": name, "tool_input": tinput, "tool_use_id": tid, "tool_response": result},
+            tool=name,
+        )
         self.context_from(post)
-        self.user_line([{"type": "tool_result", "tool_use_id": tid, "content": result,
-                         "is_error": fail}])
+        self.user_line(
+            [{"type": "tool_result", "tool_use_id": tid, "content": result, "is_error": fail}]
+        )
         self.out(f"\n* {name}({json.dumps(tinput)})\n")
 
     def subagent_step(self, sub: dict) -> None:
@@ -473,20 +523,34 @@ class Fake:
         self.run_hooks("SubagentStart", {"agent_id": aid, "agent_type": atype})
         self.user_line("subagent task", path, sidechain=True)
         self.assistant_line({"type": "text", "text": sub.get("text", "")}, 0, path, True)
-        self.run_hooks("SubagentStop", {"agent_id": aid, "agent_type": atype,
-                                        "agent_transcript_path": path,
-                                        "stop_hook_active": False})
+        self.run_hooks(
+            "SubagentStop",
+            {
+                "agent_id": aid,
+                "agent_type": atype,
+                "agent_transcript_path": path,
+                "stop_hook_active": False,
+            },
+        )
 
 
 def log_invocation(argv: list[str]) -> None:
     path = os.environ.get("FAKE_CLAUDE_LOG")
     if not path:
         return
-    keys = ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_PROJECT_DIR_NAME", "CCW_SESSION_ID",
-            "CCW_INTERNAL_URL")
+    keys = (
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_CODE_PROJECT_DIR_NAME",
+        "CCW_SESSION_ID",
+        "CCW_INTERNAL_URL",
+    )
     with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"argv": argv, "cwd": os.getcwd(),
-                            "env": {k: os.environ.get(k) for k in keys}}) + "\n")
+        f.write(
+            json.dumps(
+                {"argv": argv, "cwd": os.getcwd(), "env": {k: os.environ.get(k) for k in keys}}
+            )
+            + "\n"
+        )
 
 
 def main(argv: list[str]) -> int:

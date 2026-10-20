@@ -22,7 +22,12 @@ UUID_RE = re.compile(r"^[0-9a-f-]{36}$")
 def run_cli(args, env, cwd):
     return subprocess.run(
         [sys.executable, "-I", str(FAKE), *args],
-        env=env, cwd=cwd, capture_output=True, text=True, timeout=20, check=False,
+        env=env,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
     )
 
 
@@ -33,7 +38,12 @@ class Pty:
         self.master, slave = pty.openpty()
         self.proc = subprocess.Popen(
             [sys.executable, "-I", str(FAKE), *args],
-            stdin=slave, stdout=slave, stderr=slave, env=env, cwd=cwd, close_fds=True,
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            env=env,
+            cwd=cwd,
+            close_fds=True,
         )
         os.close(slave)
         self.buf = ""
@@ -152,8 +162,12 @@ def test_non_tty_exits_2(env, work):
 
 
 def test_argv_logged(spawn, env, work):
-    p = spawn(["--model", "m1", "--effort", "high", "--weird-flag"], CCW_SESSION_ID="s1",
-              CCW_INTERNAL_URL="http://127.0.0.1:1", SECRET_TOKEN="hunter2")
+    p = spawn(
+        ["--model", "m1", "--effort", "high", "--weird-flag"],
+        CCW_SESSION_ID="s1",
+        CCW_INTERNAL_URL="http://127.0.0.1:1",
+        SECRET_TOKEN="hunter2",
+    )
     p.boot()
     p.send(b"\x03")
     line = json.loads(Path(env["FAKE_CLAUDE_LOG"]).read_text().splitlines()[0])
@@ -196,10 +210,13 @@ def test_no_bypass_dialog(spawn, scenario_file):
 def test_basic_turn_transcript_and_hooks(spawn, env, work, tmp_path):
     out = tmp_path / "hooks.out"
     cmd = f"cat >> {out}; echo >> {out}"
-    hook_settings(env["CLAUDE_CONFIG_DIR"], {
-        ev: [{"matcher": "", "hooks": [{"type": "command", "command": cmd, "timeout": 5}]}]
-        for ev in ("UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop")
-    })
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {
+            ev: [{"matcher": "", "hooks": [{"type": "command", "command": cmd, "timeout": 5}]}]
+            for ev in ("UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop")
+        },
+    )
     p = spawn(["--session-id", "11111111-1111-4111-8111-111111111111"])
     p.boot()
     p.submit("hello there")
@@ -212,14 +229,22 @@ def test_basic_turn_transcript_and_hooks(spawn, env, work, tmp_path):
     assert lines[1]["message"]["content"][0]["type"] == "thinking"
     assert lines[2]["message"]["content"][0]["type"] == "tool_use"
     usage = lines[4]["message"]["usage"]
-    assert set(usage) == {"input_tokens", "output_tokens", "cache_read_input_tokens",
-                          "cache_creation_input_tokens"}
+    assert set(usage) == {
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    }
     tr = lines[3]["message"]["content"][0]
     assert tr["type"] == "tool_result" and tr["content"] == "hi" and tr["is_error"] is False
     assert tr["tool_use_id"] == lines[2]["message"]["content"][0]["id"]
     payloads = [json.loads(x) for x in out.read_text().splitlines()]
     assert [x["hook_event_name"] for x in payloads] == [
-        "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Stop",
+    ]
     assert payloads[0]["prompt"] == "hello there"
     assert payloads[1]["tool_name"] == "Bash"
     assert payloads[1]["tool_input"] == {"command": "echo hi"}
@@ -232,7 +257,8 @@ def test_basic_turn_transcript_and_hooks(spawn, env, work, tmp_path):
 
 def test_default_echo_turn(spawn, env, work, scenario_file):
     sc = scenario_file(
-        {"boot": {"bypass_dialog": False}, "turns": [{"match": "^zzz$", "steps": []}]})
+        {"boot": {"bypass_dialog": False}, "turns": [{"match": "^zzz$", "steps": []}]}
+    )
     p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
     p.wait_for("? for shortcuts")
     p.submit("ping")
@@ -249,7 +275,8 @@ def test_cr_in_same_chunk_does_not_submit(spawn, env, work, scenario_file):
     p.pump(0.6)
     proj = Path(env["CLAUDE_CONFIG_DIR"]) / "projects"
     assert not list(proj.rglob("*.jsonl")) or all(
-        not f.read_text().strip() for f in proj.rglob("*.jsonl"))
+        not f.read_text().strip() for f in proj.rglob("*.jsonl")
+    )
     since = len(p.buf)
     p.send(b"\r")
     p.wait_for("? for shortcuts", since=since)
@@ -286,10 +313,20 @@ def test_project_dir_name_override(spawn, env):
 
 def test_interrupt_during_sleep(spawn, env, work, tmp_path, scenario_file):
     out = tmp_path / "stop.out"
-    hook_settings(env["CLAUDE_CONFIG_DIR"], {"Stop": [{"matcher": "", "hooks": [
-        {"type": "command", "command": f"cat >> {out}", "timeout": 5}]}]})
-    sc = scenario_file({"boot": {"bypass_dialog": False},
-                        "turns": [{"match": ".*", "steps": [{"sleep": 30}]}]})
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {
+            "Stop": [
+                {
+                    "matcher": "",
+                    "hooks": [{"type": "command", "command": f"cat >> {out}", "timeout": 5}],
+                }
+            ]
+        },
+    )
+    sc = scenario_file(
+        {"boot": {"bypass_dialog": False}, "turns": [{"match": ".*", "steps": [{"sleep": 30}]}]}
+    )
     p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
     p.wait_for("? for shortcuts")
     since = len(p.buf)
@@ -307,9 +344,15 @@ def test_interrupt_during_sleep(spawn, env, work, tmp_path, scenario_file):
 
 
 def test_print_and_exit_steps(spawn, scenario_file):
-    sc = scenario_file({"boot": {"bypass_dialog": False}, "turns": [
-        {"match": "fatal", "steps": [{"print": "API Error: boom"}]},
-        {"match": "bye", "steps": [{"exit": 7}]}]})
+    sc = scenario_file(
+        {
+            "boot": {"bypass_dialog": False},
+            "turns": [
+                {"match": "fatal", "steps": [{"print": "API Error: boom"}]},
+                {"match": "bye", "steps": [{"exit": 7}]},
+            ],
+        }
+    )
     p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
     p.wait_for("? for shortcuts")
     p.submit("fatal", wait="API Error: boom")
@@ -326,44 +369,77 @@ def test_pre_tool_use_deny_and_additional_context(spawn, env, work, tmp_path, sc
     deny.write_text('cat >/dev/null; echo "blocked by policy" >&2; exit 2\n')
     ctx = tmp_path / "ctx.sh"
     ctx.write_text(
-        'cat >/dev/null; echo \'{"hookSpecificOutput":{"additionalContext":"extra"}}\'\n')
-    hook_settings(env["CLAUDE_CONFIG_DIR"], {
-        "PreToolUse": [{"matcher": "Bash", "hooks": [
-            {"type": "command", "command": f"sh {deny}"}]}],
-        "PostToolUseFailure": [{"matcher": "Bash", "hooks": [
-            {"type": "command", "command": f"sh {ctx}"}]}],
-    })
+        'cat >/dev/null; echo \'{"hookSpecificOutput":{"additionalContext":"extra"}}\'\n'
+    )
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": f"sh {deny}"}]}
+            ],
+            "PostToolUseFailure": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": f"sh {ctx}"}]}
+            ],
+        },
+    )
     p = spawn()
     p.boot()
     p.submit("x")
     lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
-    results = [c for x in lines if x["type"] == "user" and isinstance(x["message"]["content"], list)
-               for c in x["message"]["content"]]
+    results = [
+        c
+        for x in lines
+        if x["type"] == "user" and isinstance(x["message"]["content"], list)
+        for c in x["message"]["content"]
+    ]
     assert results[0]["is_error"] is True and "blocked by policy" in results[0]["content"]
     assert any(x["type"] == "system" and "extra" in json.dumps(x) for x in lines)
 
 
 def test_pre_tool_use_json_deny(spawn, env, work, tmp_path):
     h = tmp_path / "d.sh"
-    h.write_text('cat >/dev/null; echo \'{"hookSpecificOutput":{"permissionDecision":"deny",'
-                 '"permissionDecisionReason":"nope"}}\'\n')
-    hook_settings(env["CLAUDE_CONFIG_DIR"], {"PreToolUse": [{"matcher": "", "hooks": [
-        {"type": "command", "command": f"sh {h}"}]}]})
+    h.write_text(
+        'cat >/dev/null; echo \'{"hookSpecificOutput":{"permissionDecision":"deny",'
+        '"permissionDecisionReason":"nope"}}\'\n'
+    )
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {"PreToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": f"sh {h}"}]}]},
+    )
     p = spawn()
     p.boot()
     p.submit("x")
     lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
-    res = [c for x in lines if x["type"] == "user" and isinstance(x["message"]["content"], list)
-           for c in x["message"]["content"]]
+    res = [
+        c
+        for x in lines
+        if x["type"] == "user" and isinstance(x["message"]["content"], list)
+        for c in x["message"]["content"]
+    ]
     assert res[0]["is_error"] and "nope" in res[0]["content"]
 
 
 def test_failing_tool_runs_post_tool_use_failure(spawn, env, tmp_path, scenario_file):
     out = tmp_path / "f.out"
-    hook_settings(env["CLAUDE_CONFIG_DIR"], {"PostToolUseFailure": [{"matcher": "", "hooks": [
-        {"type": "command", "command": f"cat >> {out}"}]}]})
-    sc = scenario_file({"boot": {"bypass_dialog": False}, "turns": [{"match": ".*", "steps": [
-        {"tool": "Bash", "input": {}, "result": "bad", "fail": True}]}]})
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {
+            "PostToolUseFailure": [
+                {"matcher": "", "hooks": [{"type": "command", "command": f"cat >> {out}"}]}
+            ]
+        },
+    )
+    sc = scenario_file(
+        {
+            "boot": {"bypass_dialog": False},
+            "turns": [
+                {
+                    "match": ".*",
+                    "steps": [{"tool": "Bash", "input": {}, "result": "bad", "fail": True}],
+                }
+            ],
+        }
+    )
     p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
     p.wait_for("? for shortcuts")
     p.submit("x")
@@ -373,11 +449,29 @@ def test_failing_tool_runs_post_tool_use_failure(spawn, env, tmp_path, scenario_
 
 def test_subagent_step(spawn, env, work, tmp_path, scenario_file):
     out = tmp_path / "sub.out"
-    hook_settings(env["CLAUDE_CONFIG_DIR"], {ev: [{"matcher": "", "hooks": [
-        {"type": "command", "command": f"cat >> {out}; echo >> {out}"}]}]
-        for ev in ("SubagentStart", "SubagentStop")})
-    sc = scenario_file({"boot": {"bypass_dialog": False}, "turns": [{"match": ".*", "steps": [
-        {"subagent": {"id": "a1", "type": "Explore", "text": "found it"}}]}]})
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {
+            ev: [
+                {
+                    "matcher": "",
+                    "hooks": [{"type": "command", "command": f"cat >> {out}; echo >> {out}"}],
+                }
+            ]
+            for ev in ("SubagentStart", "SubagentStop")
+        },
+    )
+    sc = scenario_file(
+        {
+            "boot": {"bypass_dialog": False},
+            "turns": [
+                {
+                    "match": ".*",
+                    "steps": [{"subagent": {"id": "a1", "type": "Explore", "text": "found it"}}],
+                }
+            ],
+        }
+    )
     sid = "33333333-3333-4333-8333-333333333333"
     p = spawn(["--session-id", sid], FAKE_CLAUDE_SCENARIO=str(sc))
     p.wait_for("? for shortcuts")
@@ -394,10 +488,28 @@ def test_subagent_step(spawn, env, work, tmp_path, scenario_file):
 
 def test_background_step_runs_stop_again(spawn, env, tmp_path, scenario_file):
     out = tmp_path / "bg.out"
-    hook_settings(env["CLAUDE_CONFIG_DIR"], {"Stop": [{"matcher": "", "hooks": [
-        {"type": "command", "command": f"cat >> {out}; echo >> {out}"}]}]})
-    sc = scenario_file({"boot": {"bypass_dialog": False}, "turns": [{"match": ".*", "steps": [
-        {"text": "first"}, {"background": {"after": 0.3, "text": "later"}}]}]})
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {
+            "Stop": [
+                {
+                    "matcher": "",
+                    "hooks": [{"type": "command", "command": f"cat >> {out}; echo >> {out}"}],
+                }
+            ]
+        },
+    )
+    sc = scenario_file(
+        {
+            "boot": {"bypass_dialog": False},
+            "turns": [
+                {
+                    "match": ".*",
+                    "steps": [{"text": "first"}, {"background": {"after": 0.3, "text": "later"}}],
+                }
+            ],
+        }
+    )
     p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
     p.wait_for("? for shortcuts")
     p.submit("x")
@@ -411,8 +523,14 @@ def test_background_step_runs_stop_again(spawn, env, tmp_path, scenario_file):
 
 
 def test_hook_timeout_honoured(spawn, env, tmp_path, scenario_file):
-    hook_settings(env["CLAUDE_CONFIG_DIR"], {"Stop": [{"matcher": "", "hooks": [
-        {"type": "command", "command": "sleep 30", "timeout": 1}]}]})
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {
+            "Stop": [
+                {"matcher": "", "hooks": [{"type": "command", "command": "sleep 30", "timeout": 1}]}
+            ]
+        },
+    )
     p = spawn()
     p.boot()
     t0 = time.monotonic()
@@ -439,17 +557,21 @@ def test_plugin_flow(env, work, tmp_path):
     assert plugins[0]["id"] == "p@mymkt" and plugins[0]["scope"] == "user"
     assert plugins[0]["enabled"] is True and plugins[0]["version"]
     assert (Path(env["CLAUDE_CONFIG_DIR"]) / "plugins" / "fake-state.json").exists()
-    r = run_cli(["plugin", "install", "bad@mymkt"], {**env, "FAKE_CLAUDE_PLUGIN_FAIL": "bad@mymkt"},
-                work)
+    r = run_cli(
+        ["plugin", "install", "bad@mymkt"], {**env, "FAKE_CLAUDE_PLUGIN_FAIL": "bad@mymkt"}, work
+    )
     assert r.returncode == 1
     r = run_cli(["plugin", "marketplace", "add", "owner/repo"], env, work)
     assert r.returncode == 0
-    names = [m["name"] for m in json.loads(
-        run_cli(["plugin", "marketplace", "list", "--json"], env, work).stdout)]
+    names = [
+        m["name"]
+        for m in json.loads(run_cli(["plugin", "marketplace", "list", "--json"], env, work).stdout)
+    ]
     assert "repo" in names
 
 
 def test_shim_fixture(fake_claude_bin):
-    r = subprocess.run([str(fake_claude_bin), "--version"], capture_output=True, text=True,
-                       check=False)
+    r = subprocess.run(
+        [str(fake_claude_bin), "--version"], capture_output=True, text=True, check=False
+    )
     assert r.stdout.strip() == "0.0.0 (Fake Claude)"
