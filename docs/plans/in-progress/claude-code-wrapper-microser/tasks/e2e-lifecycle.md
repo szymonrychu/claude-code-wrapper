@@ -1,6 +1,6 @@
 ---
 title: E2E lifecycle
-status: in-progress
+status: escalated
 repo: claude-code-wrapper
 value: Proof the whole lifecycle works end to end without real Claude
 files: [tests/test_e2e_lifecycle.py, tests/test_e2e_resume.py, tests/fixtures/scenarios/e2e.json, tests/fixtures/hooks/record_hook.sh]
@@ -14,11 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--e2e-lifecycle
 branch: claude-code-wrapper-microser--e2e-lifecycle
-verified_head: ""
+verified_head: unknown
 run: claude-code-wrapper-microser
 provides: []
 acs_for_audit: []
-process_gaps: []
+process_gaps: ["The router._fire turn_id fix (_fire takes a turn_id parameter; _after_turn passes record.turn_id; interrupt() passes turn_id) must land as an epic task. Until then tests/test_e2e_lifecycle.py::test_full_lifecycle_events_and_hooks and ::test_webhook_signed fail. The task's AC1 and AC3 are not green on this branch.", "The independent verify script failed on '--prev-head unknown' before running any tests; this is a harness problem, not a task defect. I ran the targeted tests and lint myself and both passed."]
 ---
 
 # E2E lifecycle

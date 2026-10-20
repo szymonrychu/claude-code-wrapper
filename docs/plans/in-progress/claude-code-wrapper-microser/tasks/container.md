@@ -1,6 +1,6 @@
 ---
 title: Container
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: docker compose up gives a healthy non-root service with persistent volumes
 files: [Dockerfile, docker-compose.yml, .dockerignore, .env.example, tests/test_container.py]
@@ -14,9 +14,9 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--container
 branch: claude-code-wrapper-microser--container
-verified_head: ""
+verified_head: 655e4d3e3099a7ec61c9102d0e79e7000b56b7dc
 run: claude-code-wrapper-microser
-provides: []
+provides: [container-image]
 acs_for_audit: []
 process_gaps: []
 ---

@@ -1,6 +1,6 @@
 ---
 title: API sessions
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: Clients manage sessions over an authenticated HTTP API
 files: [src/claude_code_wrapper/api/__init__.py, src/claude_code_wrapper/api/app.py, src/claude_code_wrapper/api/auth.py, src/claude_code_wrapper/api/errors.py, src/claude_code_wrapper/api/sessions.py, tests/test_api_sessions.py, tests/test_api_auth.py]
@@ -14,9 +14,9 @@ actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--api-sessions
 branch: claude-code-wrapper-microser--api-sessions
-verified_head: ""
+verified_head: c053cbe348a2312732ef5947a81a7f7310afd6cd
 run: claude-code-wrapper-microser
-provides: []
+provides: [api-error-envelope, api-bearer-auth]
 acs_for_audit: []
 process_gaps: []
 ---

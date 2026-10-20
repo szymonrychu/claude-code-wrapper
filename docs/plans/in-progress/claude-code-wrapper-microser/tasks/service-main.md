@@ -1,6 +1,6 @@
 ---
 title: Service main
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: ccw serve runs the service and shuts down cleanly
 files: [src/claude_code_wrapper/service.py, src/claude_code_wrapper/cli.py, src/claude_code_wrapper/__main__.py, tests/test_cli.py, tests/test_service.py]
@@ -13,10 +13,10 @@ estimate: 75
 actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--service-main
-branch: claude-code-wrapper-microser--service-main
-verified_head: ""
+branch: "HEAD (worktree claude-code-wrapper-microser--service-main)"
+verified_head: 900a8e89046f585854dfd8c61b34cf683e1d3b12
 run: claude-code-wrapper-microser
-provides: []
+provides: [service-handle, json-redacted-logging]
 acs_for_audit: []
 process_gaps: []
 ---

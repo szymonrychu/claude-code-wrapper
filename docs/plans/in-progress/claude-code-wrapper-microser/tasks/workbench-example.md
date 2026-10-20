@@ -1,6 +1,6 @@
 ---
 title: Workbench example
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: The workbench plugin flow runs inside the service out of the box
 files: [examples/workbench.config.yaml, examples/docker-compose.workbench.yml, tests/test_examples.py]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--workbench-example
 branch: claude-code-wrapper-microser--workbench-example
-verified_head: ""
+verified_head: 920fee4ca8cd8395c2b823bec80182f7b55f5fef
 run: claude-code-wrapper-microser
 provides: []
 acs_for_audit: []

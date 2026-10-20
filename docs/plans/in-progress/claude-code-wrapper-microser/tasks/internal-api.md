@@ -1,6 +1,6 @@
 ---
 title: Internal API
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: "Only the service's own claude processes can drive session hooks"
 files: [src/claude_code_wrapper/internal_api.py, tests/test_internal_api.py]
@@ -14,7 +14,7 @@ actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--internal-api
 branch: claude-code-wrapper-microser--internal-api
-verified_head: ""
+verified_head: d2028acbe197b7c5910823532a21fbb12a303e9c
 run: claude-code-wrapper-microser
 provides: []
 acs_for_audit: []

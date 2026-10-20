@@ -1,6 +1,6 @@
 ---
 title: Metrics
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: "Operators can scrape session, turn, tool and hook metrics"
 files: [src/claude_code_wrapper/metrics.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/api/app.py, tests/test_metrics.py]
@@ -14,9 +14,9 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--metrics
 branch: claude-code-wrapper-microser--metrics
-verified_head: ""
+verified_head: cfe0199e47c56b1c43c1421e02f9c9ec803a1f0e
 run: claude-code-wrapper-microser
-provides: []
+provides: [metrics]
 acs_for_audit: []
 process_gaps: []
 ---

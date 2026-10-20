@@ -1,6 +1,6 @@
 ---
 title: Pip package
-status: in-progress
+status: todo
 repo: claude-code-wrapper
 value: "Install the service with pip and run ccw from PATH, in a Dockerfile or on a containerless host (D25)"
 files: [pyproject.toml, src/claude_code_wrapper/cli.py, src/claude_code_wrapper/bootstrap/settings.py, src/claude_code_wrapper/data/__init__.py, Dockerfile, README.md, tests/test_packaging.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--pip-package
 branch: claude-code-wrapper-microser--pip-package
 verified_head: ""
-run: ""
+run: claude-code-wrapper-microser
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Pip package
@@ -75,3 +77,5 @@ A retirement test asserts on `git ls-files <path>`, never on the filesystem.
 ## Notes
 
 Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+
+- 2026-10-20 run claude-code-wrapper-microser: dependency-failed on readme-config

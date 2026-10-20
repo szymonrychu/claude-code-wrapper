@@ -1,6 +1,6 @@
 ---
 title: API turns events
-status: in-progress
+status: done
 repo: claude-code-wrapper
 value: Clients drive turns and follow sessions by polling or SSE
 files: [src/claude_code_wrapper/api/turns.py, src/claude_code_wrapper/api/events.py, src/claude_code_wrapper/api/app.py, tests/test_api_turns.py, tests/test_api_events.py]
@@ -13,10 +13,10 @@ estimate: 90
 actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/claude-code-wrapper-microser--api-turns-events
-branch: claude-code-wrapper-microser--api-turns-events
-verified_head: ""
+branch: "HEAD (detached, worktree claude-code-wrapper-microser--api-turns-events, commit c557bf5)"
+verified_head: c557bf543ed8ddcd408c25866be6de3cec0f7187
 run: claude-code-wrapper-microser
-provides: []
+provides: [manager-transcript-path]
 acs_for_audit: []
 process_gaps: []
 ---
