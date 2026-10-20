@@ -82,7 +82,7 @@ def test_sanitize_bad(bad: str) -> None:
         sanitize_name(bad)
 
 
-async def test_empty_mode_names(tmp_path: Path, env: dict[str, str]) -> None:
+async def test_empty_mode_creates_dir(tmp_path: Path, env: dict[str, str]) -> None:
     root = tmp_path / "root"
     p = await prepare_workdir(cfg(mode="empty"), root, session_id="sid1", env=env)
     assert p == root / "sid1" and p.is_dir()
@@ -99,7 +99,7 @@ async def test_empty_mode_names(tmp_path: Path, env: dict[str, str]) -> None:
         await prepare_workdir(cfg(mode="empty"), root, session_id="s", name="../x", env=env)
 
 
-async def test_mounted(tmp_path: Path, env: dict[str, str]) -> None:
+async def test_mounted_mode_requires_existing_dir(tmp_path: Path, env: dict[str, str]) -> None:
     m = tmp_path / "mnt"
     m.mkdir()
     (m / "f").write_text("1")
@@ -141,7 +141,7 @@ async def test_mounted(tmp_path: Path, env: dict[str, str]) -> None:
         )
 
 
-async def test_clone_and_resume(tmp_path: Path, origin: Path, env: dict[str, str]) -> None:
+async def test_clone_with_submodules(tmp_path: Path, origin: Path, env: dict[str, str]) -> None:
     root = tmp_path / "root"
     c = cfg(mode="clone", repo_url=str(origin), name="proj", submodules=True)
     p = await prepare_workdir(c, root, session_id="s", env=env)
@@ -152,9 +152,7 @@ async def test_clone_and_resume(tmp_path: Path, origin: Path, env: dict[str, str
     assert p2 == p and (p / "dirty").read_text() == "keep"
 
 
-async def test_clone_depth_branch_no_submodules(
-    tmp_path: Path, origin: Path, env: dict[str, str]
-) -> None:
+async def test_clone_mode_clones_branch(tmp_path: Path, origin: Path, env: dict[str, str]) -> None:
     c = cfg(mode="clone", repo_url=f"file://{origin}", name="p", depth=1, branch="feat")
     p = await prepare_workdir(c, tmp_path / "r", session_id="s", env=env)
     assert git(p, "rev-parse", "--abbrev-ref", "HEAD") == "feat"
@@ -162,7 +160,7 @@ async def test_clone_depth_branch_no_submodules(
     assert not (p / "vendor" / "s.txt").exists()
 
 
-async def test_clone_conflicts(tmp_path: Path, origin: Path, env: dict[str, str]) -> None:
+async def test_clone_rejects_foreign_dir(tmp_path: Path, origin: Path, env: dict[str, str]) -> None:
     root = tmp_path / "r"
     (root / "plain").mkdir(parents=True)
     c = cfg(mode="clone", repo_url=str(origin), name="plain")
@@ -180,14 +178,14 @@ async def test_clone_conflicts(tmp_path: Path, origin: Path, env: dict[str, str]
         )
 
 
-async def test_clone_error_redacted(tmp_path: Path, env: dict[str, str]) -> None:
+async def test_clone_error_redacts_credentials(tmp_path: Path, env: dict[str, str]) -> None:
     c = cfg(mode="clone", repo_url="https://user:s3cretpass@127.0.0.1:1/x.git", name="p")
     with pytest.raises(WorkdirError) as ei:
         await prepare_workdir(c, tmp_path / "r", session_id="s", env=env)
     assert "s3cretpass" not in str(ei.value)
 
 
-def test_write_gitconfig(tmp_path: Path) -> None:
+def test_gitconfig_written(tmp_path: Path) -> None:
     from claude_code_wrapper.config import GitConfig
 
     wd = tmp_path / "wd"
@@ -199,7 +197,7 @@ def test_write_gitconfig(tmp_path: Path) -> None:
     assert "[user]" not in p.read_text() and "[safe]" in p.read_text()
 
 
-async def test_setup_commands(tmp_path: Path) -> None:
+async def test_setup_commands_run_once_and_fail_with_tail(tmp_path: Path) -> None:
     from claude_code_wrapper.config import SetupCommand
 
     wd = tmp_path / "wd"
@@ -210,14 +208,7 @@ async def test_setup_commands(tmp_path: Path) -> None:
     assert (wd / "out").read_text() == "a\nbar\n" and marker.exists()
     await run_setup_commands(cmds, wd, {"PATH": os.environ["PATH"]}, marker)
     assert (wd / "out").read_text() == "a\nbar\n"
-
-
-async def test_setup_failure(tmp_path: Path) -> None:
-    from claude_code_wrapper.config import SetupCommand
-
-    wd = tmp_path / "wd"
-    wd.mkdir()
-    marker = tmp_path / "marker"
+    marker = tmp_path / "marker2"
     cmds = [
         SetupCommand(run="true"),
         SetupCommand(run="echo Bearer abcdefghijklmnop; echo boom >&2; exit 3"),
@@ -260,7 +251,7 @@ def test_safe_write_invalid_paths(tmp_path: Path, path: str) -> None:
     assert ei.value.code == "invalid_path"
 
 
-def test_safe_write_symlink_escape(tmp_path: Path) -> None:
+def test_safe_write_rejects_escape_and_symlink(tmp_path: Path) -> None:
     wd = tmp_path / "wd"
     wd.mkdir()
     outside = tmp_path / "outside"
@@ -275,7 +266,7 @@ def test_safe_write_symlink_escape(tmp_path: Path) -> None:
         safe_write_files(wd, {"flink": "x"}, max_bytes=10, max_files=5)
 
 
-def test_safe_write_limits(tmp_path: Path) -> None:
+def test_safe_write_caps(tmp_path: Path) -> None:
     wd = tmp_path / "wd"
     wd.mkdir()
     with pytest.raises(FileWriteError) as ei:
@@ -285,3 +276,47 @@ def test_safe_write_limits(tmp_path: Path) -> None:
         safe_write_files(wd, {"a": "1", "b": "2"}, max_bytes=10, max_files=1)
     assert ei.value.code == "too_large"
     assert not (wd / "a").exists()
+
+
+def test_name_sanitised() -> None:
+    assert sanitize_name("ok-1._x") == "ok-1._x"
+    for bad in ("../x", "a/b", ".hidden", "..", ".", "", "x" * 65, "a b"):
+        with pytest.raises(WorkdirError):
+            sanitize_name(bad)
+
+
+async def test_clone_reuses_existing_same_origin(
+    tmp_path: Path, origin: Path, env: dict[str, str]
+) -> None:
+    root = tmp_path / "root"
+    c = cfg(mode="clone", repo_url=str(origin), name="proj")
+    p = await prepare_workdir(c, root, session_id="s", env=env)
+    (p / "dirty").write_text("keep")
+    p2 = await prepare_workdir(c, root, session_id="s", env=env)
+    assert p2 == p and (p / "dirty").read_text() == "keep"
+
+
+async def test_clone_error_redacts_credentials_with_depth_branch(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    c = cfg(
+        mode="clone",
+        repo_url="https://user:s3cretpass@127.0.0.1:1/x.git",
+        name="p",
+        depth=1,
+        branch="feature-branch",
+    )
+    with pytest.raises(WorkdirError) as ei:
+        await prepare_workdir(c, tmp_path / "r", session_id="s", env=env)
+    assert "s3cr" not in str(ei.value)
+
+
+async def test_setup_signalled_is_not_timeout(tmp_path: Path) -> None:
+    from claude_code_wrapper.config import SetupCommand
+
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    cmd = SetupCommand(run="kill -HUP $$", timeout_seconds=30)
+    with pytest.raises(WorkdirError) as ei:
+        await run_setup_commands([cmd], wd, {"PATH": os.environ["PATH"]}, tmp_path / "m")
+    assert "timed out" not in str(ei.value)

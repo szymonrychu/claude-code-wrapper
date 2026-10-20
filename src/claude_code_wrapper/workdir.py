@@ -45,8 +45,8 @@ def sanitize_name(name: str) -> str:
 
 async def _run(
     argv: Sequence[str], cwd: Path | None, env: Mapping[str, str], timeout: float | None = None
-) -> tuple[int, str]:
-    """Run a process in its own group; returns (exit code or -1 on timeout, output)."""
+) -> tuple[int, str, bool]:
+    """Run a process in its own group; returns (exit code, output, timed_out)."""
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,
@@ -62,25 +62,22 @@ async def _run(
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         out, _ = await proc.communicate()
-        return -1, out.decode(errors="replace")
+        return proc.returncode or 0, out.decode(errors="replace"), True
     except BaseException:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         raise
-    return proc.returncode or 0, out.decode(errors="replace")
+    return proc.returncode or 0, out.decode(errors="replace"), False
 
 
 async def _git(args: Sequence[str], cwd: Path | None, env: Mapping[str, str]) -> str:
     git_env = {**env, "GIT_TERMINAL_PROMPT": "0"}
     try:
-        code, out = await _run(["git", *args], cwd, git_env)
+        code, out, _ = await _run(["git", *args], cwd, git_env)
     except FileNotFoundError as exc:
         raise WorkdirError("git is not installed") from exc
     if code != 0:
-        sub = " ".join(a for a in args if not a.startswith("-"))[:40]
-        raise WorkdirError(
-            f"git {redact_output(sub)} failed ({code}): {redact_output(out)[-OUTPUT_TAIL:]}"
-        )
+        raise WorkdirError(f"git failed ({code}): {redact_output(out)[-OUTPUT_TAIL:]}")
     return out.strip()
 
 
@@ -159,9 +156,11 @@ async def run_setup_commands(
     if marker.exists():
         return
     for index, cmd in enumerate(commands):
-        code, out = await _run(["sh", "-c", cmd.run], Path(workdir), env, cmd.timeout_seconds)
+        code, out, timed_out = await _run(
+            ["sh", "-c", cmd.run], Path(workdir), env, cmd.timeout_seconds
+        )
         tail = redact_output(out)[-OUTPUT_TAIL:]
-        if code == -1:
+        if timed_out:
             raise WorkdirError(
                 f"setup command {index} timed out after {cmd.timeout_seconds}s: {tail}"
             )
