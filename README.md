@@ -1050,7 +1050,7 @@ SID=$(curl -fsS -X POST localhost:8080/v1/sessions -H "$H" -H 'Content-Type: app
         -d '{"name":"demo"}' | jq -r .session_id)
 
 curl -fsS -X POST localhost:8080/v1/sessions/$SID/turns -H "$H" -H 'Content-Type: application/json' \
-     -d '{"prompt":"List the files in the workdir and explain what you see."}'
+     -d '{"text":"List the files in the workdir and explain what you see."}'
 
 curl -N localhost:8080/v1/sessions/$SID/events -H "$H"        # SSE; Ctrl-C to stop following
 
