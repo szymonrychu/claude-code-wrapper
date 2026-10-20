@@ -1,0 +1,53 @@
+{
+  "boot": {"bypass_dialog": true, "min_seconds": 0.1},
+  "turns": [
+    {
+      "match": "run the e2e lifecycle",
+      "steps": [
+        {"thinking": "Planning the e2e lifecycle."},
+        {"text": "Starting the work."},
+        {"tool": "Bash", "input": {"command": "echo hi"}, "result": "hi", "fail": false},
+        {"tool": "Write", "input": {"file_path": "notes.txt", "content": "e2e"}, "result": "written"},
+        {"subagent": {"id": "e2esub01", "type": "general-purpose", "text": "Subagent finished."}},
+        {"text": "All done."}
+      ]
+    },
+    {
+      "match": "sleep for a while",
+      "steps": [
+        {"text": "Sleeping now."},
+        {"sleep": 30},
+        {"text": "Woke up."}
+      ]
+    },
+    {
+      "match": "trigger a fatal error",
+      "steps": [
+        {"print": "\nAPI Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}\n"}
+      ]
+    },
+    {
+      "match": "ask the user a question",
+      "steps": [
+        {
+          "tool": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "question": "Which color should I use?",
+                "header": "Color",
+                "multiSelect": false,
+                "options": [
+                  {"label": "Red", "description": "A warm color"},
+                  {"label": "Blue", "description": "A cool color"}
+                ]
+              }
+            ]
+          },
+          "result": "unused: the relay denies the tool"
+        },
+        {"text": "Which color should I use: red or blue?"}
+      ]
+    }
+  ]
+}
