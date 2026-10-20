@@ -2,85 +2,191 @@
   {
     "id": "A1",
     "text": "A separate Python microservice extracted from the tatara, magic-trainer and ros2 Claude Code wrapper methodology.",
-    "decisions": ["D1", "D3", "D13", "D17"],
-    "tasks": ["repo-scaffold", "pty-process", "session-boot", "session-turns", "session-manager", "service-main"],
+    "decisions": [
+      "D1",
+      "D3",
+      "D13",
+      "D17"
+    ],
+    "tasks": [
+      "repo-scaffold",
+      "pty-process",
+      "session-boot",
+      "session-turns",
+      "session-manager",
+      "service-main"
+    ],
     "status": "approved"
   },
   {
     "id": "A2",
     "text": "Compatible with the ~/Documents/workbench project (workbench plugin flow runs inside a session).",
-    "decisions": ["D11"],
-    "tasks": ["workbench-example", "settings-render", "event-router", "workdir-init", "home-seed", "plugins-and-mise", "container"],
+    "decisions": [
+      "D11"
+    ],
+    "tasks": [
+      "workbench-example",
+      "settings-render",
+      "event-router",
+      "workdir-init",
+      "home-seed",
+      "plugins-and-mise",
+      "container"
+    ],
     "status": "approved"
   },
   {
     "id": "A3",
     "text": "Implemented following the plugin TDD methodology, with a fake claude end-to-end test of the full lifecycle.",
-    "decisions": ["D15"],
-    "tasks": ["fake-claude", "e2e-lifecycle"],
+    "decisions": [
+      "D15"
+    ],
+    "tasks": [
+      "fake-claude",
+      "e2e-lifecycle"
+    ],
     "status": "approved"
   },
   {
     "id": "A4",
     "text": "README.md covering the functionality: endpoints, methods, bodies, SSE events and hooks.",
-    "decisions": ["D16"],
-    "tasks": ["readme-api", "readme-config"],
+    "decisions": [
+      "D16"
+    ],
+    "tasks": [
+      "readme-api",
+      "readme-config"
+    ],
     "status": "approved"
   },
   {
     "id": "A5",
     "text": "Container and docker-compose with volumes for workdir and past sessions.",
-    "decisions": ["D4", "D10"],
-    "tasks": ["container", "session-manager"],
+    "decisions": [
+      "D4",
+      "D10"
+    ],
+    "tasks": [
+      "container",
+      "session-manager"
+    ],
     "status": "approved"
   },
   {
     "id": "A6",
     "text": "Configurable with config.yaml: initialisation details, prompts, mise tooling, plugin pre-install.",
-    "decisions": ["D8", "D12", "D14"],
-    "tasks": ["config-models", "workdir-init", "plugins-and-mise", "home-seed", "session-manager", "api-turns-events", "service-main"],
+    "decisions": [
+      "D8",
+      "D12",
+      "D14"
+    ],
+    "tasks": [
+      "config-models",
+      "workdir-init",
+      "plugins-and-mise",
+      "home-seed",
+      "session-manager",
+      "api-turns-events",
+      "service-main"
+    ],
     "status": "approved"
   },
   {
     "id": "A7",
     "text": "Definable hooks: onCreate, onTurn, onDestroy, onAgentResponse, onAgentToolCall and the rest of the event set.",
-    "decisions": ["D6", "D7"],
-    "tasks": ["hook-dispatcher", "hook-relay", "settings-render", "internal-api", "event-router", "transcript-tailer"],
+    "decisions": [
+      "D6",
+      "D7"
+    ],
+    "tasks": [
+      "hook-dispatcher",
+      "hook-relay",
+      "settings-render",
+      "internal-api",
+      "event-router",
+      "transcript-tailer"
+    ],
     "status": "approved"
   },
   {
     "id": "A8",
     "text": "Analyze the source projects to see what Claude Code functionality is used and how (docs/source-analysis.md).",
-    "decisions": ["D16"],
-    "tasks": ["source-analysis"],
+    "decisions": [
+      "D16"
+    ],
+    "tasks": [
+      "source-analysis"
+    ],
     "status": "approved"
   },
   {
     "id": "A9",
     "text": "Service configuration wraps the known Claude Code env vars as typed fields, with extra passthrough, per-session override and redaction.",
-    "decisions": ["D2"],
-    "tasks": ["claude-env-model", "config-models", "session-manager", "api-sessions"],
+    "decisions": [
+      "D2"
+    ],
+    "tasks": [
+      "claude-env-model",
+      "config-models",
+      "session-manager",
+      "api-sessions"
+    ],
     "status": "approved"
   },
   {
     "id": "A10",
     "text": "Documentation covers service configuration: every config.yaml key with type, default and mapped env var, with examples.",
-    "decisions": ["D2", "D16"],
-    "tasks": ["readme-config"],
+    "decisions": [
+      "D2",
+      "D16"
+    ],
+    "tasks": [
+      "readme-config"
+    ],
     "status": "approved"
   },
   {
     "id": "A11",
     "text": "HTTP API for sessions, turns, interrupt, transcript and event streaming (SSE plus polling), with auth and metrics.",
-    "decisions": ["D4", "D5", "D9", "D18"],
-    "tasks": ["api-sessions", "api-turns-events", "event-log", "internal-api", "metrics", "service-main"],
+    "decisions": [
+      "D4",
+      "D5",
+      "D9",
+      "D18"
+    ],
+    "tasks": [
+      "api-sessions",
+      "api-turns-events",
+      "event-log",
+      "internal-api",
+      "metrics",
+      "service-main"
+    ],
     "status": "approved"
   },
   {
     "id": "A12",
     "text": "The backend drives interactive claude under a PTY, not the Agent SDK and not -p.",
-    "decisions": ["D1"],
-    "tasks": ["pty-process", "session-boot", "fake-claude"],
+    "decisions": [
+      "D1"
+    ],
+    "tasks": [
+      "pty-process",
+      "session-boot",
+      "fake-claude"
+    ],
+    "status": "approved"
+  },
+  {
+    "id": "A13",
+    "text": "DELETE /v1/sessions/{id} keeps the session dir and the workdir by default; only ?purge=true deletes them, and a mounted workdir is never deleted.",
+    "decisions": [
+      "D19"
+    ],
+    "tasks": [
+      "session-manager",
+      "api-sessions"
+    ],
     "status": "approved"
   }
 ]

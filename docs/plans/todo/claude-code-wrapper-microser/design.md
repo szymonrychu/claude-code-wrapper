@@ -450,6 +450,9 @@ Serves A1.
 (label cardinality clamped), hook actions, restarts and tokens. Unauthenticated like the other ops
 routes. Serves A11.
 
+### D19: DELETE keeps files unless purge=true
+DELETE /v1/sessions/{id} keeps the session dir and the workdir by default; only ?purge=true deletes them, and a mounted workdir is never deleted. (user decision)
+
 ## Research
 
 | Lens | Ran or skipped | Adopted | Rejected |
@@ -538,6 +541,7 @@ routes. Serves A11.
 | D16 documentation | source-analysis, readme-api, readme-config |
 | D17 local delivery | e2e-lifecycle |
 | D18 metrics | metrics |
+| D19 DELETE keeps files unless purge=true | session-manager, api-sessions |
 
 ## Contracts
 
