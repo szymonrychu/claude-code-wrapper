@@ -147,7 +147,15 @@ class EventLog:
 
     def _open(self) -> None:
         try:
+            needs_newline = False
+            with contextlib.suppress(OSError), self.path.open("rb") as rf:
+                rf.seek(0, os.SEEK_END)
+                if rf.tell() > 0:
+                    rf.seek(-1, os.SEEK_END)
+                    needs_newline = rf.read(1) != b"\n"
             self._fh = self.path.open("a", encoding="utf-8")
+            if needs_newline:
+                self._fh.write("\n")
         except OSError as exc:
             self._fh = None
             self._warn(exc)
@@ -196,12 +204,14 @@ class EventLog:
 
     def _rotate(self) -> None:
         self._fh.close()
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        keep = lines[len(lines) // 2 :]
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
-        os.replace(tmp, self.path)
-        self._open()
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+            keep = lines[len(lines) // 2 :]
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
+            os.replace(tmp, self.path)
+        finally:
+            self._open()
 
     def append_threadsafe(self, type: str, data: dict[str, Any] | None = None) -> None:
         if type not in EVENT_TYPES:

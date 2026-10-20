@@ -138,3 +138,118 @@ async def test_readonly(tmp_path):
         ro.append("probe", {})
     assert [e async for e in ro.subscribe()] == []
     assert isinstance(ro.last(1)[0], Event)
+
+
+async def test_append_assigns_increasing_seq(tmp_path):
+    p = tmp_path / "e.jsonl"
+    log = EventLog(p, "s1")
+    seqs = [log.append("probe", {"i": i}).seq for i in range(5)]
+    assert seqs == [1, 2, 3, 4, 5]
+    assert [json.loads(line)["seq"] for line in p.read_text().splitlines()] == seqs
+
+
+async def test_seq_continues_after_reopen(tmp_path):
+    p = tmp_path / "e.jsonl"
+    log = EventLog(p, "s1")
+    log.append("probe", {})
+    log.append("probe", {})
+    log.close()
+    assert EventLog(p, "s1").append("probe", {}).seq == 3
+
+
+async def test_page_after_seq_and_limit(tmp_path):
+    log = EventLog(tmp_path / "e.jsonl", "s1")
+    for _ in range(10):
+        log.append("probe", {})
+    evs, more = log.page(after_seq=2, limit=3)
+    assert [e.seq for e in evs] == [3, 4, 5] and more
+    evs, more = log.page(after_seq=7, limit=3)
+    assert [e.seq for e in evs] == [8, 9, 10] and not more
+
+
+async def test_page_falls_back_to_file_beyond_ring(tmp_path):
+    log = EventLog(tmp_path / "e.jsonl", "s1", ring_size=3)
+    for _ in range(10):
+        log.append("probe", {})
+    evs, more = log.page(after_seq=0, limit=100)
+    assert [e.seq for e in evs] == list(range(1, 11)) and not more
+
+
+async def test_subscriber_receives_live_events(tmp_path):
+    log = EventLog(tmp_path / "e.jsonl", "s1")
+    sub = log.subscribe()
+    for i in range(3):
+        log.append("probe", {"i": i})
+    got = [await asyncio.wait_for(sub.__anext__(), 1) for _ in range(3)]
+    assert [e.seq for e in got] == [1, 2, 3]
+
+
+async def test_write_failure_does_not_raise(tmp_path, caplog):
+    log = EventLog(tmp_path / "e.jsonl", "s1")
+    log._fh.close()
+    caplog.set_level("ERROR")
+    assert log.append("probe", {}).seq == 1
+    log.append("probe", {})
+    assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 1
+
+
+async def test_unknown_event_type_rejected(tmp_path):
+    log = EventLog(tmp_path / "e.jsonl", "s1")
+    with pytest.raises(ValueError):
+        log.append("bogus", {})
+
+
+async def test_close_ends_subscriptions(tmp_path):
+    log = EventLog(tmp_path / "e.jsonl", "s1")
+    sub = log.subscribe()
+    log.close()
+    assert [e async for e in sub] == []
+
+
+async def test_readonly_log_pages_and_rejects_append(tmp_path):
+    p = tmp_path / "e.jsonl"
+    log = EventLog(p, "s1")
+    log.append("probe", {})
+    log.close()
+    ro = EventLog(p, "s1", readonly=True)
+    assert [e.seq for e in ro.page()[0]] == [1]
+    with pytest.raises(RuntimeError):
+        ro.append("probe", {})
+
+
+async def test_partial_trailing_line_does_not_swallow_next_event(tmp_path):
+    p = tmp_path / "e.jsonl"
+    log = EventLog(p, "s1")
+    log.append("probe", {})
+    log.append("probe", {})
+    log.close()
+    with p.open("a") as f:
+        f.write('{"seq": 9, "tr')
+    log2 = EventLog(p, "s1")
+    assert log2.append("probe", {}).seq == 3
+    log2.close()
+    ro = EventLog(p, "s1", readonly=True)
+    assert [e.seq for e in ro.page()[0]] == [1, 2, 3]
+
+
+async def test_rotation_failure_keeps_log_writable(tmp_path, monkeypatch):
+    import os
+
+    p = tmp_path / "e.jsonl"
+    log = EventLog(p, "s1", max_bytes=500)
+    real = os.replace
+    calls = {"n": 0}
+
+    def flaky(a, b):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("boom")
+        return real(a, b)
+
+    monkeypatch.setattr(os, "replace", flaky)
+    for _ in range(30):
+        log.append("probe", {})
+    log.close()
+    assert calls["n"] >= 2
+    last = json.loads(p.read_text().splitlines()[-1])
+    assert last["seq"] == 30
