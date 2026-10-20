@@ -30,7 +30,7 @@ def err(tmp_path, text, env=None):
     return str(exc.value)
 
 
-def test_empty_file_is_defaults(tmp_path):
+def test_minimal_config_defaults(tmp_path):
     cfg = load_config(write(tmp_path, ""))
     assert cfg.server.port == 8080 and cfg.server.internal_port == 8090
     assert cfg.paths.workdir_root == "/workdir"
@@ -49,13 +49,13 @@ def test_empty_file_is_defaults(tmp_path):
     assert cfg.hooks.onCreate == []
 
 
-def test_constants():
+def test_event_constants():
     assert len(HOOK_EVENTS) == 12 and HOOK_EVENTS[0] == "onCreate" and HOOK_EVENTS[-1] == "onError"
     assert VETO_EVENTS == ("onCreate", "onResume", "onTurn", "onAgentToolCall")
     assert TOOL_EVENTS == ("onAgentToolCall", "onToolResult")
 
 
-def test_extra_forbidden(tmp_path):
+def test_unknown_key_rejected_with_path(tmp_path):
     msg = err(tmp_path, "server: {bogus: 1}\nnope: 1\n")
     assert "server.bogus:" in msg and "nope:" in msg
 
@@ -76,7 +76,7 @@ def test_paths_absolute(tmp_path):
     assert "paths.workdir_root:" in err(tmp_path, "paths: {workdir_root: rel}\n")
 
 
-def test_workdir_modes(tmp_path):
+def test_workdir_mode_rules(tmp_path):
     assert "init.workdir.path:" in err(tmp_path, "init: {workdir: {mode: mounted}}\n")
     assert "init.workdir.path:" in err(tmp_path, "init: {workdir: {mode: mounted, path: rel}}\n")
     assert "init.workdir.repo_url:" in err(tmp_path, "init: {workdir: {mode: clone}}\n")
@@ -98,7 +98,7 @@ def test_dangerous_flag_rejected(tmp_path):
     assert "claude.extra_args:" in msg
 
 
-def test_hook_actions(tmp_path):
+def test_webhook_and_command_action_validation(tmp_path):
     cfg = load_config(
         write(
             tmp_path,
@@ -124,18 +124,18 @@ def test_webhook_url_scheme(tmp_path):
     assert "hooks.onTurn.0.webhook.url:" in msg
 
 
-def test_matcher_rules(tmp_path):
+def test_matcher_only_on_tool_events(tmp_path):
     msg = err(tmp_path, "hooks: {onTurn: [{type: command, run: x, matcher: Bash}]}\n")
     assert "hooks.onTurn.0.command.matcher:" in msg
     msg = err(tmp_path, "hooks: {onToolResult: [{type: command, run: x, matcher: '('}]}\n")
     assert "hooks.onToolResult.0.command.matcher:" in msg
 
 
-def test_unknown_hook_event(tmp_path):
+def test_hook_event_names_validated(tmp_path):
     assert "hooks.onBogus:" in err(tmp_path, "hooks: {onBogus: []}\n")
 
 
-def test_templates(tmp_path):
+def test_template_placeholders_declared(tmp_path):
     ok = """
 prompts:
   initial_prompt: {template: greet, variables: {who: bob}}
@@ -153,7 +153,7 @@ def test_initial_prompt_string(tmp_path):
     assert cfg.prompts.initial_prompt == "hello"
 
 
-def test_plugins(tmp_path):
+def test_plugin_ids_validated(tmp_path):
     ok = """
 plugins:
   marketplaces: [{name: mine, source: github:me/m}]
@@ -213,7 +213,7 @@ def test_bad_yaml(tmp_path):
         load_config(tmp_path / "missing.yaml")
 
 
-def test_redacted(tmp_path, monkeypatch):
+def test_redacted_masks_secrets(tmp_path, monkeypatch):
     cfg = load_config(
         write(
             tmp_path,
@@ -248,7 +248,7 @@ hooks:
     assert Config().redacted()["server"]["auth_token"] == ""
 
 
-def test_example_loads_without_env(monkeypatch):
+def test_full_example_loads(monkeypatch):
     for k in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CCW_AUTH_TOKEN"):
         monkeypatch.delenv(k, raising=False)
     cfg = load_config(ROOT / "config.example.yaml")
@@ -270,3 +270,22 @@ def test_example_loads_without_env(monkeypatch):
         assert f"\n{section}:" in "\n" + text
     assert cfg.server.auth_token == ""
     TypeAdapter(dict).validate_python(cfg.redacted())
+
+
+def test_claude_env_section_typed(tmp_path):
+    from claude_code_wrapper.claude_env import ClaudeEnv
+
+    text = "claude:\n  env:\n    claude_code_disable_nonessential_traffic: true\n"
+    cfg = load_config(write(tmp_path, text))
+    assert isinstance(cfg.claude.env, ClaudeEnv)
+    env = cfg.claude.env.to_env()
+    assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    assert "claude.env" in err(tmp_path, "claude:\n  env:\n    not_a_var: 1\n")
+
+
+def test_empty_auth_vars_are_unset(monkeypatch):
+    for k in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CCW_AUTH_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = load_config(ROOT / "config.example.yaml")
+    assert cfg.claude.env.to_env() == {}
+    assert cfg.claude.env.redacted() == {}

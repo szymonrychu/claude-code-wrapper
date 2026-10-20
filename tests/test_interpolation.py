@@ -3,19 +3,19 @@ import pytest
 from claude_code_wrapper.interpolation import InterpolationError, interpolate
 
 
-def test_var_and_default():
+def test_interpolation_env_and_default():
     env = {"A": "x", "E": ""}
     assert interpolate("${A}-${B:-d}-${E:-e}", env) == "x-d-e"
 
 
-def test_unset_raises_with_path():
+def test_unset_var_error_names_path():
     with pytest.raises(InterpolationError) as exc:
         interpolate({"a": [{"b": "${NOPE}"}]}, {})
     assert "a.0.b" in str(exc.value)
     assert "NOPE" in str(exc.value)
 
 
-def test_dollar_escape_and_keys_untouched():
+def test_dollar_escape():
     out = interpolate({"${K}": "$$HOME ${X:-$$}"}, {})
     assert out == {"${K}": "$HOME $"}
 
