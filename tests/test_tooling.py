@@ -35,7 +35,7 @@ def cfg(tmp_path: Path, **kw) -> MiseConfig:
     return MiseConfig.model_validate({"global_config_path": str(tmp_path / "g/config.toml"), **kw})
 
 
-def test_render_tools(tmp_path):
+def test_render_global_toml(tmp_path):
     c = cfg(tmp_path, tools={"node": "22", "python": "3.12"})
     p = render_global_mise(c)
     assert p == tmp_path / "g/config.toml"
@@ -54,7 +54,7 @@ def test_render_none(tmp_path):
     assert render_global_mise(cfg(tmp_path)) is None
 
 
-async def test_install_global(tmp_path, fake_mise):
+async def test_install_global_invokes_mise_install(tmp_path, fake_mise):
     c = cfg(tmp_path, tools={"node": "22"})
     render_global_mise(c)
     await install_global(c, {})
@@ -67,7 +67,7 @@ async def test_install_global_skips_when_not_rendered(tmp_path, fake_mise):
     assert not fake_mise.exists()
 
 
-async def test_install_global_failure(tmp_path, fake_mise, caplog):
+async def test_failure_required_raises(tmp_path, fake_mise, caplog):
     c = cfg(tmp_path, tools={"node": "22"})
     render_global_mise(c)
     with pytest.raises(ToolingError):
@@ -85,7 +85,7 @@ async def test_missing_binary(tmp_path, monkeypatch):
         await install_global(c, {})
 
 
-async def test_install_workdir(tmp_path, fake_mise):
+async def test_install_workdir_trusts_then_installs(tmp_path, fake_mise):
     wd = tmp_path / "wd"
     wd.mkdir()
     assert await install_workdir(cfg(tmp_path), wd, {}) is False
@@ -97,7 +97,7 @@ async def test_install_workdir(tmp_path, fake_mise):
     assert await install_workdir(cfg(tmp_path, install_workdir=False), wd, {}) is False
 
 
-def test_mise_env(tmp_path, monkeypatch):
+def test_mise_env_vars(tmp_path, monkeypatch):
     monkeypatch.setenv("MISE_DATA_DIR", "/data/mise")
     c = cfg(tmp_path, tools={"node": "22"}, trusted_paths=["/workdir", "/x"])
     render_global_mise(c)
@@ -111,3 +111,10 @@ def test_mise_env(tmp_path, monkeypatch):
     monkeypatch.delenv("MISE_DATA_DIR")
     assert "MISE_DATA_DIR" not in mise_env(cfg(tmp_path))
     assert "MISE_GLOBAL_CONFIG_FILE" not in mise_env(cfg(tmp_path))
+
+
+async def test_install_workdir_noop_without_config(tmp_path, fake_mise):
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    assert await install_workdir(cfg(tmp_path), wd, {}) is False
+    assert not fake_mise.exists()

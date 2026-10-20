@@ -85,11 +85,17 @@ async def install_plugins(
     env: Mapping[str, str],
 ) -> PluginReport:
     report = PluginReport()
+    sources: dict[str, str] = {}
     for m in plugins_cfg.marketplaces:
-        if _is_local_path(m.source) and not Path(m.source).expanduser().is_dir():
-            raise PluginInstallError(
-                m.name, None, f"marketplace source {m.source!r} is not a directory"
-            )
+        sources[m.name] = m.source
+        if _is_local_path(m.source):
+            # claude runs with cwd=workdir, so relative paths resolve against it
+            path = (workdir / Path(m.source).expanduser()).resolve()
+            if not path.is_dir():
+                raise PluginInstallError(
+                    m.name, None, f"marketplace source {m.source!r} is not a directory"
+                )
+            sources[m.name] = str(path)
 
     full = {**env, "CLAUDE_CONFIG_DIR": str(config_dir), "DISABLE_AUTOUPDATER": "1"}
     redactor = Redactor(env.values())
@@ -112,8 +118,9 @@ async def install_plugins(
     for m in plugins_cfg.marketplaces:
         if m.name in known:
             continue
-        source = str(Path(m.source).expanduser()) if _is_local_path(m.source) else m.source
-        await run(m.name, "plugin", "marketplace", "add", source, "--scope", "user", "--json")
+        await run(
+            m.name, "plugin", "marketplace", "add", sources[m.name], "--scope", "user", "--json"
+        )
 
     failed: set[str] = set()
     present = _ids(await run("plugin list", "plugin", "list", "--json"), "id", "plugin list")
