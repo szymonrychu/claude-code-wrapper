@@ -1740,7 +1740,7 @@ hooks:
   onTurnComplete:
     - {type: webhook, url: "https://example.com/turn-done", secret: "${HOOK_SECRET:-}", retries: 3}
   onAgentToolCall:
-    - {type: command, run: ./guard.sh, matcher: Bash, blocking: true, on_error: deny}
+    - {type: command, run: "grep -q 'rm -rf' && { echo blocked >&2; exit 2; } || exit 0", matcher: Bash, blocking: true, on_error: deny}
 ```
 
 | Key | Type | Default | Env var | Description |

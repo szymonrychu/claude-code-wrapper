@@ -15,7 +15,6 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +22,7 @@ import httpx
 
 from claude_code_wrapper.config import VETO_EVENTS, CommandAction, HooksConfig, WebhookAction
 from claude_code_wrapper.redact import Redactor
+from claude_code_wrapper.timeutil import now_iso
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def build_payload(
         "session_id": session_id,
         "claude_session_id": claude_session_id,
         "turn_id": turn_id,
-        "ts": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "ts": now_iso(),
         "workdir": workdir,
         "data": dict(data),
     }

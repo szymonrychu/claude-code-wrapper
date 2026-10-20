@@ -10,7 +10,6 @@ leave a torn final line). A stopped session's store is opened read-only.
 
 from __future__ import annotations
 
-import datetime
 import json
 import logging
 import os
@@ -20,6 +19,8 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from .timeutil import now_iso  # noqa: F401  (re-exported: the one service timestamp)
 
 log = logging.getLogger(__name__)
 
@@ -42,11 +43,6 @@ _DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
 _ns_clock: Callable[[], int] = time.time_ns
 _id_lock = threading.Lock()
 _last_ns = 0
-
-
-def now_iso() -> str:
-    """UTC now as ISO 8601 with milliseconds, the timestamp format of every record."""
-    return datetime.datetime.now(datetime.UTC).isoformat(timespec="milliseconds")
 
 
 def base36(value: int) -> str:

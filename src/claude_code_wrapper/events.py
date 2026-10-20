@@ -10,9 +10,10 @@ import os
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from claude_code_wrapper.timeutil import now_iso
 
 log = logging.getLogger(__name__)
 
@@ -59,10 +60,6 @@ class Event:
         return cls(
             int(d["seq"]), str(d["ts"]), str(d["session_id"]), str(d["type"]), dict(d["data"])
         )
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class Subscription:
@@ -183,7 +180,7 @@ class EventLog:
         if type not in EVENT_TYPES:
             raise ValueError(f"unknown event type: {type}")
         self._seq += 1
-        ev = Event(self._seq, _now(), self.session_id, type, dict(data or {}))
+        ev = Event(self._seq, now_iso(), self.session_id, type, dict(data or {}))
         self._ring.append(ev)
         self._write(ev)
         for sub in list(self._subs):

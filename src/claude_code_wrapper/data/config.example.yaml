@@ -125,7 +125,8 @@ hooks:
     # - {type: command, run: "jq -r .data.text >> ${CCW_SESSIONS_ROOT:-/sessions}/replies.log"}
   onAgentToolCall:           # PreToolUse; a blocking deny blocks the tool call
     - type: command
-      run: "./guard.sh"
+      # Reads the hook payload (JSON) on stdin; exit 2 denies, stderr is the reason.
+      run: "if grep -q 'rm -rf'; then echo 'rm -rf is blocked' >&2; exit 2; fi"
       matcher: "Bash"
       blocking: true
       on_error: allow
