@@ -205,7 +205,7 @@ class EventLog:
     def _rotate(self) -> None:
         self._fh.close()
         try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            lines = self.path.read_text(encoding="utf-8", errors="replace").splitlines()
             keep = lines[len(lines) // 2 :]
             tmp = self.path.with_name(self.path.name + ".tmp")
             tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
