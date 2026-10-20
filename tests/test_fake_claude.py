@@ -186,6 +186,15 @@ def test_boot_banner_has_ansi_and_dialog(spawn):
     assert "2. Yes, I accept" in p.buf
 
 
+def test_boot_dialog_requires_down_then_cr(spawn):
+    p = spawn()
+    p.boot()
+    q = spawn()
+    q.wait_for("Bypass Permissions mode")
+    q.send(b"\r")
+    assert q.wait_exit() == 1
+
+
 def test_cr_without_down_exits_1(spawn):
     p = spawn()
     p.wait_for("Bypass Permissions mode")
