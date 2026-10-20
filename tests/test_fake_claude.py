@@ -193,7 +193,7 @@ def test_cr_without_down_exits_1(spawn):
     assert p.wait_exit() == 1
 
 
-def test_input_before_min_seconds_exits_1(spawn):
+def test_early_input_exits(spawn):
     p = spawn()
     p.wait_for("Fake Claude")
     p.send(b"x")
@@ -267,7 +267,7 @@ def test_default_echo_turn(spawn, env, work, scenario_file):
     assert UUID_RE.match(lines[0]["sessionId"])
 
 
-def test_cr_in_same_chunk_does_not_submit(spawn, env, work, scenario_file):
+def test_same_chunk_cr_does_not_submit(spawn, env, work, scenario_file):
     sc = scenario_file({"boot": {"bypass_dialog": False}})
     p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
     p.wait_for("? for shortcuts")
@@ -284,13 +284,13 @@ def test_cr_in_same_chunk_does_not_submit(spawn, env, work, scenario_file):
     assert lines[0]["message"]["content"].strip() == "abc"
 
 
-def test_resume_missing(env, work):
+def test_resume_unknown_id_exits_1(env, work):
     r = run_cli(["--resume", "nope"], env, work)
     assert r.returncode == 1
     assert "No conversation found with session ID" in (r.stdout + r.stderr)
 
 
-def test_resume_appends(spawn, env, work):
+def test_resume_appends_same_transcript(spawn, env, work):
     sid = "22222222-2222-4222-8222-222222222222"
     p = spawn(["--session-id", sid])
     p.boot()
@@ -311,7 +311,7 @@ def test_project_dir_name_override(spawn, env):
     assert list((Path(env["CLAUDE_CONFIG_DIR"]) / "projects" / "custom-proj").glob("*.jsonl"))
 
 
-def test_interrupt_during_sleep(spawn, env, work, tmp_path, scenario_file):
+def test_esc_interrupts_without_stop_hook(spawn, env, work, tmp_path, scenario_file):
     out = tmp_path / "stop.out"
     hook_settings(
         env["CLAUDE_CONFIG_DIR"],
@@ -364,7 +364,7 @@ def test_print_and_exit_steps(spawn, scenario_file):
     assert since <= len(p.buf)
 
 
-def test_pre_tool_use_deny_and_additional_context(spawn, env, work, tmp_path, scenario_file):
+def test_pretooluse_deny_blocks_tool(spawn, env, work, tmp_path, scenario_file):
     deny = tmp_path / "deny.sh"
     deny.write_text('cat >/dev/null; echo "blocked by policy" >&2; exit 2\n')
     ctx = tmp_path / "ctx.sh"
@@ -447,7 +447,7 @@ def test_failing_tool_runs_post_tool_use_failure(spawn, env, tmp_path, scenario_
     assert pl["hook_event_name"] == "PostToolUseFailure" and pl["tool_response"]
 
 
-def test_subagent_step(spawn, env, work, tmp_path, scenario_file):
+def test_subagent_hooks_and_sidechain_transcript(spawn, env, work, tmp_path, scenario_file):
     out = tmp_path / "sub.out"
     hook_settings(
         env["CLAUDE_CONFIG_DIR"],
@@ -486,7 +486,7 @@ def test_subagent_step(spawn, env, work, tmp_path, scenario_file):
     assert pls[1]["agent_transcript_path"] == str(f)
 
 
-def test_background_step_runs_stop_again(spawn, env, tmp_path, scenario_file):
+def test_background_stop_after_turn(spawn, env, tmp_path, scenario_file):
     out = tmp_path / "bg.out"
     hook_settings(
         env["CLAUDE_CONFIG_DIR"],
@@ -538,7 +538,7 @@ def test_hook_timeout_honoured(spawn, env, tmp_path, scenario_file):
     assert time.monotonic() - t0 < 8
 
 
-def test_plugin_flow(env, work, tmp_path):
+def test_plugin_commands_state(env, work, tmp_path):
     mkt = tmp_path / "mkt"
     (mkt / ".claude-plugin").mkdir(parents=True)
     (mkt / ".claude-plugin" / "marketplace.json").write_text(json.dumps({"name": "mymkt"}))
@@ -575,3 +575,70 @@ def test_shim_fixture(fake_claude_bin):
         [str(fake_claude_bin), "--version"], capture_output=True, text=True, check=False
     )
     assert r.stdout.strip() == "0.0.0 (Fake Claude)"
+
+
+def test_paste_then_separate_cr_submits(spawn, env, work):
+    p = spawn()
+    p.boot()
+    p.submit("separate")
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert lines[0]["message"]["content"].strip() == "separate"
+
+
+def test_transcript_written_at_session_path(spawn, env, work):
+    sid = "44444444-4444-4444-8444-444444444444"
+    p = spawn(["--session-id", sid], CLAUDE_CODE_PROJECT_DIR_NAME="pinned-dir")
+    p.boot()
+    p.submit("hi")
+    f = Path(env["CLAUDE_CONFIG_DIR"]) / "projects" / "pinned-dir" / f"{sid}.jsonl"
+    assert f.is_file()
+    assert json.loads(f.read_text().splitlines()[0])["sessionId"] == sid
+
+
+def test_stop_hook_receives_last_assistant_message(spawn, env, work, tmp_path):
+    out = tmp_path / "stop.out"
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": f"cat >> {out}"}]}]},
+    )
+    p = spawn()
+    p.boot()
+    p.submit("go")
+    pl = json.loads(out.read_text())
+    assert pl["last_assistant_message"] == "All done."
+    assert pl["transcript_path"].endswith(".jsonl")
+
+
+def test_stdlib_only():
+    import ast
+
+    tree = ast.parse(FAKE.read_text())
+    mods = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            mods |= {a.name.split(".")[0] for a in n.names}
+        elif isinstance(n, ast.ImportFrom) and n.module and n.level == 0:
+            mods.add(n.module.split(".")[0])
+    assert mods <= set(sys.stdlib_module_names) | {"__future__"}, mods
+
+
+def test_subagent_path_matches_real_layout(spawn, env, work, scenario_file):
+    sc = scenario_file(
+        {
+            "boot": {"bypass_dialog": False},
+            "turns": [
+                {
+                    "match": ".*",
+                    "steps": [{"subagent": {"id": "z9", "type": "Plan", "text": "ok"}}],
+                }
+            ],
+        }
+    )
+    sid = "55555555-5555-4555-8555-555555555555"
+    p = spawn(["--session-id", sid], FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.submit("x")
+    proj = re.sub(r"[^A-Za-z0-9]", "-", work)
+    main = Path(env["CLAUDE_CONFIG_DIR"]) / "projects" / proj / f"{sid}.jsonl"
+    sub = main.parent / sid / "subagents" / "agent-z9.jsonl"
+    assert main.is_file() and sub.is_file()
