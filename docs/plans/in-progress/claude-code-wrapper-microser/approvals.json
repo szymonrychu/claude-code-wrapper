@@ -256,5 +256,16 @@
       "readme-config"
     ],
     "status": "approved"
+  },
+  {
+    "id": "A19",
+    "text": "User (mid-run): make the service installable through pip as a package exposing a command on PATH, runnable in a Dockerfile or on an existing containerless installation.",
+    "decisions": [
+      "D25"
+    ],
+    "tasks": [
+      "pip-package"
+    ],
+    "status": "approved"
   }
 ]

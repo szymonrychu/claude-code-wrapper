@@ -468,6 +468,9 @@ Trust model: one wrapper instance per project or assignment; bearer-token caller
 ### D24: Secret env overrides are not persisted
 Per-session secret env overrides are never persisted; resuming such a session requires resending them in the resume request body. (user decision)
 
+### D25: pip-installable package with ccw on PATH
+User (mid-run): make the service installable through pip as a package exposing a command on PATH, runnable in a Dockerfile or on an existing containerless installation. (user decision)
+
 ## Research
 
 | Lens | Ran or skipped | Adopted | Rejected |
@@ -562,6 +565,7 @@ Per-session secret env overrides are never persisted; resuming such a session re
 | D22 onTurnComplete fires for every terminal turn state | event-router, readme-api, e2e-lifecycle |
 | D23 Trust model: one instance per project, trusted callers | readme-api, readme-config, api-sessions, api-turns-events |
 | D24 Secret env overrides are not persisted | session-manager, api-sessions, readme-config |
+| D25 pip-installable package with ccw on PATH | pip-package |
 
 ## Contracts
 
