@@ -19,6 +19,17 @@ services:
     # Must exceed limits.shutdown_timeout_seconds (10 in config.example.yaml).
     stop_grace_period: 30s
 
+  # Makes `docker compose up -d` return only once ccw is healthy: the published port
+  # resets connections until uvicorn is listening, which breaks scripted smoke checks.
+  ccw-ready:
+    image: claude-code-wrapper:local
+    pull_policy: never
+    entrypoint: ["true"]
+    restart: "no"
+    depends_on:
+      ccw:
+        condition: service_healthy
+
 volumes:
   workdir:
   sessions:

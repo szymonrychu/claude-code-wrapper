@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- builder: resolve the project's locked dependencies into /app/.venv ----
-# trixie, not bookworm: bookworm apt signing keys are rejected as invalid on current mirrors.
-FROM python:3.12-slim-trixie AS builder
+FROM python:3.12-slim-bookworm AS builder
 # uv pinned so the lockfile resolves identically on every build (0.13.x reads uv.lock v1).
 COPY --from=ghcr.io/astral-sh/uv:0.13.4 /uv /uvx /bin/
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
@@ -14,10 +13,10 @@ RUN uv sync --frozen --no-dev
 
 # ---- node source: official image, copied so node is exact and not an apt guess ----
 # Node 24 pinned: Claude Code requires a current LTS line; bump deliberately with the CLI.
-FROM node:24.22.0-trixie-slim AS node
+FROM node:24.22.0-bookworm-slim AS node
 
 # ---- runtime ----
-FROM python:3.12-slim-trixie AS runtime
+FROM python:3.12-slim-bookworm AS runtime
 
 # Claude Code CLI version pinned: the PTY driver depends on its dialogs and hook behaviour.
 ARG CLAUDE_CODE_VERSION=2.1.304
@@ -73,9 +72,15 @@ ENV HOME=/home/agent \
     CCW_CONFIG=/etc/ccw/config.yaml \
     PATH=/app/.venv/bin:/opt/mise/shims:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# Debian's /etc/profile resets PATH in login shells (bash -l): expose ccw and the mise shims there too.
+USER root
+RUN ln -s /app/.venv/bin/ccw /usr/local/bin/ccw \
+ && ln -s /app/.venv/bin/ccw-hook /usr/local/bin/ccw-hook \
+ && printf 'export PATH=/opt/mise/shims:$PATH\n' > /etc/profile.d/mise-shims.sh
+
 USER agent
 WORKDIR /app
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --start-interval=1s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 CMD ["ccw", "serve"]
