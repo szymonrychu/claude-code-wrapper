@@ -337,6 +337,15 @@ async def test_stop_flushes_before_reading_marker_and_usage(h):
     assert h.events("turn_completed")
 
 
+async def test_usage_reset_after_stop(h):
+    h.transcript.write_text(assistant("one", usage={"input_tokens": 7}))
+    await h.router.handle_claude_hook("Stop", {"session_id": CLAUDE_SID})
+    await h.router.handle_claude_hook("Stop", {"session_id": CLAUDE_SID})
+    first, second = h.calls("complete")
+    assert first[2]["input_tokens"] == 7
+    assert not second[2] and not second[3]
+
+
 async def test_stop_none_record_emits_nothing(h):
     h.session.complete_result = None
     await h.router.handle_claude_hook("Stop", {})
@@ -478,6 +487,22 @@ async def test_resumed_history_is_not_replayed(tmp_path):
         f.write(assistant("new", mid="m9"))
     await wait_until(lambda: h.events("assistant_text"))
     assert [e.data["text"] for e in h.events("assistant_text")] == ["new"]
+    await h.router.close()
+
+
+async def test_resumed_subagent_history_is_not_replayed(tmp_path):
+    h = Harness(tmp_path)
+    h.session.spec.resume = True
+    h.transcript.write_text(assistant("old"))
+    sub = h.transcript.parent / "main" / "subagents"
+    sub.mkdir(parents=True)
+    (sub / "agent-abc.jsonl").write_text(assistant("old sub", mid="ms"))
+    h.router.ensure_tailing()
+    await asyncio.sleep(0.3)
+    with (sub / "agent-abc.jsonl").open("a") as f:
+        f.write(assistant("new sub", mid="ms2"))
+    await wait_until(lambda: h.events("assistant_text"))
+    assert [e.data["text"] for e in h.events("assistant_text")] == ["new sub"]
     await h.router.close()
 
 

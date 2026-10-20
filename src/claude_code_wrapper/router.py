@@ -249,13 +249,15 @@ class SessionRouter(SessionListener):
         # A resumed session's transcript already holds its history: do not replay it as events.
         spec = getattr(self.session, "spec", None)
         self._dropping_history = bool(getattr(spec, "resume", False)) and path.exists()
-        self._tasks.append(asyncio.ensure_future(self._run_tailer(self._tailer)))
         self._tasks.append(asyncio.ensure_future(self._watcher.run()))
+        self._tasks.append(asyncio.ensure_future(self._run_tailer(self._tailer)))
 
     async def _run_tailer(self, tailer: TranscriptTailer) -> None:
         if self._dropping_history:
             try:
                 await tailer.flush()
+                if self._watcher is not None:
+                    await self._watcher.flush()
             finally:
                 self._dropping_history = False
         await tailer.run()
@@ -370,6 +372,7 @@ class SessionRouter(SessionListener):
             model_tokens=per_model or None,
             marker_turn_id=self._last_marker,
         )
+        self._usage.reset()
         if record is not None:
             event = self._emit_turn_event("turn_completed", record)
             await self._after_turn(record, event)
