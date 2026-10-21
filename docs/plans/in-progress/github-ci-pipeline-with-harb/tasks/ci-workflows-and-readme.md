@@ -1,6 +1,6 @@
 ---
 title: CI workflows and README
-status: todo
+status: in-progress
 repo: .
 value: "Merges to main build, test and push the image to Harbor; tags release it"
 files: [.github/workflows/build.yaml, .github/workflows/release.yaml, renovate.json, tests/test_ci_workflows.py, README.md]
