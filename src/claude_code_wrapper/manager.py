@@ -68,6 +68,9 @@ from .workdir import prepare_workdir, run_setup_commands, write_gitconfig
 
 log = logging.getLogger(__name__)
 
+#: Where `sessions.exit_when_dead` leaves a Kubernetes termination message.
+TERMINATION_LOG = "/dev/termination-log"
+
 #: How often the idle reaper looks for sessions idle longer than `idle_timeout_seconds`.
 REAPER_INTERVAL_SECONDS = 30.0
 # Shares of `limits.shutdown_timeout_seconds` (see SessionManager.shutdown).
@@ -263,8 +266,11 @@ class SessionManager:
         relay_command: str | None = None,
         reaper_interval: float = REAPER_INTERVAL_SECONDS,
         metrics: Metrics | None = None,
+        on_exit_request: Callable[[int], None] | None = None,
     ) -> None:
         self.metrics = metrics
+        self._on_exit_request = on_exit_request
+        self._created_any = False
         self.cfg = cfg
         self.internal_url = internal_url
         self.service_env = dict(service_env)
@@ -438,6 +444,7 @@ class SessionManager:
             self._track(ctx, self._initial_turn(ctx, initial))
         self._set_step(ctx, "ready")
         self._count_created("ok")
+        self._created_any = True
         return self._snapshot(ctx)
 
     def _count_created(self, result: str) -> None:
@@ -715,7 +722,26 @@ class SessionManager:
         if purge:
             self._purge(session_id)
             snapshot["purged"] = True
+        self._maybe_exit_when_empty()
         return snapshot
+
+    def _request_exit(self, code: int) -> None:
+        if self._on_exit_request is not None and not self._closing:
+            self._on_exit_request(code)
+
+    def _maybe_exit_when_empty(self) -> None:
+        """`sessions.exit_when_last_destroyed`: nothing active after a session was created."""
+        if self.cfg.sessions.exit_when_last_destroyed and self._created_any and not self._active:
+            self._request_exit(0)
+
+    def _exit_for_dead(self, ctx: _Active, last_fatal: str | None) -> None:
+        """`sessions.exit_when_dead`: leave a termination message, then ask for exit 3."""
+        if not self.cfg.sessions.exit_when_dead or self._closing:
+            return
+        message = f"session {ctx.session_id} dead: {last_fatal or 'claude exited'}"
+        with contextlib.suppress(OSError):
+            Path(TERMINATION_LOG).write_text(message, encoding="utf-8")
+        self._request_exit(3)
 
     def _start_destroy(
         self,
@@ -891,9 +917,11 @@ class SessionManager:
         """A running session's claude is dead for good: release it, keep state `dead`."""
         if ctx.phase != "running":
             return
+        last_fatal = ctx.session.last_fatal if ctx.session is not None else None
         await self._teardown(ctx, 0)
         ctx.meta.update(state="dead")
         self._finish(ctx)
+        self._exit_for_dead(ctx, last_fatal)
 
     # ------------------------------------------------------------------ service lifecycle
 
@@ -946,7 +974,7 @@ class SessionManager:
             idle = now - self._last_activity(ctx)
             if idle > limit:
                 log.info("session %s: idle for %.0fs, stopping", ctx.session_id, idle)
-                await self.destroy(ctx.session_id)
+                await self.destroy(ctx.session_id)  # may request the exit
                 reaped.append(ctx.session_id)
         return reaped
 

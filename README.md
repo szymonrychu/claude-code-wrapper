@@ -1982,6 +1982,8 @@ sessions:
 | `sessions.defer_stop_on_background_tasks` | boolean | `false` | - | Keep the running turn open (`turn_deferred`) while a Stop reports non-empty `background_tasks`; a later Stop with none completes it. See [`onStop`](#onstop). |
 | `sessions.probe_alive_token` | string | `"CCW-ALIVE"` | - | Non-empty token a probe asks Claude to reply with; an assistant message containing it answers the probe, and the default probe text names it. |
 | `sessions.restart_continue_prompt` | string | `""` | - | Prompt pasted (with the same turn marker) into a resumed relaunch after claude crashed mid-turn, so the running turn continues instead of failing with `claude_exited` (a `turn_resumed` event); empty disables it. See "Crash during a turn" under `POST /v1/sessions/{id}/turns`. |
+| `sessions.exit_when_last_destroyed` | boolean | `false` | - | Exit 0 through the normal shutdown (hooks drained) when a DELETE or the idle reaper leaves no active session and one was created in this process; the triggering DELETE still returns its full body first. |
+| `sessions.exit_when_dead` | boolean | `false` | - | Exit 3 through the normal shutdown when a session reaches `dead`, after writing `session <id> dead: <last_fatal or "claude exited">` to `/dev/termination-log` when writable. |
 
 ### `limits`
 
@@ -2499,6 +2501,10 @@ No chart is shipped; the image runs as-is.
 - **Persistent storage**: back `paths.sessions_root` (sessions and transcripts, required to
   resume after a restart) and, if workdirs must survive, `paths.workdir_root`. The mise volume is a
   cache and may be ephemeral.
+- **Job completion and termination message**: `sessions.exit_when_last_destroyed: true` makes the
+  process exit 0 once the last session is deleted (or reaped idle), so a Job completes;
+  `sessions.exit_when_dead: true` exits 3 when a session dies and writes the reason to
+  `/dev/termination-log` for the pod's termination message. Both stop through the normal shutdown.
 - **Replicas**: one instance per project or assignment; see the [Trust model](#trust-model). Keep
   the Service cluster-internal and never expose it through a public ingress.
 
