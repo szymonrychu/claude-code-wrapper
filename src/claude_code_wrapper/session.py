@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import contextlib
+import fnmatch
 import inspect
 import logging
 import os
@@ -169,6 +170,43 @@ def build_argv(spec: SessionSpec) -> list[str]:
     return _argv(spec, resume=spec.resume or os.path.isfile(transcript_path_for(spec)))
 
 
+MANAGED_ENV_NAMES = frozenset(
+    {
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_CODE_PROJECT_DIR_NAME",
+        "GIT_CONFIG_GLOBAL",
+        "CCW_SESSION_ID",
+        "CCW_INTERNAL_URL",
+        "CCW_HOOK_TOKEN",
+        "CCW_TOOL_GATE_FAIL",
+        "CCW_GATE_TIMEOUT",
+    }
+)
+
+
+def passthrough_names(
+    service_env: Mapping[str, str], patterns: Iterable[str], exclude: Iterable[str] = ()
+) -> list[str]:
+    """Service env names selected by `fnmatchcase` patterns minus the exclude patterns.
+
+    `CCW_*` names and service-managed names are never selected, even through `*`; a
+    refused literal pattern is logged. Shared by `build_env` and the setup-command env.
+    """
+    excludes = list(exclude)
+    chosen: list[str] = []
+    for pattern in patterns:
+        if pattern.startswith("CCW_") or pattern in MANAGED_ENV_NAMES:
+            log.warning("passthrough of %s refused: service-managed or service-private", pattern)
+        for name in service_env:
+            if name in chosen or name.startswith("CCW_") or name in MANAGED_ENV_NAMES:
+                continue
+            if fnmatch.fnmatchcase(name, pattern) and not any(
+                fnmatch.fnmatchcase(name, e) for e in excludes
+            ):
+                chosen.append(name)
+    return sorted(chosen)
+
+
 def build_env(
     *,
     service_env: Mapping[str, str],
@@ -182,6 +220,7 @@ def build_env(
     gate_timeout: float,
     mise_env: Mapping[str, str] | None,
     passthrough: Iterable[str],
+    passthrough_exclude: Iterable[str] = (),
 ) -> dict[str, str]:
     """The complete claude child env, built from an allow-list rather than filtered.
 
@@ -204,11 +243,8 @@ def build_env(
         "CCW_GATE_TIMEOUT": f"{gate_timeout:g}",
     }
     env = {name: service_env[name] for name in BASE_ENV if name in service_env}
-    for name in passthrough:
-        if name.startswith("CCW_") or name in managed:
-            log.warning("passthrough of %s refused: service-managed or service-private", name)
-        elif name in service_env:
-            env[name] = service_env[name]
+    for name in passthrough_names(service_env, passthrough, passthrough_exclude):
+        env[name] = service_env[name]
     env["TERM"] = "xterm-256color"
     env.update(claude_env.to_env())
     env.update(mise_env or {})

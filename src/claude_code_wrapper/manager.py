@@ -60,6 +60,7 @@ from .session import (
     SessionSpec,
     TurnRejected,
     build_env,
+    passthrough_names,
 )
 from .tooling import install_workdir, mise_env
 from .turns import TurnStore, now_iso
@@ -580,9 +581,12 @@ class SessionManager:
         service and config (base vars, passthrough, claude env, mise), without the CCW_* relay
         plumbing that only the claude child needs."""
         env = {n: self.service_env[n] for n in BASE_ENV if n in self.service_env}
-        for name in self.cfg.claude.passthrough_env:
-            if name in self.service_env and not name.startswith("CCW_"):
-                env[name] = self.service_env[name]
+        for name in passthrough_names(
+            self.service_env,
+            self.cfg.claude.passthrough_env,
+            self.cfg.claude.passthrough_env_exclude,
+        ):
+            env[name] = self.service_env[name]
         env.update(ctx.claude_env.to_env())
         env.update(mise_env(self.cfg.mise))
         env["CLAUDE_CONFIG_DIR"] = str(ctx.config_dir)
@@ -606,6 +610,7 @@ class SessionManager:
             gate_timeout=relay_timeouts(self.cfg).attempt_timeout,
             mise_env=mise_env(self.cfg.mise),
             passthrough=self.cfg.claude.passthrough_env,
+            passthrough_exclude=self.cfg.claude.passthrough_env_exclude,
         )
 
     def _wire(self, ctx: _Active, env: dict[str, str], resume: bool) -> None:

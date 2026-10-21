@@ -1391,7 +1391,8 @@ claude:
 | `claude.effort` | string | `""` | - | Value for `--effort`; empty uses Claude's default. |
 | `claude.permission_mode` | string | `"bypassPermissions"` | - | Written to `settings.json` as `permissions.defaultMode`. |
 | `claude.extra_args` | list | `[]` | - | Extra argv appended after the service flags. `--dangerously-skip-permissions` is rejected (it adds a boot dialog). |
-| `claude.passthrough_env` | list | `[]` | - | List of env var names copied from the service environment into Claude's environment when present (for example `GH_TOKEN`, `SSH_AUTH_SOCK`). |
+| `claude.passthrough_env` | list | `[]` | - | List of env var name patterns (`fnmatch`, case-sensitive; a plain name matches only itself, `GH_*` matches by prefix) copied from the service environment into Claude's environment and the setup-command environment when present. `CCW_*` names and service-managed names are never passed, even through `*` (the refusal is logged). Warning: `*` hands every service secret to Claude; use explicit globs plus `passthrough_env_exclude`. |
+| `claude.passthrough_env_exclude` | list | `[]` | - | List of `fnmatch` patterns removing names matched by `claude.passthrough_env`, for example `["*_SECRET*", "AWS_*"]`. |
 | `claude.permissions.allow` | list | `[]` | - | List of allow rules, for example `Bash(git status:*)`. |
 | `claude.permissions.deny` | list | `["EnterPlanMode", "ExitPlanMode"]` | - | List of deny rules. Plan-mode tools are denied by default. |
 | `claude.settings` | map | `{}` | - | Map deep-merged into `settings.json`; hook lists are appended to the service's own hooks. |

@@ -173,6 +173,7 @@ class ClaudeConfig(_Model):
     extra_args: list[str] = Field(default_factory=list)
     env: ClaudeEnv = Field(default_factory=ClaudeEnv)  # type: ignore[valid-type]
     passthrough_env: list[str] = Field(default_factory=list)
+    passthrough_env_exclude: list[str] = Field(default_factory=list)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     settings: dict[str, Any] = Field(default_factory=dict)
     claude_json: dict[str, Any] = Field(default_factory=dict)
