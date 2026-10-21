@@ -1,6 +1,6 @@
 ---
 title: tatara example lifecycle
-status: in-progress
+status: done
 repo: .
 value: "A tested worked example of tatara's bootstrap, TTL gate, safety and metrics pushes and pod policy as ccw config"
 files: [src/claude_code_wrapper/data/examples/tatara.config.yaml, src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py, README.md, tests/test_example_tatara_lifecycle.py]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--tatara-example-lifecycle
 branch: hook-capabilities-for-tatara--tatara-example-lifecycle
-verified_head: ""
+verified_head: e6153f9cf59053c25a6e342405e5b81b8cd84745
 run: hook-capabilities-for-tatara
 provides: []
 acs_for_audit: []

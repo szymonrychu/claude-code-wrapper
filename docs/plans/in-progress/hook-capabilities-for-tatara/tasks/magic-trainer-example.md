@@ -1,6 +1,6 @@
 ---
 title: magic-trainer example
-status: in-progress
+status: escalated
 repo: .
 value: "A tested worked example of magic-trainer's seat-pair completion, review, narration and exit as ccw hooks"
 files: [src/claude_code_wrapper/data/examples/magic-trainer.config.yaml, src/claude_code_wrapper/data/examples/magic-trainer/mtg_hooks.py, examples/magic-trainer.config.yaml, README.md, tests/test_example_magic_trainer.py]
@@ -14,11 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--magic-trainer-example
 branch: hook-capabilities-for-tatara--magic-trainer-example
-verified_head: ""
+verified_head: 68bac411ca0af0969d706e559f51a66718c9875d
 run: hook-capabilities-for-tatara
 provides: []
 acs_for_audit: []
-process_gaps: []
+process_gaps: [The working tree has the examples/magic-trainer.config.yaml symlink replaced by a regular file. Restore it with git checkout before the integrated run., "No red-first evidence for the tests. The implementer says they were written after the code, and no tdd exception was named."]
 ---
 
 # magic-trainer example
