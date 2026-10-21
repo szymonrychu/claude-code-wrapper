@@ -734,7 +734,23 @@ class SessionRouter(SessionListener):
         metadata: Mapping[str, Any] | None = None,
     ) -> TurnRecord:
         self.session.check_submittable()  # a doomed turn fires no hooks
+        was_armed = self._ac_armed
         self._cancel_auto_compact()
+        try:
+            return await self._submit_turn(text, files, callback_url, origin, metadata)
+        except BaseException:
+            if was_armed:  # no turn started and none will end: keep the idle gap alive
+                self._arm_auto_compact()
+            raise
+
+    async def _submit_turn(
+        self,
+        text: str,
+        files: Mapping[str, str] | None,
+        callback_url: str | None,
+        origin: Origin,
+        metadata: Mapping[str, Any] | None,
+    ) -> TurnRecord:
         turn_id = new_turn_id()
         outcome = await self._fire(
             "onTurn",

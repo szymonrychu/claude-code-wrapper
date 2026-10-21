@@ -22,7 +22,7 @@ def parse(sessions: dict[str, Any]) -> Config:
 # ---------------------------------------------------------------- config
 
 
-def test_defaults_are_off():
+def test_auto_compact_off_by_default():
     cfg = parse({}).sessions.auto_compact
     assert (cfg.idle_seconds, cfg.instructions, cfg.min_context_tokens) == (0, "", 0)
 
@@ -41,7 +41,7 @@ def test_instructions_must_be_one_line():
     parse({"auto_compact": {"idle_seconds": 5, "instructions": "keep the plan"}})
 
 
-def test_idle_seconds_not_below_reaper_is_a_config_error(tmp_path):
+def test_idle_seconds_must_be_below_idle_timeout(tmp_path):
     from claude_code_wrapper.config import load_config
 
     path = tmp_path / "c.yaml"
@@ -80,16 +80,27 @@ def idle_completions(world: World, sid: str) -> list[dict]:
     ]
 
 
-async def test_compacts_once_per_idle_gap(world):
-    m, sid = await start(world, {"instructions": "keep the plan"})
-    router = m.router(sid)
+async def test_auto_compact_not_armed_without_turn(world):
+    m, sid = await start(world, {})
     await asyncio.sleep(0.8)
     assert idle_completions(world, sid) == []  # never ran a turn: never compacted
-    await router.submit_turn("go")
+
+
+async def test_auto_compact_fires_after_idle(world):
+    m, sid = await start(world, {"instructions": "keep the plan"})
+    await m.router(sid).submit_turn("go")
     await world.wait_turn(m, sid)
     await world.until(lambda: idle_completions(world, sid), what="auto compact completed")
     rec = idle_completions(world, sid)[0]["data"]["record"]
     assert rec["name"] == "compact" and rec["args"] == {"instructions": "keep the plan"}
+
+
+async def test_auto_compact_once_per_idle_gap(world):
+    m, sid = await start(world, {})
+    router = m.router(sid)
+    await router.submit_turn("go")
+    await world.wait_turn(m, sid)
+    await world.until(lambda: idle_completions(world, sid), what="auto compact completed")
     await world.until(lambda: router.session.state == "ready")
     await asyncio.sleep(1.0)
     assert len(idle_completions(world, sid)) == 1  # once per gap
@@ -99,7 +110,41 @@ async def test_compacts_once_per_idle_gap(world):
     await world.until(lambda: len(idle_completions(world, sid)) == 2, what="second gap compact")
 
 
-async def test_new_turn_cancels_pending_timer(world):
+async def test_auto_compact_fires_at_or_above_min_context(world):
+    m, sid = await start(world, {"min_context_tokens": 1})
+    await m.router(sid).submit_turn("go")
+    await world.wait_turn(m, sid)
+    await world.until(lambda: idle_completions(world, sid), what="auto compact completed")
+
+
+async def test_client_command_cancels_pending_auto_compact(world):
+    m, sid = await start(world, {"idle_seconds": 0.6})
+    router = m.router(sid)
+    await router.submit_turn("go")
+    await world.wait_turn(m, sid)
+    rec = router.request_command("reload-skills", origin="client")
+    await world.until(lambda: rec.state == "completed")
+    await world.until(lambda: router.session.state == "ready")
+    await asyncio.sleep(1.2)
+    assert idle_completions(world, sid) == []
+
+
+async def test_failed_submit_keeps_auto_compact_armed(world):
+    m, sid = await start(world, {})
+    router = m.router(sid)
+    await router.submit_turn("go")
+    await world.wait_turn(m, sid)
+
+    async def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    router.session.submit = boom
+    with pytest.raises(RuntimeError):
+        await router.submit_turn("again")
+    await world.until(lambda: idle_completions(world, sid), what="auto compact after failed submit")
+
+
+async def test_turn_cancels_pending_auto_compact(world):
     m, sid = await start(world, {"idle_seconds": 1.0})
     router = m.router(sid)
     await router.submit_turn("go")
@@ -111,7 +156,7 @@ async def test_new_turn_cancels_pending_timer(world):
     assert idle_completions(world, sid) == []
 
 
-async def test_min_context_tokens_skips_small_contexts(world):
+async def test_auto_compact_skipped_below_min_context(world):
     m, sid = await start(world, {"min_context_tokens": 10_000_000})
     router = m.router(sid)
     await router.submit_turn("go")
@@ -120,7 +165,7 @@ async def test_min_context_tokens_skips_small_contexts(world):
     assert not [e for e in world.events(sid) if e["type"].startswith("command_")]
 
 
-async def test_idle_commands_do_not_count_as_activity(world):
+async def test_auto_compact_does_not_reset_reaper_clock(world):
     m, sid = await start(world, {}, idle_timeout_seconds=300)
     router = m.router(sid)
     await router.submit_turn("go")
