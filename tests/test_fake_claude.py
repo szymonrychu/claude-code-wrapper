@@ -699,7 +699,7 @@ def test_stop_payload_defaults_empty_task_lists(spawn, env, tmp_path):
     assert stop["background_tasks"] == [] and stop["session_crons"] == []
 
 
-def test_stop_payload_carries_turn_task_lists_first_stop_only(spawn, env, tmp_path, scenario_file):
+def test_stop_carries_background_tasks(spawn, env, tmp_path, scenario_file):
     out = tmp_path / "stop.out"
     record_all(env["CLAUDE_CONFIG_DIR"], out, ["Stop"])
     task = {"id": "t1", "type": "bash", "status": "running", "description": "sleep"}
@@ -725,7 +725,7 @@ def test_stop_payload_carries_turn_task_lists_first_stop_only(spawn, env, tmp_pa
     assert later["background_tasks"] == [] and later["session_crons"] == []
 
 
-def test_background_step_tasks_ride_the_later_stop(spawn, env, tmp_path, scenario_file):
+def test_background_stop_carries_its_own_tasks(spawn, env, tmp_path, scenario_file):
     out = tmp_path / "stop.out"
     record_all(env["CLAUDE_CONFIG_DIR"], out, ["Stop"])
     task = {"id": "t2", "type": "agent", "status": "running", "description": "d"}
@@ -769,7 +769,7 @@ def block_hook(env, tmp_path, script):
     return out
 
 
-def test_stop_block_json_continues_turn(spawn, env, tmp_path, work):
+def test_stop_block_continues_turn_with_reason(spawn, env, tmp_path, work):
     out = tmp_path / "stop.out"
     script = (
         "if grep -q 'stop_hook_active.: true' "
@@ -819,7 +819,7 @@ def test_stop_block_exit_2_uses_stderr_and_on_block_steps(
     assert [r["message"]["content"] for r in rows if r["type"] == "user"] == ["hi", "no yet"]
 
 
-def test_stop_block_cap_default_and_env(spawn, env, tmp_path):
+def test_stop_block_cap(spawn, env, tmp_path):
     out = block_hook(env, tmp_path, 'echo \'{"decision": "block", "reason": "again"}\'')
     p = spawn(CLAUDE_CODE_STOP_HOOK_BLOCK_CAP="2")
     p.boot()
@@ -838,7 +838,7 @@ def test_stop_block_cap_default_and_env(spawn, env, tmp_path):
     assert len(payloads(out)) == 9  # first Stop + 8 blocked re-entries
 
 
-def test_agent_attribution_on_tool_events_and_sidechain(spawn, env, tmp_path, scenario_file, work):
+def test_tool_step_agent_attribution(spawn, env, tmp_path, scenario_file, work):
     out = tmp_path / "tool.out"
     record_all(env["CLAUDE_CONFIG_DIR"], out, ["PreToolUse", "PostToolUse", "PostToolUseFailure"])
     agent = {"id": "ag1", "type": "Explore"}
@@ -885,7 +885,7 @@ def test_agent_attribution_on_tool_events_and_sidechain(spawn, env, tmp_path, sc
     assert any("Edit" in k for k in kinds) and any("main" in k for k in kinds)
 
 
-def test_exit_once_crashes_only_first_time(spawn, env, tmp_path, scenario_file):
+def test_exit_once_survives_resume(spawn, env, tmp_path, scenario_file):
     sc = scenario_boot(
         scenario_file,
         [{"match": ".*", "steps": [{"text": "a"}, {"exit_once": 7}, {"text": "after"}]}],
@@ -902,7 +902,7 @@ def test_exit_once_crashes_only_first_time(spawn, env, tmp_path, scenario_file):
     p2.submit("x", wait="after")
 
 
-def test_print_mode_argument_stdin_and_json(env, work, scenario_file):
+def test_print_mode(env, work, scenario_file):
     sc = scenario_file(
         {
             "turns": [
