@@ -14,6 +14,7 @@ from claude_code_wrapper.hook_relay import CLAUDE_HOOK_EVENTS
 from .claude_json import _deep_merge, _load, atomic_write
 
 PROMPT_HOOK_TIMEOUT = 15
+CCW_MCP_ALLOW = "mcp__ccw__command"
 MIN_HOOK_TIMEOUT = 30
 _GATED_EVENTS = (
     "onAgentToolCall",
@@ -82,7 +83,10 @@ def _without_relay(groups: Any, relay: str) -> list[Any]:
 
 
 def render_settings(
-    config_dir: str | Path, cfg: Config, relay_command: str | None = None
+    config_dir: str | Path,
+    cfg: Config,
+    relay_command: str | None = None,
+    ccw_mcp: bool = False,
 ) -> dict[str, Any]:
     path = Path(config_dir) / "settings.json"
     relay = relay_command or default_relay_command()
@@ -99,13 +103,16 @@ def render_settings(
         hooks[event] = [group, *_without_relay(hooks.get(event), relay)]
     doc["hooks"] = hooks
 
+    allow = [a for a in cfg.claude.permissions.allow if a != CCW_MCP_ALLOW]
+    if ccw_mcp:
+        allow.append(CCW_MCP_ALLOW)
     deny = list(cfg.claude.permissions.deny)
     if cfg.sessions.ask_user_question == "deny" and "AskUserQuestion" not in deny:
         deny.append("AskUserQuestion")
     permissions = doc.get("permissions") if isinstance(doc.get("permissions"), dict) else {}
     permissions.update(
         defaultMode=cfg.claude.permission_mode,
-        allow=list(cfg.claude.permissions.allow),
+        allow=allow,
         deny=deny,
     )
     doc["permissions"] = permissions
