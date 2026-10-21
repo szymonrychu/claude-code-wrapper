@@ -418,6 +418,64 @@ sent on submit (`{}` when none, and for `initial` and `agent` turns).
 
 Errors: `401 unauthorized`, `404 not_found` (unknown session or turn).
 
+### `POST /v1/sessions/{id}/commands`
+
+Queue an allowlisted Claude Code slash command (`compact`, `reload-plugins`, `reload-skills`, `mcp`,
+`context`) without typing into the session. The command uses the same queue and lifecycle as the
+agent's `command` MCP tool, with origin `client`, so the session's `sessions.commands.client`
+allowlist applies. On an idle session it runs at once; during a turn it waits for that turn's Stop
+and the turn is then resumed.
+
+Auth: bearer. Body (unknown fields are rejected):
+
+```json
+{"name": "compact", "args": {"instructions": "keep the API design decisions"}}
+```
+
+`args` is an object (default `{}`); its keys depend on `name`. Queueing a name that is already
+queued returns the existing record.
+
+Response `202`: the command record.
+
+```json
+{
+  "id": "cmd_3f9a1c0b7d42",
+  "name": "compact",
+  "args": {"instructions": "keep the API design decisions"},
+  "origin": "client",
+  "turn_id": "turn-1k9x2m0q4zw8",
+  "state": "queued",
+  "result": null,
+  "error": null,
+  "output": null,
+  "created_at": "2026-10-21T09:01:00.010+00:00",
+  "started_at": null,
+  "finished_at": null
+}
+```
+
+`state` is `queued`, `running`, `completed`, `failed` or `cancelled`; `turn_id` is the turn running
+when it was queued (`null` when idle).
+
+Errors: `401 unauthorized`, `404 not_found` (unknown session), `403 command_not_allowed` (not in
+the client allowlist), `422 invalid_command` (unknown command, bad `args`, or `force` without
+`commands.allow_force`), `422 invalid_request` (bad body), `429 command_queue_full`, `409 dead`
+or `409 booting` (the session cannot take commands now).
+
+### `GET /v1/sessions/{id}/commands`
+
+The session's recent commands, oldest first: `{"commands": [record, ...]}` (records as above, the
+last 100 are kept).
+
+Auth: bearer. Errors: `401 unauthorized`, `404 not_found`, `409 dead`.
+
+### `GET /v1/sessions/{id}/commands/{command_id}`
+
+One command record, showing its current or final state.
+
+Auth: bearer. Errors: `401 unauthorized`, `404 not_found` (unknown session), `404 command_not_found`,
+`409 dead`.
+
 ### `POST /v1/sessions/{id}/interrupt`
 
 Interrupt the running turn: send ESC, resolve on the transcript's interrupt line, or send a second
@@ -1464,7 +1522,9 @@ FastAPI's `{"detail": ...}` body instead.
 | `unauthorized` | 401 | missing or invalid bearer token |
 | `vetoed` | 403 | a blocking `onCreate`, `onResume` or `onTurn` hook denied; the message is the hook's reason |
 | `not_found` | 404 | unknown session, turn, probe or route |
+| `command_not_found` | 404 | unknown command id |
 | `no_transcript` | 404 | the session has no transcript yet |
+| `command_not_allowed` | 403 | the command is not in the session's client allowlist (`sessions.commands.client`) |
 | `method_not_allowed` | 405 | the route exists but not for this method |
 | `busy` | 409 | a turn is already running in the session |
 | `invalid_state` | 409 | the operation does not apply to the session's current state (for example delete while `creating`) |
@@ -1478,6 +1538,8 @@ FastAPI's `{"detail": ...}` body instead.
 | `missing_variable` | 422 | a required template variable has no value or default |
 | `invalid_request` | 422 | the body, query or path failed validation, or the merged `env` is invalid; the message lists `field: problem` entries |
 | `too_large` | 413 | prompt over `limits.max_prompt_bytes`, or turn `files` over `limits.max_file_bytes` or `limits.max_files_per_turn` |
+| `invalid_command` | 422 | unknown command, invalid `args`, or `force` not allowed |
+| `command_queue_full` | 429 | the session already has the maximum of queued commands |
 | `too_many_sessions` | 429 | `sessions.max_sessions` reached |
 | `create_failed` | 500 | a create or resume step failed; the message names the step |
 | `booting` | 503 | the session is still booting |
