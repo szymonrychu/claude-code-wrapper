@@ -314,7 +314,7 @@ async def test_idle_command_marks_busy_and_turn_409(world):
 
 async def test_never_typed_while_busy(world):
     scenario = {
-        "turns": [{"match": "go", "steps": [{"sleep": 1.0}, {"text": "done"}]}],
+        "turns": [{"match": "go", "steps": [{"sleep": 3.0}, {"text": "done"}]}],
         "commands": {"reload-skills": {"delay_seconds": 0.5}},
     }
     m, sid, _ = await start(world, scenario)
@@ -333,6 +333,8 @@ async def test_never_typed_while_busy(world):
     during = router.request_command("compact", origin="client")
     assert during.state == "queued"
     await asyncio.sleep(0.6)
+    # The turn (3s) must still be in flight, else the window proves nothing.
+    assert router.session.state == "busy"
     assert during.state == "queued"
     await world.wait_turn(m, sid)
     await world.until(lambda: router.session.state == "ready")
