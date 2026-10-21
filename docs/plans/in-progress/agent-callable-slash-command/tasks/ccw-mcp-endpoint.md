@@ -1,6 +1,6 @@
 ---
 title: ccw MCP endpoint
-status: in-progress
+status: done
 repo: .
 value: Claude can connect to ccw as an MCP server and call the one command tool
 files: [src/claude_code_wrapper/mcp_server.py, src/claude_code_wrapper/internal_api.py, README.md, tests/test_mcp_server.py]
@@ -14,9 +14,9 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--ccw-mcp-endpoint
 branch: agent-callable-slash-command--ccw-mcp-endpoint
-verified_head: ""
+verified_head: 40d874ba9ec45f8f2e16ce0fbedcdf8c7b772b1f
 run: agent-callable-slash-command
-provides: []
+provides: [ccw-mcp-server]
 acs_for_audit: []
 process_gaps: []
 ---

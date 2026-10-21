@@ -37,7 +37,7 @@ Claude Code slash commands such as /compact and /reload-plugins are not tools th
 
 ## Time
 
-Estimate: 990 min | Actual: 27 min | Remaining estimate: 570 min
+Estimate: 990 min | Actual: 27 min | Remaining estimate: 405 min
 
 ## Review
 

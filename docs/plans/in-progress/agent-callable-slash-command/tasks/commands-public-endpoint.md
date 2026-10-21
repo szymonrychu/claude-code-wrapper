@@ -1,6 +1,6 @@
 ---
 title: Commands public endpoint
-status: in-progress
+status: todo
 repo: .
 value: API clients can queue and read slash commands for a session without typing into it
 files: [src/claude_code_wrapper/api/commands.py, src/claude_code_wrapper/api/app.py, src/claude_code_wrapper/api/errors.py, README.md, tests/test_api_commands.py]
