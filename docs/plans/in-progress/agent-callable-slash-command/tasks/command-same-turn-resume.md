@@ -1,6 +1,6 @@
 ---
 title: Command same-turn resume
-status: in-progress
+status: done
 repo: .
 value: "The agent keeps working in the same turn after its own /compact or /reload-plugins, with one turn record"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, README.md, tests/test_command_turn_resume.py]
@@ -14,9 +14,9 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-same-turn-resume
 branch: agent-callable-slash-command--command-same-turn-resume
-verified_head: ""
+verified_head: ff3282b3f68bb084ec47f2a8989a6eb21e7ec0e3
 run: agent-callable-slash-command
-provides: []
+provides: [continue-turn, turn-command-phase]
 acs_for_audit: []
 process_gaps: []
 ---

@@ -1,6 +1,6 @@
 ---
 title: Deflake never typed while busy
-status: in-progress
+status: escalated
 repo: .
 value: A flaky test in the runner suite would make CI red at random
 files: [tests/test_command_runner.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--deflake-never-typed-while-bu
 branch: agent-callable-slash-command--deflake-never-typed-while-bu
 verified_head: ""
-run: ""
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Deflake never typed while busy

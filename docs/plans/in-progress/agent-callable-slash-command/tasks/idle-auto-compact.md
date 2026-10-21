@@ -1,6 +1,6 @@
 ---
 title: Idle auto-compact
-status: in-progress
+status: escalated
 repo: .
 value: "Long-lived sessions compact themselves while idle, so the next turn starts with a small context"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/router.py, README.md, tests/test_auto_compact.py]
@@ -16,7 +16,7 @@ worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-
 branch: agent-callable-slash-command--idle-auto-compact
 verified_head: ""
 run: agent-callable-slash-command
-provides: []
+provides: [auto-compact-config, idle-activity-ranges]
 acs_for_audit: []
 process_gaps: []
 ---
