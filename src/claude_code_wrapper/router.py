@@ -87,8 +87,12 @@ COMPACT_FAILURES = (
     "Not enough messages to compact.",
     "Error compacting conversation",
 )
-#: reload-plugins skipped because the MCP tool set would change ("Run ... --force to apply.").
-RELOAD_SKIPPED = "--force to apply"
+#: reload-plugins left the plugin cache as is because the MCP tool set would change; its
+#: stdout ends "Run ... --force to apply." and the record's result is `skipped_cache`.
+RELOAD_FORCE_HINT = "--force to apply"
+#: Seconds a compact completed by the PostCompact relay waits for its transcript boundary, so
+#: `compacted` is emitted before `command_completed`.
+COMPACT_BOUNDARY_GRACE = 1.0
 
 
 def _compact_done(sig: Signal) -> bool:
@@ -921,6 +925,8 @@ class SessionRouter(SessionListener):
                 return "failed", None, "timeout", None
             if sig.kind == "command_output":
                 return "failed", None, "compact_failed", _output_text(sig)
+            if sig.kind == "post_compact":
+                await self._await_compact_boundary(mark, min(left(), COMPACT_BOUNDARY_GRACE))
             return "completed", "ok", None, None
         invoked = await self.signals.wait(_invoked(record.name), after=mark, timeout=left())
         if invoked is None:
@@ -936,10 +942,22 @@ class SessionRouter(SessionListener):
             return "failed", None, "command_error", stderr[:COMMAND_OUTPUT_CHARS]
         result = (
             "skipped_cache"
-            if record.name == "reload-plugins" and RELOAD_SKIPPED in stdout
+            if record.name == "reload-plugins" and RELOAD_FORCE_HINT in stdout
             else "ok"
         )
         return "completed", result, None, stdout[:COMMAND_OUTPUT_CHARS]
+
+    async def _await_compact_boundary(self, mark: int, timeout: float) -> None:
+        """Deliver the compaction's transcript boundary (so `compacted`) before completion.
+
+        The PostCompact relay can outrun the tailer's poll: flush first, then wait briefly for a
+        boundary that is still being written. claude without a boundary completes regardless.
+        """
+        tailer = self._tailer
+        if tailer is not None:
+            with contextlib.suppress(OSError):
+                await tailer.flush()
+        await self.signals.wait(lambda s: s.kind == "compact_boundary", after=mark, timeout=timeout)
 
     async def _finish_command(
         self,

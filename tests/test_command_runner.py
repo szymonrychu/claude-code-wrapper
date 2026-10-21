@@ -7,11 +7,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from conftest import World, jsonl
 from test_metrics import sample
 from test_router import Harness, StubSession
 
+from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.commands import CommandRejected
 from claude_code_wrapper.manager import CreateSessionRequest
 from claude_code_wrapper.metrics import Metrics
@@ -61,41 +63,40 @@ async def finished(world: World, rec: Any, timeout: float = 15.0) -> None:
 
 # ---------------------------------------------------------------- World: real PTY, fake claude
 
+TOKEN = "tok-0123456789abcdef"
 
-async def test_idle_compact_runs_at_once_and_completes(world):
+
+async def test_idle_compact_runs_and_completes(world):
     m, sid, metrics = await start(world)
     router = m.router(sid)
     rec = router.request_command("compact", {"instructions": "keep the plan"}, origin="client")
     assert rec.state == "queued" and rec.turn_id is None and rec.origin == "client"
-    # D4.8: busy at once, without a turn record, so client turns get 409 busy.
-    assert router.session.state == "busy" and router.session.current_turn is None
-    assert m.get(sid)["state"] == "busy"
-    with pytest.raises(TurnRejected) as exc:
-        await router.submit_turn("go")
-    assert exc.value.reason == "busy"
     await finished(world, rec)
     assert rec.state == "completed" and rec.result == "ok" and rec.error is None
     assert rec.started_at and rec.finished_at
     await world.until(lambda: router.session.state == "ready")
-    assert types(world, sid) == ["command_queued", "command_started", "command_completed"]
+    # One compaction is one `compacted`, and it lands between started and completed.
+    order = ("command_queued", "command_started", "compacted", "command_completed")
+    seen = [e["type"] for e in world.events(sid) if e["type"] in order]
+    assert seen == list(order)
     (done,) = of_type(world, sid, "command_completed")
     assert done["record"]["id"] == rec.id and done["record"]["state"] == "completed"
     (queued,) = of_type(world, sid, "command_queued")
     assert queued["record"]["state"] == "queued"
+    (compacted,) = of_type(world, sid, "compacted")
+    assert compacted["trigger"] == "manual"
     typed = [i for i in inputs(world, sid) if i["text"].startswith("/")]
     assert typed == [{"text": "/compact keep the plan", "state": "idle", "ts": typed[0]["ts"]}]
-    labels = {"command": "compact", "origin": "client", "result": "completed"}
-    assert sample(metrics, "ccw_commands_total", **labels) == 1
-    assert sample(metrics, "ccw_command_duration_seconds_count", command="compact") == 1
-    await world.until(lambda: of_type(world, sid, "compacted"))  # the boundary may trail the hook
     assert sample(metrics, "ccw_compactions_total", trigger="manual") == 1
 
 
-async def test_compact_boundary_only_signal_completes(world):
+async def test_compact_boundary_only_completes(world):
     m, sid, _ = await start(world, {"commands": {"compact": {"post_compact_hook": False}}})
     rec = m.router(sid).request_command("compact", origin="agent")
     await finished(world, rec)
     assert (rec.state, rec.result) == ("completed", "ok")
+    order = ("command_started", "compacted", "command_completed")
+    assert [e["type"] for e in world.events(sid) if e["type"] in order] == list(order)
 
 
 @pytest.mark.parametrize(
@@ -106,31 +107,54 @@ async def test_compact_boundary_only_signal_completes(world):
         ("error", "Error compacting conversation"),
     ],
 )
-async def test_compact_failure_output(world, outcome, text):
-    m, sid, metrics = await start(world, {"commands": {"compact": {"outcome": outcome}}})
+async def test_compact_failure_reported(world, outcome, text):
+    m, sid, _ = await start(world, {"commands": {"compact": {"outcome": outcome}}})
     rec = m.router(sid).request_command("compact", origin="client")
     await finished(world, rec)
     assert (rec.state, rec.error) == ("failed", "compact_failed")
     assert text in (rec.output or "")
     assert types(world, sid) == ["command_queued", "command_started", "command_failed"]
-    labels = {"command": "compact", "origin": "client", "result": "failed"}
-    assert sample(metrics, "ccw_commands_total", **labels) == 1
+    (failed,) = of_type(world, sid, "command_failed")
+    assert failed["record"]["error"] == "compact_failed" and text in failed["record"]["output"]
 
 
-async def test_reload_plugins_stdout_is_the_output(world):
-    m, sid, _ = await start(world)
+@pytest.mark.parametrize(
+    ("stdout", "result", "output"),
+    [
+        (None, "ok", "Reloaded: 0 plugins, 0 skills, 0 agents, 0 hooks, 0 MCP servers"),
+        (
+            "MCP servers changed. Run /reload-plugins --force to apply.",
+            "skipped_cache",
+            "MCP servers changed. Run /reload-plugins --force to apply.",
+        ),
+    ],
+)
+async def test_reload_plugins_output_and_skipped_cache(world, stdout, result, output):
+    scenario = {"commands": {"reload-plugins": {"stdout": stdout}}} if stdout else None
+    m, sid, _ = await start(world, scenario)
     rec = m.router(sid).request_command("reload-plugins", origin="agent")
     await finished(world, rec)
-    assert (rec.state, rec.result) == ("completed", "ok")
-    assert rec.output == "Reloaded: 0 plugins, 0 skills, 0 agents, 0 hooks, 0 MCP servers"
+    assert (rec.state, rec.result, rec.output) == ("completed", result, output)
+    assert [i["text"] for i in inputs(world, sid)] == ["/reload-plugins"]
 
 
-async def test_reload_plugins_force_to_apply_is_skipped_cache(world):
-    stdout = "MCP servers changed. Run /reload-plugins --force to apply."
-    m, sid, _ = await start(world, {"commands": {"reload-plugins": {"stdout": stdout}}})
-    rec = m.router(sid).request_command("reload-plugins", origin="client")
-    await finished(world, rec)
-    assert (rec.state, rec.result, rec.output) == ("completed", "skipped_cache", stdout)
+async def test_other_commands_complete_with_output(world):
+    m, sid, _ = await start(world)
+    router = m.router(sid)
+    skills = router.request_command("reload-skills", origin="client")
+    mcp = router.request_command(
+        "mcp", {"action": "reconnect", "server": "github"}, origin="client"
+    )
+    context = router.request_command("context", origin="client")
+    for rec in (skills, mcp, context):
+        await finished(world, rec)
+    assert [(r.state, r.result, r.output) for r in (skills, mcp, context)] == [
+        ("completed", "ok", "Reloaded skills"),
+        ("completed", "ok", "Reconnected to github"),
+        ("completed", "ok", "Context usage: 0 tokens"),
+    ]
+    typed = [i["text"] for i in inputs(world, sid)]
+    assert typed == ["/reload-skills", "/mcp reconnect github", "/context"]
 
 
 async def test_stdout_entry_as_user_line_and_output_cut(world):
@@ -141,59 +165,53 @@ async def test_stdout_entry_as_user_line_and_output_cut(world):
     assert rec.state == "completed" and rec.output == "x" * 4000
 
 
-async def test_mcp_reconnect_typed_with_server(world):
-    m, sid, _ = await start(world)
-    rec = m.router(sid).request_command(
-        "mcp", {"action": "reconnect", "server": "github"}, origin="client"
-    )
-    await finished(world, rec)
-    assert (rec.state, rec.output) == ("completed", "Reconnected to github")
-    assert [i["text"] for i in inputs(world, sid)] == ["/mcp reconnect github"]
-
-
-async def test_timeout_sends_esc_once_and_fails(world):
-    m, sid, metrics = await start(
+async def test_command_timeout_sends_esc(world):
+    m, sid, _ = await start(
         world,
         {"commands": {"reload-skills": {"hang": True}}},
-        timeout_seconds={"compact": 5, "default": 0.6},
+        timeout_seconds={"compact": 5, "reload-skills": 0.6, "default": 5},
     )
     router = m.router(sid)
+    sent: list[bytes] = []
+    pty = router.session.pty
+    write = pty.write
+
+    async def recording(data: bytes) -> None:
+        sent.append(bytes(data))
+        await write(data)
+
+    pty.write = recording
     rec = router.request_command("reload-skills", origin="client")
     await finished(world, rec)
     assert (rec.state, rec.error) == ("failed", "timeout")
+    assert types(world, sid) == ["command_queued", "command_started", "command_failed"]
+    assert sent.count(b"\x1b") == 1
     await world.until(lambda: router.session.state == "ready")
     # The ESC released the hung command: the next one is typed at an idle prompt and completes.
     nxt = router.request_command("context", origin="client")
     await finished(world, nxt)
     assert nxt.state == "completed"
+    assert sent.count(b"\x1b") == 1
     assert [i["state"] for i in inputs(world, sid)] == ["idle", "idle"]
-    labels = {"command": "reload-skills", "origin": "client", "result": "failed"}
-    assert sample(metrics, "ccw_commands_total", **labels) == 1
 
 
-async def test_on_command_veto_fails_without_typing(world, tmp_path):
+async def test_on_command_deny_vetoes(world):
     deny = {"type": "command", "run": 'echo \'{"decision": "deny", "reason": "not now"}\''}
-    done = tmp_path / "complete.json"
-    hooks = {
-        "onCommand": [{**deny, "blocking": True}],
-        "onCommandComplete": [{"type": "command", "run": f"cat > {done}", "blocking": True}],
-    }
-    m, sid, metrics = await start(world, hooks=hooks)
+    m, sid, _ = await start(world, hooks={"onCommand": [{**deny, "blocking": True}]})
     router = m.router(sid)
     rec = router.request_command("compact", origin="client")
     await finished(world, rec)
     assert (rec.state, rec.error, rec.output) == ("failed", "vetoed", "not now")
     assert rec.started_at is None
     assert types(world, sid) == ["command_queued", "command_failed"]
+    (failed,) = of_type(world, sid, "command_failed")
+    assert failed["record"]["error"] == "vetoed" and failed["record"]["output"] == "not now"
     await world.until(lambda: router.session.state == "ready")
+    await asyncio.sleep(0.3)  # anything typed would have reached the fake by now
     assert inputs(world, sid) == []
-    await world.until(lambda: done.exists() and done.read_text())
-    assert json.loads(done.read_text())["data"]["state"] == "failed"
-    labels = {"command": "compact", "origin": "client", "result": "failed"}
-    assert sample(metrics, "ccw_commands_total", **labels) == 1
 
 
-async def test_hooks_get_command_and_record(world, tmp_path):
+async def test_on_command_complete_fired_with_record(world, tmp_path):
     seen, done = tmp_path / "on-command.json", tmp_path / "complete.json"
     hooks = {
         "onCommand": [{"type": "command", "run": f"cat > {seen}", "blocking": True}],
@@ -214,11 +232,26 @@ async def test_hooks_get_command_and_record(world, tmp_path):
     }
     complete = json.loads(done.read_text())
     assert complete["event"] == "onCommandComplete"
-    assert complete["data"]["id"] == rec.id and complete["data"]["state"] == "completed"
-    assert complete["data"]["result"] == "ok"
+    assert complete["data"] == rec.model_dump(mode="json")
+    assert complete["data"]["state"] == "completed" and complete["data"]["result"] == "ok"
+    assert complete["data"]["finished_at"]
 
 
-async def test_queued_commands_run_in_order_one_at_a_time(world):
+async def test_on_command_complete_fired_for_a_veto(world, tmp_path):
+    deny = {"type": "command", "run": 'echo \'{"decision": "deny", "reason": "not now"}\''}
+    done = tmp_path / "complete.json"
+    hooks = {
+        "onCommand": [{**deny, "blocking": True}],
+        "onCommandComplete": [{"type": "command", "run": f"cat > {done}", "blocking": True}],
+    }
+    m, sid, _ = await start(world, hooks=hooks)
+    rec = m.router(sid).request_command("compact", origin="client")
+    await finished(world, rec)
+    await world.until(lambda: done.exists() and done.read_text())
+    assert json.loads(done.read_text())["data"] == rec.model_dump(mode="json")
+
+
+async def test_commands_run_in_sequence(world):
     m, sid, _ = await start(world, {"commands": {"reload-skills": {"delay_seconds": 0.6}}})
     router = m.router(sid)
     first = router.request_command("reload-skills", origin="client")
@@ -240,12 +273,108 @@ async def test_queued_commands_run_in_order_one_at_a_time(world):
     assert len(of_type(world, sid, "command_queued")) == 3  # the duplicate emitted nothing
     typed = inputs(world, sid)
     assert [i["text"] for i in typed] == ["/reload-skills", "/context", "/compact"]
-    assert {i["state"] for i in typed} == {"idle"}
     # busy held for the whole run: no ready between the first start and the last completion
     evs = world.events(sid)
     begin = next(i for i, e in enumerate(evs) if e["type"] == "command_started")
     after = [e["data"]["state"] for e in evs[begin:] if e["type"] == "session_state"]
     assert after == ["ready"]
+
+
+async def test_idle_command_marks_busy_and_turn_409(world):
+    metrics = Metrics()
+    cfg = world.cfg(
+        {"commands": {"reload-skills": {"delay_seconds": 0.8}}},
+        server={"auth_token": TOKEN},
+        sessions={"commands": commands_cfg()},
+    )
+    m = world.manager(cfg, metrics=metrics)
+    sid = (await m.create(CreateSessionRequest()))["session_id"]
+    router = m.router(sid)
+    app = create_app(m, cfg, metrics)
+    transport = httpx.ASGITransport(app=app)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://t", headers=headers) as c:
+        rec = router.request_command("reload-skills", origin="client")
+        # D4.8: busy at once, without a turn record, so client turns get 409 busy.
+        assert router.session.state == "busy" and router.session.current_turn is None
+        assert m.get(sid)["state"] == "busy"
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go"})
+        assert r.status_code == 409 and r.json()["error"]["code"] == "busy"
+        await finished(world, rec)
+        await world.until(lambda: router.session.state == "ready")
+        assert m.get(sid)["state"] == "ready"
+        states = [d["state"] for d in of_type(world, sid, "session_state")]
+        assert states[-2:] == ["busy", "ready"]
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "hello"})
+        assert r.status_code == 202
+    assert [i["text"] for i in inputs(world, sid) if i["text"].startswith("/")] == [
+        "/reload-skills"
+    ]
+
+
+async def test_never_typed_while_busy(world):
+    scenario = {
+        "turns": [{"match": "go", "steps": [{"sleep": 1.0}, {"text": "done"}]}],
+        "commands": {"reload-skills": {"delay_seconds": 0.5}},
+    }
+    m, sid, _ = await start(world, scenario)
+    router = m.router(sid)
+    # Idle: two commands queued together, and a turn attempted while they run.
+    first = router.request_command("reload-skills", origin="client")
+    second = router.request_command("context", origin="client")
+    with pytest.raises(TurnRejected):
+        await router.submit_turn("go")
+    for rec in (first, second):
+        await finished(world, rec)
+    await world.until(lambda: router.session.state == "ready")
+    # A turn runs; a command requested mid-turn is not typed while the turn is busy.
+    await router.submit_turn("go")
+    await world.until(lambda: router.session.state == "busy")
+    during = router.request_command("compact", origin="client")
+    assert during.state == "queued"
+    await asyncio.sleep(0.6)
+    assert during.state == "queued"
+    await world.wait_turn(m, sid)
+    await world.until(lambda: router.session.state == "ready")
+    # Back at idle: the next command (and the turn-bound one ahead of it) run at the prompt.
+    after = router.request_command("reload-plugins", origin="client")
+    await finished(world, after)
+    await world.until(lambda: router.session.state == "ready")
+    typed = inputs(world, sid)
+    lines = [i for i in typed if i["text"].startswith("/")]
+    assert [i["text"] for i in lines][:2] == ["/reload-skills", "/context"]
+    assert "/reload-plugins" in [i["text"] for i in lines]
+    assert lines and all(i["state"] == "idle" for i in lines)
+
+
+async def test_command_metrics_counted(world):
+    m, sid, metrics = await start(
+        world,
+        {"commands": {"reload-skills": {"hang": True}}},
+        timeout_seconds={"compact": 5, "reload-skills": 0.6, "default": 5},
+    )
+    router = m.router(sid)
+    recs = [
+        router.request_command("compact", origin="agent"),
+        router.request_command("context", origin="client"),
+        router.request_command("reload-skills", origin="client"),
+    ]
+    for rec in recs:
+        await finished(world, rec)
+    await world.until(lambda: router.session.state == "ready")
+    counted = {
+        ("compact", "agent", "completed"): 1,
+        ("context", "client", "completed"): 1,
+        ("reload-skills", "client", "failed"): 1,
+        ("context", "client", "failed"): 0,
+    }
+    for (command, origin, result), n in counted.items():
+        labels = {"command": command, "origin": origin, "result": result}
+        assert sample(metrics, "ccw_commands_total", **labels) == n
+    for command in ("compact", "context", "reload-skills"):
+        assert sample(metrics, "ccw_command_duration_seconds_count", command=command) == 1
+        assert sample(metrics, "ccw_command_duration_seconds_sum", command=command) > 0
+    assert sample(metrics, "ccw_command_duration_seconds_sum", command="reload-skills") >= 0.6
 
 
 async def test_command_queued_during_turn_waits_for_the_stop_gate(world):
