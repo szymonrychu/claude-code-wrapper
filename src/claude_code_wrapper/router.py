@@ -173,6 +173,7 @@ class SessionRouter(SessionListener):
         self._tick_tasks: list[asyncio.Task[Any]] = []
         self._tick_runs: set[asyncio.Task[Any]] = set()
         self._closed = False
+        self._subagents: set[str] = set()
         # The dispatcher is built before the router; route its per-action results here.
         if getattr(dispatcher, "_on_result", None) is None:
             dispatcher._on_result = self.on_hook_result
@@ -525,8 +526,19 @@ class SessionRouter(SessionListener):
             return _allow()
         return None
 
+    @property
+    def outstanding_subagents(self) -> int:
+        """Subagents seen in SubagentStart and not yet in SubagentStop."""
+        return len(self._subagents)
+
     async def _on_subagent(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         started = event_name == "SubagentStart"
+        agent_id = payload.get("agent_id")
+        if isinstance(agent_id, str):
+            if started:
+                self._subagents.add(agent_id)
+            else:
+                self._subagents.discard(agent_id)
         data: dict[str, Any] = {
             "agent_id": payload.get("agent_id"),
             "agent_type": payload.get("agent_type"),
@@ -711,6 +723,7 @@ class SessionRouter(SessionListener):
         self._spawn(self._fire("onError", data))
 
     def on_restart(self, count: int, resumed: bool) -> None:
+        self._subagents.clear()
         self._emit(
             "session_state",
             {
@@ -766,6 +779,7 @@ class SessionRouter(SessionListener):
         with contextlib.suppress(Exception):
             await self._flush_transcripts()
         self._closed = True
+        self._subagents.clear()
         if self._tailer is not None:
             self._tailer.stop()
         if self._watcher is not None:

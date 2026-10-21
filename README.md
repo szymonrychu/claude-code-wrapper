@@ -197,6 +197,7 @@ Response `201`:
   "updated_at": "2026-10-20T09:00:14.882+00:00",
   "last_activity_at": "2026-10-20T09:00:14.882+00:00",
   "turns_completed": 0,
+  "outstanding_subagents": 0,
   "current_turn_id": null,
   "stall_suspected_since": null,
   "last_fatal": null,
@@ -209,7 +210,7 @@ Response `201`:
 
 Snapshot fields: `state` is one of `creating`, `ready`, `busy`, `stopped`, `failed`, `dead`;
 `step` is the create/resume step last entered (on `failed`, the one that failed, with `error:
-{"step", "message"}`); `current_turn_id` is the running turn; `last_fatal` is the last fatal
+{"step", "message"}`); `outstanding_subagents` is the number of subagents started and not yet stopped (0 for stopped and persisted sessions); `current_turn_id` is the running turn; `last_fatal` is the last fatal
 screen text; `pid` is the claude pid while alive; `env` shows set values with secrets masked as
 `***`.
 

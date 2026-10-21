@@ -1196,6 +1196,9 @@ class SessionManager:
             current=current,
             live=live,
             last_activity_at=self._last_activity_iso(ctx),
+            outstanding_subagents=(
+                ctx.router.outstanding_subagents if ctx.router is not None else 0
+            ),
         )
 
     def _persisted_snapshot(self, meta: dict[str, Any]) -> dict[str, Any]:
@@ -1227,6 +1230,7 @@ class SessionManager:
         current: Any,
         live: dict[str, Any],
         last_activity_at: str | None,
+        outstanding_subagents: int = 0,
     ) -> dict[str, Any]:
         return {
             "session_id": meta["session_id"],
@@ -1243,6 +1247,7 @@ class SessionManager:
             "updated_at": meta.get("updated_at"),
             "last_activity_at": last_activity_at,
             "turns_completed": turns_completed,
+            "outstanding_subagents": outstanding_subagents,
             "current_turn_id": current.turn_id if current is not None else None,
             "stall_suspected_since": (
                 current.stall_suspected_since if current is not None else None
