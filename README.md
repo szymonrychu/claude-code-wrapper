@@ -1250,6 +1250,33 @@ A plugin hook (for example the workbench plugin's) may rewrite a Bash command th
 Claude asked to run when the PreToolUse relay fired; the command that finally executes can differ.
 Do not treat `tool_input` as proof of what ran.
 
+
+## Hook examples
+
+Worked examples of project behaviour expressed as hooks, with no project code in ccw. Each ships
+under `src/claude_code_wrapper/data/examples/` (symlinked from `examples/`) and is tested against
+the fake claude.
+
+### tatara
+
+[`tatara.config.yaml`](examples/tatara.config.yaml) and its script
+[`tatara_hooks.py`](src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py) (python stdlib
+only, one script with subcommands) express tatara's turn path. Actions run
+`${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} <subcommand>`; the task
+name comes from `TATARA_TASK`, the callback from `DEFAULT_CALLBACK_URL` signed with
+`CALLBACK_HMAC_SECRET` (`X-Tatara-Signature: sha256=<hex>`), and `MAX_OUTCOME_REPROMPTS` (default
+2, capped below claude's 8 Stop blocks) bounds the outcome gate. Tests:
+[`tests/test_example_tatara.py`](tests/test_example_tatara.py).
+
+| Parity row | Behaviour | Hook |
+|---|---|---|
+| B1 | Finaliser: commit and push changed repos, drain issues, add account usage, post the signed callback | `onTurnComplete`, non-blocking, `finalize` (a blocking finaliser would hold claude's Stop hook) |
+| B2 | Internal issue capture, category and severity clamped (`other` / `medium`) | `onAgentToolCall`, blocking, matcher `mcp__tatara__report_internal_issue`, `capture-issue` |
+| B3 | Remember whether the last outcome was rejected | `onToolResult`, non-blocking, matcher `mcp__tatara__submit_outcome`, `outcome-result` |
+| B4 | Outcome gate: re-prompt a rejected outcome, counted in `CCW_STATE_DIR` | `onStop`, blocking, `outcome-gate` |
+| B5 | Nothing posted while an outcome re-prompt is pending | `finalize` checks the gate's state |
+| B6 | Account rate limits | `claude.settings.statusLine`, `statusline` writes `rate_limits.json`, read by `finalize` |
+
 ## Errors
 
 Every public API error has the envelope:
