@@ -1,6 +1,6 @@
 ---
 title: Deflake never typed while busy
-status: todo
+status: in-progress
 repo: .
 value: A flaky test in the runner suite would make CI red at random
 files: [tests/test_command_runner.py]
@@ -12,8 +12,8 @@ model: sonnet
 estimate: 45
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--deflake-never-typed-while-bu
+branch: agent-callable-slash-command--deflake-never-typed-while-bu
 verified_head: ""
 run: ""
 provides: []
