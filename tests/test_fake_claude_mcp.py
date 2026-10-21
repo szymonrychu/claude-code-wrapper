@@ -275,7 +275,7 @@ def test_mcp_step_agent_goes_to_subagent_transcript(
     assert pre["agent_id"] == "a9" and pre["agent_type"] == "Explore"
 
 
-async def test_world_forwards_internal_api(world):
+async def test_world_forwards_internal_routes(world):
     from claude_code_wrapper.manager import CreateSessionRequest
 
     m = world.manager(world.cfg())
