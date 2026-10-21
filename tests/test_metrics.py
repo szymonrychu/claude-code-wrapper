@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from test_manager import CreateSessionRequest, World, deny_hook, world  # noqa: F401
+from test_manager import CreateSessionRequest, World, deny_hook  # noqa: F401
 from test_router import (
     CLAUDE_SID,
     SID,
