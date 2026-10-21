@@ -626,6 +626,7 @@ class Session:
         callback_url: str | None = None,
         turn_id: str | None = None,
         annotations: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> TurnRecord:
         """Start a turn: reserve the slot, persist the record, then paste and CR.
 
@@ -645,6 +646,7 @@ class Session:
             started_at=now,
             last_activity_at=now,
             annotations=dict(annotations or {}),
+            metadata=dict(metadata or {}),
         )
         # Reserve before the first byte: a second submit racing this one sees busy.
         self._turn = record

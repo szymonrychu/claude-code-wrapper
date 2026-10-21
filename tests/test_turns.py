@@ -184,6 +184,7 @@ def test_turn_record_serializes_callback_url_camel_case(tmp_path: Path) -> None:
         "stall_suspected_since",
         "tool_calls",
         "annotations",
+        "metadata",
     }
     path = tmp_path / "turns.jsonl"
     store = TurnStore(path)

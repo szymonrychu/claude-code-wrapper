@@ -98,6 +98,7 @@ class TurnRecord(BaseModel):
     stall_suspected_since: str | None = None
     tool_calls: int = 0
     annotations: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def terminal(self) -> bool:
@@ -110,6 +111,8 @@ class TurnRecord(BaseModel):
 
 #: A turn's annotations may not exceed this many bytes serialised.
 ANNOTATIONS_MAX_BYTES = 16 * 1024
+#: A turn's client-supplied metadata may not exceed this many bytes serialised.
+METADATA_MAX_BYTES = 16 * 1024
 
 
 def merged_annotations(current: dict[str, Any], new: dict[str, Any]) -> dict[str, Any] | None:

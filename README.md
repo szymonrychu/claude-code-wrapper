@@ -303,6 +303,7 @@ Request body (exactly one of `text` and `template`):
 | `variables` | object | no | values for the template's `{{name}}` placeholders; only with `template` |
 | `files` | object (path to content) | no | files written into the workdir before the prompt is pasted; relative paths only, limited by `limits.max_files_per_turn` and `limits.max_file_bytes` |
 | `callbackUrl` | string | no | `http`/`https` URL that receives this turn's terminal-state callback (and its questions); overrides the session's `callbackUrl` |
+| `metadata` | object | no | client-supplied JSON object kept on the turn record (`metadata`) and given to `onTurn` hooks as `data.metadata`, so hooks can gate on it; at most 16 KiB serialised |
 
 Response `202`:
 
@@ -320,8 +321,8 @@ Response `202`:
 | 403 | `vetoed` | a blocking `onTurn` action denied (a `turn_rejected` event is logged) |
 | 404 | `not_found` | unknown session |
 | 409 | `busy` | a turn is already running |
-| 413 | `too_large` | prompt over `limits.max_prompt_bytes`, or `files` over the per-file or count limits |
-| 422 | `invalid_request` | invalid body, or `unknown_template`, `unknown_variable`, `missing_variable` |
+| 413 | `too_large` | prompt over `limits.max_prompt_bytes`, `metadata` over 16 KiB, or `files` over the per-file or count limits |
+| 422 | `invalid_request` | invalid body (including `metadata` that is not an object), or `unknown_template`, `unknown_variable`, `missing_variable` |
 | 503 | `booting` | the session is still booting |
 | 503 | `dead` | the session is stopped, failed or dead |
 
@@ -371,7 +372,8 @@ Response `200`:
   "last_activity_at": "2026-10-20T09:01:09.401+00:00",
   "stall_suspected_since": null,
   "tool_calls": 2,
-  "annotations": {"pending_tasks": 1}
+  "annotations": {"pending_tasks": 1},
+  "metadata": {"handoff": true}
 }
 ```
 
@@ -381,7 +383,8 @@ Claude's last assistant message (set on completed turns); `error` names why a tu
 counts across models, `model_tokens` breaks them down per model; `stall_suspected_since` is set
 while no activity has been seen for `sessions.turn_stall_seconds` (reported, never fatal);
 `tool_calls` counts tool results seen; `annotations` is the object hooks tagged the turn with
-(`{}` when none did, see "Turn annotations" under Hooks).
+(`{}` when none did, see "Turn annotations" under Hooks); `metadata` is the object the client
+sent on submit (`{}` when none, and for `initial` and `agent` turns).
 
 Errors: `401 unauthorized`, `404 not_found` (unknown session or turn).
 
@@ -636,7 +639,7 @@ Emitted when the Stop hook ended a turn normally. Also POSTed to the turn's (els
 
 ```
 event: turn_completed
-data: {"seq":12,"ts":"2026-10-20T09:01:09.455Z","session_id":"ses_3f9a1c0b7d42","type":"turn_completed","data":{"record":{"turn_id":"turn-1k9x2m0q4zw8","session_id":"ses_3f9a1c0b7d42","origin":"client","state":"completed","text":"hi","final_text":"Hello!","stop_reason":"end_turn","usage":{"input_tokens":120,"output_tokens":48},"model_tokens":null,"error":null,"callbackUrl":null,"started_at":"2026-10-20T09:01:00.010+00:00","completed_at":"2026-10-20T09:01:09.455+00:00","last_activity_at":null,"stall_suspected_since":null,"tool_calls":0,"annotations":{}}}}
+data: {"seq":12,"ts":"2026-10-20T09:01:09.455Z","session_id":"ses_3f9a1c0b7d42","type":"turn_completed","data":{"record":{"turn_id":"turn-1k9x2m0q4zw8","session_id":"ses_3f9a1c0b7d42","origin":"client","state":"completed","text":"hi","final_text":"Hello!","stop_reason":"end_turn","usage":{"input_tokens":120,"output_tokens":48},"model_tokens":null,"error":null,"callbackUrl":null,"started_at":"2026-10-20T09:01:00.010+00:00","completed_at":"2026-10-20T09:01:09.455+00:00","last_activity_at":null,"stall_suspected_since":null,"tool_calls":0,"annotations":{},"metadata":{}}}}
 ```
 
 ### `turn_failed`
@@ -941,7 +944,7 @@ Payload envelope (command stdin, webhook body):
   "turn_id": "turn-1k9x2m0q4zw8",
   "ts": "2026-10-20T09:01:00.011Z",
   "workdir": "/workdir/review-pr-42",
-  "data": {"text": "hi", "files": [], "origin": "client"}
+  "data": {"text": "hi", "files": [], "origin": "client", "metadata": {}}
 }
 ```
 
@@ -979,7 +982,8 @@ stopped session snapshot.
 
 Trigger: the router, before the prompt is pasted (also for `initial` and `agent` origins). Blocking:
 a `deny` vetoes the turn (`403 vetoed`, `turn_rejected` event). `data`: `text`, `files` (list of
-workdir-relative paths about to be written), `origin`.
+workdir-relative paths about to be written), `origin`, `metadata` (the submit body's object, `{}`
+when absent).
 
 ### `onTurnComplete`
 

@@ -75,7 +75,14 @@ class StubSession:
             raise TurnRejected(self.reject)
 
     async def submit(
-        self, text, *, origin="client", callback_url=None, turn_id=None, annotations=None
+        self,
+        text,
+        *,
+        origin="client",
+        callback_url=None,
+        turn_id=None,
+        annotations=None,
+        metadata=None,
     ):
         if self.reject:
             raise TurnRejected(self.reject)
@@ -556,7 +563,12 @@ async def test_on_turn_veto_rejects_submit(tmp_path):
     assert ei.value.reason == "not now"
     assert h.events("turn_rejected")[0].data == {"reason": "not now"}
     assert not h.calls("submit") and not (h.workdir / "f.txt").exists()
-    assert h.hook_posts[0]["data"] == {"text": "hi", "files": ["f.txt"], "origin": "client"}
+    assert h.hook_posts[0]["data"] == {
+        "text": "hi",
+        "files": ["f.txt"],
+        "origin": "client",
+        "metadata": {},
+    }
     await h.router.close()
 
 

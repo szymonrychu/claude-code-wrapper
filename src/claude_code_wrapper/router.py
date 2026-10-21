@@ -552,12 +552,18 @@ class SessionRouter(SessionListener):
         files: Mapping[str, str] | None = None,
         callback_url: str | None = None,
         origin: Origin = "client",
+        metadata: Mapping[str, Any] | None = None,
     ) -> TurnRecord:
         self.session.check_submittable()  # a doomed turn fires no hooks
         turn_id = new_turn_id()
         outcome = await self._fire(
             "onTurn",
-            {"text": text, "files": list((files or {}).keys()), "origin": origin},
+            {
+                "text": text,
+                "files": list((files or {}).keys()),
+                "origin": origin,
+                "metadata": dict(metadata or {}),
+            },
             turn_id=turn_id,
         )
         if outcome.decision == "deny":
@@ -583,6 +589,7 @@ class SessionRouter(SessionListener):
             callback_url=callback_url,
             turn_id=turn_id,
             annotations=annotations,
+            metadata=dict(metadata or {}),
         )
         self._usage.reset()
         self._emit(
