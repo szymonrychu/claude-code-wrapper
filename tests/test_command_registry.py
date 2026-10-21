@@ -39,14 +39,14 @@ def rejected(fn, *a, **kw) -> CommandRejected:
 
 
 # ------------------------------------------------------------------ config
-def test_defaults_change_nothing():
+def test_commands_config_defaults_off():
     c = Config().sessions.commands
     assert c.agent == [] and c.client == []
     assert c.timeout_seconds == {"compact": 600, "default": 60}
     assert c.continue_prompt and c.allow_force is False and c.quiet_seconds == 1.5
 
 
-def test_unknown_name_error_path(tmp_path):
+def test_unknown_command_name_rejected_at_config(tmp_path):
     p = tmp_path / "c.yaml"
     p.write_text("sessions:\n  commands:\n    agent: [compact, clear]\n")
     with pytest.raises(ConfigError) as e:
@@ -116,7 +116,7 @@ def test_validate_params():
     validate_params("compact", {"instructions": "x" * 2000}, allow_force=False)
 
 
-def test_render():
+def test_render_command_lines():
     assert render("compact", {}) == "/compact"
     assert render("compact", {"instructions": "keep X"}) == "/compact keep X"
     assert render("reload-plugins", {}) == "/reload-plugins"
@@ -127,7 +127,7 @@ def test_render():
     assert render("context", {}) == "/context"
 
 
-def test_params_schema():
+def test_params_schema_lists_allowed_commands():
     s = params_schema(["compact", "mcp"])
     assert s["properties"]["name"]["enum"] == ["compact", "mcp"]
     assert len(s["oneOf"]) == 2
@@ -136,7 +136,7 @@ def test_params_schema():
 
 
 # ------------------------------------------------------------------ queue
-def test_origin_allowlists():
+def test_queue_allowlist_per_origin():
     q = CommandQueue(CommandsConfig(agent=["compact"], client=["context"]))
     assert rejected(q.request, "context", {}, origin="agent", turn_id="t").code == "not_allowed"
     assert rejected(q.request, "compact", {}, origin="client", turn_id="t").code == "not_allowed"
@@ -199,3 +199,96 @@ def test_create_request_override_validates():
         CreateSessionRequest.model_validate({"commands": {"agent": ["clear"]}})
     with pytest.raises(ValidationError):
         CreateSessionRequest.model_validate({"commands": {"bogus": 1}})
+
+
+def test_unknown_param_rejected_naming_allowed():
+    e = rejected(validate_params, "compact", {"x": 1}, allow_force=False)
+    assert e.code == "invalid_params" and "instructions" in e.message
+    e = rejected(validate_params, "reload-plugins", {"bad": 1}, allow_force=True)
+    assert e.code == "invalid_params" and "force" in e.message
+    e = rejected(validate_params, "context", {"a": 1}, allow_force=False)
+    assert e.code == "invalid_params" and "takes no params" in e.message
+
+
+def test_force_and_instruction_limits():
+    assert (
+        rejected(validate_params, "reload-plugins", {"force": True}, allow_force=False).code
+        == "force_not_allowed"
+    )
+    assert validate_params("reload-plugins", {"force": True}, allow_force=True) == {"force": True}
+    for bad in ("a\nb", "a\rb", "a\x1bb", "x" * 2001):
+        assert (
+            rejected(validate_params, "compact", {"instructions": bad}, allow_force=False).code
+            == "invalid_params"
+        )
+    validate_params("compact", {"instructions": "x" * 2000}, allow_force=False)
+
+
+def test_duplicate_queued_returns_existing():
+    q = CommandQueue(cfg())
+    a, new = q.request("compact", {"instructions": "first"}, origin="agent", turn_id="t1")
+    assert new
+    b, new = q.request("compact", {"instructions": "second"}, origin="client", turn_id="t1")
+    assert b is a and not new and a.args == {"instructions": "first"}
+    assert len(q.pending()) == 1
+
+
+def test_queue_cap_and_terminal_records():
+    q = CommandQueue(cfg())
+    first, _ = q.request("compact", {}, origin="agent", turn_id="t")
+    for n in ("reload-plugins", "reload-skills", "context"):
+        q.request(n, {}, origin="agent", turn_id="t")
+    assert (
+        rejected(q.request, "mcp", {"action": "reconnect"}, origin="agent", turn_id="t").code
+        == "queue_full"
+    )
+    q.start(first)
+    q.finish(first, "completed", result="ok")
+    q.finish(first, "failed", error="boom")
+    q.cancel_queued()
+    assert first.state == "completed" and first.error is None and first.result == "ok"
+
+
+async def test_create_override_persisted_and_resumed(world) -> None:
+    from conftest import wait_turn
+
+    m = world.manager(world.cfg(sessions={"commands": {"agent": ["compact"], "allow_force": True}}))
+    snap = await m.create(
+        CreateSessionRequest(prompt="hi", commands={"client": ["context"], "allow_force": False})
+    )
+    sid = snap["session_id"]
+    await wait_turn(m, sid)
+    cmds = m.router(sid).commands_cfg
+    assert cmds.agent == ["compact"] and cmds.client == ["context"] and cmds.allow_force is False
+    assert world.meta(sid)["commands"] == {"client": ["context"], "allow_force": False}
+    await m.destroy(sid)
+    await m.resume(sid)
+    cmds = m.router(sid).commands_cfg
+    assert cmds.agent == ["compact"] and cmds.client == ["context"] and cmds.allow_force is False
+
+
+async def test_subagent_ccw_tool_call_refused(tmp_path):
+    from test_router import Harness, webhook
+
+    h = Harness(tmp_path, hooks={"onAgentToolCall": [webhook()]})
+    r = await h.router.handle_claude_hook(
+        "PreToolUse",
+        {
+            "tool_use_id": "tu9",
+            "tool_name": "mcp__ccw__command",
+            "tool_input": {"name": "compact"},
+            "agent_id": "ag1",
+            "agent_type": "Explore",
+        },
+    )
+    out = json.loads(r["stdout"])["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
+    assert "main agent only" in out["permissionDecisionReason"]
+    (ev,) = h.events("tool_denied")
+    assert ev.data["agent_id"] == "ag1" and ev.data["tool_name"] == "mcp__ccw__command"
+    assert h.hook_posts == [] and not h.events("tool_call")
+    r = await h.router.handle_claude_hook(
+        "PreToolUse", {"tool_use_id": "t", "tool_name": "mcp__ccw__command", "tool_input": {}}
+    )
+    assert r["stdout"] == "" and h.events("tool_call")
+    await h.router.close()
