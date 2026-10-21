@@ -34,6 +34,8 @@ INTERRUPT_PREFIX = "[Request interrupted by user"
 
 _TURN_MARKER = re.compile(r"<!--\s*ccw turn:\s*(\S+?)\s*-->")
 _PROBE_MARKER = re.compile(r"<!--\s*ccw probe:\s*(\S+?)\s*-->")
+_COMMAND_PREFIXES = ("<command-name>", "<command-message>")
+_OUTPUT_PREFIXES = ("<local-command-stdout>", "<local-command-stderr>")
 _NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
 
 
@@ -109,8 +111,44 @@ class ProbeMarker(_Event):
     probe_id: str
 
 
+@dataclass
+class CommandInvoked(_Event):
+    """A slash command echo (`<command-name>/compact</command-name>...`)."""
+
+    name: str
+    args: str = ""
+
+
+@dataclass
+class CommandOutput(_Event):
+    """Local command output (`<local-command-stdout>` / `<local-command-stderr>`)."""
+
+    stdout: str = ""
+    stderr: str = ""
+
+
+@dataclass
+class CompactBoundary(_Event):
+    """A `system` / `compact_boundary` entry: the conversation was compacted."""
+
+    trigger: str = "unknown"
+    pre_tokens: int = 0
+    post_tokens: int | None = None
+    duration_ms: int | None = None
+
+
 Event = (
-    UserPrompt | AssistantText | Thinking | ToolUse | ToolResult | Usage | Interrupted | ProbeMarker
+    UserPrompt
+    | AssistantText
+    | Thinking
+    | ToolUse
+    | ToolResult
+    | Usage
+    | Interrupted
+    | ProbeMarker
+    | CommandInvoked
+    | CommandOutput
+    | CompactBoundary
 )
 OnEvents = Callable[[list[Event]], Awaitable[None] | None]
 #: (event class, constructor kwargs) before the sidechain/agent flags are attached.
@@ -144,7 +182,30 @@ def _str(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _tag(text: str, tag: str) -> str | None:
+    m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
+    return m.group(1) if m else None
+
+
+def _command_invoked(text: str, redactor: Redactor | None) -> _Made:
+    name = (_tag(text, "command-name") or _tag(text, "command-message") or "").strip()
+    args = (_tag(text, "command-args") or "").strip()
+    return (CommandInvoked, {"name": name.removeprefix("/"), "args": _redact(redactor, args)})
+
+
+def _command_output(text: str, redactor: Redactor | None) -> _Made:
+    out = {
+        k: _redact(redactor, _tag(text, f"local-command-{k}") or "") for k in ("stdout", "stderr")
+    }
+    return (CommandOutput, out)
+
+
 def _prompt_events(text: str, redactor: Redactor | None) -> list[_Made]:
+    head = text.lstrip()
+    if head.startswith(_COMMAND_PREFIXES):
+        return [_command_invoked(head, redactor)]
+    if head.startswith(_OUTPUT_PREFIXES):
+        return [_command_output(head, redactor)]
     if text.startswith(INTERRUPT_PREFIX):
         return [(Interrupted, {})]
     probe = _PROBE_MARKER.search(text)
@@ -176,19 +237,41 @@ def parse_line(
         return []
     message = obj.get("message")
     kind = obj.get("type")
-    if kind not in ("user", "assistant") or not isinstance(message, dict):
-        return []
     flags = {
         "sidechain": bool(sidechain or obj.get("isSidechain")),
         "agent_id": agent_id or _str(obj.get("agentId")),
     }
-    content = message.get("content")
-    made = (
-        _user_events(content, redactor)
-        if kind == "user"
-        else _assistant_events(message, content, redactor)
-    )
+    if kind == "system":
+        made = _system_events(obj, redactor)
+    elif kind not in ("user", "assistant") or not isinstance(message, dict):
+        return []
+    elif kind == "user":
+        if obj.get("isCompactSummary") is True or obj.get("isMeta") is True:
+            return []
+        made = _user_events(message.get("content"), redactor)
+    else:
+        made = _assistant_events(message, message.get("content"), redactor)
     return [cls(**kw, **flags) for cls, kw in made]
+
+
+def _system_events(obj: dict, redactor: Redactor | None) -> list[_Made]:
+    subtype = obj.get("subtype")
+    text = obj.get("content")
+    if subtype == "compact_boundary":
+        meta = obj.get("compactMetadata")
+        meta = meta if isinstance(meta, dict) else {}
+        post, dur = meta.get("postTokens"), meta.get("durationMs")
+        kw = {
+            "trigger": _str(meta.get("trigger")) or "unknown",
+            "pre_tokens": _int(meta.get("preTokens")),
+            "post_tokens": post if isinstance(post, int) and not isinstance(post, bool) else None,
+            "duration_ms": dur if isinstance(dur, int) and not isinstance(dur, bool) else None,
+        }
+        return [(CompactBoundary, kw)]
+    body = text if isinstance(text, str) else ""
+    if subtype == "local_command" or body.lstrip().startswith("<local-command-"):
+        return [_command_output(body, redactor)]
+    return []
 
 
 def _user_events(content: Any, redactor: Redactor | None) -> list[_Made]:
