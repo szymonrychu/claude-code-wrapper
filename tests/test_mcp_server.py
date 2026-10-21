@@ -180,3 +180,19 @@ async def test_disabled_session_has_no_tools() -> None:
     assert body["result"]["isError"] is True
     assert body["result"]["content"][0]["text"] == "ccw commands are disabled for this session"
     assert m.r.calls == []
+
+
+async def test_extra_argument_keys_are_an_error_and_queue_nothing(mgr: FakeManager) -> None:
+    async with client(mgr) as c:
+        r = await c.post(
+            "/internal/mcp",
+            json=rpc(
+                "tools/call",
+                {"name": "command", "arguments": {"name": "compact", "force": True}},
+            ),
+            headers=H,
+        )
+    res = r.json()["result"]
+    assert res["isError"] is True
+    assert "name" in res["content"][0]["text"] and "params" in res["content"][0]["text"]
+    assert mgr.r.calls == []

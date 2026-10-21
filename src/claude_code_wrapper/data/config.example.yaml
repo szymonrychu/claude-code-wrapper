@@ -163,7 +163,7 @@ sessions:
   # Slash commands (README "Slash commands"). Both allowlists are empty by default, so nothing is queueable.
   # commands:
   #   agent: []                # commands the main agent may queue through the ccw MCP tool (compact, reload-plugins, reload-skills, mcp, context)
-  #   client: []               # commands API clients may queue through POST /v1/sessions/{id}/commands
+  #   client: []               # commands API clients may queue through the public commands endpoint
   #   timeout_seconds: {compact: 600, default: 60}   # seconds a command may run before it fails with timeout
   #   continue_prompt: "The slash commands you queued have run. Continue the task you were working on."   # resumes the agent after its commands ran
   #   allow_force: false       # allow force on reload-plugins (typed as --force)

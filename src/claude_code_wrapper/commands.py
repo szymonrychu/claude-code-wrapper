@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Mapping
 from typing import Any, Literal
@@ -17,6 +18,8 @@ from claude_code_wrapper.config import (
 )
 from claude_code_wrapper.turns import now_iso
 
+#: no leading hyphen, so a server name can never be read as a flag
+SERVER_NAME = re.compile(r"[A-Za-z0-9_.:][A-Za-z0-9_.:-]{0,63}")
 MAX_QUEUED = 4
 MAX_KEPT = 100
 
@@ -77,17 +80,21 @@ def validate_params(name: str, params: Mapping[str, Any] | None, *, allow_force:
         if not isinstance(value, str if kind == "string" else bool):
             raise CommandRejected("invalid_params", f"/{name}: {key} must be a {kind}")
     out = dict(params)
-    if name == "compact" and "instructions" in out:
-        text = out["instructions"]
+    for key, (kind, _desc, _req) in spec.items():
+        text = out.get(key)
+        if kind != "string" or text is None:
+            continue
         if INSTRUCTIONS_CONTROL.search(text):
             raise CommandRejected(
                 "invalid_params",
-                "/compact: instructions must be one line without control characters",
+                f"/{name}: {key} must be one line without control characters",
             )
         if len(text) > MAX_INSTRUCTIONS:
             raise CommandRejected(
-                "invalid_params", f"/compact: instructions exceed {MAX_INSTRUCTIONS} characters"
+                "invalid_params", f"/{name}: {key} exceeds {MAX_INSTRUCTIONS} characters"
             )
+    if name == "mcp" and "server" in out and not SERVER_NAME.fullmatch(out["server"]):
+        raise CommandRejected("invalid_params", "/mcp: server must match ^[A-Za-z0-9_.:-]{1,64}$")
     if name == "mcp" and out["action"] != "reconnect":
         raise CommandRejected("invalid_params", "/mcp: action must be 'reconnect'")
     if name == "reload-plugins" and out.get("force") and not allow_force:
@@ -110,48 +117,29 @@ def render(name: str, params: Mapping[str, Any] | None = None) -> str:
 
 
 def params_schema(names: list[str] | tuple[str, ...]) -> dict:
-    """JSON schema of the MCP tool input `{name, params?}` for the given command names."""
+    """Flat JSON schema of the MCP tool input `{name, params?}` (no oneOf/anyOf/allOf)."""
     names = [n for n in names if n in BUILTIN_COMMANDS]
-    variants = []
+    props: dict[str, Any] = {}
     for n in names:
-        spec = BUILTIN_COMMANDS[n]
-        props = {k: {"type": t, "description": d} for k, (t, d, _r) in spec.items()}
-        required = [k for k, (_t, _d, r) in spec.items() if r]
-        params: dict[str, Any] = {
-            "type": "object",
-            "properties": props,
-            "additionalProperties": False,
-        }
-        if required:
-            params["required"] = required
-        variants.append(
-            {
-                "type": "object",
-                "properties": {"name": {"const": n}, "params": params},
-                "required": ["name", *(["params"] if required else [])],
-                "additionalProperties": False,
-                "description": f"/{n}" + ("" if props else " (takes no params)"),
-            }
-        )
+        for key, (kind, desc, required) in BUILTIN_COMMANDS[n].items():
+            note = f"/{n}: {desc}" + (" (required)" if required else "")
+            if key in props:
+                props[key]["description"] += f"; {note}"
+            else:
+                props[key] = {"type": kind, "description": note}
     return {
         "type": "object",
         "properties": {
             "name": {"type": "string", "enum": names, "description": "the slash command to run"},
             "params": {
                 "type": "object",
-                "description": "; ".join(
-                    f"{n}: "
-                    + (
-                        ", ".join(f"{k} ({d})" for k, (_t, d, _r) in BUILTIN_COMMANDS[n].items())
-                        or "no params"
-                    )
-                    for n in names
-                ),
+                "description": "parameters of the chosen command; omit when it takes none",
+                "properties": props,
+                "additionalProperties": False,
             },
         },
         "required": ["name"],
         "additionalProperties": False,
-        "oneOf": variants,
     }
 
 

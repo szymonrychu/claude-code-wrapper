@@ -96,6 +96,10 @@ never put it behind a public ingress.
 - There is no workdir allowlist: a caller may name any existing absolute path as a mounted workdir
   (when `init.workdir.mode` is `mounted`) and may write any relative path inside the workdir with
   turn `files`.
+- The ccw MCP endpoint `/internal/mcp` accepts the session token that claude's environment holds, so
+  a subagent's Bash can queue allowlisted slash commands directly; only the PreToolUse relay on
+  `mcp__ccw__command` keeps the tool main-agent-only. This is accepted: it cannot queue anything
+  outside `sessions.commands.agent`.
 - There is no callback host policy: `callbackUrl` may point at any `http` or `https` host the
   service can reach.
 - The service must not be exposed to untrusted callers. If `server.auth_token` is empty the service
@@ -1012,25 +1016,25 @@ data: {"seq":21,"ts":"2026-10-20T09:01:06.100Z","session_id":"ses_3f9a1c0b7d42",
 
 Emitted when a slash command is accepted into the session's command queue.
 
-`data`: `{record}`, the CommandRecord fields (`command_id`, `name`, `args`, `origin`, `state`, `turn_id`, `error` and the timestamps).
+`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args`, `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
 
 ### `command_started`
 
 Emitted when the command is typed into Claude Code at an idle prompt.
 
-`data`: `{record}`, the CommandRecord fields (`command_id`, `name`, `args`, `origin`, `state`, `turn_id`, `error` and the timestamps).
+`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args`, `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
 
 ### `command_completed`
 
 Emitted when the command finished successfully.
 
-`data`: `{record}`, the CommandRecord fields (`command_id`, `name`, `args`, `origin`, `state`, `turn_id`, `error` and the timestamps).
+`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args`, `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
 
 ### `command_failed`
 
 Emitted when the command failed (including `vetoed` by an `onCommand` hook) or was cancelled.
 
-`data`: `{record}`, the CommandRecord fields (`command_id`, `name`, `args`, `origin`, `state`, `turn_id`, `error` and the timestamps).
+`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args`, `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
 
 ### `compacted`
 
@@ -1550,7 +1554,12 @@ now with a one-line status. You will be resumed automatically.` Errors come back
 tool results: not allowed, unknown params, queue full (4 pending), `force` without `allow_force`,
 "ccw commands are disabled for this session" when the allowlist is empty. Only the main agent may
 call the tool: a call from a subagent or teammate is denied before it reaches ccw, and nothing is
-queued.
+queued. That restriction is enforced by the PreToolUse relay on `mcp__ccw__command`, not by the
+endpoint: a subagent's Bash can call `/internal/mcp` directly with the session token that is in
+claude's environment. It can only queue commands on the allowlist, which the trust model accepts.
+Every string param must be one line without control characters (at most 2000 characters), and
+`mcp` `server` must match `^[A-Za-z0-9_.:-]{1,64}$`; extra tool arguments beyond `name` and
+`params` are an error.
 
 ### Commands endpoint
 
