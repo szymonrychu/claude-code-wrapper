@@ -99,21 +99,21 @@ def test_ordinary_prompt_with_tag_mention_keeps_marker():
 def test_sidechain_flag_and_redaction():
     events = parse_line(LINES[0], sidechain=True, agent_id="a1")
     assert events[0].sidechain and events[0].agent_id == "a1"
-    redactor = Redactor(["hunter2"])
+    redactor = Redactor(["hunter2-secret-value"])
     line = json.dumps(
         {
             "type": "user",
             "message": {
-                "content": "<command-name>/x</command-name><command-args>hunter2</command-args>"
+                "content": "<command-name>/x</command-name><command-args>hunter2-secret-value</command-args>"
             },
         }
     )
-    assert "hunter2" not in parse_line(line, redactor=redactor)[0].args
+    assert "hunter2-secret-value" not in parse_line(line, redactor=redactor)[0].args
     out = json.dumps(
         {
             "type": "system",
             "subtype": "local_command",
-            "content": "<local-command-stdout>hunter2</local-command-stdout>",
+            "content": "<local-command-stdout>hunter2-secret-value</local-command-stdout>",
         }
     )
-    assert "hunter2" not in parse_line(out, redactor=redactor)[0].stdout
+    assert "hunter2-secret-value" not in parse_line(out, redactor=redactor)[0].stdout
