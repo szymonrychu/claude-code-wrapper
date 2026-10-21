@@ -1,6 +1,6 @@
 ---
 title: Hook result fields
-status: todo
+status: in-progress
 repo: .
 value: "Hooks can return annotations and output, the base for stop gates, turn tags and destroy reviews"
 files: [src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/router.py, README.md, tests/test_hook_result_fields.py]

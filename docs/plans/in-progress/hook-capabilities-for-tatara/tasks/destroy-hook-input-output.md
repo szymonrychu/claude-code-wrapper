@@ -1,6 +1,6 @@
 ---
 title: Destroy hook input output
-status: todo
+status: in-progress
 repo: .
 value: "DELETE can feed an onDestroy hook and return its output, e.g. the magic-trainer review (K3)"
 files: [src/claude_code_wrapper/api/sessions.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/events.py, README.md, tests/test_destroy_io.py]

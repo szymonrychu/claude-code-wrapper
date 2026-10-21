@@ -1,6 +1,6 @@
 ---
 title: PreToolUse gate fails closed
-status: todo
+status: in-progress
 repo: .
 value: "A deny gate can no longer be bypassed by a ccw-side failure (DEF-1)"
 files: [src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/manager.py, README.md, tests/test_pretooluse_fail_closed.py]

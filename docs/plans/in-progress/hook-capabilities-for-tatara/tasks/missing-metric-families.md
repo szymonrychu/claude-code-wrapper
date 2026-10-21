@@ -1,6 +1,6 @@
 ---
 title: Missing metric families
-status: todo
+status: in-progress
 repo: .
 value: "HTTP, probe, stall and interrupt metrics that tatara alerts depend on (K13)"
 files: [src/claude_code_wrapper/metrics.py, src/claude_code_wrapper/api/app.py, src/claude_code_wrapper/api/turns.py, src/claude_code_wrapper/router.py, README.md, tests/test_metric_families.py]

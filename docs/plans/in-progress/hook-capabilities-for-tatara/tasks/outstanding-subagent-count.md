@@ -1,6 +1,6 @@
 ---
 title: Outstanding subagent count
-status: todo
+status: in-progress
 repo: .
 value: "The session snapshot shows how many subagents are still running (K10)"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/manager.py, README.md, tests/test_outstanding_subagents.py]

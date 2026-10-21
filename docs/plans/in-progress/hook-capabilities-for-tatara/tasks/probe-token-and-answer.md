@@ -1,6 +1,6 @@
 ---
 title: Probe token and answer
-status: todo
+status: in-progress
 repo: .
 value: "Probes answer with the operator's own token and expose the answer text (K9)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/turns.py, src/claude_code_wrapper/api/turns.py, README.md, tests/test_probe_token.py]

@@ -1,6 +1,6 @@
 ---
 title: Agent attribution and usage
-status: todo
+status: in-progress
 repo: .
 value: "Tool events and usage say which agent acted, so per-role activity and tokens are derivable (K5)"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/events.py, README.md, tests/test_agent_attribution.py]

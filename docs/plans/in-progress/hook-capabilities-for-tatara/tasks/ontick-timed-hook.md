@@ -1,6 +1,6 @@
 ---
 title: onTick timed hook
-status: todo
+status: in-progress
 repo: .
 value: "Periodic hook actions for safety pushes and metrics pushes without sidecars (K7)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/router.py, README.md, tests/test_on_tick.py]

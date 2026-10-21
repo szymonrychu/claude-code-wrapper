@@ -1,6 +1,6 @@
 ---
 title: Turn metadata on submit
-status: todo
+status: in-progress
 repo: .
 value: "Clients can attach metadata to a turn for hooks to gate on, e.g. tatara handoff (K6)"
 files: [src/claude_code_wrapper/api/turns.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/turns.py, README.md, tests/test_turn_metadata.py]

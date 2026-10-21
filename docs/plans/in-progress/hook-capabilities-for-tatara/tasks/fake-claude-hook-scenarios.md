@@ -1,6 +1,6 @@
 ---
 title: Fake claude hook scenarios
-status: todo
+status: in-progress
 repo: .
 value: Lets every new hook capability be tested end to end against the fake claude
 files: [tests/fake_claude/fake_claude.py, tests/conftest.py, tests/test_fake_claude.py, tests/test_manager.py]

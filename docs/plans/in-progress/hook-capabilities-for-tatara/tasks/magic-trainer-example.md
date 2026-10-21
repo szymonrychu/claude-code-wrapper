@@ -1,6 +1,6 @@
 ---
 title: magic-trainer example
-status: todo
+status: in-progress
 repo: .
 value: "A tested worked example of magic-trainer's seat-pair completion, review, narration and exit as ccw hooks"
 files: [src/claude_code_wrapper/data/examples/magic-trainer.config.yaml, src/claude_code_wrapper/data/examples/magic-trainer/mtg_hooks.py, examples/magic-trainer.config.yaml, README.md, tests/test_example_magic_trainer.py]

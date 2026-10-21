@@ -1,6 +1,6 @@
 ---
 title: Passthrough env globs
-status: todo
+status: in-progress
 repo: .
 value: "Arbitrary operator env names reach claude by pattern, with excludes for secrets (K11)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/manager.py, README.md, tests/test_passthrough_globs.py]

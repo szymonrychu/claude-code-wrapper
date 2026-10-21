@@ -1,6 +1,6 @@
 ---
 title: Turn annotations from hooks
-status: todo
+status: in-progress
 repo: .
 value: "Hooks can tag a turn record (pending tasks, outcomes) that clients see in GET turn and callbacks (K2)"
 files: [src/claude_code_wrapper/turns.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, README.md, tests/test_turn_annotations.py]

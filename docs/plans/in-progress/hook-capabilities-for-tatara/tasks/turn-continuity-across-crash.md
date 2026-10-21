@@ -1,6 +1,6 @@
 ---
 title: Turn continuity across crash
-status: todo
+status: in-progress
 repo: .
 value: "A claude crash mid-turn no longer loses the turn when a continue prompt is configured (K12)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/events.py, README.md, tests/test_turn_continuity.py]

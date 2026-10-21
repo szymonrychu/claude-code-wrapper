@@ -1,6 +1,6 @@
 ---
 title: Busy check before turn files
-status: todo
+status: in-progress
 repo: .
 value: "A rejected turn never rewrites files under the running turn (DEF-2)"
 files: [src/claude_code_wrapper/session.py, src/claude_code_wrapper/router.py, tests/test_submit_busy_first.py]

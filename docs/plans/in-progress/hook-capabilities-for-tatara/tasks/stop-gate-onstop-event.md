@@ -1,6 +1,6 @@
 ---
 title: Stop gate onStop event
-status: todo
+status: in-progress
 repo: .
 value: "Turns can be continued or held open past a Stop, closing mtg seat-pair completion and tatara outcome re-prompts (K1)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/bootstrap/settings.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/events.py, README.md, tests/test_stop_gate.py]
