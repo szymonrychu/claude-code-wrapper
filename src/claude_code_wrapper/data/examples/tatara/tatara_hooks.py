@@ -461,9 +461,8 @@ def prepare_repo(workdir: Path, url: str, base: str, task_branch: str, full: boo
 
 
 def bootstrap() -> int:
-    """A skeleton of tatara's bootstrap, not a port: it clones the repos, puts the task branch
-    in place, writes the CLAUDE.md directive blocks and the MCP config. Tatara's Go bootstrap
-    does more (credentials helpers, sparse checkouts, retries) and stays the reference."""
+    """A skeleton of tatara's bootstrap: it clones the repos, puts the task branch in place,
+    writes the CLAUDE.md directive blocks and the MCP config."""
     workdir = Path.cwd()
     try:
         specs = repo_specs()
