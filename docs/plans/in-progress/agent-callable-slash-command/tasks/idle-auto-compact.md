@@ -12,8 +12,8 @@ model: sonnet
 estimate: 75
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--idle-auto-compact
+branch: agent-callable-slash-command--idle-auto-compact
 verified_head: ""
 run: ""
 provides: []

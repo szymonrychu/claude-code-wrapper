@@ -12,8 +12,8 @@ model: sonnet
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-runner-failures
+branch: agent-callable-slash-command--command-runner-failures
 verified_head: ""
 run: ""
 provides: []

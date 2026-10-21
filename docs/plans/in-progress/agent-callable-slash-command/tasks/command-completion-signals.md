@@ -12,8 +12,8 @@ model: sonnet
 estimate: 75
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-completion-signals
+branch: agent-callable-slash-command--command-completion-signals
 verified_head: ""
 run: ""
 provides: []

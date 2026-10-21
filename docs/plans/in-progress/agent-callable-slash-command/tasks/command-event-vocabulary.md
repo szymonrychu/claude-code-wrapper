@@ -12,8 +12,8 @@ model: sonnet
 estimate: 45
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-event-vocabulary
+branch: agent-callable-slash-command--command-event-vocabulary
 verified_head: ""
 run: ""
 provides: []

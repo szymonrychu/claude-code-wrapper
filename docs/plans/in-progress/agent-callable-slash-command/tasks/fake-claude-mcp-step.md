@@ -12,8 +12,8 @@ model: sonnet
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--fake-claude-mcp-step
+branch: agent-callable-slash-command--fake-claude-mcp-step
 verified_head: ""
 run: ""
 provides: []

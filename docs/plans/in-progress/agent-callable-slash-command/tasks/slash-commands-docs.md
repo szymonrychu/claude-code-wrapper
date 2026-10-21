@@ -12,8 +12,8 @@ model: sonnet
 estimate: 45
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--slash-commands-docs
+branch: agent-callable-slash-command--slash-commands-docs
 verified_head: ""
 run: ""
 provides: []
