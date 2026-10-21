@@ -258,6 +258,7 @@ class SessionManager:
         internal_url: str,
         service_env: Mapping[str, str],
         redactor: Redactor,
+        api_url: str = "",
         relay_command: str | None = None,
         reaper_interval: float = REAPER_INTERVAL_SECONDS,
         metrics: Metrics | None = None,
@@ -266,6 +267,7 @@ class SessionManager:
         self.cfg = cfg
         self.internal_url = internal_url
         self.service_env = dict(service_env)
+        self.api_url = api_url
         self.redactor = redactor
         self.started = False
         self._relay_command = relay_command
@@ -1107,12 +1109,16 @@ class SessionManager:
         if cwd is None:
             cwd = ctx.session_dir if ctx.session_dir.is_dir() else Path(self._root)
         if ctx.dispatcher is None or ctx.dispatcher_cwd != cwd:
+            state_dir = ctx.session_dir / "hook-state"
+            state_dir.mkdir(parents=True, exist_ok=True)
             ctx.dispatcher = HookDispatcher(
                 self.cfg.hooks,
                 self.redactor,
                 base_env=self.service_env,
                 default_cwd=cwd,
                 config_dir=ctx.config_dir,
+                state_dir=state_dir,
+                api_url=self.api_url,
             )
             ctx.dispatcher_cwd = cwd
             self._dispatchers.add(ctx.dispatcher)

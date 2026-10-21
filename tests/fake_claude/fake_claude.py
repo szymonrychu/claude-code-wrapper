@@ -3,6 +3,8 @@
 CLI
     fake_claude [--model M] [--effort E] [--session-id UUID] [-r|--resume ID]
                 [--append-system-prompt T] [other flags accepted and recorded]
+    fake_claude -p|--print [prompt] [--output-format json] [flags]
+                                                print mode, see below
     fake_claude --version                       prints "0.0.0 (Fake Claude)"
     fake_claude plugin marketplace add <source> [--scope s] [--json]
     fake_claude plugin marketplace list --json
@@ -20,6 +22,7 @@ Environment
                                  CLAUDE_CODE_PROJECT_DIR_NAME, CCW_SESSION_ID,
                                  CCW_INTERNAL_URL}}
     FAKE_CLAUDE_PLUGIN_FAIL      `plugin install` of exactly this id exits 1
+    CLAUDE_CODE_STOP_HOOK_BLOCK_CAP  max consecutive Stop blocks per turn (default 8)
 
 Interactive mode (no subcommand) needs a TTY on stdin, else exits 2. Boot prints a
 colored banner, then (boot.bypass_dialog, default true) a "Bypass Permissions mode"
@@ -35,16 +38,37 @@ Scenario schema
   First turn whose regex matches (re.search) the prompt runs; otherwise the default
   steps [{"text": "echo: <prompt>"}]. Steps:
     {"text": s}  {"thinking": s}
-    {"tool": name, "input": {...}, "result": s, "fail": false}
+    {"tool": name, "input": {...}, "result": s, "fail": false,
+     "agent": {"id": A, "type": T}}   with "agent", PreToolUse and PostToolUse(Failure)
+                         payloads carry agent_id and agent_type, and the tool_use and
+                         tool_result lines go to subagents/agent-<A>.jsonl (isSidechain true)
     {"subagent": {"id", "type", "text"}}  -> <project dir>/<session id>/subagents/
                                              agent-<id>.jsonl, isSidechain true
     {"sleep": seconds}   ESC during it writes "[Request interrupted by user]" and
                          returns to idle without a Stop hook
     {"print": s}         raw PTY output, then idle without Stop
     {"exit": code}
-    {"background": {"after": seconds, "text": s}}  after the turn, wait, append an
-                         assistant line and run Stop again
+    {"exit_once": code}  exit with code only the first time any fake process reaches this
+                         step (flag file under $CLAUDE_CONFIG_DIR); afterwards a no-op
+    {"background": {"after": seconds, "text": s, "background_tasks": [...]}}  after the
+                         turn, wait, append an assistant line and run Stop again; that Stop
+                         carries background_tasks (default [])
   After the last step: Stop hooks run with the last assistant text, then the footer.
+  Turn-level keys besides "match" and "steps":
+    "stop": {"background_tasks": [...], "session_crons": [...]}  the turn's first Stop
+                         carries these lists verbatim (entries {"id","type","status",
+                         "description"}); every Stop payload has both keys, default []
+    "on_block": [steps]  run after a Stop block (default [{"text": "continued: <reason>"}])
+  Stop block: a Stop hook that prints {"decision": "block", "reason": R} on stdout (exit 0)
+  or exits 2 (reason = stderr) makes the fake write R as a user line, run the turn's
+  on_block steps and fire Stop again with stop_hook_active true. At most 8 consecutive
+  blocks (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP overrides); past the cap the turn ends as allowed.
+
+Print mode
+  `-p`/`--print` takes the prompt from the argument or stdin, needs no TTY and runs no hooks.
+  It picks the first turn whose regex matches, prints the concatenated `text` steps (default
+  "echo: <prompt>") and exits 0; with `--output-format json` it prints {"result": <text>}.
+  Other flags are accepted and logged via FAKE_CLAUDE_LOG like every invocation.
 
 Hooks come from $CLAUDE_CONFIG_DIR/settings.json hooks.<Event>; commands run via
 `sh -c` with the JSON payload on stdin and CLAUDE_PROJECT_DIR=<cwd>. PreToolUse deny
@@ -65,6 +89,7 @@ import termios
 import time
 import tty
 import uuid
+import zlib
 
 PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
@@ -72,6 +97,21 @@ DOWN = b"\x1b[B"
 FOOTER = "? for shortcuts"
 INTERRUPT_TEXT = "[Request interrupted by user]"
 VERSION = "0.0.0 (Fake Claude)"
+DEFAULT_BLOCK_CAP = 8
+VALUED_FLAGS = {
+    "--model",
+    "--effort",
+    "--append-system-prompt",
+    "--permission-mode",
+    "--settings",
+    "--add-dir",
+    "--allowedTools",
+    "--disallowedTools",
+    "--setting-sources",
+    "--output-format",
+    "--max-turns",
+    "--mcp-config",
+}
 
 
 def config_dir() -> str:
@@ -202,22 +242,12 @@ class Fake:
         self.settings = self._load_settings()
         self.parent = None
         self.last_text = ""
-        self.background: list[tuple[float, str]] = []
+        self.background: list[tuple[float, str, list]] = []
         self.pending_input = b""
 
     @staticmethod
     def _parse(argv: list[str]) -> tuple[str, str | None]:
         sid, resume = None, None
-        valued = {
-            "--model",
-            "--effort",
-            "--append-system-prompt",
-            "--permission-mode",
-            "--settings",
-            "--add-dir",
-            "--allowedTools",
-            "--disallowedTools",
-        }
         i = 0
         while i < len(argv):
             a = argv[i]
@@ -227,7 +257,7 @@ class Fake:
             elif a in ("-r", "--resume") and i + 1 < len(argv):
                 resume = argv[i + 1]
                 i += 1
-            elif a in valued:
+            elif a in VALUED_FLAGS:
                 i += 1
             i += 1
         return resume or sid or str(uuid.uuid4()), resume
@@ -392,7 +422,7 @@ class Fake:
         while True:
             timeout = None
             if self.background:
-                timeout = max(0.0, min(t for t, _ in self.background) - time.monotonic())
+                timeout = max(0.0, min(b[0] for b in self.background) - time.monotonic())
             data = self.read(timeout)
             if data is None:
                 self.fire_background()
@@ -431,7 +461,7 @@ class Fake:
             self.background.remove(item)
             self.assistant_line({"type": "text", "text": item[1]})
             self.last_text = item[1]
-            self.run_hooks("Stop", {"stop_hook_active": False, "last_assistant_message": item[1]})
+            self.stop_cycle([], background_tasks=item[2])
             self.footer()
 
     def interrupted(self, timeout: float = 0.0) -> bool:
@@ -443,21 +473,43 @@ class Fake:
         self.out(f"\n{INTERRUPT_TEXT}\n")
         self.footer()
 
-    def run_turn(self, prompt: str) -> None:
-        steps = [{"text": f"echo: {prompt}"}]
-        for t in self.scenario.get("turns", []):
+    @staticmethod
+    def matching_turn_of(scenario: dict, prompt: str) -> dict:
+        for t in scenario.get("turns", []):
             if re.search(t.get("match", ".*"), prompt):
-                steps = t.get("steps", [])
-                break
+                return t
+        return {"steps": [{"text": f"echo: {prompt}"}]}
+
+    def matching_turn(self, prompt: str) -> dict:
+        return self.matching_turn_of(self.scenario, prompt)
+
+    def run_turn(self, prompt: str) -> None:
+        turn = self.matching_turn(prompt)
         self.user_line(prompt)
         self.run_hooks("UserPromptSubmit", {"prompt": prompt})
         self.out(f"\n> {prompt}\n")
         tokens = len(prompt.split())
         self.last_text = ""
         bg: list[dict] = []
-        for step in steps:
+        if not self.run_steps(turn.get("steps", []), tokens, bg, turn):
+            return
+        self.stop_cycle(turn.get("on_block"), turn.get("stop") or {})
+        self.footer()
+        for b in bg:
+            self.background.append(
+                (
+                    time.monotonic() + float(b.get("after", 0)),
+                    b["text"],
+                    b.get("background_tasks", []),
+                )
+            )
+
+    def run_steps(self, steps: list[dict], tokens: int, bg: list[dict], turn: dict) -> bool:
+        """Run steps; False when the turn ended without a Stop (interrupt or raw print)."""
+        for index, step in enumerate(steps):
             if self.interrupted():
-                return self.do_interrupt()
+                self.do_interrupt()
+                return False
             if "text" in step:
                 self.assistant_line({"type": "text", "text": step["text"]}, tokens)
                 self.last_text = step["text"]
@@ -472,28 +524,88 @@ class Fake:
                 self.subagent_step(step["subagent"])
             elif "sleep" in step:
                 if self.interrupted(float(step["sleep"])):
-                    return self.do_interrupt()
+                    self.do_interrupt()
+                    return False
             elif "print" in step:
                 self.out(step["print"])
-                return None
+                return False
             elif "exit" in step:
                 raise Exit(int(step["exit"]))
+            elif "exit_once" in step:
+                self.exit_once(int(step["exit_once"]), f"{turn.get('match', '')}#{index}")
             elif "background" in step:
                 bg.append(step["background"])
-        self.run_hooks(
-            "Stop", {"stop_hook_active": False, "last_assistant_message": self.last_text}
-        )
-        self.footer()
-        for b in bg:
-            self.background.append((time.monotonic() + float(b.get("after", 0)), b["text"]))
+        return True
+
+    def exit_once(self, code: int, key: str) -> None:
+        flag = os.path.join(config_dir(), f"fake-exit-once-{code}-{zlib.crc32(key.encode()):08x}")
+        try:
+            fd = os.open(flag, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return
+        os.close(fd)
+        raise Exit(code)
+
+    @staticmethod
+    def block_reason(results: list[dict]) -> str | None:
+        for r in results:
+            if r["json"].get("decision") == "block":
+                return str(r["json"].get("reason") or r["stderr"] or "blocked by hook")
+            if r["code"] == 2:
+                return r["stderr"] or "blocked by hook"
         return None
+
+    def stop_cycle(
+        self,
+        on_block: list[dict] | None,
+        stop: dict | None = None,
+        background_tasks: list | None = None,
+    ) -> None:
+        """Fire Stop; a block continues the turn and re-fires Stop (cap per claude 2.1.143)."""
+        cap = int(os.environ.get("CLAUDE_CODE_STOP_HOOK_BLOCK_CAP") or DEFAULT_BLOCK_CAP)
+        stop = stop or {}
+        tasks = stop.get("background_tasks", background_tasks or [])
+        crons = stop.get("session_crons", [])
+        blocks = 0
+        while True:
+            results = self.run_hooks(
+                "Stop",
+                {
+                    "stop_hook_active": blocks > 0,
+                    "last_assistant_message": self.last_text,
+                    "background_tasks": tasks,
+                    "session_crons": crons,
+                },
+            )
+            reason = self.block_reason(results)
+            if reason is None or blocks >= cap:
+                return
+            blocks += 1
+            tasks, crons = [], []
+            self.user_line(reason)
+            steps = on_block if on_block is not None else [{"text": f"continued: {reason}"}]
+            if not self.run_steps(steps, len(reason.split()), [], {}):
+                return
 
     def tool_step(self, step: dict, tokens: int) -> None:
         name, tinput = step["tool"], step.get("input", {})
         tid = "toolu_" + uuid.uuid4().hex[:24]
-        self.assistant_line({"type": "tool_use", "id": tid, "name": name, "input": tinput}, tokens)
+        agent = step.get("agent")
+        who: dict = {}
+        path, side = None, False
+        if agent:
+            who = {"agent_id": agent["id"], "agent_type": agent.get("type", "general-purpose")}
+            path = os.path.join(
+                self.proj_dir, self.session_id, "subagents", f"agent-{agent['id']}.jsonl"
+            )
+            side = True
+        self.assistant_line(
+            {"type": "tool_use", "id": tid, "name": name, "input": tinput}, tokens, path, side
+        )
         pre = self.run_hooks(
-            "PreToolUse", {"tool_name": name, "tool_input": tinput, "tool_use_id": tid}, tool=name
+            "PreToolUse",
+            {"tool_name": name, "tool_input": tinput, "tool_use_id": tid, **who},
+            tool=name,
         )
         self.context_from(pre)
         deny = None
@@ -508,12 +620,20 @@ class Fake:
         event = "PostToolUseFailure" if fail else "PostToolUse"
         post = self.run_hooks(
             event,
-            {"tool_name": name, "tool_input": tinput, "tool_use_id": tid, "tool_response": result},
+            {
+                "tool_name": name,
+                "tool_input": tinput,
+                "tool_use_id": tid,
+                "tool_response": result,
+                **who,
+            },
             tool=name,
         )
         self.context_from(post)
         self.user_line(
-            [{"type": "tool_result", "tool_use_id": tid, "content": result, "is_error": fail}]
+            [{"type": "tool_result", "tool_use_id": tid, "content": result, "is_error": fail}],
+            path,
+            side,
         )
         self.out(f"\n* {name}({json.dumps(tinput)})\n")
 
@@ -553,6 +673,30 @@ def log_invocation(argv: list[str]) -> None:
         )
 
 
+def print_main(argv: list[str]) -> int:
+    """`-p`/`--print`: no TTY, no hooks; prints the matching turn's text steps."""
+    prompt = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in VALUED_FLAGS or a in ("--session-id", "-r", "--resume"):
+            i += 1
+        elif not a.startswith("-"):
+            prompt = a
+            break
+        i += 1
+    if prompt is None:
+        prompt = "" if sys.stdin.isatty() else sys.stdin.read().rstrip("\n")
+    turn = Fake.matching_turn_of(Fake._load_scenario(), prompt)
+    texts = [st["text"] for st in turn.get("steps", []) if "text" in st]
+    text = "".join(texts) if texts else f"echo: {prompt}"
+    if _opt(argv, ("--output-format",)) == "json":
+        print(json.dumps({"result": text}))
+    else:
+        print(text)
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--version"]:
         print(VERSION)
@@ -560,6 +704,8 @@ def main(argv: list[str]) -> int:
     log_invocation(argv)
     if argv[:1] == ["plugin"]:
         return plugin_main(argv[1:])
+    if "-p" in argv or "--print" in argv:
+        return print_main(argv)
     fake = Fake(argv)
     if fake.resume and not os.path.isfile(fake.transcript):
         print(f"No conversation found with session ID: {fake.resume}")
