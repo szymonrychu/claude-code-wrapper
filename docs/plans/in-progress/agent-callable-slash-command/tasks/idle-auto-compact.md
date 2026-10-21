@@ -1,6 +1,6 @@
 ---
 title: Idle auto-compact
-status: escalated
+status: done
 repo: .
 value: "Long-lived sessions compact themselves while idle, so the next turn starts with a small context"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/router.py, README.md, tests/test_auto_compact.py]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--idle-auto-compact
 branch: agent-callable-slash-command--idle-auto-compact
-verified_head: ""
+verified_head: 93f1790eee634a5b686c2fa8e80eadfeff753115
 run: agent-callable-slash-command
 provides: [auto-compact-config, idle-activity-ranges]
 acs_for_audit: []
@@ -74,3 +74,5 @@ With `sessions.auto_compact.idle_seconds` set, a session that went quiet after a
 A timer per session (asyncio, cancelled on close) or the manager's reaper loop are both fine; tests use a small idle_seconds (for example 0.3) and the fake's compact.
 
 - 2026-10-21 run agent-callable-slash-command: dependency-failed on ccw-mcp-injection-and-e2e, command-same-turn-resume
+
+- 2026-10-22 hand-verified on 93f1790 after verify-agent-died: verify-task.py --base f874f1e passed, all ACs met, clean. A first hand run failed tests/test_manager.py::test_shutdown_stops_all only while a second verifier ran in parallel; it passes 3/3 alone in the worktree and 2/2 on main (pre-existing, load-sensitive).

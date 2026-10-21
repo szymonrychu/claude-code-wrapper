@@ -1,6 +1,6 @@
 ---
 title: Deflake never typed while busy
-status: escalated
+status: done
 repo: .
 value: A flaky test in the runner suite would make CI red at random
 files: [tests/test_command_runner.py]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--deflake-never-typed-while-bu
 branch: agent-callable-slash-command--deflake-never-typed-while-bu
-verified_head: ""
+verified_head: b75056fdfde85ca21f243ea58a43df77dd9e1a64
 run: agent-callable-slash-command
 provides: []
 acs_for_audit: []
@@ -53,3 +53,5 @@ test_never_typed_while_busy is deterministic: 30/30 runs pass and the full suite
 ## Notes
 
 Seen failing once in the full suite on main f874f1e (1016 passed, 3 failed; the other two were a StubSession gap fixed in f874f1e). Do not edit tests/conftest.py or tests/fake_claude.
+
+- 2026-10-22 hand-verified on b75056f after the run's verifier hung (no activity for over an hour): verify-task.py --base f874f1e passed, AC1 (30 consecutive passes) and AC2 (lint + full suite) met, clean.

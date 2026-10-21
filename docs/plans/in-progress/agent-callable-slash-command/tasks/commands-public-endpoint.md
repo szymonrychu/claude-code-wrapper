@@ -1,6 +1,6 @@
 ---
 title: Commands public endpoint
-status: escalated
+status: done
 repo: .
 value: API clients can queue and read slash commands for a session without typing into it
 files: [src/claude_code_wrapper/api/commands.py, src/claude_code_wrapper/api/app.py, src/claude_code_wrapper/api/errors.py, README.md, tests/test_api_commands.py]
@@ -38,7 +38,7 @@ Public commands endpoint for clients (design D5; user decision, redundancy with 
 - AC1: POST commands returns 202 with the record and the command runs on an idle session [evidence: test:tests/test_api_commands.py::test_post_command_returns_202_record]
 - AC2: a name outside the client allowlist returns 403 command_not_allowed [evidence: test:tests/test_api_commands.py::test_post_command_not_allowed_403]
 - AC3: bad args return 422 invalid_command [evidence: test:tests/test_api_commands.py::test_post_command_bad_args_422]
-- AC4: a full queue returns 429 command_queue_full [evidence: test:tests/test_api_commands.py::test_queue_full_429]
+- AC4: a full queue returns 429 command_queue_full [evidence: test:tests/test_api_commands.py::test_post_command_queue_full_429]
 - AC5: GET returns one record and the list oldest first [evidence: test:tests/test_api_commands.py::test_get_command_and_list]
 - AC6: an unknown command id returns 404 command_not_found [evidence: test:tests/test_api_commands.py::test_unknown_command_id_404]
 - AC7: the routes require the API token [evidence: test:tests/test_api_commands.py::test_commands_require_auth]
@@ -73,3 +73,5 @@ API clients queue, list and read commands per session through `/v1/sessions/{id}
 Design D-numbers and facts with file:line are in ../design.md.
 
 - 2026-10-21 run agent-callable-slash-command: dependency-failed on command-same-turn-resume
+
+- 2026-10-22 hand-verified on d57e1ef: verify-task.py --base f874f1e passed; the run's gate-repeat was AC4 ref-missing only. AC4 ref renamed to the implementer's test test_post_command_queue_full_429 (asserts 429 and command_queue_full; mapping in api/commands.py).
