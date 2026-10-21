@@ -14,8 +14,11 @@ from claude_code_wrapper.pty_proc import paste_bytes
 from claude_code_wrapper.turns import Probe, now_iso
 
 
-def test_config_default_and_non_empty():
+def test_default_token_unchanged():
     assert Config().sessions.probe_alive_token == "CCW-ALIVE"
+
+
+def test_empty_token_rejected():
     with pytest.raises(ValidationError):
         SessionsConfig(probe_alive_token="")
 
@@ -34,7 +37,7 @@ async def test_default_probe_text_names_configured_token(harness: Harness):  # n
     assert probe.answer == "TOK-9 fine" and probe.answered_at
 
 
-async def test_answer_capped_at_2000(harness: Harness):  # noqa: F811
+async def test_answer_captured_and_capped(harness: Harness):  # noqa: F811
     session = await harness.start({})
     probe = await session.probe()
     session.probe_delivered(probe.probe_id)
@@ -42,7 +45,7 @@ async def test_answer_capped_at_2000(harness: Harness):  # noqa: F811
     assert probe.answer is not None and len(probe.answer) == 2000
 
 
-async def test_router_answers_with_configured_token(tmp_path):
+async def test_custom_token_answers_probe(tmp_path):
     h = RouterHarness(tmp_path, sessions={"probe_alive_token": "TOK-9"})
     from claude_code_wrapper.turns import Probe as P
 
@@ -60,7 +63,7 @@ async def test_router_answers_with_configured_token(tmp_path):
     await h.router.close()
 
 
-def test_get_probe_includes_answer(client, stub):  # noqa: F811
+def test_get_probe_returns_answer(client, stub):  # noqa: F811
     client.post(f"/v1/sessions/{SID}/probe")
     got = client.get(f"/v1/sessions/{SID}/probe/probe-1").json()
     assert got["answer"] is None
