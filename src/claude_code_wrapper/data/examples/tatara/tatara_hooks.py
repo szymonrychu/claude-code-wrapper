@@ -280,6 +280,9 @@ def post(payload: dict[str, Any]) -> int:
         return 1
     body = json.dumps(payload).encode()
     secret = os.environ.get("CALLBACK_HMAC_SECRET", "")
+    if not secret:
+        print("CALLBACK_HMAC_SECRET is empty: refusing to sign the callback", file=sys.stderr)
+        return 1
     signature = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     request = urllib.request.Request(
         url,

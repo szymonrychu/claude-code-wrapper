@@ -1068,7 +1068,8 @@ background completion, recorded as an `origin: "agent"` turn) and a stale or for
 `transcript_path` (null when absent).
 
 Decisions (blocking actions; any other decision, `deny` included, is treated as `allow` and
-recorded as `invalid_decision`):
+recorded as `invalid_decision`). A blocking action that fails (crash, timeout, bad output) with
+`on_error: deny` yields `block` with the failure reason; with `on_error: allow` it is an `allow`:
 
 - `allow`: the turn completes as usual (one `turn_completed`, one `onTurnComplete`, one callback);
   its usage is summed over every leg of the turn.

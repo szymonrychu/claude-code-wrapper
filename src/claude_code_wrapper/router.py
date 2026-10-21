@@ -362,19 +362,20 @@ class SessionRouter(SessionListener):
         except Exception as exc:  # noqa: BLE001 - claude is never broken by the router
             log.exception("hook relay %s failed", event_name)
             tool_name = str(payload.get("tool_name") or "")
+            # an unknown tool name could match any gate: consider them all
             closed = (
-                event_name == "PreToolUse" and gate_fail_mode(self._cfg.hooks, tool_name) == "deny"
+                event_name == "PreToolUse"
+                and gate_fail_mode(self._cfg.hooks, tool_name or None) == "deny"
             )
+            response = self._fail_closed(exc, tool_name, payload) if closed else _allow()
             try:
                 data = self._report_error(
                     "hook_relay", f"{event_name}: {type(exc).__name__}: {exc}"
                 )
-                await self._fire("onError", data)
+                self._spawn(self._fire("onError", data))
             except Exception:  # noqa: BLE001
                 log.exception("reporting hook relay failure failed")
-            if closed:
-                return self._fail_closed(exc, tool_name, payload)
-            return _allow()
+            return response
 
     def _fail_closed(
         self, exc: Exception, tool_name: str, payload: Mapping[str, Any]

@@ -1176,7 +1176,8 @@ class SessionManager:
             cwd = ctx.session_dir if ctx.session_dir.is_dir() else Path(self._root)
         if ctx.dispatcher is None or ctx.dispatcher_cwd != cwd:
             state_dir = ctx.session_dir / "hook-state"
-            state_dir.mkdir(parents=True, exist_ok=True)
+            state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            state_dir.chmod(0o700)
             ctx.dispatcher = HookDispatcher(
                 self.cfg.hooks,
                 self.redactor,
