@@ -70,6 +70,10 @@ class StubSession:
         self.calls.append(("complete", payload, usage, model_tokens, marker_turn_id))
         return self.complete_result
 
+    def check_submittable(self):
+        if self.reject:
+            raise TurnRejected(self.reject)
+
     async def submit(self, text, *, origin="client", callback_url=None, turn_id=None):
         if self.reject:
             raise TurnRejected(self.reject)

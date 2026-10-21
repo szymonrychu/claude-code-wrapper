@@ -602,6 +602,13 @@ class Session:
             raise TurnRejected("dead")
         return self.pty
 
+    def check_submittable(self) -> PtyProcess:
+        """Raise `TurnRejected(booting|dead|busy)` if a turn cannot start now (no side effects)."""
+        pty = self._writable_pty()
+        if self.state == "busy" or self._turn is not None:
+            raise TurnRejected("busy")
+        return pty
+
     async def submit(
         self,
         text: str,
@@ -616,9 +623,7 @@ class Session:
         Raises `TurnRejected` (booting, dead, busy). A claude that exits under the write fails
         the turn with `claude_exited`; the record is returned either way.
         """
-        pty = self._writable_pty()
-        if self.state == "busy" or self._turn is not None:
-            raise TurnRejected("busy")
+        pty = self.check_submittable()
         now = now_iso()
         record = TurnRecord(
             turn_id=turn_id or new_turn_id(),

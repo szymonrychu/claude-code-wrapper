@@ -457,6 +457,7 @@ class SessionRouter(SessionListener):
         callback_url: str | None = None,
         origin: Origin = "client",
     ) -> TurnRecord:
+        self.session.check_submittable()  # a doomed turn fires no hooks
         turn_id = new_turn_id()
         outcome = await self._fire(
             "onTurn",
@@ -467,6 +468,8 @@ class SessionRouter(SessionListener):
             reason = outcome.reason or DEFAULT_DENY_REASON
             self._emit("turn_rejected", {"reason": reason})
             raise TurnVetoed(reason)
+        # No await from this check through safe_write_files to submit's slot reservation.
+        self.session.check_submittable()
         if files:
             safe_write_files(
                 self.info.workdir,
