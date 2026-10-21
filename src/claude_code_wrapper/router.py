@@ -221,10 +221,18 @@ class SessionRouter(SessionListener):
             log.error("router background task failed", exc_info=task.exception())
 
     async def drain(self, timeout: float | None = None) -> None:
-        """Wait for background hook fires and callback deliveries started so far."""
-        pending = list(self._background)
-        if pending:
-            await asyncio.wait(pending, timeout=timeout)
+        """Wait for background hook fires and callback deliveries, including those they start.
+
+        A turn's `_after_turn` spawns its callback delivery only after onTurnComplete returns,
+        so one snapshot of the pending tasks would let `close()` cancel that delivery.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while pending := [t for t in self._background if not t.done()]:
+            left = None if deadline is None else deadline - loop.time()
+            if left is not None and left <= 0:
+                return
+            await asyncio.wait(pending, timeout=left)
 
     async def _fire(
         self,
@@ -742,6 +750,12 @@ class SessionRouter(SessionListener):
 
     def on_stall(self, turn_id: str) -> None:
         self._emit("stall_suspected", {"turn_id": turn_id})
+
+    def on_turn_resumed(self, record: Any, restart: int) -> None:
+        # The continue prompt carries this turn's marker, so its Stop completes the same record;
+        # the usage totals are not reset, so they span the crash.
+        self._last_marker = record.turn_id
+        self._emit("turn_resumed", {"turn_id": record.turn_id, "restart": restart})
 
     def on_turn_end(self, record: Any) -> None:
         # Completed turns are finished by the Stop hook handler, which also has the usage.

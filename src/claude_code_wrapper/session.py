@@ -7,17 +7,21 @@ call the session ready on a ready marker or output quiescence, never before `min
 (a submit while the TUI is still painting exits claude). A boot that never gets there is
 relaunched once; a crash after boot is relaunched within `max_restarts`, with `--resume` only
 when the transcript exists (resuming a conversation that was never written exits claude at once
-and burns the budget). The ring is emptied before every relaunch so the old screen cannot
-satisfy the new boot's dialog or marker checks.
+and burns the budget). With `sessions.restart_continue_prompt` set, a turn running when claude
+crashes is held (still `running`) across the relaunch; a resumed relaunch is sent the continue
+prompt with the same turn marker and the turn goes on (`on_turn_resumed`). The ring is emptied
+before every relaunch so the old screen cannot satisfy the new boot's dialog or marker checks.
 
 Turns (D13): one at a time. `submit` reserves the slot and persists the record before the first
 byte is written, then pastes the prompt (with a `<!-- ccw turn: <id> -->` marker, because Stop
 payloads carry no turn id) and sends CR as a separate write. A turn ends exactly once, on the
 first of: a matching Stop (`complete`), an interrupt (resolved by the transcript interrupt line or
 a second ESC after `interrupt_settle_seconds`, since claude runs no Stop hook for an interrupted
-turn), a fatal pattern on screen, claude exiting, the hard `turn_max_seconds` limit, or `stop`.
-Every end frees the slot, persists the record and calls `on_turn_end`. A quiet turn is only
-reported (`on_stall`), never failed: silence is not a stall.
+turn), a fatal pattern on screen, claude exiting (unless the turn is held for continuation, then
+when the relaunch is dead, fails to boot or is fresh), the hard `turn_max_seconds` limit (measured
+from the original submit, across a crash), or `stop`. Every end frees the slot, persists the
+record and calls `on_turn_end`. A quiet turn is only reported (`on_stall`), never failed:
+silence is not a stall.
 
 The screen is never the source of turn results; it is read only for boot, fatal patterns and
 debug tails, and every tail that leaves this module is redacted.
@@ -280,6 +284,9 @@ class SessionListener:
     def on_stall(self, turn_id: str) -> None:
         """The running turn has been quiet for `turn_stall_seconds`."""
 
+    def on_turn_resumed(self, record: Any, restart: int) -> None:
+        """A turn held across a crash was continued in the resumed relaunch number `restart`."""
+
     def on_turn_end(self, record: Any) -> None:
         """A turn reached a terminal state."""
 
@@ -377,6 +384,8 @@ class Session:
         self._turn: TurnRecord | None = None
         self._turn_watch: asyncio.Future[None] | None = None
         self._interrupting: _PendingInterrupt | None = None
+        #: The running turn while claude is relaunched after a crash (continuation, K12).
+        self._held: TurnRecord | None = None
         self._last_activity = clock()
         self._turn_started = clock()
         self._activity_persisted = self._last_activity
@@ -576,8 +585,14 @@ class Session:
         if self._stopping or self.state not in ("ready", "busy"):
             return
         record = self._turn
-        if record is not None:  # never re-pasted: the client decides whether to retry
-            self._end_turn(record, "failed", error="claude_exited", next_state=None)
+        if record is not None:
+            if (
+                self.restarts < self.spec.max_restarts
+                and self.spec.sessions.restart_continue_prompt
+            ):
+                self._held = record  # stays running; _recover continues or fails it
+            else:  # never re-pasted: the client decides whether to retry
+                self._end_turn(record, "failed", error="claude_exited", next_state=None)
         log.warning(
             "session %s: claude exited unexpectedly code=%s tail=%r",
             self.spec.session_id,
@@ -605,6 +620,7 @@ class Session:
                 self.spec.session_id,
                 self.spec.max_restarts,
             )
+            self._fail_held()
             self._set_state("dead")
             self._notify("on_exit", code)
             return
@@ -614,10 +630,43 @@ class Session:
         try:
             resumed = await self._boot(resume=os.path.isfile(self.transcript_path))
         except BootError as exc:
-            if exc.code != "stopped":
+            if exc.code != "stopped":  # a stop ended the held turn itself
+                self._fail_held()
                 self._notify("on_exit", code)
             return
+        if not resumed:
+            self._fail_held()  # a fresh claude has no conversation to continue
         self._notify("on_restart", self.restarts, resumed)
+        if resumed and self._held is not None and not self._stopping:
+            await self._continue_held(self._held)
+
+    def _fail_held(self) -> None:
+        record = self._held
+        if record is not None:
+            self._end_turn(record, "failed", error="claude_exited", next_state=None)
+
+    async def _continue_held(self, record: TurnRecord) -> None:
+        """Retake the slot for the held turn and paste the continue prompt with its marker."""
+        pty = self.pty
+        assert pty is not None
+        self._held = None
+        self._set_state("busy")
+        self._notify("on_turn_resumed", record, self.restarts)
+        log.info(
+            "session %s: turn %s continued after restart %d",
+            self.spec.session_id,
+            record.turn_id,
+            self.restarts,
+        )
+        try:
+            await pty.send_prompt(
+                self._with_marker(self.spec.sessions.restart_continue_prompt, record),
+                self.spec.boot.submit_delay_seconds,
+            )
+        except PtyClosed:
+            self._end_turn(
+                record, "failed", error="claude_exited", next_state="ready" if pty.alive else None
+            )
 
     # -- stop ------------------------------------------------------------------------------
 
@@ -706,12 +755,11 @@ class Session:
         self._set_state("busy")
         self._persist(record)
         self._arm_watch(record)
-        prompt = text
-        if self.spec.sessions.turn_marker:
-            prompt += f"\n\n<!-- ccw turn: {record.turn_id} -->"
         log.info("session %s: turn %s submitted (%s)", self.spec.session_id, record.turn_id, origin)
         try:
-            await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
+            await pty.send_prompt(
+                self._with_marker(text, record), self.spec.boot.submit_delay_seconds
+            )
         except PtyClosed:
             # A claude that died is handled by the exit path (relaunch or dead); a live one
             # whose write failed gets its slot back here.
@@ -719,6 +767,11 @@ class Session:
                 record, "failed", error="claude_exited", next_state="ready" if pty.alive else None
             )
         return record
+
+    def _with_marker(self, text: str, record: TurnRecord) -> str:
+        if not self.spec.sessions.turn_marker:
+            return text
+        return f"{text}\n\n<!-- ccw turn: {record.turn_id} -->"
 
     def annotate(self, record: TurnRecord, annotations: dict[str, Any]) -> bool:
         """Shallow-merge hook annotations into `record` and persist it.
@@ -737,7 +790,11 @@ class Session:
             self._turn_watch = self._track(asyncio.ensure_future(self._watch_turn(record)))
 
     async def _watch_turn(self, record: TurnRecord) -> None:
-        """Report a quiet turn once per quiet period; end it as `timeout` at the hard limit."""
+        """Report a quiet turn once per quiet period; end it as `timeout` at the hard limit.
+
+        It keeps running while the turn is held across a crash, so both clocks measure from
+        the original submit; a held turn at the limit just ends (there is no claude to ESC).
+        """
         stall = self.spec.sessions.turn_stall_seconds
         limit = self.spec.limits.turn_max_seconds
         started = self.clock()
@@ -750,7 +807,10 @@ class Session:
                     record.turn_id,
                     limit,
                 )
-                await self._interrupt(record, "timeout")
+                if self._held is record:
+                    self._end_turn(record, "timeout", next_state=None)
+                else:
+                    await self._interrupt(record, "timeout")
                 return
             wait = TURN_WATCH_MAX_SLEEP
             if limit > 0:
@@ -869,6 +929,8 @@ class Session:
         """The single terminal transition: free the slot, persist, notify. Once per turn."""
         if record.terminal:
             return False
+        if self._held is record:
+            self._held = None  # nothing is pasted for it after the relaunch
         if self._turn is record:
             self._turn = None
             watch, self._turn_watch = self._turn_watch, None
@@ -911,9 +973,13 @@ class Session:
 
         One ESC, then up to `interrupt_settle_seconds` for the transcript interrupt line
         (`on_interrupted`); without it a second ESC. claude runs no Stop hook for an
-        interrupted turn, so the turn is ended here either way and the slot freed.
+        interrupted turn, so the turn is ended here either way and the slot freed. A turn held
+        across a crash ends at once: there is no claude to send ESC to, and nothing is pasted.
         """
         record = self._turn
+        if record is not None and self._held is record:
+            self._end_turn(record, "interrupted", next_state=None)
+            return record.turn_id
         if record is None or self.state != "busy":
             return None
         return await self._interrupt(record, "interrupted")
@@ -938,7 +1004,8 @@ class Session:
                     pending.done.wait(), self.spec.sessions.interrupt_settle_seconds
                 )
             except TimeoutError:
-                if not record.terminal:
+                # A turn held across a crash: the second ESC would hit the booting relaunch.
+                if not record.terminal and self._held is not record:
                     log.warning(
                         "session %s: no interrupt line for %s after %gs, second ESC",
                         self.spec.session_id,

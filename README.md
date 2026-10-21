@@ -327,6 +327,20 @@ Response `202`:
 | 503 | `booting` | the session is still booting |
 | 503 | `dead` | the session is stopped, failed or dead |
 
+Crash during a turn: when claude exits mid-turn it is relaunched (with `--resume` when the
+transcript exists) within `sessions.max_restarts`. By default the turn fails with `claude_exited`
+and is never re-pasted; the client decides whether to retry. With
+`sessions.restart_continue_prompt` set and restarts left, the turn stays `running` instead (no
+`turn_failed`, no `onTurnComplete`, no callback; the session shows `creating` while claude
+relaunches, then `busy`). Once the relaunch is resumed, the continue prompt is pasted with the
+same `<!-- ccw turn: <turn_id> -->` marker, a `turn_resumed` event is logged, and the turn
+completes on that claude's Stop as usual, with `usage` summed across the crash. The turn fails with
+`claude_exited` exactly once when the restart budget is exhausted (the session is `dead`), the
+relaunch fails to boot, or the relaunch is fresh (no transcript, so nothing to continue).
+`limits.turn_max_seconds` and `sessions.turn_stall_seconds` keep measuring from the original
+submit across the crash; an interrupt, `stop` or `DELETE` during the relaunch ends the turn
+(`interrupted`, `timeout` or `session_stopped`) and nothing is pasted afterwards.
+
 ### `GET /v1/sessions/{id}/turns`
 
 List the session's turns in start order.
@@ -686,6 +700,20 @@ interrupt still apply to it.
 ```
 event: turn_deferred
 data: {"seq":11,"ts":"2026-10-20T09:01:06.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_deferred","data":{"turn_id":"turn-1k9x2m0q4zw8","background_tasks":[{"id":"b1","type":"local_bash","status":"running","description":"npm test"}]}}
+```
+
+### `turn_resumed`
+
+Emitted when a turn that was running when claude crashed is continued in the resumed relaunch
+(`sessions.restart_continue_prompt` set): the continue prompt was pasted with the turn's marker,
+the session is `busy` again and the turn stays `running` until a later Stop completes it. See
+"Crash during a turn" under `POST /v1/sessions/{id}/turns`.
+
+`data`: `turn_id`, `restart` (the relaunch number, the session's `restarts` count).
+
+```
+event: turn_resumed
+data: {"seq":14,"ts":"2026-10-20T09:02:10.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_resumed","data":{"turn_id":"turn-1k9x2m0q4zw8","restart":1}}
 ```
 
 ### `assistant_text`
@@ -1953,6 +1981,7 @@ sessions:
 | `sessions.resume_on_start` | boolean | `false` | - | Resume known sessions when the service starts instead of listing them as stopped. |
 | `sessions.defer_stop_on_background_tasks` | boolean | `false` | - | Keep the running turn open (`turn_deferred`) while a Stop reports non-empty `background_tasks`; a later Stop with none completes it. See [`onStop`](#onstop). |
 | `sessions.probe_alive_token` | string | `"CCW-ALIVE"` | - | Non-empty token a probe asks Claude to reply with; an assistant message containing it answers the probe, and the default probe text names it. |
+| `sessions.restart_continue_prompt` | string | `""` | - | Prompt pasted (with the same turn marker) into a resumed relaunch after claude crashed mid-turn, so the running turn continues instead of failing with `claude_exited` (a `turn_resumed` event); empty disables it. See "Crash during a turn" under `POST /v1/sessions/{id}/turns`. |
 
 ### `limits`
 
