@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .command_signals import Signal, SignalBus
-from .commands import CommandQueue, CommandRecord, render, validate_params
+from .commands import CommandQueue, CommandRecord, CommandRejected, render, validate_params
 from .commands import Origin as CommandOrigin
 from .config import CommandsConfig, Config
 from .events import Event as LogEvent
@@ -220,6 +220,10 @@ class SessionRouter(SessionListener):
         self._closed = False
         self._subagents: set[str] = set()
         self._runner: asyncio.Task[Any] | None = None
+        #: Why the runner is being cancelled (claude_exited, session_stopped, interrupted).
+        self._abort: str | None = None
+        #: The record the runner is working on, so an abort can fail it.
+        self._current: CommandRecord | None = None
         # The dispatcher is built before the router; route its per-action results here.
         if getattr(dispatcher, "_on_result", None) is None:
             dispatcher._on_result = self.on_hook_result
@@ -706,13 +710,27 @@ class SessionRouter(SessionListener):
         return record
 
     async def interrupt(self) -> str | None:
-        turn_id = await self.session.interrupt()
+        session = self.session
+        if session.command_active and self.runner_active:
+            return await self._interrupt_command()
+        turn_id = await session.interrupt()
         if self._metrics is not None:
             self._metrics.interrupt("idle" if turn_id is None else "interrupted")
         if turn_id is not None:
             self._emit("interrupted", {"turn_id": turn_id})
             await self._fire("onInterrupt", {"turn_id": turn_id}, turn_id=turn_id)
         return turn_id
+
+    async def _interrupt_command(self) -> None:
+        """Idle session, a command running: ESC, the command fails `interrupted`, queued ones
+        are cancelled, the session returns to ready."""
+        runner = self._abort_runner("interrupted")
+        with contextlib.suppress(PtyClosed, TurnRejected):
+            await self.session.send_escape()
+        if runner is not None:
+            await asyncio.gather(runner, return_exceptions=True)
+        if self._metrics is not None:
+            self._metrics.interrupt("interrupted")
 
     # ------------------------------------------------------------------ transcript events
 
@@ -811,6 +829,8 @@ class SessionRouter(SessionListener):
         while a turn runs the command stays queued for that turn's Stop.
         """
         validate_params(name, params, allow_force=self.commands_cfg.allow_force)
+        if self.session.state not in ("ready", "busy"):
+            raise CommandRejected("invalid_state", f"session is {self.session.state}")
         turn = self.session.current_turn
         record, new = self.commands.request(
             name, params, origin=origin, turn_id=turn.turn_id if turn is not None else None
@@ -844,8 +864,43 @@ class SessionRouter(SessionListener):
     async def _run_idle(self) -> None:
         try:
             await self._run_queue()
+        except asyncio.CancelledError:
+            reason = self._abort
+            if reason is None:
+                raise
+            await self._fail_commands(reason)
         finally:
+            self._abort = None
+            self._current = None
             self.session.end_command()  # no await since the queue was found empty
+
+    def _abort_runner(self, reason: str) -> asyncio.Task[Any] | None:
+        """Cancel the running runner; it fails the in-flight command with `reason` and cancels
+        the queued ones. The first reason wins."""
+        runner = self._runner
+        if runner is None or runner.done():
+            return None
+        if self._abort is None:
+            self._abort = reason
+            runner.cancel()
+        return runner
+
+    async def _fail_commands(self, reason: str) -> None:
+        """The in-flight command fails with `reason`; every queued one is cancelled."""
+        started = time.monotonic()
+        current = self._current
+        if current is not None:
+            await self._finish_quietly(current, "failed", started, error=reason)
+        for record in self.commands.pending():
+            await self._finish_quietly(record, "cancelled", started)
+
+    async def _finish_quietly(
+        self, record: CommandRecord, state: Any, started: float, *, error: str | None = None
+    ) -> None:
+        try:
+            await self._finish_command(record, state, started, error=error)
+        except Exception:  # noqa: BLE001 - one failing hook never leaves the slot held
+            log.exception("command %s: finishing as %s failed", record.id, state)
 
     async def _run_queue(self) -> list[CommandRecord]:
         """Run every queued command in order, one at a time; the records run."""
@@ -867,6 +922,7 @@ class SessionRouter(SessionListener):
         session = self.session
         timeout = self._command_timeout(record.name)
         started = time.monotonic()
+        self._current = record
         try:
             if not await session.wait_quiet(self.commands_cfg.quiet_seconds, timeout):
                 await self._finish_command(
@@ -1018,6 +1074,11 @@ class SessionRouter(SessionListener):
 
     def on_state(self, state: str) -> None:
         self._emit("session_state", {"state": state})
+        internal = self.session.state
+        if internal in ("booting", "dead"):
+            self._abort_runner("claude_exited")
+        elif internal in ("stopping", "stopped"):
+            self._abort_runner("session_stopped")
         if state in ("ready", "busy"):
             with contextlib.suppress(RuntimeError):
                 self.ensure_tailing()
@@ -1105,9 +1166,8 @@ class SessionRouter(SessionListener):
             await self._flush_transcripts()
         self._closed = True
         self._subagents.clear()
-        runner = self._runner
-        if runner is not None and not runner.done():
-            runner.cancel()
+        runner = self._abort_runner("session_stopped")
+        if runner is not None:
             await asyncio.gather(runner, return_exceptions=True)
         if self._tailer is not None:
             self._tailer.stop()
