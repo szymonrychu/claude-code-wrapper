@@ -46,17 +46,19 @@ K10 outstanding subagents in the snapshot (design D14).
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `SessionRouter.outstanding_subagents` (property, int); snapshot key `outstanding_subagents` in `manager.py::SessionManager._compose`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+GET session tells how many subagents are still running.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_outstanding_subagents.py` (router unit plus a `world` session with the fake's subagent step); see it fail.
+- Track the set in `_on_subagent`, clear on restart and close, expose in the snapshot.
+- README.
+- `uv run pytest tests/test_outstanding_subagents.py tests/test_api_sessions.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- `last_activity_at` already folds in subagent activity; only the count is new.

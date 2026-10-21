@@ -49,17 +49,19 @@ K6 turn metadata (design D10). Owns part `turn-metadata`.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `turn-metadata`: `api/turns.py::TurnRequest.metadata`, `turns.py::TurnRecord.metadata`, `SessionRouter.submit_turn(..., metadata=...)`, `Session.submit(..., metadata=...)`, onTurn `data.metadata`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A client can send per-turn metadata (e.g. `{"handoff": true}`) that onTurn gates read and that is kept on the record.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_turn_metadata.py` (API via the app with a `world` manager, plus an onTurn gate script); see it fail.
+- Add the field through API, router, session and record; the 16 KiB cap.
+- README.
+- `uv run pytest tests/test_turn_metadata.py tests/test_api_turns.py tests/test_turns.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Keep `extra="forbid"` on `TurnRequest`; only `metadata` is added.

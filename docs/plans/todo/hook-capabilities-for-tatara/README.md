@@ -37,7 +37,7 @@ ccw already matches the tatara and magic-trainer harnesses on the interactive co
 
 ## Time
 
-Derived by `ticket.py tasks` and `apply-run` from the task `estimate` and `actual` fields; never edit by hand. Report only, never a budget.
+Estimate: 1380 min | Actual: 0 min | Remaining estimate: 1380 min
 
 ## Review
 

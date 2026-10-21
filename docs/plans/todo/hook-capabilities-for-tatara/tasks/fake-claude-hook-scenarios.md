@@ -61,17 +61,21 @@ Existing scenarios and tests behave exactly as before.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `fake-claude-scenarios`: the scenario schema in the `tests/fake_claude/fake_claude.py` docstring (turn `stop`, background `background_tasks`, `on_block`, tool `agent`, `exit_once`, `-p`/`--print`).
+- Part `ccw-world-fixture`: `tests/conftest.py::World` and the `world` fixture; methods `cfg(scenario=None, **sections)`, `manager(cfg, **kw)`, `until(pred, timeout)`, `wait_turn(manager, session_id, state)`, `events(session_id)`, `meta(session_id)`, `session_dir(session_id)`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Every later task can write an end-to-end test with `world` and a scenario dict that exercises background tasks, Stop blocks, subagent tool calls, a one-time crash and print mode; the existing suite is unchanged and green.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the new tests in `tests/test_fake_claude.py`; run `uv run pytest tests/test_fake_claude.py -q` and see them fail.
+- Implement the scenario additions in the fake; rerun until green.
+- Move `World` and `world` into `tests/conftest.py`, drop the copy in `tests/test_manager.py`; `uv run pytest tests/test_manager.py -q` green.
+- `uv run pytest tests/test_fake_claude.py tests/test_manager.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- The fake stays stdlib only and runs under `-I`; keep the existing default behaviour byte for byte (other tests assert on it).
+- Claude's real Stop block semantics: `decision: block` plus reason continues the turn, `stop_hook_active` is true on re-entry, cap 8 (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, claude 2.1.143).

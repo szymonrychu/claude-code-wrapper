@@ -49,17 +49,19 @@ K11 passthrough env globs (design D15). Owns part `passthrough-globs`.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `passthrough-globs`: `ClaudeConfig.passthrough_env` (patterns), `ClaudeConfig.passthrough_env_exclude`, one selector function in session.py used by `build_env` and `SessionManager._tool_env`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Operators pass arbitrary env families to claude by pattern without ever leaking CCW_* or managed names.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_passthrough_globs.py` (pure unit tests on `build_env` and `_tool_env`); see it fail.
+- Implement the selector and use it in both places; add the exclude key.
+- README rows and warning.
+- `uv run pytest tests/test_passthrough_globs.py tests/test_claude_env.py tests/test_session_boot.py tests/test_readme_config.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Today `_tool_env` and `build_env` filter differently (managed names); the shared selector removes that drift.

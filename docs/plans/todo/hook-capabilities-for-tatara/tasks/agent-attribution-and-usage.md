@@ -49,17 +49,20 @@ K5 agent attribution and per-message usage events (design D9). Owns part `agent-
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `agent-attribution`: `agent_id`, `agent_type` in `tool_call`, `tool_result`, `tool_denied` event data and in onAgentToolCall/onToolResult data; event type `usage`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Consumers can attribute tool calls and token usage to the main agent or a specific subagent or teammate from the event stream alone.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_agent_attribution.py` with the fake's tool `agent` step and a subagent step; see it fail.
+- Add the fields in `_on_pre_tool_use`/`_on_post_tool_use`; emit `usage` from `_on_transcript_events` using the dedupe of `UsageTotals.add`.
+- README.
+- `uv run pytest tests/test_agent_attribution.py tests/test_router.py tests/test_readme_api.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Upstream: agent_id/agent_type are in Pre/PostToolUse inside subagents (2.1.69) and teammates (2.1.290).
+- `UsageTotals.add` returns whether the message was new: use it to emit once.

@@ -52,17 +52,20 @@ K7 onTick timed hook (design D11). Owns part `on-tick-event`.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `on-tick-event`: `config.py::HOOK_EVENTS` (onTick), action fields `interval_seconds`, `when`; `HookDispatcher.fire(..., only_index=...)` (or equivalent); router tick tasks.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Operators can run a hook action every N seconds while a turn runs (or always), without sidecars, and ticks stop with the session.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_on_tick.py` (config validation unit tests; `world` sessions with short intervals and a sleeping fake turn); see it fail.
+- Config fields and validator; single-action fire; router timers started at first ready, cancelled in `close()`.
+- README.
+- `uv run pytest tests/test_on_tick.py tests/test_config.py tests/test_router.py tests/test_readme_api.py tests/test_readme_config.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Reuse the matcher validator pattern (`HooksConfig._matcher_events`) for the onTick-only keys.
+- Use the session clock for elapsed time; never let a tick task outlive the router.

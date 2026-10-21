@@ -48,17 +48,19 @@ Today `safe_write_files` runs in `SessionRouter.submit_turn` before `Session.sub
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `session.py::Session.check_submittable() -> None` raising `TurnRejected`.
+- `router.py::SessionRouter.submit_turn` order: check, onTurn, check, write files, submit.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A 409 busy (or 503) turn never touches the workdir and fires no onTurn hook.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_submit_busy_first.py` (a busy session with a file present; submit with that file; assert content unchanged and no onTurn hook_result); see it fail.
+- Add `check_submittable`, call it twice in `submit_turn`.
+- `uv run pytest tests/test_submit_busy_first.py tests/test_router.py tests/test_session_turns.py tests/test_api_turns.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- `Session.submit` reserves the slot before its first await; keep the second check, `safe_write_files` and the `submit` call free of awaits between them.

@@ -53,17 +53,20 @@ Test `tests/test_example_tatara_lifecycle.py` against the fake claude via the `w
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `tatara_hooks.py` subcommands `bootstrap`, `ttl-gate`, `safety-push`, `metrics-push`; config keys exit_when_dead, probe_alive_token, restart_continue_prompt, passthrough globs and excludes.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+The tatara example covers pod bootstrap, the TTL/handoff admission, the safety and metrics pushes and the pod policy options, each tested.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_example_tatara_lifecycle.py`; see it fail.
+- Extend the config and script.
+- Extend README `### tatara`.
+- `uv run pytest tests/test_example_tatara_lifecycle.py tests/test_example_tatara.py tests/test_examples.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Parity rows C1-C11, D1, D4-D6, E1, A9. Bootstrap is a documented skeleton of tatara's Go bootstrap, not a port.
+- R5: explicit globs plus excludes, never `*`.

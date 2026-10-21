@@ -61,17 +61,20 @@ README: a new `## Hook examples` section (after `## Hooks`) with `### tatara` de
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `src/claude_code_wrapper/data/examples/tatara.config.yaml`, `src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py` subcommands `finalize`, `capture-issue`, `outcome-result`, `outcome-gate`, `statusline`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A reader can see, run and test how tatara's turn-complete callback, internal issues, outcome re-prompts and account usage are done with ccw hooks.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_example_tatara.py`; see it fail.
+- Write the config and script; add the symlink in `examples/`.
+- README `## Hook examples` / `### tatara`.
+- `uv run pytest tests/test_example_tatara.py tests/test_examples.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Parity rows B1-B6 (design Research). Finaliser non-blocking (R4). Gate counts in CCW_STATE_DIR (R2).
+- No tatara names in `src/claude_code_wrapper/*.py` (anti-goal).

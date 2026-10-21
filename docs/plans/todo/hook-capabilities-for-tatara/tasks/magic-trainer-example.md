@@ -56,17 +56,20 @@ Test `tests/test_example_magic_trainer.py` against the fake claude via the `worl
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `src/claude_code_wrapper/data/examples/magic-trainer.config.yaml`, `src/claude_code_wrapper/data/examples/magic-trainer/mtg_hooks.py` subcommands `pending-tasks`, `review`, `narrate`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A reader can see, run and test how magic-trainer's seat-pair completion, the claude -p review, narration and one-match-per-process lifecycle are done with ccw hooks and options.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_example_magic_trainer.py`; see it fail.
+- Write the config and script; add the symlink in `examples/`.
+- README `### magic-trainer` under `## Hook examples` (created by tatara-example-turn-hooks).
+- `uv run pytest tests/test_example_magic_trainer.py tests/test_examples.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Parity rows #5, #9, #13-#15, #18, #19, #21-#25. R1 fallback via the transcript. Review timing per design D7 (after claude stopped, before purge).
+- No mtg names in `src/claude_code_wrapper/*.py` (anti-goal).

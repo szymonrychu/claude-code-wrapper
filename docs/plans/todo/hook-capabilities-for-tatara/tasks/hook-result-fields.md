@@ -54,17 +54,20 @@ Extend the hook dispatcher's result parsing in `src/claude_code_wrapper/hooks.py
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `hook-result-fields`: `hooks.py::ActionResult` (`annotations`, `output`), `hooks.py::HookOutcome` (`annotations`, `outputs`), `hooks.py::EVENT_DECISIONS`, `hooks.py::OUTPUT_CAP_BYTES`, the decision parser. Consumers: stop-gate-onstop-event, turn-annotations-from-hooks, destroy-hook-input-output, the examples.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A blocking hook action can return `annotations` and `output` next to its decision; the outcome carries them merged and per action; the hook_result event shows the output; nothing changes for hooks that do not use them.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_hook_result_fields.py` (command actions via small `sh -c` scripts, webhooks via `httpx.MockTransport`); see it fail.
+- Extend the parser, `ActionResult`, `HookOutcome` and `fire`; add `EVENT_DECISIONS`; route output into `on_hook_result`.
+- Update README hooks sections.
+- `uv run pytest tests/test_hook_result_fields.py tests/test_hooks_command.py tests/test_hooks_webhook.py tests/test_router.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Deny still only counts on `VETO_EVENTS` (config.py); keep that rule inside `EVENT_DECISIONS`, one place.
+- Redact output with the dispatcher's `Redactor` before capping, so a secret never reaches events.jsonl.

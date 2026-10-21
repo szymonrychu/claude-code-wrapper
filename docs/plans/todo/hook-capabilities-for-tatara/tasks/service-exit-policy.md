@@ -53,17 +53,20 @@ K8 exit policy (design D12). Owns part `exit-policy`.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `exit-policy`: `SessionsConfig.exit_when_last_destroyed`, `SessionsConfig.exit_when_dead`, `SessionManager(on_exit_request=...)`, `ServiceHandle.exit_code`, `service.TERMINATION_LOG`, cli `_serve` return code.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`ccw serve` exits 0 after its last session is deleted, or 3 with a termination message when a session dies, when configured; otherwise it keeps running.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_exit_policy.py` (`run_service` with port 0, the fake claude, monkeypatched `TERMINATION_LOG`); see it fail.
+- Manager trigger points (destroy, reaper, dead state), service stop wiring, cli exit code.
+- README rows and Kubernetes note.
+- `uv run pytest tests/test_exit_policy.py tests/test_service.py tests/test_cli.py tests/test_readme_config.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Design D12: not a hook (`kill -TERM $PPID` gives the wrong code, no termination message and races the dispatcher drain).
+- Shutdown must not re-enter the trigger; the first exit request wins.

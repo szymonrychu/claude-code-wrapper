@@ -56,17 +56,20 @@ K12 turn continuity across a mid-turn crash (design D16).
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `SessionsConfig.restart_continue_prompt`; event `turn_resumed`; `Session._on_exit` / `Session._recover` continuity path.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+With a continue prompt configured, a claude crash mid-turn resumes the same turn after the relaunch and it completes normally; without it, nothing changes.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_turn_continuity.py` with the fake's `exit_once` step (`world` fixture); see it fail.
+- Keep the record running across `_on_exit` when continuing; paste the continue prompt with the same marker after a resumed boot in `_recover`; fail once on every non-continuable path.
+- README.
+- `uv run pytest tests/test_turn_continuity.py tests/test_session_turns.py tests/test_e2e_resume.py tests/test_readme_api.py tests/test_readme_config.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- `_end_turn` is the single terminal transition; `stop()` ends a running turn with session_stopped, keep that true during recovery.
+- The router's `_last_marker` must match the continued turn so its Stop completes it.

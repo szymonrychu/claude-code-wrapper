@@ -56,17 +56,20 @@ K3 destroy hook input and output (design D7). Owns part `destroy-io`.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `destroy-io`: `api/sessions.py` DELETE body model (`hook_input`), `SessionManager.destroy(session_id, purge=False, hook_input=None)`, response key `hook_outputs`, event `destroy_output`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A client can DELETE a session with a review request and get the onDestroy hook's output back in the response, with the event log showing destroy_output then session_closed.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_destroy_io.py` (API plus `world` manager; an onDestroy script echoing `data.input` as output); see it fail.
+- Body model and cap, manager plumbing, move the `session_closed` emit after onDestroy, add the event.
+- README.
+- `uv run pytest tests/test_destroy_io.py tests/test_api_sessions.py tests/test_manager.py tests/test_router.py tests/test_readme_api.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- onDestroy runs after claude stopped and before purge (manager `_destroy_active`); keep that order (one claude process per pod, design D7).
+- Every path that closes a router must still produce exactly one `session_closed`.

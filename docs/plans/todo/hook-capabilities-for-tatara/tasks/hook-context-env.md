@@ -50,17 +50,20 @@ K4 hook context env (design D8) and DEF-3 env documentation (design D4).
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `hook-context-env`: `CCW_STATE_DIR`, `CCW_API_URL` in `hooks.py::HookDispatcher._command` env; `HookDispatcher(..., state_dir=..., api_url=...)`; `SessionManager(..., api_url="")`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Hook scripts can keep per-session state and call back into ccw's API; the README describes the real hook and setup-command environments.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_hook_context_env.py` (a command hook dumping its env to a file; `world` for the session cases, `run_service` with port 0 for the API URL); see it fail.
+- Implement the dispatcher params, state dir lifecycle in the manager (create before onCreate, keep on stop/resume, delete on purge), the service wiring.
+- Rewrite README `### Command actions` env paragraph and the setup_commands env note.
+- `uv run pytest tests/test_hook_context_env.py tests/test_hooks_command.py tests/test_manager.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Design D4: keep the full service env for hooks (finalisers need secrets that must not reach claude); fix only the doc.
+- Facts: base_env=service_env (manager.py `_dispatcher`), service_env=dict(os.environ) (service.py `_run`), setup_commands use `_tool_env`.

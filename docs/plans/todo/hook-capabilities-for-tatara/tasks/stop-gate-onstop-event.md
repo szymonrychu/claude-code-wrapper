@@ -74,17 +74,22 @@ README: `### \`onStop\`` under `## Hooks` (trigger, data, decisions, exit 2, cla
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `on-stop-event`: `config.py::HOOK_EVENTS` (onStop), `HooksConfig.onStop`, `SessionsConfig.defer_stop_on_background_tasks`, `hooks.py::EVENT_DECISIONS["onStop"]`, `session.py::Session.stop_target`, events `turn_continued`, `turn_deferred`.
+- Relay output for a block: stdout `{"decision": "block", "reason": R}`, exit 0.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A turn ends only when claude stops AND the gate allows it: hooks can send claude back to work with a reason, or hold the turn open while background tasks finish, with no double completion and every existing bound (stall, turn_max_seconds, interrupt) still in force.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_stop_gate.py` with the fake's Stop block, `stop` lists and background steps (`world` fixture); see it fail.
+- Factor `stop_target` out of `complete`; add config and decisions; implement the three outcomes in `_on_stop`; add the events; add onStop to `_GATED_EVENTS`.
+- README sections and config row.
+- `uv run pytest tests/test_stop_gate.py tests/test_router.py tests/test_session_turns.py tests/test_bootstrap_settings.py tests/test_config.py tests/test_readme_api.py tests/test_readme_config.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Upstream: Stop input has `background_tasks` and `session_crons` since 2.1.145; teammates do not fire the parent Stop (they fire TeammateIdle), so only the lead's Stop is gated.
+- Keep `self._usage` across legs: reset only when the turn really completes.
+- A deferred turn keeps `Session._turn`, so `_watch_turn` and `interrupt` keep their target; check no path ends it twice (`_end_turn` is the single terminal transition).

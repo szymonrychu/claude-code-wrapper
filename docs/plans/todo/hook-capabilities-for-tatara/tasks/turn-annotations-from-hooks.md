@@ -50,17 +50,19 @@ K2 hook annotations (design D6). Owns part `turn-annotations`.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- Part `turn-annotations`: `turns.py::TurnRecord.annotations`; `Session.submit(..., annotations=...)`; router merge helper.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Hooks on turn-scoped events can tag the turn (e.g. `pending_tasks`, outcome state) and clients read the tags from GET turn and the turn callback.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_turn_annotations.py` (`world` fixture, hooks printing JSON with annotations); see it fail.
+- Add the field, the merge in each turn-scoped handler, the size cap.
+- README record field and hooks paragraph.
+- `uv run pytest tests/test_turn_annotations.py tests/test_turns.py tests/test_router.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- `HookOutcome.annotations` is already merged across actions by hook-result-fields; merge it into the record, later keys win.

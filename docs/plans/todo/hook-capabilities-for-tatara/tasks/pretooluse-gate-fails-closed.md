@@ -55,17 +55,21 @@ Today `SessionRouter.handle_claude_hook` catches every exception and returns all
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+- `hooks.py::gate_fail_mode(hooks, tool_name=None)`; `manager.py::SessionManager._gate_fail` delegates to it.
+- `router.py::SessionRouter.handle_claude_hook` PreToolUse failure path returns `hook_relay.deny_output(...)`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+With a blocking `onAgentToolCall` gate whose `on_error` is deny, no exception anywhere in ccw's PreToolUse handling lets the tool call through; without such a gate behaviour is unchanged.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write `tests/test_pretooluse_fail_closed.py` forcing each failure path with monkeypatch (dispatcher.fire raising, redactor raising, event_log.append raising); see the deny tests fail.
+- Implement `gate_fail_mode`, the re-raise in `_fire` for onAgentToolCall, the deny path in `handle_claude_hook`.
+- README `onAgentToolCall` note.
+- `uv run pytest tests/test_pretooluse_fail_closed.py tests/test_router.py tests/test_manager.py -q && mise run lint`.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+- Design D2: follow the matching gate's on_error, matcher-aware (`HookDispatcher._matches` is the matcher rule).
+- The deny path must itself be exception-safe: guard each emit separately and return the deny regardless.

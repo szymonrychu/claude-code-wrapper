@@ -1,0 +1,65 @@
+[
+  {
+    "id": "A",
+    "text": "magic-trainer-facing hook capabilities: onStop stop gate with block and defer plus the background-task defer flag (K1), hook annotations on the turn record (K2), agent attribution on tool events and per-message usage events (K5).",
+    "decisions": ["D1", "D5", "D6", "D9"],
+    "tasks": [
+      "fake-claude-hook-scenarios",
+      "hook-result-fields",
+      "stop-gate-onstop-event",
+      "turn-annotations-from-hooks",
+      "agent-attribution-and-usage"
+    ],
+    "status": "approved"
+  },
+  {
+    "id": "B",
+    "text": "Lifecycle and context hook capabilities: DELETE hook_input to onDestroy with hook outputs in the DELETE response and a destroy_output event, so the magic-trainer review runs as an onDestroy claude -p hook (K3); CCW_STATE_DIR and CCW_API_URL in hook env (K4); turn metadata (K6); onTick timed hook (K7); exit when the last session is destroyed or a session dies (K8).",
+    "decisions": ["D1", "D7", "D8", "D10", "D11", "D12"],
+    "tasks": [
+      "hook-result-fields",
+      "destroy-hook-input-output",
+      "hook-context-env",
+      "turn-metadata-on-submit",
+      "ontick-timed-hook",
+      "service-exit-policy"
+    ],
+    "status": "approved"
+  },
+  {
+    "id": "C",
+    "text": "Generic core options where hooks cannot do it: configurable probe token with captured answer (K9), outstanding subagent count in the snapshot (K10), passthrough env globs with excludes (K11), turn continuity across a mid-turn crash (K12), missing metric families (K13).",
+    "decisions": ["D1", "D13", "D14", "D15", "D16", "D17"],
+    "tasks": [
+      "fake-claude-hook-scenarios",
+      "probe-token-and-answer",
+      "outstanding-subagent-count",
+      "passthrough-env-globs",
+      "turn-continuity-across-crash",
+      "missing-metric-families"
+    ],
+    "status": "approved"
+  },
+  {
+    "id": "D",
+    "text": "Defect fixes: DEF-1 PreToolUse gate fails closed, DEF-2 busy check before turn files, DEF-3 README states hooks get the full service env.",
+    "decisions": ["D2", "D3", "D4"],
+    "tasks": [
+      "pretooluse-gate-fails-closed",
+      "busy-check-before-turn-files",
+      "hook-context-env"
+    ],
+    "status": "approved"
+  },
+  {
+    "id": "E",
+    "text": "Worked examples in this repo showing how tatara and magic-trainer use the hooks, each tested against the fake claude, plus README docs for every new event, result field, option and env var (README docs are ACs of each feature task).",
+    "decisions": ["D1", "D18"],
+    "tasks": [
+      "tatara-example-turn-hooks",
+      "tatara-example-lifecycle",
+      "magic-trainer-example"
+    ],
+    "status": "approved"
+  }
+]
