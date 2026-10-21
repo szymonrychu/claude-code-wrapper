@@ -282,6 +282,7 @@ class E2E:
 
         hooks: dict[str, list[dict[str, Any]]] = {event: [record()] for event in HOOK_EVENTS}
         hooks["onAgentToolCall"] = [record(blocking=True)]
+        hooks["onTick"] = [record(interval_seconds=3600)]  # required; never due in a test
         hooks["onTurnComplete"].append(
             {
                 "type": "webhook",
