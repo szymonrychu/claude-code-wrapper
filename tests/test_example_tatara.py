@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -149,9 +150,26 @@ def test_script_is_executable_stdlib_with_header():
 # ---------------------------------------------------------------- finaliser
 
 
-async def test_finalize_pushes_repos_drains_issues_and_signs_callback(
-    world: World, env, receiver, tmp_path
-):
+class Run:
+    def __init__(self, record, body, headers, raw, good, bad, sid, cfgdir):
+        self.record, self.body, self.headers, self.raw = record, body, headers, raw
+        self.good, self.bad, self.sid, self.cfgdir = good, bad, sid, cfgdir
+
+
+def run_statusline(env, cfgdir: Path, payload: dict) -> str:
+    command = example(env)["claude"]["settings"]["statusLine"]["command"]
+    return subprocess.run(
+        command,
+        shell=True,
+        input=json.dumps(payload),
+        env={"CLAUDE_CONFIG_DIR": str(cfgdir), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+async def full_turn(world: World, env, receiver, tmp_path) -> Run:
     scenario = turn(
         [
             *tool(ISSUE, {"category": "tool_failure", "severity": "high", "summary": "boom"}),
@@ -165,50 +183,74 @@ async def test_finalize_pushes_repos_drains_issues_and_signs_callback(
     clean = workdir / "clean"
     clean.mkdir()
     sh("init", "-b", "main", cwd=clean)
-    # a statusline run inside claude persists the account limits
     cfgdir = next(world.session_dir(sid).rglob("settings.json")).parent
-    command = example(env)["claude"]["settings"]["statusLine"]["command"]
-    out = subprocess.run(
-        command,
-        shell=True,
-        input=json.dumps({"model": {"display_name": "Fake"}, "rate_limits": {"five_hour": 12}}),
-        env={"CLAUDE_CONFIG_DIR": str(cfgdir), "PATH": "/usr/bin:/bin"},
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
+    out = run_statusline(
+        env, cfgdir, {"model": {"display_name": "Fake"}, "rate_limits": {"five_hour": 12}}
+    )
     assert out.strip() and "\n" not in out.strip()
-    assert json.loads((cfgdir / "rate_limits.json").read_text()) == {"five_hour": 12}
-
     record = await m.router(sid).submit_turn("go")
     await wait_turn(m, sid)
     await world.until(lambda: receiver.posts, what="callback")
+    await asyncio.sleep(1.0)  # settle: a duplicate callback would land here
+    assert len(receiver.posts) == 1
     headers, raw = receiver.posts[0]
-    expected = "sha256=" + hmac.new(SECRET.encode(), raw, hashlib.sha256).hexdigest()
-    assert headers["x-tatara-signature"] == expected
-    body = json.loads(raw)
-    assert body["turnId"] == record.turn_id
+    return Run(record, json.loads(raw), headers, raw, good, bad, sid, cfgdir)
+
+
+def test_tatara_config_loads_and_ships(env):
+    import claude_code_wrapper
+
+    pkg = Path(claude_code_wrapper.__file__).resolve().parent
+    assert (pkg / "data/examples/tatara.config.yaml").samefile(EXAMPLE)
+    assert (pkg / "data/examples/tatara/tatara_hooks.py").samefile(SCRIPT)
+    assert (ROOT / "examples/tatara.config.yaml").samefile(EXAMPLE)
+    # loads with only the stub env (every value is ${VAR:-default})
+    stub = {"TATARA_PYTHON": "py", "TATARA_HOOKS": "/h.py"}
+    raw = yaml.safe_load(EXAMPLE.read_text())
+    cfg = interpolate(raw, stub)
+    assert cfg["hooks"]["onStop"][0]["blocking"] is True
+    assert "/h.py" in json.dumps(cfg["hooks"])
+
+
+async def test_finalizer_posts_signed_flat_payload(world: World, env, receiver, tmp_path):
+    r = await full_turn(world, env, receiver, tmp_path)
+    expected = "sha256=" + hmac.new(SECRET.encode(), r.raw, hashlib.sha256).hexdigest()
+    assert r.headers["x-tatara-signature"] == expected
+    body = r.body
+    assert body["turnId"] == r.record.turn_id
     assert body["taskName"] == "task-7"
     assert body["state"] == "complete"
     assert body["finalText"] == "all done"
     assert body["error"] is None
     assert body["durationSeconds"] >= 1.0
     assert set(body["usage"]) >= {"input_tokens", "output_tokens"}
-    assert body["accountUsage"] == {"five_hour": 12}
-    assert body["pushedRepos"] == ["good"]
-    assert [f["repo"] for f in body["failedRepos"]] == ["bad"]
-    assert body["failedRepos"][0]["error"]
-    assert body["internalIssues"] == [
+    assert {"pushedRepos", "failedRepos", "internalIssues"} <= set(body)
+
+
+async def test_issue_capture_drained_into_callback(world: World, env, receiver, tmp_path):
+    r = await full_turn(world, env, receiver, tmp_path)
+    assert r.body["internalIssues"] == [
         {"category": "tool_failure", "severity": "high", "summary": "boom"},
         {"category": "other", "severity": "medium", "summary": "odd"},
     ]
-    # the change reached the remote; the clean repo was left alone; issues were drained
+    assert not (state_dir(world, r.sid) / "issues.jsonl").exists()
+
+
+async def test_statusline_rate_limits_in_account_usage(world: World, env, receiver, tmp_path):
+    r = await full_turn(world, env, receiver, tmp_path)
+    assert json.loads((r.cfgdir / "rate_limits.json").read_text()) == {"five_hour": 12}
+    assert r.body["accountUsage"] == {"five_hour": 12}
+
+
+async def test_finalizer_pushes_changed_repos(world: World, env, receiver, tmp_path):
+    r = await full_turn(world, env, receiver, tmp_path)
+    assert r.body["pushedRepos"] == ["good"]
+    assert [f["repo"] for f in r.body["failedRepos"]] == ["bad"]
+    assert r.body["failedRepos"][0]["error"]
     assert sh("log", "-1", "--format=%s", "main", cwd=tmp_path / "good.git")
     assert sh("show", "main:a.txt", cwd=tmp_path / "good.git") == "changed"
-    assert sh("status", "--porcelain", cwd=good) == ""
-    assert sh("status", "--porcelain", cwd=bad) == ""
-    assert not (state_dir(world, sid) / "issues.jsonl").exists()
-    assert len(receiver.posts) == 1
+    assert sh("status", "--porcelain", cwd=r.good) == ""
+    assert sh("status", "--porcelain", cwd=r.bad) == ""
 
 
 async def test_finalize_omits_account_usage_and_maps_failed_state(
@@ -250,6 +292,19 @@ def outcome_steps(*, fail: bool) -> list[dict]:
     return tool(OUTCOME, {"status": "done"}, fail=fail)
 
 
+async def test_outcome_gate_blocks_once_then_allows(world: World, env, receiver):
+    scenario = turn(outcome_steps(fail=True), on_block=outcome_steps(fail=False))
+    m, sid, _ = await start(world, env, scenario)
+    record = await m.router(sid).submit_turn("go")
+    await wait_turn(m, sid)
+    await world.until(lambda: receiver.posts, what="callback")
+    await asyncio.sleep(1.0)
+    conts = [e["data"] for e in world.events(sid) if e["type"] == "turn_continued"]
+    assert len(conts) == 1 and conts[0]["turn_id"] == record.turn_id
+    assert len(receiver.posts) == 1
+    assert receiver.bodies()[0]["turnId"] == record.turn_id
+
+
 async def test_gate_reprompts_until_cap_then_finalizes_once(world: World, env, receiver):
     scenario = turn(outcome_steps(fail=True), on_block=outcome_steps(fail=True))
     m, sid, _ = await start(world, env, scenario)
@@ -259,6 +314,7 @@ async def test_gate_reprompts_until_cap_then_finalizes_once(world: World, env, r
     conts = [e["data"] for e in world.events(sid) if e["type"] == "turn_continued"]
     assert len(conts) == 2  # MAX_OUTCOME_REPROMPTS default
     assert all(c["turn_id"] == record.turn_id and c["reason"] for c in conts)
+    await asyncio.sleep(1.0)
     assert len(receiver.posts) == 1  # nothing posted while a re-prompt was pending
 
 
