@@ -452,6 +452,72 @@ class HooksConfig(_Model):
         return getattr(self, event)
 
 
+BUILTIN_COMMAND_NAMES: tuple[str, ...] = (
+    "compact",
+    "context",
+    "mcp",
+    "reload-plugins",
+    "reload-skills",
+)
+DEFAULT_CONTINUE_PROMPT = (
+    "The slash commands you queued have run. Continue the task you were working on."
+)
+
+
+def _check_command_names(names: list[str]) -> list[str]:
+    for i, name in enumerate(names):
+        if name not in BUILTIN_COMMAND_NAMES:
+            raise _at(
+                str(i),
+                f"unknown command {name!r}; allowed: {', '.join(BUILTIN_COMMAND_NAMES)}",
+            )
+    return names
+
+
+def _check_command_timeouts(value: dict[str, float]) -> dict[str, float]:
+    for key, seconds in value.items():
+        if key != "default" and key not in BUILTIN_COMMAND_NAMES:
+            allowed = ", ".join((*BUILTIN_COMMAND_NAMES, "default"))
+            raise _at(key, f"unknown command {key!r}; allowed: {allowed}")
+        if seconds <= 0:
+            raise _at(key, "must be greater than 0")
+    return value
+
+
+class CommandsConfig(_Model):
+    agent: list[str] = []
+    client: list[str] = []
+    timeout_seconds: dict[str, float] = {"compact": 600, "default": 60}
+    continue_prompt: str = Field(DEFAULT_CONTINUE_PROMPT, min_length=1)
+    allow_force: bool = False
+    quiet_seconds: float = Field(1.5, ge=0)
+
+    _agent = field_validator("agent")(_check_command_names)
+    _client = field_validator("client")(_check_command_names)
+    _timeouts = field_validator("timeout_seconds")(_check_command_timeouts)
+
+
+class CommandsOverride(_Model):
+    """Per-session `sessions.commands` override: every field optional, unset fields inherit."""
+
+    agent: list[str] | None = None
+    client: list[str] | None = None
+    timeout_seconds: dict[str, float] | None = None
+    continue_prompt: str | None = Field(None, min_length=1)
+    allow_force: bool | None = None
+    quiet_seconds: float | None = Field(None, ge=0)
+
+    @field_validator("agent", "client")
+    @classmethod
+    def _names(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else _check_command_names(value)
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _timeouts(cls, value: dict[str, float] | None) -> dict[str, float] | None:
+        return None if value is None else _check_command_timeouts(value)
+
+
 class SessionsConfig(_Model):
     max_sessions: int = Field(4, ge=1)
     idle_timeout_seconds: float = Field(0, ge=0)
@@ -468,6 +534,7 @@ class SessionsConfig(_Model):
     #: Pasted (with the same turn marker) into a resumed relaunch after a mid-turn crash, so the
     #: running turn continues instead of failing with claude_exited. Empty disables it.
     restart_continue_prompt: str = ""
+    commands: CommandsConfig = Field(default_factory=CommandsConfig)
 
 
 class LimitsConfig(_Model):

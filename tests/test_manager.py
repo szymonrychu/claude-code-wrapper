@@ -909,3 +909,28 @@ async def test_world_wait_turn_returns_completed_turn(world: World) -> None:
     snap = await m.create(CreateSessionRequest(prompt="hi"))
     turn = await world.wait_turn(m, snap["session_id"])
     assert turn.state == "completed"
+
+
+# ------------------------------------------------------------------ slash command config
+
+
+async def test_commands_override_stored_and_reapplied_on_resume(world: World) -> None:
+    m = world.manager(world.cfg(sessions={"commands": {"agent": ["compact"], "allow_force": True}}))
+    snap = await m.create(
+        CreateSessionRequest(prompt="hi", commands={"client": ["context"], "allow_force": False})
+    )
+    sid = snap["session_id"]
+    await wait_turn(m, sid)
+    cmds = m.router(sid).commands_cfg
+    assert cmds.agent == ["compact"] and cmds.client == ["context"] and cmds.allow_force is False
+    assert world.meta(sid)["commands"] == {"client": ["context"], "allow_force": False}
+    await m.destroy(sid)
+    await m.resume(sid)
+    cmds = m.router(sid).commands_cfg
+    assert cmds.agent == ["compact"] and cmds.client == ["context"] and cmds.allow_force is False
+
+
+async def test_no_commands_override_uses_config(world: World) -> None:
+    m = world.manager(world.cfg(sessions={"commands": {"agent": ["context"]}}))
+    snap = await m.create(CreateSessionRequest())
+    assert m.router(snap["session_id"]).commands_cfg.agent == ["context"]

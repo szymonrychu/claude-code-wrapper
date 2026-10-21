@@ -25,7 +25,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import Config
+from .commands import CommandQueue
+from .config import CommandsConfig, Config
 from .events import Event as LogEvent
 from .events import EventLog
 from .hook_relay import RelayResponse, deny_output
@@ -59,6 +60,11 @@ from .workdir import safe_write_files
 
 log = logging.getLogger(__name__)
 
+CCW_TOOL_PREFIX = "mcp__ccw__"
+CCW_SUBAGENT_DENY_REASON = (
+    "ccw commands are available to the main agent only; "
+    "subagents and teammates cannot call mcp__ccw__command."
+)
 QUESTION_DENY_REASON = (
     "Question forwarded to the API client. Ask the user in plain text, "
     "end your turn now and wait for their reply in the next message."
@@ -155,8 +161,11 @@ class SessionRouter(SessionListener):
         *,
         session_info: SessionInfo | Mapping[str, Any],
         metrics: Metrics | None = None,
+        commands: CommandsConfig | None = None,
     ) -> None:
         self._metrics = metrics
+        self.commands_cfg = commands if commands is not None else cfg.sessions.commands
+        self.commands = CommandQueue(self.commands_cfg)
         self._session = session
         self._event_log = event_log
         self._dispatcher = dispatcher
@@ -417,6 +426,19 @@ class SessionRouter(SessionListener):
             self._deliver(self._callback_url(self.session.current_turn), event)
             return {"stdout": deny_output(QUESTION_DENY_REASON), "stderr": "", "exit_code": 0}
         who = _attribution(payload)
+        if tool_name.startswith(CCW_TOOL_PREFIX) and payload.get("agent_id"):
+            self._emit(
+                "tool_denied",
+                {
+                    "tool_use_id": tool_use_id,
+                    "tool_name": tool_name,
+                    "reason": CCW_SUBAGENT_DENY_REASON,
+                    **who,
+                },
+            )
+            if self._metrics is not None:
+                self._metrics.tool_call(tool_name, "deny")
+            return {"stdout": deny_output(CCW_SUBAGENT_DENY_REASON), "stderr": "", "exit_code": 0}
         data = {
             "tool_use_id": tool_use_id,
             "tool_name": tool_name,

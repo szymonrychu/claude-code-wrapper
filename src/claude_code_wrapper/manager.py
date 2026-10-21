@@ -44,7 +44,8 @@ from .bootstrap import (
 )
 from .bootstrap.settings import relay_timeouts, render_settings
 from .claude_env import SECRET_KEY_RE, ClaudeEnv
-from .config import Config, InitialPromptTemplate
+from .commands import effective_commands
+from .config import CommandsConfig, CommandsOverride, Config, InitialPromptTemplate
 from .events import EventLog
 from .hooks import RETRY_BASE_SECONDS, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
@@ -172,6 +173,7 @@ class CreateSessionRequest(BaseModel):
     template: str | None = None
     variables: dict[str, str] | None = None
     callback_url: str | None = Field(default=None, alias="callbackUrl")
+    commands: CommandsOverride | None = None
 
 
 class _StepFailed(Exception):
@@ -390,6 +392,7 @@ class SessionManager:
             "effort": req.effort or self.cfg.claude.effort,
             "env": _persistable_env(override),
             "callbackUrl": req.callback_url,
+            "commands": req.commands.model_dump(exclude_none=True) if req.commands else None,
             "created_at": now,
             "updated_at": now,
             "state": "creating",
@@ -639,6 +642,7 @@ class SessionManager:
                 callback_url=meta.get("callbackUrl"),
             ),
             metrics=self.metrics,
+            commands=self._commands_for(meta),
             on_state_change=lambda state: self._on_session_state(ctx, state),
         )
         spec = SessionSpec(
@@ -1072,6 +1076,18 @@ class SessionManager:
         )
 
     # ------------------------------------------------------------------ internals
+
+    def _commands_for(self, meta: Mapping[str, Any]) -> CommandsConfig:
+        """The service `sessions.commands` with the session's persisted override applied."""
+        stored = meta.get("commands")
+        try:
+            override = CommandsOverride.model_validate(stored) if stored else None
+        except ValidationError:
+            log.warning(
+                "session %s: persisted commands override is invalid", meta.get("session_id")
+            )
+            override = None
+        return effective_commands(self.cfg.sessions.commands, override)
 
     def _check_open(self) -> None:
         if self._closing:
