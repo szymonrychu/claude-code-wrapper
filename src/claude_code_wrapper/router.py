@@ -172,6 +172,7 @@ class SessionRouter(SessionListener):
         self._background: set[asyncio.Task[Any]] = set()
         self._dropping_history = False
         self._tick_tasks: list[asyncio.Task[Any]] = []
+        self._tick_runs: set[asyncio.Task[Any]] = set()
         self._closed = False
         # The dispatcher is built before the router; route its per-action results here.
         if getattr(dispatcher, "_on_result", None) is None:
@@ -207,11 +208,12 @@ class SessionRouter(SessionListener):
     def _emit(self, type: str, data: Mapping[str, Any] | None = None) -> LogEvent:
         return self._event_log.append(type, self._redactor.redact_obj(dict(data or {})))
 
-    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
+    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.ensure_future(coro)
         self._background.add(task)
         task.add_done_callback(self._background.discard)
         task.add_done_callback(self._log_failure)
+        return task
 
     @staticmethod
     def _log_failure(task: asyncio.Future[Any]) -> None:
@@ -692,7 +694,9 @@ class SessionRouter(SessionListener):
                 "elapsed_seconds": session.turn_elapsed,
                 "interval_seconds": interval,
             }
-            running = asyncio.ensure_future(self._fire("onTick", data, only_index=index))
+            running = self._spawn(self._fire("onTick", data, only_index=index))
+            self._tick_runs.add(running)
+            running.add_done_callback(self._tick_runs.discard)
 
     # ------------------------------------------------------------------ SessionListener
 
@@ -771,9 +775,10 @@ class SessionRouter(SessionListener):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-        for task in self._tick_tasks:
+        runs = list(self._tick_runs)
+        for task in [*self._tick_tasks, *runs]:
             task.cancel()
-        await asyncio.gather(*self._tick_tasks, return_exceptions=True)
+        await asyncio.gather(*self._tick_tasks, *runs, return_exceptions=True)
         await self.drain(max(drain_timeout, 0.0))
         for task in list(self._background):
             task.cancel()
