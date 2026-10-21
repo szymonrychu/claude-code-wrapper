@@ -401,6 +401,8 @@ class Session:
     def _set_state(self, state: str) -> None:
         public = public_state(state)
         self.state = state
+        if state not in ("ready", "busy"):
+            self._command_active = False  # a command run cannot outlive the live claude
         if public != self._public:
             self._public = public
             self._notify("on_state", public)

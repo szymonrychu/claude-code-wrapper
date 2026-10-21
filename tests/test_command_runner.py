@@ -524,23 +524,12 @@ async def test_busy_with_a_turn_queues_with_its_turn_id(u):
     assert [e.type for e in u.events() if e.type.startswith("command_")] == ["command_queued"]
 
 
-async def test_queued_while_booting_runs_once_ready_outside_the_state_callback(u):
+async def test_command_while_booting_is_rejected_invalid_state(u):
     u.session.state = "booting"
-    u.session.script["/context"] = [
-        ("command_invoked", {"name": "context", "args": ""}),
-        ("command_output", {"stdout": "ok", "stderr": ""}),
-    ]
-    rec = u.router.request_command("context", origin="client")
-    await asyncio.sleep(0.05)
-    assert rec.state == "queued" and not u.router.runner_active
-    u.session.state = "ready"
-    u.router.on_state("ready")
-    # never re-entered from inside the state callback: the manager sees ready, then busy
-    assert u.session.state == "ready" and not u.router.runner_active
-    await u.router.wait_runner_idle()
-    await asyncio.sleep(0)
-    await u.router.wait_runner_idle()
-    assert rec.state == "completed" and u.session.state == "ready"
+    with pytest.raises(CommandRejected) as err:
+        u.router.request_command("context", origin="client")
+    assert err.value.code == "invalid_state"
+    assert u.router.commands.list() == [] and not u.router.runner_active
 
 
 async def test_screen_never_quiet_fails_without_typing(u):
