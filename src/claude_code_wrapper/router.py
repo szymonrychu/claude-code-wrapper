@@ -926,13 +926,13 @@ class SessionRouter(SessionListener):
         validate_params(name, params, allow_force=self.commands_cfg.allow_force)
         if self.session.state not in ("ready", "busy"):
             raise CommandRejected("invalid_state", f"session is {self.session.state}")
-        if origin != "idle":
-            self._cancel_auto_compact()
-            self._idle_only = False  # from here on the events count as activity
         turn = self.session.current_turn
         record, new = self.commands.request(
             name, params, origin=origin, turn_id=turn.turn_id if turn is not None else None
         )
+        if origin != "idle":  # accepted: a rejected request never started anything
+            self._cancel_auto_compact()
+            self._idle_only = False  # from here on the events count as activity
         if new:
             if record.origin == "idle" and self._idle_start is None:
                 self._idle_only = True

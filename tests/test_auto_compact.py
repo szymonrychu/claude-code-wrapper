@@ -9,6 +9,7 @@ import pytest
 from conftest import World
 from test_command_runner import commands_cfg
 
+from claude_code_wrapper.commands import CommandRejected
 from claude_code_wrapper.config import Config, ConfigError
 from claude_code_wrapper.manager import CreateSessionRequest, _epoch
 
@@ -127,6 +128,16 @@ async def test_client_command_cancels_pending_auto_compact(world):
     await world.until(lambda: router.session.state == "ready")
     await asyncio.sleep(1.2)
     assert idle_completions(world, sid) == []
+
+
+async def test_rejected_command_keeps_auto_compact_armed(world):
+    m, sid = await start(world, {})
+    router = m.router(sid)
+    await router.submit_turn("go")
+    await world.wait_turn(m, sid)
+    with pytest.raises(CommandRejected):
+        router.request_command("reload-skills", origin="agent")
+    await world.until(lambda: idle_completions(world, sid), what="auto compact after rejection")
 
 
 async def test_failed_submit_keeps_auto_compact_armed(world):
