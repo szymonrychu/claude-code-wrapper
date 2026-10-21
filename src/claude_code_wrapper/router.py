@@ -20,21 +20,24 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import Coroutine, Mapping
+import time
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .command_signals import SignalBus
-from .commands import CommandQueue
+from .command_signals import Signal, SignalBus
+from .commands import CommandQueue, CommandRecord, render, validate_params
+from .commands import Origin as CommandOrigin
 from .config import CommandsConfig, Config
 from .events import Event as LogEvent
 from .events import EventLog
 from .hook_relay import RelayResponse, deny_output
 from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
+from .pty_proc import PtyClosed
 from .redact import Redactor
-from .session import Session, SessionListener
+from .session import Session, SessionListener, TurnRejected
 from .transcript import (
     MAX_RESULT_CHARS,
     TRUNCATED_SUFFIX,
@@ -77,6 +80,30 @@ DEFAULT_DENY_REASON = "Denied by a wrapper hook."
 DEFAULT_BLOCK_REASON = "A wrapper onStop hook asked you to continue."
 #: Seconds `close()` waits for background hooks and callbacks before cancelling them.
 CLOSE_DRAIN_SECONDS = 5.0
+#: Characters of a command's stdout kept as the record's output.
+COMMAND_OUTPUT_CHARS = 4000
+COMPACT_FAILURES = (
+    "Compaction canceled.",
+    "Not enough messages to compact.",
+    "Error compacting conversation",
+)
+#: reload-plugins skipped because the MCP tool set would change ("Run ... --force to apply.").
+RELOAD_SKIPPED = "--force to apply"
+
+
+def _compact_done(sig: Signal) -> bool:
+    if sig.kind in ("post_compact", "compact_boundary"):
+        return sig.data.get("trigger") == "manual"
+    return sig.kind == "command_output" and any(f in _output_text(sig) for f in COMPACT_FAILURES)
+
+
+def _invoked(name: str) -> Callable[[Signal], bool]:
+    return lambda sig: sig.kind == "command_invoked" and sig.data.get("name") == name
+
+
+def _output_text(sig: Signal) -> str:
+    parts = (str(sig.data.get("stdout") or ""), str(sig.data.get("stderr") or ""))
+    return "\n".join(p for p in parts if p)[:COMMAND_OUTPUT_CHARS]
 
 
 class TurnVetoed(Exception):
@@ -188,6 +215,7 @@ class SessionRouter(SessionListener):
         self._tick_runs: set[asyncio.Task[Any]] = set()
         self._closed = False
         self._subagents: set[str] = set()
+        self._runner: asyncio.Task[Any] | None = None
         # The dispatcher is built before the router; route its per-action results here.
         if getattr(dispatcher, "_on_result", None) is None:
             dispatcher._on_result = self.on_hook_result
@@ -763,6 +791,181 @@ class SessionRouter(SessionListener):
             {"text": ev.text, "message_id": ev.message_id, "model": ev.model},
         )
 
+    # ------------------------------------------------------------------ slash commands
+
+    def request_command(
+        self,
+        name: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        origin: CommandOrigin,
+    ) -> CommandRecord:
+        """Queue an allowlisted slash command; `CommandRejected` propagates unchanged.
+
+        A new record emits `command_queued`; a coalesced duplicate returns the queued record and
+        emits nothing. On a ready session with no turn the runner starts at once (idle path);
+        while a turn runs the command stays queued for that turn's Stop.
+        """
+        validate_params(name, params, allow_force=self.commands_cfg.allow_force)
+        turn = self.session.current_turn
+        record, new = self.commands.request(
+            name, params, origin=origin, turn_id=turn.turn_id if turn is not None else None
+        )
+        if new:
+            self._emit_command("command_queued", record)
+        self._start_idle_runner()
+        return record
+
+    @property
+    def runner_active(self) -> bool:
+        """A command runner is working through the queue (at most one per session)."""
+        return self._runner is not None and not self._runner.done()
+
+    async def wait_runner_idle(self) -> None:
+        """Return once no command runner is active."""
+        while (runner := self._runner) is not None and not runner.done():
+            await asyncio.wait({runner})
+
+    def _start_idle_runner(self) -> bool:
+        """Start the runner on an idle session (D4.8); False when it cannot start now."""
+        if self._closed or self.runner_active or self.commands.next() is None:
+            return False
+        session = self.session
+        if session.current_turn is not None or not session.begin_command():
+            return False
+        self._runner = asyncio.ensure_future(self._run_idle())
+        self._runner.add_done_callback(self._log_failure)
+        return True
+
+    async def _run_idle(self) -> None:
+        try:
+            await self._run_queue()
+        finally:
+            self.session.end_command()  # no await since the queue was found empty
+
+    async def _run_queue(self) -> list[CommandRecord]:
+        """Run every queued command in order, one at a time; the records run."""
+        done: list[CommandRecord] = []
+        while (record := self.commands.next()) is not None:
+            await self._run_command(record)
+            done.append(record)
+        return done
+
+    def _emit_command(self, type: str, record: CommandRecord) -> LogEvent:
+        return self._emit(type, {"record": record.model_dump(mode="json")})
+
+    def _command_timeout(self, name: str) -> float:
+        timeouts = self.commands_cfg.timeout_seconds
+        return float(timeouts.get(name, timeouts.get("default", 60)))
+
+    async def _run_command(self, record: CommandRecord) -> None:
+        """D4 step 3: quiet screen, onCommand, type the line, wait for completion or timeout."""
+        session = self.session
+        timeout = self._command_timeout(record.name)
+        started = time.monotonic()
+        try:
+            if not await session.wait_quiet(self.commands_cfg.quiet_seconds, timeout):
+                await self._finish_command(
+                    record, "failed", started, error="timeout", output="the screen never settled"
+                )
+                return
+            if record.state != "queued":
+                return  # cancelled while the screen settled
+            outcome = await self._fire(
+                "onCommand",
+                {
+                    "command_id": record.id,
+                    "name": record.name,
+                    "args": dict(record.args),
+                    "origin": record.origin,
+                    "turn_id": record.turn_id,
+                },
+                turn_id=record.turn_id,
+            )
+            if outcome.decision == "deny":
+                reason = outcome.reason or DEFAULT_DENY_REASON
+                await self._finish_command(record, "failed", started, error="vetoed", output=reason)
+                return
+            if record.state != "queued":
+                return  # cancelled while onCommand ran
+            self.commands.start(record)
+            started = time.monotonic()
+            self._emit_command("command_started", record)
+            mark = self.signals.mark()
+            await session.send_command(render(record.name, record.args))
+            state, result, error, output = await self._await_completion(record, mark, timeout)
+            if error == "timeout":
+                await session.send_escape()
+        except (PtyClosed, TurnRejected):
+            state, result, error, output = "failed", None, "claude_exited", None
+        except Exception as exc:  # noqa: BLE001 - one command never wedges the queue
+            log.exception("command %s failed", record.id)
+            self._report_error("command", f"/{record.name}: {type(exc).__name__}: {exc}")
+            state, result, error, output = "failed", None, "internal_error", None
+        await self._finish_command(
+            record, state, started, result=result, error=error, output=output
+        )
+
+    async def _await_completion(
+        self, record: CommandRecord, mark: int, timeout: float
+    ) -> tuple[str, str | None, str | None, str | None]:
+        """(state, result, error, output) from the signal bus, or a timeout failure."""
+        deadline = time.monotonic() + timeout
+
+        def left() -> float:
+            return max(deadline - time.monotonic(), 0.0)
+
+        if record.name == "compact":
+            sig = await self.signals.wait(_compact_done, after=mark, timeout=left())
+            if sig is None:
+                return "failed", None, "timeout", None
+            if sig.kind == "command_output":
+                return "failed", None, "compact_failed", _output_text(sig)
+            return "completed", "ok", None, None
+        invoked = await self.signals.wait(_invoked(record.name), after=mark, timeout=left())
+        if invoked is None:
+            return "failed", None, "timeout", None
+        sig = await self.signals.wait(
+            lambda s: s.kind == "command_output", after=invoked.seq, timeout=left()
+        )
+        if sig is None:
+            return "failed", None, "timeout", None
+        stdout = str(sig.data.get("stdout") or "")
+        stderr = str(sig.data.get("stderr") or "")
+        if not stdout and stderr:
+            return "failed", None, "command_error", stderr[:COMMAND_OUTPUT_CHARS]
+        result = (
+            "skipped_cache"
+            if record.name == "reload-plugins" and RELOAD_SKIPPED in stdout
+            else "ok"
+        )
+        return "completed", result, None, stdout[:COMMAND_OUTPUT_CHARS]
+
+    async def _finish_command(
+        self,
+        record: CommandRecord,
+        state: Any,
+        started: float,
+        *,
+        result: str | None = None,
+        error: str | None = None,
+        output: str | None = None,
+    ) -> None:
+        """D4 step 6: final event, metric, onCommandComplete."""
+        if record.state in ("completed", "failed", "cancelled"):
+            return
+        self.commands.finish(record, state, result=result, error=error, output=output)
+        self._emit_command(
+            "command_completed" if state == "completed" else "command_failed", record
+        )
+        if self._metrics is not None:
+            self._metrics.command_finished(
+                record.name, record.origin, state, time.monotonic() - started
+            )
+        await self._fire(
+            "onCommandComplete", record.model_dump(mode="json"), turn_id=record.turn_id
+        )
+
     # ------------------------------------------------------------------ onTick timers
 
     def _start_ticks(self) -> None:
@@ -801,6 +1004,11 @@ class SessionRouter(SessionListener):
             with contextlib.suppress(RuntimeError):
                 self.ensure_tailing()
             self._start_ticks()
+        if state == "ready" and any(r.turn_id is None for r in self.commands.pending()):
+            # Queued while no turn could take it (booting, a relaunch). Started on the next loop
+            # pass, never from inside this state callback, so listeners see ready before busy.
+            with contextlib.suppress(RuntimeError):
+                asyncio.get_running_loop().call_soon(self._start_idle_runner)
 
     def on_fatal(self, text: str, tail: str) -> None:
         data = self._report_error("fatal", text, tail=self._redactor.redact(tail))
@@ -879,6 +1087,10 @@ class SessionRouter(SessionListener):
             await self._flush_transcripts()
         self._closed = True
         self._subagents.clear()
+        runner = self._runner
+        if runner is not None and not runner.done():
+            runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
         if self._tailer is not None:
             self._tailer.stop()
         if self._watcher is not None:
