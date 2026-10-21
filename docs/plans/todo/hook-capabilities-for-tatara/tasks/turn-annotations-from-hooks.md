@@ -26,7 +26,7 @@ provides: []
 K2 hook annotations (design D6). Owns part `turn-annotations`.
 
 - `TurnRecord.annotations: dict[str, Any]` (default `{}`), persisted in turns.jsonl; old lines without it load. It appears in `GET /v1/sessions/{id}/turns/{turn_id}`, in `turn_completed`/`turn_failed` events and therefore in callbacks.
-- The router shallow-merges `HookOutcome.annotations` (later keys win) into the running turn's record for the turn-scoped events: `onTurn` (applied to the new record at submit: `Session.submit` takes `annotations`), `onAgentToolCall`, `onToolResult`, `onStop` (merged before completion, so they are in the `turn_completed` event and the callback) and `onTurnComplete` (merged into the terminal record and persisted again; visible in GET turn; the callback already sent is not re-sent, documented).
+- The router shallow-merges `HookOutcome.annotations` (later keys win) into the running turn's record for the turn-scoped events: `onTurn` (applied to the new record at submit: `Session.submit` takes `annotations`), `onAgentToolCall`, `onToolResult`, `onStop` (merged on every leg - allow, block and defer - before any completion, so they are in the `turn_completed` event and the callback; this task owns the merge call in the router `_on_stop`, stop-gate-onstop-event only produces the outcome) and `onTurnComplete` (merged into the terminal record and persisted again; visible in GET turn; the callback already sent is not re-sent, documented).
 - Annotations from any other event are ignored. A merge that would take a turn's annotations above 16 KiB serialised is dropped and an `error` event (kind `annotations_too_large`) is emitted.
 - README: the `annotations` field in the GET turn record and a paragraph in `## Hooks` on which events annotate the turn.
 
@@ -35,6 +35,7 @@ K2 hook annotations (design D6). Owns part `turn-annotations`.
 - AC1: onTurn annotations land on the new record [evidence: test:tests/test_turn_annotations.py::test_on_turn_annotations_on_record]
 - AC2: onAgentToolCall and onToolResult annotations merge into the running turn [evidence: test:tests/test_turn_annotations.py::test_tool_hook_annotations_merged]
 - AC3: onStop annotations are in the turn_completed event and the callback [evidence: test:tests/test_turn_annotations.py::test_on_stop_annotations_in_callback]
+- AC4a: onStop annotations are merged into the turn record on the block and defer legs too [evidence: test:tests/test_turn_annotations.py::test_on_stop_annotations_merged_on_block_and_defer_legs]
 - AC4: onTurnComplete annotations are persisted and served by GET turn [evidence: test:tests/test_turn_annotations.py::test_on_turn_complete_annotations_persisted]
 - AC5: annotations from non turn-scoped events are ignored [evidence: test:tests/test_turn_annotations.py::test_non_turn_event_annotations_ignored]
 - AC6: a merge past 16 KiB is dropped with an error event [evidence: test:tests/test_turn_annotations.py::test_annotations_size_cap]

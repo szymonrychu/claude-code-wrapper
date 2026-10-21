@@ -28,6 +28,7 @@ K7 onTick timed hook (design D11). Owns part `on-tick-event`.
 - `onTick` joins `HOOK_EVENTS` and `HooksConfig`. Hook actions gain `interval_seconds: float | None` (> 0) and `when: Literal["busy", "always"] | None`. On onTick `interval_seconds` is required and `when` defaults to `busy`; on every other event both are rejected. Errors point at `hooks.onTick.<i>.<type>.interval_seconds` like the matcher validator.
 - The router owns one timer task per onTick action, started when the session first reaches ready, kept across claude restarts and cancelled in `close()`. Each tick fires only that action (`HookDispatcher.fire` gains a way to run a single action index). `when: busy` skips ticks with no running turn. A tick whose previous run of the same action has not finished is skipped (no overlap).
 - data: `turn_id` (null when idle), `elapsed_seconds` of the running turn (null when idle), `interval_seconds`.
+- `EVENT_DECISIONS` (from hook-result-fields, existing events only) gains `onTick` = `allow` only, added by this task.
 - onTick decisions, annotations and outputs are ignored (it cannot veto). onTick is not relayed from claude and is not in `_GATED_EVENTS`.
 - README: `### \`onTick\`` under `## Hooks` and the two action keys in the hooks configuration reference.
 

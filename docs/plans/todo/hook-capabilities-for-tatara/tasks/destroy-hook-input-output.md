@@ -32,7 +32,8 @@ K3 destroy hook input and output (design D7). Owns part `destroy-io`.
 - On shutdown (SIGTERM) onDestroy runs with `input: null` under its 25% share of `shutdown_timeout_seconds`; `destroy_output` is still emitted when it completes in time.
 - Timing stays: onDestroy runs after claude stopped and before purge, and DELETE returns after it.
 - `destroy_output` joins `EVENT_TYPES`.
-- README: DELETE request body and response, timing and bounds (DELETE: action `timeout_seconds`; SIGTERM: 25% of `shutdown_timeout_seconds`, so long reviews need DELETE), onDestroy `data.input`, and `### \`destroy_output\``.
+- Only blocking onDestroy actions contribute to `hook_outputs`; outputs of non-blocking actions are not returned.
+- README: DELETE request body and response, that `hook_outputs` collects only blocking onDestroy actions (non-blocking outputs are not returned), timing and bounds (DELETE: action `timeout_seconds`; SIGTERM: 25% of `shutdown_timeout_seconds`, so long reviews need DELETE), onDestroy `data.input`, and `### \`destroy_output\``.
 
 ## Acceptance conditions
 
@@ -43,6 +44,7 @@ K3 destroy hook input and output (design D7). Owns part `destroy-io`.
 - AC5: a body above 1 MiB is rejected with 413 [evidence: test:tests/test_destroy_io.py::test_delete_body_too_large_413]
 - AC6: a failed onDestroy action reports its error in hook_outputs [evidence: test:tests/test_destroy_io.py::test_failed_action_output_has_error]
 - AC7: shutdown still emits destroy_output then session_closed [evidence: test:tests/test_destroy_io.py::test_shutdown_emits_destroy_output]
+- AC7a: README documents that hook_outputs collects only blocking onDestroy actions [evidence: command:grep -qi "only blocking" README.md]
 - AC8: existing sessions, manager and router tests stay green [evidence: command:uv run pytest tests/test_api_sessions.py tests/test_manager.py tests/test_router.py tests/test_readme_api.py -q]
 
 ## Files

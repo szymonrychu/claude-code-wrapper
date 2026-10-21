@@ -33,7 +33,7 @@ Subcommands and their config:
 
 Config: `sessions.exit_when_dead: true`, `sessions.probe_alive_token: TATARA-ALIVE`, `sessions.restart_continue_prompt` (a short "claude restarted, continue the task" prompt), `sessions.ask_user_question: deny`, `claude.passthrough_env` globs (`TATARA_*`, `CLI_OIDC_*`, `OIDC_ISSUER`, `RUN_ID`, `GIT_TOKEN`, `MISE_ALWAYS_KEEP_DOWNLOAD`, ...) with `claude.passthrough_env_exclude` for hook-only secrets (`CALLBACK_HMAC_SECRET`, `OPERATOR_PUSH_*`), model/effort/permission mode via `${MODEL:-}` style interpolation, and tatara's deny list in `claude.permissions.deny`.
 
-Test `tests/test_example_tatara_lifecycle.py` against the fake claude via the `world` fixture and local bare git remotes. README `### tatara` gains the lifecycle part.
+Test `tests/test_example_tatara_lifecycle.py` against the fake claude via the `world` fixture and local bare git remotes. README `### tatara` gains a `#### tatara lifecycle` subsection (that exact heading) documenting the lifecycle hooks (`ttl-gate`, `safety-push`, `metrics-push`) and the bootstrap skeleton.
 
 ## Acceptance conditions
 
@@ -42,7 +42,7 @@ Test `tests/test_example_tatara_lifecycle.py` against the fake claude via the `w
 - AC3: the onTick metrics push posts the scraped metrics to the receiver [evidence: test:tests/test_example_tatara_lifecycle.py::test_metrics_push_posts_scrape]
 - AC4: bootstrap clones into the owner/repo layout and checks out the task branch [evidence: test:tests/test_example_tatara_lifecycle.py::test_bootstrap_clones_into_owner_repo_layout]
 - AC5: the config sets exit_when_dead, the TATARA-ALIVE token, continuity and passthrough globs with excludes [evidence: test:tests/test_example_tatara_lifecycle.py::test_tatara_config_lifecycle_options]
-- AC6: README tatara section documents the lifecycle hooks and the bootstrap skeleton [evidence: judgement]
+- AC6: README tatara section documents the lifecycle hooks and the bootstrap skeleton [evidence: doc-section:README.md#tatara lifecycle]
 
 ## Files
 
@@ -63,7 +63,7 @@ The tatara example covers pod bootstrap, the TTL/handoff admission, the safety a
 
 - Write `tests/test_example_tatara_lifecycle.py`; see it fail.
 - Extend the config and script.
-- Extend README `### tatara`.
+- Extend README `### tatara` with the `#### tatara lifecycle` subsection.
 - `uv run pytest tests/test_example_tatara_lifecycle.py tests/test_example_tatara.py tests/test_examples.py -q && mise run lint`.
 
 ## Notes

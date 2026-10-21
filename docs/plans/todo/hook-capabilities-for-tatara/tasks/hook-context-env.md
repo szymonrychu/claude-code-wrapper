@@ -28,6 +28,7 @@ K4 hook context env (design D8) and DEF-3 env documentation (design D4).
 - Every command action's environment gains `CCW_STATE_DIR` = `<session_dir>/hook-state` and `CCW_API_URL` = `http://127.0.0.1:<public port actually bound>`.
 - `CCW_STATE_DIR` is created before the session's first hook fires (before onCreate), kept across stop and resume, and removed by purge. It is per session.
 - `SessionManager` takes `api_url: str = ""`; `service._run` passes `http://127.0.0.1:<handle.public_port>`. `HookDispatcher` receives the state dir and api url (constructor params) and sets both vars after the action `env` (service-managed vars win). Empty strings when not configured (unit tests).
+- In the hook env `CCW_CLAUDE_CONFIG_DIR` and the claude CLI `CLAUDE_CONFIG_DIR` of the same session resolve to the same path.
 - Webhook payloads are unchanged.
 - DEF-3: README `### Command actions` says hook command actions get the FULL service environment (every variable of the ccw process, including secrets such as `CCW_AUTH_TOKEN`), then the action's `env`, then `CCW_EVENT`, `CCW_SESSION_ID`, `CCW_TURN_ID`, `CCW_WORKDIR`, `CCW_CLAUDE_CONFIG_DIR`, `CCW_STATE_DIR`, `CCW_API_URL`; and that `init.setup_commands` get the allow-listed tool environment instead (base vars, passthrough, claude env, mise, `CLAUDE_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`). The wrong "service's child environment" wording is removed. Hooks keep the full service env (no narrowing).
 
@@ -38,6 +39,7 @@ K4 hook context env (design D8) and DEF-3 env documentation (design D4).
 - AC3: purge removes the state dir [evidence: test:tests/test_hook_context_env.py::test_state_dir_removed_on_purge]
 - AC4: CCW_API_URL names the bound public port under run_service with port 0 [evidence: test:tests/test_hook_context_env.py::test_api_url_is_bound_public_port]
 - AC5: a service env var outside passthrough reaches the hook (full service env) [evidence: test:tests/test_hook_context_env.py::test_hook_env_is_full_service_env]
+- AC5a: CCW_CLAUDE_CONFIG_DIR in the hook env and CLAUDE_CONFIG_DIR of the same session resolve to the same path [evidence: test:tests/test_hook_context_env.py::test_hook_and_claude_config_dir_match]
 - AC6: README drops the child-environment wording and documents the new vars [evidence: command:! grep -q "service's child environment" README.md && grep -q CCW_STATE_DIR README.md && grep -q CCW_API_URL README.md]
 
 ## Files

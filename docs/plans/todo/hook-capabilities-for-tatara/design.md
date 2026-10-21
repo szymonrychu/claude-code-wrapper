@@ -331,6 +331,13 @@ built (hook-dispatcher, config-schema, event-log); no live epic consumes them ye
 - Exact caps (hook_input 1 MiB, metadata 16 KiB, output and answer caps) within those orders of
   magnitude; event field names beyond the ones named here.
 - Example script language (python stdlib or sh) per script.
+- builder check 2026-10-21: magic-trainer-example depends on tatara-example-lifecycle (both edit README `## Hook examples`).
+- builder check 2026-10-21: tatara-example-lifecycle AC6 is `doc-section:README.md#tatara lifecycle`; the requirement creates the `#### tatara lifecycle` heading (magic-trainer and turn-hooks doc-section headings are likewise created by their requirements).
+- builder check 2026-10-21: onStop annotations merge into the turn record on every leg (allow, block, defer); turn-annotations-from-hooks owns the merge call, with a defer/block-leg AC.
+- builder check 2026-10-21: service-exit-policy: with exit_when_last_destroyed the DELETE returns 200 with its full body (hook_outputs included) before exit 0; the stop is scheduled after the response is sent.
+- builder check 2026-10-21: hook_outputs collects only blocking onDestroy actions (README AC); magic-trainer's review action sets blocking: true.
+- builder check 2026-10-21: hook-context-env: CCW_CLAUDE_CONFIG_DIR (hook env) and CLAUDE_CONFIG_DIR (claude) of the same session resolve to the same path (test AC).
+- builder check 2026-10-21: EVENT_DECISIONS in hook-result-fields covers existing events only; stop-gate-onstop-event adds onStop (allow|block|defer), ontick-timed-hook adds onTick (allow only).
 
 Settled by the planner (my call), binding on the tasks:
 

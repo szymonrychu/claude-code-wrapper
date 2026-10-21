@@ -28,7 +28,7 @@ K1 stop gate (design D5): a new `onStop` hook event that can allow, block or def
 Config and relay:
 - `onStop` joins `HOOK_EVENTS` and `HooksConfig` (no matcher). `sessions.defer_stop_on_background_tasks: bool = False`.
 - `onStop` joins `_GATED_EVENTS` in `bootstrap/settings.py`, so blocking onStop actions extend the relay timeout.
-- `EVENT_DECISIONS["onStop"]` = `allow|block|defer` (deny on onStop is not honoured: treated as allow and recorded invalid, per the hook-result-fields rule). A command action exiting 2 on onStop is a block with its trimmed stderr as reason. Across blocking actions the outcome is the strictest: block > defer > allow; the reason is the first blocking action's reason in index order.
+- `EVENT_DECISIONS` (from hook-result-fields, existing events only) gains `onStop`: this task adds `EVENT_DECISIONS["onStop"]` = `allow|block|defer` (deny on onStop is not honoured: treated as allow and recorded invalid, per the hook-result-fields rule). A command action exiting 2 on onStop is a block with its trimmed stderr as reason. Across blocking actions the outcome is the strictest: block > defer > allow; the reason is the first blocking action's reason in index order.
 
 Session:
 - `Session.stop_target(payload, marker_turn_id) -> TurnRecord | None` factors the claude-session-id and stale-marker checks out of `Session.complete`; `complete` uses it. Behaviour of `complete` is unchanged.

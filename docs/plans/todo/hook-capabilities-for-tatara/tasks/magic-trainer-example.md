@@ -5,7 +5,7 @@ repo: .
 value: "A tested worked example of magic-trainer's seat-pair completion, review, narration and exit as ccw hooks"
 files: [src/claude_code_wrapper/data/examples/magic-trainer.config.yaml, src/claude_code_wrapper/data/examples/magic-trainer/mtg_hooks.py, examples/magic-trainer.config.yaml, README.md, tests/test_example_magic_trainer.py]
 verify: "uv run pytest tests/test_example_magic_trainer.py tests/test_examples.py -q && mise run lint"
-depends_on: [tatara-example-turn-hooks]
+depends_on: [tatara-example-turn-hooks, tatara-example-lifecycle]
 owns: []
 uses: [fake-claude-scenarios, hook-result-fields, on-stop-event, destroy-io, exit-policy, agent-attribution, turn-annotations, hook-context-env, ccw-world-fixture]
 model: sonnet
@@ -30,11 +30,11 @@ Files: `src/claude_code_wrapper/data/examples/magic-trainer.config.yaml`, `src/c
 Config and subcommands:
 - Seat pair completion: `sessions.defer_stop_on_background_tasks: true`; agent teams via `claude.env` (`${AGENT_TEAMS:-}`) and `claude.settings.teammateMode: in-process`.
 - `pending-tasks` (blocking onStop; the R1 fallback for teammates missing from background_tasks): reads `data.transcript_path`, finds background work started since the turn's last marker and not finished (background Agent/Task and Bash tool uses, teammates spawned, minus their completion or TaskStop), prints `{"decision": "defer", "annotations": {"pending_tasks": [...]}}` when any, else `{"decision": "allow", "annotations": {"pending_tasks": []}}`.
-- `review` (blocking onDestroy, `timeout_seconds: ${REVIEW_TIMEOUT_SECONDS:-4800}`): reads `data.input` `{prompt, model, effort}`; runs `${CLAUDE_BIN:-claude} -p --setting-sources "" --strict-mcp-config --model <model>` with the prompt on stdin in the session workdir and `CLAUDE_CONFIG_DIR=$CCW_CLAUDE_CONFIG_DIR`; prints `{"output": {"text": <stdout>}}`. No input: no review, `{"output": null}`.
+- `review` (onDestroy, `blocking: true` (required: hook_outputs in the DELETE response collects only blocking onDestroy actions), `timeout_seconds: ${REVIEW_TIMEOUT_SECONDS:-4800}`): reads `data.input` `{prompt, model, effort}`; runs `${CLAUDE_BIN:-claude} -p --setting-sources "" --strict-mcp-config --model <model>` with the prompt on stdin in the session workdir and `CLAUDE_CONFIG_DIR=$CCW_CLAUDE_CONFIG_DIR`; prints `{"output": {"text": <stdout>}}`. No input: no review, `{"output": null}`.
 - `narrate` (non-blocking onAgentToolCall and onAgentResponse): appends one line per event, `step tool=<name> agent=<agent_type or main>` or `say <first 80 chars>`, to `${NARRATION_LOG:-/proc/1/fd/1}`.
 - `sessions.exit_when_last_destroyed: true`, `sessions.max_restarts: 0`, `sessions.ask_user_question: deny`, the MCP limits in `claude.env`, and `init.setup_commands` for the git credential helper (token file path from env), `safe.directory /guides` and the agent renderer (`${MTG_AGENTS_RENDER:-true}`, the consumer's renderer command).
 
-Test `tests/test_example_magic_trainer.py` against the fake claude via the `world` fixture (the fake's print mode answers the review). README `## Hook examples` gains `### magic-trainer` with the files and the parity row -> hook mapping.
+Test `tests/test_example_magic_trainer.py` against the fake claude via the `world` fixture (the fake's print mode answers the review). README `## Hook examples` (created by tatara-example-turn-hooks; this task and tatara-example-lifecycle both edit the README, hence the dependency) gains a `### magic-trainer` heading with the files and the parity row -> hook mapping.
 
 ## Acceptance conditions
 
