@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 from test_metrics import ANON, sample, with_metrics
 from test_router import Harness, completed_record
 
-from claude_code_wrapper.api import turns as turns_api
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.manager import InvalidState
 from claude_code_wrapper.metrics import Metrics
