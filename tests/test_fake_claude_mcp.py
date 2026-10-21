@@ -132,7 +132,7 @@ def record_hooks(env, out):  # noqa: F811
     return lambda: [json.loads(x) for x in out.read_text().splitlines()]
 
 
-def test_mcp_step_full_handshake_with_env_expansion(
+def test_mcp_step_expands_env_and_calls_tool(
     spawn,
     env,
     work,
@@ -182,7 +182,7 @@ def test_mcp_step_full_handshake_with_env_expansion(
     assert "agent_id" not in got[0]
 
 
-def test_mcp_step_unconfigured_server_errors_without_http(
+def test_mcp_step_missing_server(
     spawn,
     env,
     work,
@@ -196,7 +196,7 @@ def test_mcp_step_unconfigured_server_errors_without_http(
     assert stub.seen == [] and mcp_log(env) == []
 
 
-def test_mcp_step_pretooluse_deny_sends_nothing(
+def test_mcp_step_denied_skips_http(
     spawn,
     env,
     work,
@@ -224,7 +224,7 @@ def test_mcp_step_pretooluse_deny_sends_nothing(
         {"error": {"code": -32000, "message": "rpc broke"}},
     ],
 )
-def test_mcp_step_error_runs_post_tool_use_failure(
+def test_mcp_step_result_and_error_reach_transcript(
     spawn,
     env,
     work,
@@ -246,7 +246,7 @@ def test_mcp_step_error_runs_post_tool_use_failure(
     assert [x["hook_event_name"] for x in pls()] == ["PreToolUse", "PostToolUseFailure"]
 
 
-def test_mcp_step_agent_goes_to_subagent_transcript(
+def test_mcp_step_agent_attribution(
     spawn,
     env,
     work,
