@@ -1,6 +1,6 @@
 ---
 title: magic-trainer example
-status: escalated
+status: done
 repo: .
 value: "A tested worked example of magic-trainer's seat-pair completion, review, narration and exit as ccw hooks"
 files: [src/claude_code_wrapper/data/examples/magic-trainer.config.yaml, src/claude_code_wrapper/data/examples/magic-trainer/mtg_hooks.py, examples/magic-trainer.config.yaml, README.md, tests/test_example_magic_trainer.py]
@@ -77,3 +77,5 @@ A reader can see, run and test how magic-trainer's seat-pair completion, the cla
 - No mtg names in `src/claude_code_wrapper/*.py` (anti-goal).
 
 - 2026-10-21 run hook-capabilities-for-tatara: dependency-failed on tatara-example-turn-hooks, tatara-example-lifecycle
+
+- 2026-10-21 hand-verified on 68bac41: verify-task.py --base e6153f9 (without --tdd-revert, which converts the committed examples/ symlink into a file) passed, AC1-AC7 met, clean, no debt. Gate-repeat was the same symlink artifact. Process gap accepted: tests written after the example code (examples are config + scripts exercised only by these tests); recorded, not re-done.
