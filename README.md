@@ -473,7 +473,7 @@ last 100 are kept).
 
 Auth: bearer. Errors: `401 unauthorized`, `404 not_found`, `409 dead`.
 
-### `GET /v1/sessions/{id}/commands/{command_id}`
+### `GET /v1/sessions/{id}/commands/{cid}`
 
 One command record, showing its current or final state.
 
@@ -1567,7 +1567,7 @@ Clients queue the same commands through the public API, limited by `sessions.com
 
 - [`POST /v1/sessions/{id}/commands`](#post-v1sessionsidcommands) queues a command (`202` with the record).
 - [`GET /v1/sessions/{id}/commands`](#get-v1sessionsidcommands) lists the session's recent commands.
-- [`GET /v1/sessions/{id}/commands/{command_id}`](#get-v1sessionsidcommandscommand_id) shows one record.
+- [`GET /v1/sessions/{id}/commands/{cid}`](#get-v1sessionsidcommandscid) shows one record.
 
 ```bash
 curl -X POST -H "Authorization: Bearer $CCW_AUTH_TOKEN" -H 'Content-Type: application/json' \

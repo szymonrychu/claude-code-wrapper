@@ -80,3 +80,53 @@ def test_readme_documents_subagent_bypass():
 def test_example_config_commands_client_comment():
     line = next(x for x in EXAMPLE.splitlines() if "client: []" in x)
     assert "/sessions/" not in line and "public commands endpoint" in line
+
+
+@pytest.mark.parametrize("bad", ["x\n/exit", "x\r/exit", "x y", "x\x85y", "x\x1by", "a" * 5000])
+def test_string_params_reject_control_chars_and_bad_server(bad):
+    with pytest.raises(CommandRejected):
+        validate_params("compact", {"instructions": bad}, allow_force=True)
+    with pytest.raises(CommandRejected):
+        validate_params("mcp", {"action": "reconnect", "server": bad}, allow_force=True)
+    for server in ("-x", "a b", "a/b", ""):
+        with pytest.raises(CommandRejected):
+            validate_params("mcp", {"action": "reconnect", "server": server}, allow_force=True)
+
+
+def test_param_smuggling_never_typed():
+    from claude_code_wrapper.commands import CommandQueue
+    from claude_code_wrapper.config import CommandsConfig
+
+    q = CommandQueue(CommandsConfig(agent=list(BUILTIN_COMMANDS), client=list(BUILTIN_COMMANDS)))
+    attempts = [
+        ("compact", {"instructions": "ok\n/exit"}),
+        ("mcp", {"action": "reconnect", "server": "gh\n/compact"}),
+        ("mcp", {"action": "reconnect", "server": "gh --force"}),
+        ("reload-plugins", {"force": True}),
+    ]
+    for name, params in attempts:
+        with pytest.raises(CommandRejected):
+            q.request(name, params, origin="agent", turn_id="t1")
+    assert q.pending() == [] and q.list() == []
+
+
+def test_tool_schema_is_flat():
+    s = params_schema(list(BUILTIN_COMMANDS))
+    assert not {"oneOf", "anyOf", "allOf"} & set(s)
+    assert set(s["properties"]) == {"name", "params"}
+    assert s["properties"]["params"]["additionalProperties"] is False
+
+
+async def test_unknown_top_level_argument_rejected():
+    import tests.test_mcp_server as t
+
+    m = t.FakeManager()
+    async with t.client(m) as c:
+        r = await c.post(
+            "/internal/mcp",
+            json=t.rpc("tools/call", {"name": "command", "arguments": {"name": "compact", "x": 1}}),
+            headers=t.H,
+        )
+    res = r.json()["result"]
+    assert res["isError"] is True and "params" in res["content"][0]["text"]
+    assert m.r.calls == []
