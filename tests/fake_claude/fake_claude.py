@@ -63,6 +63,45 @@ Scenario schema
   or exits 2 (reason = stderr) makes the fake write R as a user line, run the turn's
   on_block steps and fire Stop again with stop_hook_active true. At most 8 consecutive
   blocks (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP overrides); past the cap the turn ends as allowed.
+    {"auto_compact": {"pre_tokens": N}}  inside a turn (models Claude Code's own compaction):
+                         PreCompact then the boundary (trigger "auto") and summary lines, then
+                         PostCompact (trigger "auto"); the following steps continue
+
+Local slash commands
+  Submitted text (stripped) starting with "/" plus a name is a command, not a turn: no
+  UserPromptSubmit, no Stop, no assistant line; the idle footer follows. Known names: compact,
+  reload-plugins, reload-skills, mcp, context. An unknown "/name" prints "Unknown command: /name"
+  and returns to idle with no transcript line. Every known command first writes a user line whose
+  string content is
+    <command-name>/NAME</command-name>\n<command-message>NAME</command-message>\n
+    <command-args>ARGS</command-args>          (ARGS = rest of the line, stripped; may be empty)
+  /compact [instructions]: PreCompact hooks run with {trigger: "manual", custom_instructions:
+    ARGS or null}; a block (exit 2 or stdout {"decision": "block"}) ends it as "canceled". Then a
+    system line {"subtype": "compact_boundary", "content": "Conversation compacted",
+    "compactMetadata": {trigger, preTokens, postTokens, durationMs}}, then a user line with
+    isCompactSummary and isVisibleInTranscriptOnly true whose content starts "This session is being
+    continued from a previous conversation" and holds "All user messages:" followed by every earlier
+    user prompt of this process verbatim (turn markers included), then PostCompact hooks with
+    {trigger, compact_summary}, then "Compacted" on the PTY and the idle footer.
+  /reload-plugins [--force], /reload-skills, /context, /mcp ARGS: write one stdout entry
+    <local-command-stdout>STDOUT</local-command-stdout> as a system line (subtype local_command),
+    or as a user line when the scenario sets as_user. Default STDOUT: "Reloaded: 0 plugins, 0
+    skills, 0 agents, 0 hooks, 0 MCP servers", "Reloaded skills", "Context usage: 0 tokens",
+    "Reconnected to all MCP servers" ("/mcp reconnect NAME" -> "Reconnected to NAME").
+  Scenario key (top level) "commands": {"<name>": {...}}:
+    compact: "outcome" ok (default) | canceled ("Compaction canceled.") | not_enough ("Not enough
+      messages to compact.") | error ("Error compacting conversation") | hang (nothing until ESC,
+      then canceled); "post_compact_hook": false skips PostCompact (boundary-only signal);
+      "pre_tokens"/"post_tokens" set the boundary token counts. A failure outcome writes a system
+      local_command line <local-command-stderr>MSG</local-command-stderr>, prints MSG, writes no
+      boundary and runs no PostCompact.
+    any command: "delay_seconds" before completing (ESC during it cancels); "stdout" overrides the
+      stdout text; "as_user": true writes the stdout entry as a user line; "hang": true writes
+      nothing until ESC, then returns to idle.
+  Input log: every submitted line is appended to $CLAUDE_CONFIG_DIR/fake-inputs.jsonl as
+  {"text", "state": "idle"|"busy", "ts"}. Bytes other than ESC arriving while a turn or command
+  runs are recorded with state "busy" (and dropped), so tests can prove nothing typed into a
+  running turn.
 
 Print mode
   `-p`/`--print` takes the prompt from the argument or stdin, needs no TTY and runs no hooks.
@@ -98,6 +137,19 @@ FOOTER = "? for shortcuts"
 INTERRUPT_TEXT = "[Request interrupted by user]"
 VERSION = "0.0.0 (Fake Claude)"
 DEFAULT_BLOCK_CAP = 8
+COMMAND_RE = re.compile(r"^/([^\s/]+)(?:\s+(.*))?$", re.DOTALL)
+COMMANDS = ("compact", "reload-plugins", "reload-skills", "mcp", "context")
+COMMAND_STDOUT = {
+    "reload-plugins": "Reloaded: 0 plugins, 0 skills, 0 agents, 0 hooks, 0 MCP servers",
+    "reload-skills": "Reloaded skills",
+    "context": "Context usage: 0 tokens",
+    "mcp": "Reconnected to all MCP servers",
+}
+COMPACT_FAILURES = {
+    "canceled": "Compaction canceled.",
+    "not_enough": "Not enough messages to compact.",
+    "error": "Error compacting conversation",
+}
 VALUED_FLAGS = {
     "--model",
     "--effort",
@@ -244,6 +296,7 @@ class Fake:
         self.last_text = ""
         self.background: list[tuple[float, str, list]] = []
         self.pending_input = b""
+        self.user_prompts: list[str] = []
 
     @staticmethod
     def _parse(argv: list[str]) -> tuple[str, str | None]:
@@ -450,7 +503,7 @@ class Fake:
                         elif pasted or typed:
                             text = (paste if pasted else typed).decode(errors="replace")
                             in_paste, paste, pasted, typed = False, b"", False, b""
-                            self.run_turn(text.rstrip("\n"))
+                            self.submit(text.rstrip("\n"))
                             data = b""
                     elif not pasted:
                         typed += ch
@@ -464,8 +517,15 @@ class Fake:
             self.stop_cycle([], background_tasks=item[2])
             self.footer()
 
+    def record_input(self, text: str, state: str) -> None:
+        with open(os.path.join(config_dir(), "fake-inputs.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"text": text, "state": state, "ts": now()}) + "\n")
+
     def interrupted(self, timeout: float = 0.0) -> bool:
         data = self.read(timeout)
+        if data is not None and data != b"\x1b":
+            text = data.replace(PASTE_START, b"").replace(PASTE_END, b"")
+            self.record_input(text.decode(errors="replace"), "busy")
         return data == b"\x1b"
 
     def do_interrupt(self) -> None:
@@ -483,7 +543,126 @@ class Fake:
     def matching_turn(self, prompt: str) -> dict:
         return self.matching_turn_of(self.scenario, prompt)
 
+    def submit(self, text: str) -> None:
+        self.record_input(text, "idle")
+        m = COMMAND_RE.match(text.strip())
+        if m:
+            self.run_command(m.group(1), (m.group(2) or "").strip())
+        else:
+            self.run_turn(text)
+
+    # ---- local slash commands
+    def wait_esc(self, seconds: float | None) -> bool:
+        """Wait up to `seconds` (None: forever); True when ESC arrived first."""
+        deadline = None if seconds is None else time.monotonic() + seconds
+        while True:
+            left = 0.1 if deadline is None else min(0.1, deadline - time.monotonic())
+            if left <= 0:
+                return False
+            if self.interrupted(left):
+                return True
+
+    def run_command(self, name: str, args: str) -> None:
+        if name not in COMMANDS:
+            self.out(f"\nUnknown command: /{name}\n")
+            self.footer()
+            return
+        self.user_line(
+            f"<command-name>/{name}</command-name>\n<command-message>{name}</command-message>\n"
+            f"<command-args>{args}</command-args>"
+        )
+        cfg = (self.scenario.get("commands") or {}).get(name) or {}
+        if name == "compact":
+            self.compact_command(args, cfg)
+        else:
+            self.stdout_command(name, args, cfg)
+        self.footer()
+
+    def local_output(self, kind: str, text: str, as_user: bool = False) -> None:
+        content = f"<local-command-{kind}>{text}</local-command-{kind}>"
+        if as_user:
+            self.user_line(content)
+        else:
+            self.write_line({"type": "system", "subtype": "local_command", "content": content})
+        self.out(f"\n{text}\n")
+
+    def stdout_command(self, name: str, args: str, cfg: dict) -> None:
+        if cfg.get("hang"):
+            self.wait_esc(None)
+            return
+        if self.wait_esc(float(cfg.get("delay_seconds", 0))):
+            return
+        words = args.split()
+        default = COMMAND_STDOUT[name]
+        if name == "mcp" and words[:1] == ["reconnect"] and words[1:2] not in ([], ["all"]):
+            default = f"Reconnected to {words[1]}"
+        self.local_output("stdout", cfg.get("stdout", default), bool(cfg.get("as_user")))
+
+    def compact_command(self, args: str, cfg: dict) -> None:
+        outcome = cfg.get("outcome", "ok")
+        start = time.monotonic()
+        if outcome == "hang":
+            self.wait_esc(None)
+            outcome = "canceled"
+        elif self.wait_esc(float(cfg.get("delay_seconds", 0))):
+            outcome = "canceled"
+        if outcome == "ok":
+            pre = self.run_hooks(
+                "PreCompact", {"trigger": "manual", "custom_instructions": args or None}
+            )
+            if self.block_reason(pre) is not None:
+                outcome = "canceled"
+        if outcome != "ok":
+            self.local_output("stderr", COMPACT_FAILURES.get(outcome, COMPACT_FAILURES["error"]))
+            return
+        self.write_compaction(
+            "manual",
+            int(cfg.get("pre_tokens", 100000)),
+            int(cfg.get("post_tokens", 5000)),
+            start,
+            post_hook=cfg.get("post_compact_hook", True),
+        )
+        self.out("\nCompacted\n")
+
+    def write_compaction(
+        self, trigger: str, pre: int, post: int, start: float, post_hook: bool = True
+    ) -> None:
+        self.write_line(
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "content": "Conversation compacted",
+                "compactMetadata": {
+                    "trigger": trigger,
+                    "preTokens": pre,
+                    "postTokens": post,
+                    "durationMs": int((time.monotonic() - start) * 1000),
+                },
+            }
+        )
+        summary = (
+            "This session is being continued from a previous conversation that ran out of "
+            "context. The summary below covers the earlier portion of the conversation.\n\n"
+            "All user messages:\n" + "\n".join(f"- {p}" for p in self.user_prompts)
+        )
+        self.write_line(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": summary},
+                "isCompactSummary": True,
+                "isVisibleInTranscriptOnly": True,
+            }
+        )
+        if post_hook:
+            self.run_hooks("PostCompact", {"trigger": trigger, "compact_summary": summary})
+
+    def auto_compact_step(self, spec: dict) -> None:
+        start = time.monotonic()
+        self.run_hooks("PreCompact", {"trigger": "auto", "custom_instructions": None})
+        self.write_compaction("auto", int(spec.get("pre_tokens", 100000)), 5000, start)
+
     def run_turn(self, prompt: str) -> None:
+        self.user_prompts.append(prompt)
         turn = self.matching_turn(prompt)
         self.user_line(prompt)
         self.run_hooks("UserPromptSubmit", {"prompt": prompt})
@@ -535,6 +714,8 @@ class Fake:
                 self.exit_once(int(step["exit_once"]), f"{turn.get('match', '')}#{index}")
             elif "background" in step:
                 bg.append(step["background"])
+            elif "auto_compact" in step:
+                self.auto_compact_step(step["auto_compact"] or {})
         return True
 
     def exit_once(self, code: int, key: str) -> None:
