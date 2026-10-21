@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
-from conftest import World, wait_turn
+from conftest import World, wait_turn, wait_until
 from fastapi.testclient import TestClient
 
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.events import EVENT_TYPES
-from claude_code_wrapper.manager import CreateSessionRequest
+from claude_code_wrapper.manager import CreateFailed, CreateSessionRequest, CreateVetoed
 
 TOKEN = "tok-0123456789abcdef"
 ECHO_INPUT = {
@@ -88,6 +89,47 @@ async def test_shutdown_runs_on_destroy_with_null_input(world: World) -> None:
     do = [e for e in world.events(sid) if e["type"] == "destroy_output"]
     assert do and do[0]["data"]["outputs"][0]["output"] == {"seen": None}
     assert ev.index("destroy_output") < ev.index("session_closed")
+
+
+async def test_failed_create_emits_one_session_closed(world: World, tmp_path: Path) -> None:
+    dead = tmp_path / "dead-claude"
+    dead.write_text("#!/bin/sh\nexit 1\n")
+    dead.chmod(0o755)
+    m = world.manager(world.cfg(claude={"binary": str(dead)}))
+    with pytest.raises(CreateFailed):
+        await m.create(CreateSessionRequest())
+    [snap] = m.list(state="failed")
+    assert types(world, snap["session_id"]).count("session_closed") == 1
+
+
+async def test_vetoed_create_emits_one_session_closed(world: World) -> None:
+    deny = {
+        "type": "command",
+        "run": 'echo \'{"decision": "deny", "reason": "no"}\'',
+        "blocking": True,
+    }
+    m = world.manager(world.cfg(hooks={"onCreate": [deny]}))
+    with pytest.raises(CreateVetoed):
+        await m.create(CreateSessionRequest())
+    [snap] = m.list()
+    assert types(world, snap["session_id"]).count("session_closed") == 1
+
+
+async def test_abandoned_destroy_emits_one_session_closed(world: World) -> None:
+    slow = {"type": "command", "run": "cat > /dev/null; sleep 30", "blocking": True}
+    m = world.manager(
+        world.cfg(
+            hooks={"onDestroy": [{**slow, "timeout_seconds": 30}]},
+            limits={"shutdown_timeout_seconds": 2},
+        )
+    )
+    sid = (await m.create(CreateSessionRequest()))["session_id"]
+    closing = asyncio.ensure_future(m.destroy(sid))
+    await asyncio.sleep(0.5)  # inside the slow onDestroy: session_closed not yet emitted
+    await m.shutdown()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert types(world, sid).count("session_closed") == 1
 
 
 class Stub:
