@@ -1,7 +1,7 @@
 ---
 title: GitHub CI pipeline with Harbor push
 blockers: [claude-code-wrapper microservice]
-stage: build
+stage: review
 owner: Szymon Richert
 repos: [.]
 created: 2026-10-20
