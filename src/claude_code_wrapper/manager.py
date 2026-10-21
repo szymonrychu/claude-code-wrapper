@@ -46,7 +46,7 @@ from .bootstrap.settings import relay_timeouts, render_settings
 from .claude_env import SECRET_KEY_RE, ClaudeEnv
 from .config import Config, InitialPromptTemplate
 from .events import EventLog
-from .hooks import RETRY_BASE_SECONDS, HookDispatcher, HookOutcome, build_payload
+from .hooks import RETRY_BASE_SECONDS, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
 from .plugins import install_plugins
 from .prompts import render_template, resolve_prompt
@@ -589,8 +589,7 @@ class SessionManager:
         return env
 
     def _gate_fail(self) -> str:
-        deny = any(a.blocking and a.on_error == "deny" for a in self.cfg.hooks.onAgentToolCall)
-        return "deny" if deny else "allow"
+        return gate_fail_mode(self.cfg.hooks)
 
     def _child_env(self, ctx: _Active) -> dict[str, str]:
         return build_env(

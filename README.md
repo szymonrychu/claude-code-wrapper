@@ -938,6 +938,10 @@ Cannot veto. `data`: `text`, `message_id`, `model`.
 Trigger: Claude's PreToolUse, relayed before the tool runs. Supports `matcher`. Blocking: a `deny`
 blocks the tool call (Claude is told the reason, a `tool_denied` event is logged); an action's
 `additional_context` is returned to Claude. `data`: `tool_use_id`, `tool_name`, `tool_input`.
+The gate fails closed: a ccw-side failure (relay error, unusable event, redaction failure) denies
+the tool call when a matching blocking action has `on_error: deny`, with the reason
+`ccw hook relay failed: <ExceptionType>`; with no such action the call is allowed and the failure
+is reported as an `error` event.
 
 ### `onToolResult`
 

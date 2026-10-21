@@ -29,7 +29,7 @@ from .config import Config
 from .events import Event as LogEvent
 from .events import EventLog
 from .hook_relay import RelayResponse, deny_output
-from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload
+from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
 from .redact import Redactor
 from .session import Session, SessionListener
@@ -221,6 +221,8 @@ class SessionRouter(SessionListener):
             return await self._dispatcher.fire(event, payload, tool_name=tool_name)
         except Exception:  # noqa: BLE001 - user hooks never break the router
             log.exception("firing %s failed", event)
+            if event == "onAgentToolCall":
+                raise  # the PreToolUse gate decides whether this fails closed
             return HookOutcome()
 
     def _report_error(self, kind: str, message: str, **extra: Any) -> dict[str, Any]:
@@ -306,6 +308,10 @@ class SessionRouter(SessionListener):
             return await handler(event_name, payload)
         except Exception as exc:  # noqa: BLE001 - claude is never broken by the router
             log.exception("hook relay %s failed", event_name)
+            tool_name = str(payload.get("tool_name") or "")
+            closed = (
+                event_name == "PreToolUse" and gate_fail_mode(self._cfg.hooks, tool_name) == "deny"
+            )
             try:
                 data = self._report_error(
                     "hook_relay", f"{event_name}: {type(exc).__name__}: {exc}"
@@ -313,7 +319,32 @@ class SessionRouter(SessionListener):
                 await self._fire("onError", data)
             except Exception:  # noqa: BLE001
                 log.exception("reporting hook relay failure failed")
+            if closed:
+                return self._fail_closed(exc, tool_name, payload)
             return _allow()
+
+    def _fail_closed(
+        self, exc: Exception, tool_name: str, payload: Mapping[str, Any]
+    ) -> RelayResponse:
+        """Deny the tool call after a ccw-side failure; every step is best effort."""
+        reason = f"ccw hook relay failed: {type(exc).__name__}"
+        try:
+            self._emit(
+                "tool_denied",
+                {
+                    "tool_use_id": payload.get("tool_use_id"),
+                    "tool_name": tool_name,
+                    "reason": reason,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("emitting tool_denied failed")
+        try:
+            if self._metrics is not None:
+                self._metrics.tool_call(tool_name, "deny")
+        except Exception:  # noqa: BLE001
+            log.exception("counting the denied tool call failed")
+        return {"stdout": deny_output(reason), "stderr": "", "exit_code": 0}
 
     async def _on_user_prompt_submit(
         self, event_name: str, payload: Mapping[str, Any]

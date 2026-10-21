@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -184,6 +184,19 @@ async def _kill_group(proc: asyncio.subprocess.Process) -> None:
         await asyncio.wait_for(proc.wait(), _KILL_GRACE_SECONDS)
 
 
+def gate_fail_mode(hooks: HooksConfig, tool_name: str | None = None) -> Literal["allow", "deny"]:
+    """`deny` when a blocking onAgentToolCall action with on_error deny matches `tool_name`.
+
+    `tool_name=None` considers every action regardless of its matcher.
+    """
+    for a in hooks.onAgentToolCall:
+        if not (a.blocking and a.on_error == "deny"):
+            continue
+        if tool_name is None or HookDispatcher._matches(a.matcher, tool_name):
+            return "deny"
+    return "allow"
+
+
 class HookDispatcher:
     def __init__(
         self,
@@ -214,15 +227,11 @@ class HookDispatcher:
         cwd: str | Path | None = None,
     ) -> HookOutcome:
         outcome = HookOutcome()
-        try:
-            actions = [
-                (i, a)
-                for i, a in enumerate(self._cfg.for_event(event))
-                if self._matches(a.matcher, tool_name)
-            ]
-        except Exception as e:  # noqa: BLE001 - unknown event etc.
-            log.warning("hook event %s unusable: %s", event, e)
-            return outcome
+        actions = [
+            (i, a)
+            for i, a in enumerate(self._cfg.for_event(event))
+            if self._matches(a.matcher, tool_name)
+        ]
         if not actions:
             return outcome
         safe = self._redactor.redact_obj(payload)
