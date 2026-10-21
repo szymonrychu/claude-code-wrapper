@@ -1,6 +1,6 @@
 ---
 title: tatara example turn hooks
-status: todo
+status: in-progress
 repo: .
 value: "A tested worked example of tatara's finaliser, issue capture, outcome gate and statusline as ccw hooks"
 files: [src/claude_code_wrapper/data/examples/tatara.config.yaml, src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py, examples/tatara.config.yaml, README.md, tests/test_example_tatara.py]

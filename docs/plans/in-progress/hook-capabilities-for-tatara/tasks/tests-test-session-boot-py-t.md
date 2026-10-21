@@ -1,6 +1,6 @@
 ---
 title: "tests/test_session_boot.py::test_restart_budget_exhausted_dead looks flaky: it once asserted rec.exits == [3] and got [], and passed on every rerun here"
-status: todo
+status: in-progress
 repo: .
 value: "The check is timing-dependent (wait_until on state then assert exits), so it can intermittently fail the verify command."
 files: ["tests/test_session_boot.py:555"]
@@ -12,8 +12,8 @@ model: ""
 estimate: ""
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--tests-test-session-boot-py-t
+branch: hook-capabilities-for-tatara--tests-test-session-boot-py-t
 verified_head: ""
 run: ""
 provides: []

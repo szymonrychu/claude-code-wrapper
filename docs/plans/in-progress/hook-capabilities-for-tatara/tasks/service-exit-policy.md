@@ -1,6 +1,6 @@
 ---
 title: Service exit policy
-status: todo
+status: in-progress
 repo: .
 value: "The process exits when its last session is deleted or a session dies, for k8s Jobs and pod death signals (K8)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/service.py, src/claude_code_wrapper/cli.py, README.md, tests/test_exit_policy.py]
