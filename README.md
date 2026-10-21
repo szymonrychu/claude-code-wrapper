@@ -2341,7 +2341,9 @@ tree at `/workdir/workbench`, `~/.ssh` read-only, and the example config; it for
 `pre-commit` -> `unit` (lint + tests) -> `integration` (compose-based, real image, fake claude) ->
 `build-push`. Pull requests run the whole chain and build the image, but never log in or push.
 Only a push to `main` logs in to Harbor and pushes the image. The only registry used is Harbor
-(no Docker Hub, no PyPI, no GHCR).
+(no Docker Hub, no PyPI, no GHCR). The image is built as a gzip OCI archive and pushed with
+`regctl` in 50MB chunks, because Cloudflare in front of Harbor rejects request bodies over 100MB
+and some layers are larger than that.
 
 Image: `harbor.szymonrichert.pl/containers/claude-code-wrapper`
 

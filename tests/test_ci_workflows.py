@@ -74,20 +74,35 @@ def test_stage_commands():
 def test_push_and_login_gated_on_main_push():
     steps = _load("build.yaml")["jobs"]["build-push"]["steps"]
     gated = [
-        s for s in steps if "docker login" in s.get("run", "") or "docker push" in s.get("run", "")
+        s
+        for s in steps
+        if "registry login" in s.get("run", "") or "image import" in s.get("run", "")
     ]
     assert len(gated) >= 2
     for s in gated:
         cond = s.get("if", "")
         assert "github.event_name == 'push'" in cond
         assert "refs/heads/main" in cond
-    login = next(s for s in gated if "docker login" in s["run"])
-    assert "--password-stdin" in login["run"]
+    login = next(s for s in gated if "registry login" in s["run"])
+    assert "--pass-stdin" in login["run"]
     assert "secrets.HARBOR_USERNAME" in json.dumps(login)
     assert "secrets.HARBOR_PASSWORD" in json.dumps(login)
-    builds = [s for s in steps if "docker build" in s.get("run", "")]
+    builds = [s for s in steps if "docker buildx build" in s.get("run", "")]
     assert builds and all("if" not in s for s in builds)
-    assert "docker build" in builds[0]["run"]
+
+
+def test_push_is_chunked_under_the_cloudflare_body_limit():
+    # Cloudflare in front of Harbor answers 413 to any request body over 100MB.
+    steps = _load("build.yaml")["jobs"]["build-push"]["steps"]
+    runs = "\n".join(s.get("run", "") for s in steps)
+    assert "docker push" not in runs
+    assert "type=oci" in runs and "compression=gzip" in runs
+    m = re.search(r"regctl registry set \S+ --blob-chunk (\d+) --blob-max (\d+)", runs)
+    assert m, runs
+    assert 0 < int(m.group(1)) < 100_000_000
+    assert 0 < int(m.group(2)) < 100_000_000
+    assert re.search(r'regctl image import "?\$HARBOR_URL/containers/\$CONTAINER_NAME:', runs)
+    assert 'regctl = "' in (ROOT / "mise.toml").read_text()
 
 
 def test_every_uses_is_pinned_with_version_comment():
@@ -108,7 +123,7 @@ def test_image_refs_use_harbor_containers():
         refs = re.findall(r"\S*/containers/\S+", text)
         assert refs
         for ref in refs:
-            assert ref.startswith(("$HARBOR_URL/containers/$CONTAINER_NAME", IMAGE)), ref
+            assert ref.strip('"').startswith(("$HARBOR_URL/containers/$CONTAINER_NAME", IMAGE)), ref
     assert "HARBOR_URL" in _load("release.yaml")["env"]
 
 
