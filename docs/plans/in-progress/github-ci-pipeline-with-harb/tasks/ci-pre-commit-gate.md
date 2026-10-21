@@ -1,6 +1,6 @@
 ---
 title: CI pre-commit gate
-status: in-progress
+status: done
 repo: .
 value: "Every push is checked by the same hooks locally and in CI, and the tree is clean under them"
 files: [.pre-commit-config.yaml, mise.toml, tests/test_precommit_config.py, tests/fixtures/hooks/record_hook.sh]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/github-ci-pipeline-with-harb--ci-pre-commit-gate
 branch: github-ci-pipeline-with-harb--ci-pre-commit-gate
-verified_head: ""
-run: ""
+verified_head: 735fd7e0e8a3abb6d9706e498b6a0888bfdecd7d
+run: github-ci-pipeline-with-harb
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # CI pre-commit gate

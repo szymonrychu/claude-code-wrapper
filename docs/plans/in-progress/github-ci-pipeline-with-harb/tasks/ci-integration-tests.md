@@ -1,6 +1,6 @@
 ---
 title: CI integration tests
-status: in-progress
+status: blocked
 repo: .
 value: The built container is proven to serve and run a full session before any image is pushed
 files: [mise.toml, pyproject.toml, scripts/integration.sh, docker-compose.ci.yml, tests/integration/config.ci.yaml, tests/integration/conftest.py, tests/integration/test_container_http.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/github-ci-pipeline-with-harb--ci-integration-tests
 branch: github-ci-pipeline-with-harb--ci-integration-tests
-verified_head: ""
-run: ""
+verified_head: unknown
+run: github-ci-pipeline-with-harb
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # CI integration tests

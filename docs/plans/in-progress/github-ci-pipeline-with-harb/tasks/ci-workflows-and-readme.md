@@ -1,6 +1,6 @@
 ---
 title: CI workflows and README
-status: in-progress
+status: todo
 repo: .
 value: "Merges to main build, test and push the image to Harbor; tags release it"
 files: [.github/workflows/build.yaml, .github/workflows/release.yaml, renovate.json, tests/test_ci_workflows.py, README.md]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/github-ci-pipeline-with-harb--ci-workflows-and-readme
 branch: github-ci-pipeline-with-harb--ci-workflows-and-readme
 verified_head: ""
-run: ""
+run: github-ci-pipeline-with-harb
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # CI workflows and README
@@ -68,3 +70,5 @@ Pushing to main runs pre-commit, unit, integration, then pushes :<shortsha> to H
 ## Notes
 
 Harbor `containers` project has tag immutability: push :<shortsha> once, only on push to main; a rerun of a main build may 412, so treat it as fatal-free only by gating, never by re-pushing. GITHUB_TOKEN tag pushes do not trigger workflows (irrelevant: tags are pushed by the user). Username `robot$gitlab` must be passed through secrets, never an unquoted shell. HARBOR_URL is a bare host with no scheme. Reference: hikvision-doorbell build.yaml/release.yaml; mise steps from magic-cards-model ci.yml (mise install, mise run install).
+
+- 2026-10-21 run github-ci-pipeline-with-harb: dependency-failed on ci-integration-tests

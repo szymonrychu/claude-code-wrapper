@@ -39,7 +39,7 @@ Gate operations (orchestrator, not tasks, listed in the repo README CI section):
 
 ## Time
 
-Estimate: 195 min | Actual: 0 min | Remaining estimate: 195 min
+Estimate: 195 min | Actual: 0 min | Remaining estimate: 135 min
 
 ## Review
 
