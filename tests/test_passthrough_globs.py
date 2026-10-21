@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from claude_code_wrapper.config import ClaudeConfig
-from claude_code_wrapper.session import passthrough_names
+from types import SimpleNamespace
+
+from claude_code_wrapper.claude_env import ClaudeEnv
+from claude_code_wrapper.config import ClaudeConfig, Config
+from claude_code_wrapper.manager import SessionManager
+from claude_code_wrapper.session import build_env, passthrough_names
 
 SERVICE = {
     "GH_TOKEN": "a",
@@ -36,3 +40,52 @@ def test_case_sensitive():
 def test_config_field_defaults_and_parses():
     assert ClaudeConfig().passthrough_env_exclude == []
     assert ClaudeConfig(passthrough_env_exclude=["*KEY"]).passthrough_env_exclude == ["*KEY"]
+
+
+def test_glob_matches_names():
+    assert passthrough_names(SERVICE, ["WB_*"], []) == ["WB_ONE", "WB_SECRET_KEY"]
+
+
+def test_exclude_removes_matches():
+    assert passthrough_names(SERVICE, ["WB_*"], ["*SECRET*"]) == ["WB_ONE"]
+
+
+def test_ccw_and_managed_never_pass_star():
+    got = passthrough_names(SERVICE, ["*"], [])
+    assert not any(n.startswith("CCW_") for n in got)
+    assert "CLAUDE_CONFIG_DIR" not in got
+
+
+def test_plain_names_unchanged():
+    assert passthrough_names(SERVICE, ["GH_TOKEN", "NOPE"], []) == ["GH_TOKEN"]
+
+
+PATTERNS = ["WB_*", "GH_*"]
+EXCLUDES = ["*SECRET*"]
+
+
+def test_tool_env_uses_same_rule():
+    cfg = Config()
+    cfg.claude.passthrough_env = PATTERNS
+    cfg.claude.passthrough_env_exclude = EXCLUDES
+    fake = SimpleNamespace(service_env=SERVICE, cfg=cfg)
+    ctx = SimpleNamespace(claude_env=ClaudeEnv(), config_dir="/cfg")
+    tool = SessionManager._tool_env(fake, ctx, None)
+    child = build_env(
+        service_env=SERVICE,
+        claude_env=ClaudeEnv(),
+        config_dir="/cfg",
+        gitconfig="/g",
+        session_id="s",
+        internal_url="http://x",
+        hook_token="t",
+        gate_fail="allow",
+        gate_timeout=1.0,
+        mise_env=None,
+        passthrough=PATTERNS,
+        passthrough_exclude=EXCLUDES,
+    )
+    expected = set(passthrough_names(SERVICE, PATTERNS, EXCLUDES))
+    assert expected == {"GH_TOKEN", "GH_HOST", "WB_ONE"}
+    assert expected <= set(tool) and expected <= set(child)
+    assert "WB_SECRET_KEY" not in tool and "WB_SECRET_KEY" not in child
