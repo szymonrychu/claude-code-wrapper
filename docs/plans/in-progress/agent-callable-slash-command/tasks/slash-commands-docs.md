@@ -1,6 +1,6 @@
 ---
 title: Slash commands docs
-status: in-progress
+status: done
 repo: .
 value: "Operators can find how to enable, call and limit slash commands, with working examples for tatara and magic-trainer"
 files: [README.md, config.example.yaml, src/claude_code_wrapper/data/examples/workbench.config.yaml, src/claude_code_wrapper/data/examples/tatara.config.yaml, src/claude_code_wrapper/data/examples/magic-trainer.config.yaml, tests/test_slash_commands_docs.py]
@@ -13,8 +13,8 @@ estimate: 45
 actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--slash-commands-docs
-branch: agent-callable-slash-command--slash-commands-docs
-verified_head: ""
+branch: "HEAD (worktree agent-callable-slash-command--slash-commands-docs)"
+verified_head: 5a7aec5c8fea66b38464fac398401f94800c8d43
 run: agent-callable-slash-command
 provides: []
 acs_for_audit: []
