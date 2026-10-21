@@ -740,30 +740,51 @@ data: {"seq":10,"ts":"2026-10-20T09:01:05.000Z","session_id":"ses_3f9a1c0b7d42",
 
 ### `turn_deferred`
 
-Emitted when the end of the running turn was deferred, by `sessions.defer_stop_on_background_tasks`
-or an `onStop` `defer`: claude was answered allow, but the turn stays `running` and the session
-`busy` until a later Stop is allowed. `sessions.turn_stall_seconds`, `limits.turn_max_seconds` and
-interrupt still apply to it.
+Emitted when the end of the running turn was deferred: claude was answered allow, but the turn
+stays `running` and the session `busy`. `sessions.turn_stall_seconds`, `limits.turn_max_seconds`
+and interrupt still apply to it.
 
-`data`: `turn_id`, `background_tasks` (the Stop payload's list, `[]` when absent).
+`data`: `turn_id`, `reason`, `background_tasks` (the Stop payload's list, `[]` when absent),
+`commands` (ids of the slash commands queued at that Stop, `[]` when none). `reason` is one of:
+
+- `hook`: an `onStop` action answered `defer`; a later Stop that is allowed completes the turn.
+- `background_tasks`: `sessions.defer_stop_on_background_tasks` and the Stop reported running
+  background tasks; a later Stop with none completes the turn.
+- `command`: the Stop was allowed while slash commands were queued. The commands listed in
+  `commands` run now (`command_started`, `command_completed` or `command_failed`), then the
+  agent is resumed in the same turn (`turn_resumed` with `cause: "command"`) and the next Stop
+  completes it. Queued commands stay queued through a `hook` or `background_tasks` deferral and
+  run at the later Stop that is not deferred.
 
 ```
 event: turn_deferred
-data: {"seq":11,"ts":"2026-10-20T09:01:06.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_deferred","data":{"turn_id":"turn-1k9x2m0q4zw8","background_tasks":[{"id":"b1","type":"local_bash","status":"running","description":"npm test"}]}}
+data: {"seq":11,"ts":"2026-10-20T09:01:06.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_deferred","data":{"turn_id":"turn-1k9x2m0q4zw8","reason":"background_tasks","background_tasks":[{"id":"b1","type":"local_bash","status":"running","description":"npm test"}],"commands":[]}}
 ```
 
 ### `turn_resumed`
 
-Emitted when a turn that was running when claude crashed is continued in the resumed relaunch
-(`sessions.restart_continue_prompt` set): the continue prompt was pasted with the turn's marker,
-the session is `busy` again and the turn stays `running` until a later Stop completes it. See
-"Crash during a turn" under `POST /v1/sessions/{id}/turns`.
+Emitted when the running turn is continued with a prompt pasted with the turn's marker; the
+session stays `busy` and the turn stays `running` until a later Stop completes the same record
+(no second `turn_started`; `usage` sums every leg).
 
-`data`: `turn_id`, `restart` (the relaunch number, the session's `restarts` count).
+`data`: `turn_id`, `cause`, and per cause:
+
+- `cause: "restart"`: a turn that was running when claude crashed is continued in the resumed
+  relaunch with `sessions.restart_continue_prompt`. Also `restart` (the relaunch number, the
+  session's `restarts` count). See "Crash during a turn" under `POST /v1/sessions/{id}/turns`.
+- `cause: "command"`: the slash commands run at the turn's Stop (`turn_deferred` with
+  `reason: "command"`) have finished. The continuation is `sessions.commands.continue_prompt`,
+  a blank line and `Command results: <name> <state>[ <result or error>]; ...` (for example
+  `Command results: compact completed ok; context failed timeout`). Also `commands` (the ids of
+  the commands that ran, in order). An interrupt, `limits.turn_max_seconds` or a claude crash
+  while the commands run ends the turn without this continuation: the running command gets ESC
+  (none after a crash) and fails `interrupted`, `timeout` or `claude_exited`, the queued ones
+  are `cancelled`, and after a crash the turn continues with `cause: "restart"` or fails as
+  `claude_exited`.
 
 ```
 event: turn_resumed
-data: {"seq":14,"ts":"2026-10-20T09:02:10.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_resumed","data":{"turn_id":"turn-1k9x2m0q4zw8","restart":1}}
+data: {"seq":14,"ts":"2026-10-20T09:02:10.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_resumed","data":{"turn_id":"turn-1k9x2m0q4zw8","restart":1,"cause":"restart"}}
 ```
 
 ### `assistant_text`
@@ -1133,13 +1154,19 @@ recorded as `invalid_decision`). A blocking action that fails (crash, timeout, b
 `on_error: deny` yields `block` with the failure reason; with `on_error: allow` it is an `allow`:
 
 - `allow`: the turn completes as usual (one `turn_completed`, one `onTurnComplete`, one callback);
-  its usage is summed over every leg of the turn.
+  its usage is summed over every leg of the turn. When slash commands are queued, an allowed Stop
+  is deferred instead (`turn_deferred` with `reason: "command"`): claude is answered allow, the
+  commands run once that answer is back with claude, and the turn resumes with the continue
+  prompt (`turn_resumed`); the continuation's Stop fires `onStop` again. Pending commands gate
+  the Stop this way even with no `onStop` action and no `defer_stop_on_background_tasks`.
 - `block` with a `reason`: claude gets `{"decision": "block", "reason": R}` from the relay and
   keeps working on the same turn; the turn stays `running`, a `turn_continued` event is logged.
+  Queued slash commands stay queued.
   A command action exiting `2` is a block with its trimmed stderr as the reason.
 - `defer`: claude is answered allow, but the turn stays `running` and the session `busy`; a
-  `turn_deferred` event is logged. `turn_stall_seconds`, `limits.turn_max_seconds` and interrupt
-  still end it; a later Stop that is allowed completes it.
+  `turn_deferred` event (`reason: "hook"`) is logged. `turn_stall_seconds`,
+  `limits.turn_max_seconds` and interrupt still end it; a later Stop that is allowed completes it.
+  Queued slash commands stay queued until that Stop.
 
 Claude caps consecutive Stop blocks at 8 per turn and then ends the turn regardless, so a gate
 script must count its blocks itself, for example in a file under `CCW_STATE_DIR`, and allow
@@ -2165,7 +2192,7 @@ sessions:
 | `sessions.commands.agent` | list of string | `[]` | - | Slash commands the main agent may queue through the ccw MCP tool; any of `compact`, `context`, `mcp`, `reload-plugins`, `reload-skills`. Empty allows none. |
 | `sessions.commands.client` | list of string | `[]` | - | Slash commands API clients may queue; same names as `agent`. Empty allows none. |
 | `sessions.commands.timeout_seconds` | map of number | `{"compact": 600, "default": 60}` | - | Seconds a command may run before it fails with `timeout`; keys are a command name or `default`, values > 0. |
-| `sessions.commands.continue_prompt` | string | `"The slash commands you queued have run. Continue the task you were working on."` | - | Non-empty text that resumes the agent after its queued commands ran. |
+| `sessions.commands.continue_prompt` | string | `"The slash commands you queued have run. Continue the task you were working on."` | - | Non-empty text that resumes the agent after its queued commands ran, followed by a blank line and the `Command results: ...` line (see [`turn_resumed`](#turn_resumed)). |
 | `sessions.commands.allow_force` | boolean | `false` | - | Allow `force: true` on `reload-plugins` (typed as `--force`). |
 | `sessions.commands.quiet_seconds` | number | `1.5` | - | Seconds of PTY silence to wait for before typing a command, >= 0. |
 
