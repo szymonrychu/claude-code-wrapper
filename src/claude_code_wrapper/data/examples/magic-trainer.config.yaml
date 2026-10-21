@@ -37,6 +37,12 @@ sessions:
   exit_when_last_destroyed: true
   max_restarts: 0
   ask_user_question: deny
+  # The agent may compact and reload plugins itself; an idle session compacts once after 30 minutes.
+  commands:
+    agent: [compact, reload-plugins]
+  auto_compact:
+    idle_seconds: 1800
+    instructions: "keep the seat assignments, the game state and pending teammate work"
 
 hooks:
   onStop:

@@ -57,6 +57,12 @@ sessions:
   probe_alive_token: TATARA-ALIVE
   restart_continue_prompt: "Claude was restarted. Continue the task where you left off."
   ask_user_question: deny
+  # The agent may compact and reload plugins itself; an idle pod compacts once after 30 minutes.
+  commands:
+    agent: [compact, reload-plugins]
+  auto_compact:
+    idle_seconds: 1800
+    instructions: "keep the task description, the outcome format, branch names and unfinished steps"
 
 hooks:
   onTurn:

@@ -1485,6 +1485,8 @@ dead for good, so the pod restarts), `sessions.probe_alive_token: TATARA-ALIVE`,
 model, effort and permission mode from `${MODEL:-}`, `${EFFORT:-}` and
 `${PERMISSION_MODE:-bypassPermissions}`, and tatara's deny list in `claude.permissions.deny`.
 
+The config also carries an `auto_compact` block (`sessions.auto_compact`: `idle_seconds: 1800`, instructions that keep the task, outcome format and branch names) so an idle pod compacts its context once, and `sessions.commands.agent: [compact, reload-plugins]` so the agent can compact or reload plugins itself. See [Slash commands](#slash-commands).
+
 ### magic-trainer
 
 [`magic-trainer.config.yaml`](examples/magic-trainer.config.yaml) and its script
@@ -1505,6 +1507,135 @@ as `${VAR:-default}` and no secret lives in a file. Tests:
 | #23 | No interactive questions | `sessions.ask_user_question: deny` |
 | #24 | MCP limits | `claude.env`: `mcp_timeout`, `mcp_tool_timeout` and `max_mcp_output_tokens` from `${MCP_TIMEOUT_MS:-60000}`, `${MCP_TOOL_TIMEOUT_MS:-600000}` and `${MAX_MCP_OUTPUT_TOKENS:-50000}` |
 | #25 | Git and agent setup | `init.setup_commands`: a git credential helper (`git-credential`, token file `${MTG_GIT_TOKEN_FILE:-/etc/mtg/git-token}`), `safe.directory /guides`, and the consumer's agent renderer `${MTG_AGENTS_RENDER:-true}` |
+| - | Context management | `sessions.auto_compact` (`idle_seconds: 1800`, instructions that keep seats, game state and pending teammate work) compacts an idle session once; `sessions.commands.agent: [compact, reload-plugins]` lets the agent do it itself. See [Slash commands](#slash-commands) |
+
+## Slash commands
+
+ccw can type allowlisted Claude Code slash commands (`/compact`, `/reload-plugins`, `/reload-skills`,
+`/mcp reconnect`, `/context`) into a session's PTY on behalf of the agent or of an API client, so a
+long-lived agent can manage its own context and pick up plugin changes without a human at the
+keyboard. Nothing is enabled until `sessions.commands.agent` or `sessions.commands.client` lists
+commands. `sessions.auto_compact` optionally compacts an idle session.
+
+### The ccw command tool
+
+When `sessions.commands.agent` is non-empty, the service injects an MCP server named `ccw` into the
+session's `.claude.json` and adds `mcp__ccw__command` to `permissions.allow`:
+
+```json
+{"mcpServers": {"ccw": {"type": "http", "url": "${CCW_INTERNAL_URL}/internal/mcp",
+  "headers": {"X-CCW-Session": "${CCW_SESSION_ID}", "X-CCW-Hook-Token": "${CCW_HOOK_TOKEN}"},
+  "alwaysLoad": true}}}
+```
+
+The URL, session id and hook token are env references that Claude Code expands from its own
+environment, so the token is never written to a file. An empty agent allowlist removes a previous
+`ccw` entry and the allow rule, and a `claude.mcp_servers` entry named `ccw` is then free again (it
+is a config error while the allowlist is non-empty). See [`POST /internal/mcp`](#post-internalmcp)
+for the protocol.
+
+There is one tool, `command`, with input `{name, params?}`:
+
+| `name` | `params` | Typed |
+|---|---|---|
+| `compact` | `instructions` (string, optional, one line, at most 2000 characters) | `/compact [instructions]` |
+| `reload-plugins` | `force` (boolean, optional; only honoured when `allow_force` is set) | `/reload-plugins [--force]` |
+| `reload-skills` | none | `/reload-skills` |
+| `mcp` | `action: "reconnect"` (required), `server` (string, optional, default all) | `/mcp reconnect <server or all>` |
+| `context` | none | `/context` |
+
+`name` is limited to the session's agent allowlist; unknown params are rejected with a tool error
+naming the allowed ones. Success text: `Queued <id>. It runs when you end this turn; end your turn
+now with a one-line status. You will be resumed automatically.` Errors come back as `isError: true`
+tool results: not allowed, unknown params, queue full (4 pending), `force` without `allow_force`,
+"ccw commands are disabled for this session" when the allowlist is empty. Only the main agent may
+call the tool: a call from a subagent or teammate is denied before it reaches ccw, and nothing is
+queued.
+
+### Commands endpoint
+
+Clients queue the same commands through the public API, limited by `sessions.commands.client`:
+
+- [`POST /v1/sessions/{id}/commands`](#post-v1sessionsidcommands) queues a command (`202` with the record).
+- [`GET /v1/sessions/{id}/commands`](#get-v1sessionsidcommands) lists the session's recent commands.
+- [`GET /v1/sessions/{id}/commands/{command_id}`](#get-v1sessionsidcommandscommand_id) shows one record.
+
+```bash
+curl -X POST -H "Authorization: Bearer $CCW_AUTH_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "compact", "args": {"instructions": "keep the API design decisions"}}' \
+  http://localhost:8080/v1/sessions/$SESSION/commands
+```
+
+Progress is visible as the `command_queued`, `command_started`, `command_completed` and
+`command_failed` events, and as `compacted` for every compaction.
+
+### Lifecycle
+
+1. **Queued during a turn.** The command waits in the session's queue (a duplicate name returns the
+   existing record).
+2. **Runs at Stop.** When the turn reaches its Stop, ccw answers the Stop hook with allow, emits
+   [`turn_deferred`](#turn_deferred) with `reason: "command"`, waits for a quiet screen
+   (`quiet_seconds`), fires `onCommand` (a blocking deny fails the command as `vetoed`), types the
+   command and waits for its completion signal or `timeout_seconds`. Queued commands run one after
+   another.
+3. **Same-turn resume.** When the queue is empty, the turn continues with
+   `sessions.commands.continue_prompt` plus a `Command results:` line
+   ([`turn_resumed`](#turn_resumed), `cause: "command"`). The turn record stays the same and its
+   usage keeps accumulating.
+4. **Idle sessions.** With no turn running the command runs at once and the session is `busy`
+   meanwhile (turns get `409 busy`, the idle reaper skips it). There is no continuation.
+5. **Kept queued.** A blocking `onStop` hook wins: its block keeps the commands queued for the next
+   Stop. Background tasks still pending defer the Stop as usual and keep them queued too.
+6. **Interrupt, crash, turn_max_seconds.** An interrupt cancels the turn's queued commands and
+   sends ESC to a running one (it fails `interrupted`); the turn ends without a continuation. A
+   claude crash fails the running command `claude_exited` and the usual restart rules decide the
+   turn. `limits.turn_max_seconds` keeps counting while commands run, so a long compact can end the
+   turn.
+
+### Configuration
+
+```yaml
+sessions:
+  commands:
+    agent: [compact, reload-plugins]       # main agent, through the ccw MCP tool
+    client: [compact, reload-plugins, reload-skills, mcp, context]   # API clients
+    timeout_seconds: {compact: 600, default: 60}
+    continue_prompt: "The slash commands you queued have run. Continue the task you were working on."
+    allow_force: false                     # true lets reload-plugins take force
+    quiet_seconds: 1.5
+  auto_compact:
+    idle_seconds: 1800
+    instructions: "keep the current plan, open decisions and file paths"
+    min_context_tokens: 0
+```
+
+The keys are in the [configuration reference](#configuration-reference). `POST /v1/sessions`
+accepts a per-session `commands` override. Worked examples are in
+[Hook examples](#hook-examples) (tatara, magic-trainer) and the workbench example config.
+
+### Idle auto-compact
+
+`sessions.auto_compact.idle_seconds` greater than 0 queues one `/compact` (with `instructions`,
+when set) after a session stayed idle that long following a turn. It fires once per idle gap: the
+next turn end re-arms it. With `min_context_tokens` it is skipped while the last context is smaller.
+Its events and everything emitted while it runs do not count as activity, so it never keeps a
+session alive against `idle_timeout_seconds`; `idle_seconds` must be below `idle_timeout_seconds`
+when both are set. Claude Code's own automatic and idle compaction is left as is (disable it with
+`claude.env.disable_auto_compact`); ccw only reports it as a [`compacted`](#compacted) event.
+
+### Limits
+
+- Session-replacing commands (`/clear`, `/resume`), dialog commands and skills are not supported;
+  the five names above are the whole set.
+- ccw never adds `--force` by itself. `reload-plugins` takes `force` only when `allow_force` is
+  true; otherwise the call is rejected.
+- Compact instructions are one line without control characters, because they are typed into the PTY.
+- At most 4 commands are queued per session.
+- Completion is detected, not assumed: for `compact` the `PostCompact` hook relay or the
+  `compact_boundary` transcript entry (the known failure messages fail it); for the others the
+  command's local-command output in the transcript. A `reload-plugins` run that only reports it
+  needs `--force` completes with result `skipped_cache`. No signal within `timeout_seconds` sends
+  ESC once and fails the command `timeout`.
 
 ## Errors
 

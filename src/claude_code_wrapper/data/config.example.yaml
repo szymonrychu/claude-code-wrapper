@@ -160,6 +160,19 @@ sessions:
   resume_on_start: false     # resume known sessions when the service starts
   defer_stop_on_background_tasks: false  # hold a turn open while its Stop lists background tasks
   probe_alive_token: CCW-ALIVE  # token a probe asks Claude to reply with
+  # Slash commands (README "Slash commands"). Both allowlists are empty by default, so nothing is queueable.
+  # commands:
+  #   agent: []                # commands the main agent may queue through the ccw MCP tool (compact, reload-plugins, reload-skills, mcp, context)
+  #   client: []               # commands API clients may queue through POST /v1/sessions/{id}/commands
+  #   timeout_seconds: {compact: 600, default: 60}   # seconds a command may run before it fails with timeout
+  #   continue_prompt: "The slash commands you queued have run. Continue the task you were working on."   # resumes the agent after its commands ran
+  #   allow_force: false       # allow force on reload-plugins (typed as --force)
+  #   quiet_seconds: 1.5       # PTY silence to wait for before typing a command
+  # Idle auto-compact: queue one /compact after the session stayed idle (README "Idle auto-compact").
+  # auto_compact:
+  #   idle_seconds: 0          # idle time after a turn before compacting (0 = off; must be below idle_timeout_seconds)
+  #   instructions: ""         # one-line focus instructions passed to /compact (empty = none)
+  #   min_context_tokens: 0    # skip while the context is smaller than this (0 = compact whatever the size)
 
 limits:
   max_prompt_bytes: 1048576
