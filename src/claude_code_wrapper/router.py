@@ -99,6 +99,11 @@ class SessionInfo:
         )
 
 
+def _attribution(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Which agent acted: Claude puts agent_id/agent_type on hooks fired inside subagents."""
+    return {"agent_id": payload.get("agent_id"), "agent_type": payload.get("agent_type")}
+
+
 def _allow() -> RelayResponse:
     return {"stdout": "", "stderr": "", "exit_code": 0}
 
@@ -369,6 +374,7 @@ class SessionRouter(SessionListener):
                     "tool_use_id": payload.get("tool_use_id"),
                     "tool_name": tool_name,
                     "reason": reason,
+                    **_attribution(payload),
                 },
             )
         except Exception:  # noqa: BLE001
@@ -395,7 +401,13 @@ class SessionRouter(SessionListener):
             event = self._emit("question", {"tool_use_id": tool_use_id, "questions": tool_input})
             self._deliver(self._callback_url(self.session.current_turn), event)
             return {"stdout": deny_output(QUESTION_DENY_REASON), "stderr": "", "exit_code": 0}
-        data = {"tool_use_id": tool_use_id, "tool_name": tool_name, "tool_input": tool_input}
+        who = _attribution(payload)
+        data = {
+            "tool_use_id": tool_use_id,
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+            **who,
+        }
         self._emit("tool_call", data)
         outcome = await self._fire("onAgentToolCall", data, tool_name=tool_name)
         self._annotate(self.session.current_turn, outcome)
@@ -405,7 +417,7 @@ class SessionRouter(SessionListener):
             reason = outcome.reason or DEFAULT_DENY_REASON
             self._emit(
                 "tool_denied",
-                {"tool_use_id": tool_use_id, "tool_name": tool_name, "reason": reason},
+                {"tool_use_id": tool_use_id, "tool_name": tool_name, "reason": reason, **who},
             )
             return {"stdout": deny_output(reason), "stderr": "", "exit_code": 0}
         if outcome.additional_context:
@@ -423,6 +435,7 @@ class SessionRouter(SessionListener):
             "tool_name": tool_name,
             "is_error": _response_is_error(event_name, payload),
             "response": _response_text(payload),
+            **_attribution(payload),
         }
         self._emit("tool_result", data)
         self.session.record_tool_call()
@@ -600,7 +613,19 @@ class SessionRouter(SessionListener):
                     {"text": ev.text, "message_id": ev.message_id, "agent_id": ev.agent_id},
                 )
             elif isinstance(ev, Usage):
-                self._usage.add(ev)
+                if self._usage.add(ev):
+                    self._emit(
+                        "usage",
+                        {
+                            "message_id": ev.message_id,
+                            "model": ev.model,
+                            "agent_id": ev.agent_id,
+                            "input_tokens": ev.input_tokens,
+                            "output_tokens": ev.output_tokens,
+                            "cache_read_input_tokens": ev.cache_read_input_tokens,
+                            "cache_creation_input_tokens": ev.cache_creation_input_tokens,
+                        },
+                    )
             elif isinstance(ev, Interrupted):
                 if not ev.sidechain:
                     self.session.on_interrupted()

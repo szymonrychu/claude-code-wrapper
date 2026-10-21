@@ -231,7 +231,13 @@ async def test_pretooluse_deny_returns_deny_json_and_tool_denied(tmp_path):
     out = json.loads(r["stdout"])["hookSpecificOutput"]
     assert out["permissionDecision"] == "deny" and out["permissionDecisionReason"] == "no bash"
     (ev,) = h.events("tool_denied")
-    assert ev.data == {"tool_use_id": "tu1", "tool_name": "Bash", "reason": "no bash"}
+    assert ev.data == {
+        "tool_use_id": "tu1",
+        "tool_name": "Bash",
+        "reason": "no bash",
+        "agent_id": None,
+        "agent_type": None,
+    }
     assert h.hook_posts[0]["data"]["tool_name"] == "Bash"
     await h.router.close()
 

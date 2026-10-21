@@ -704,16 +704,31 @@ event: thinking
 data: {"seq":9,"ts":"2026-10-20T09:01:03.000Z","session_id":"ses_3f9a1c0b7d42","type":"thinking","data":{"text":"The user greets me.","message_id":"msg_01","agent_id":null}}
 ```
 
+### `usage`
+
+Emitted once per assistant `message_id` (the same dedupe as the per-turn usage totals) for
+main-chain and subagent messages, so per-agent token use is derivable. Not emitted while a
+resumed transcript's history is being dropped.
+
+`data`: `message_id`, `model`, `agent_id` (null for the main agent), `input_tokens`,
+`output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`.
+
+```
+event: usage
+data: {"seq":10,"ts":"2026-10-20T09:01:05.000Z","session_id":"ses_3f9a1c0b7d42","type":"usage","data":{"message_id":"msg_01","model":"claude-sonnet-4-5","agent_id":null,"input_tokens":120,"output_tokens":48,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}
+```
+
 ### `tool_call`
 
 Emitted from the PreToolUse relay, before the tool runs (and before `onAgentToolCall` fires).
 
 `data`: `tool_use_id`, `tool_name`, `tool_input` (as Claude sent it; a plugin hook that rewrites
-Bash through `updatedInput` can make the executed command differ from this).
+Bash through `updatedInput` can make the executed command differ from this), `agent_id` and
+`agent_type` (the subagent or teammate that acted; null for the main agent).
 
 ```
 event: tool_call
-data: {"seq":11,"ts":"2026-10-20T09:01:06.000Z","session_id":"ses_3f9a1c0b7d42","type":"tool_call","data":{"tool_use_id":"toolu_01","tool_name":"Bash","tool_input":{"command":"ls"}}}
+data: {"seq":11,"ts":"2026-10-20T09:01:06.000Z","session_id":"ses_3f9a1c0b7d42","type":"tool_call","data":{"tool_use_id":"toolu_01","tool_name":"Bash","tool_input":{"command":"ls"},"agent_id":null,"agent_type":null}}
 ```
 
 ### `tool_result`
@@ -721,18 +736,18 @@ data: {"seq":11,"ts":"2026-10-20T09:01:06.000Z","session_id":"ses_3f9a1c0b7d42",
 Emitted from the PostToolUse and PostToolUseFailure relays.
 
 `data`: `tool_use_id`, `tool_name`, `is_error` (boolean), `response` (text, truncated when very
-long).
+long), `agent_id`, `agent_type` (null for the main agent).
 
 ```
 event: tool_result
-data: {"seq":12,"ts":"2026-10-20T09:01:07.000Z","session_id":"ses_3f9a1c0b7d42","type":"tool_result","data":{"tool_use_id":"toolu_01","tool_name":"Bash","is_error":false,"response":"README.md\nsrc"}}
+data: {"seq":12,"ts":"2026-10-20T09:01:07.000Z","session_id":"ses_3f9a1c0b7d42","type":"tool_result","data":{"tool_use_id":"toolu_01","tool_name":"Bash","is_error":false,"response":"README.md\nsrc","agent_id":null,"agent_type":null}}
 ```
 
 ### `tool_denied`
 
 Emitted when a blocking `onAgentToolCall` action denied a tool call; Claude receives the reason.
 
-`data`: `tool_use_id`, `tool_name`, `reason`.
+`data`: `tool_use_id`, `tool_name`, `reason`, `agent_id`, `agent_type`.
 
 ```
 event: tool_denied
@@ -1027,7 +1042,8 @@ Cannot veto. `data`: `text`, `message_id`, `model`.
 
 Trigger: Claude's PreToolUse, relayed before the tool runs. Supports `matcher`. Blocking: a `deny`
 blocks the tool call (Claude is told the reason, a `tool_denied` event is logged); an action's
-`additional_context` is returned to Claude. `data`: `tool_use_id`, `tool_name`, `tool_input`.
+`additional_context` is returned to Claude. `data`: `tool_use_id`, `tool_name`, `tool_input`,
+`agent_id`, `agent_type` (null for the main agent).
 The gate fails closed: a ccw-side failure (relay error, unusable event, redaction failure) denies
 the tool call when a matching blocking action has `on_error: deny`, with the reason
 `ccw hook relay failed: <ExceptionType>`; with no such action the call is allowed and the failure
@@ -1037,7 +1053,7 @@ is reported as an `error` event.
 
 Trigger: PostToolUse and PostToolUseFailure. Supports `matcher`. Cannot veto; a blocking action's
 `additional_context` is returned to Claude as hook context. `data`: `tool_use_id`, `tool_name`,
-`is_error`, `response`.
+`is_error`, `response`, `agent_id`, `agent_type` (null for the main agent).
 
 ### `onSubagentStart`
 
