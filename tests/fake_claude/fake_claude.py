@@ -42,6 +42,22 @@ Scenario schema
      "agent": {"id": A, "type": T}}   with "agent", PreToolUse and PostToolUse(Failure)
                          payloads carry agent_id and agent_type, and the tool_use and
                          tool_result lines go to subagents/agent-<A>.jsonl (isSidechain true)
+    {"mcp": {"server": "ccw", "tool": "command", "arguments": {...},
+             "agent": {"id": A, "type": T}}}   an MCP tool call named mcp__<server>__<tool>
+                         (agent optional, as for "tool"): reads $CLAUDE_CONFIG_DIR/.claude.json
+                         mcpServers[server] (missing: tool_result error `MCP server "<server>"
+                         is not configured`, no HTTP), expands ${VAR} from the process
+                         environment (unset -> empty) in url and header values, runs PreToolUse
+                         (a deny is the tool_result error, no HTTP), then POSTs JSON-RPC with the
+                         headers plus Content-Type: application/json and Accept: application/json,
+                         text/event-stream: server/discover (an error answer is ignored),
+                         initialize (protocolVersion 2025-11-25), notifications/initialized, and
+                         tools/call {name, arguments}. The result text is the concatenated text
+                         content items; result.isError or a JSON-RPC error is an error result
+                         (PostToolUseFailure, else PostToolUse).
+                         $CLAUDE_CONFIG_DIR/fake-mcp.jsonl gets one line per step:
+                         {url, headers, requests, responses} (expanded url and header values,
+                         so a test can prove env expansion happened in the fake)
     {"subagent": {"id", "type", "text"}}  -> <project dir>/<session id>/subagents/
                                              agent-<id>.jsonl, isSidechain true
     {"sleep": seconds}   ESC during it writes "[Request interrupted by user]" and
@@ -127,6 +143,8 @@ import sys
 import termios
 import time
 import tty
+import urllib.error
+import urllib.request
 import uuid
 import zlib
 
@@ -137,6 +155,8 @@ FOOTER = "? for shortcuts"
 INTERRUPT_TEXT = "[Request interrupted by user]"
 VERSION = "0.0.0 (Fake Claude)"
 DEFAULT_BLOCK_CAP = 8
+MCP_PROTOCOL = "2025-11-25"
+ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 COMMAND_RE = re.compile(r"^/([^\s/]+)(?:\s+(.*))?$", re.DOTALL)
 COMMANDS = ("compact", "reload-plugins", "reload-skills", "mcp", "context")
 COMMAND_STDOUT = {
@@ -699,6 +719,8 @@ class Fake:
                 )
             elif "tool" in step:
                 self.tool_step(step, tokens)
+            elif "mcp" in step:
+                self.mcp_step(step["mcp"], tokens)
             elif "subagent" in step:
                 self.subagent_step(step["subagent"])
             elif "sleep" in step:
@@ -770,8 +792,17 @@ class Fake:
 
     def tool_step(self, step: dict, tokens: int) -> None:
         name, tinput = step["tool"], step.get("input", {})
+        self.tool_flow(
+            name,
+            tinput,
+            step.get("agent"),
+            tokens,
+            lambda: (step.get("result", ""), bool(step.get("fail"))),
+        )
+
+    def tool_flow(self, name: str, tinput: dict, agent: dict | None, tokens: int, execute) -> None:
+        """tool_use line, PreToolUse (a deny skips execute), tool_result line, Post hooks."""
         tid = "toolu_" + uuid.uuid4().hex[:24]
-        agent = step.get("agent")
         who: dict = {}
         path, side = None, False
         if agent:
@@ -796,8 +827,7 @@ class Fake:
                 deny = spec.get("permissionDecisionReason") or r["stderr"] or "denied by hook"
             elif r["code"] == 2:
                 deny = r["stderr"] or "denied by hook"
-        fail = bool(step.get("fail")) or deny is not None
-        result = deny if deny is not None else step.get("result", "")
+        result, fail = (deny, True) if deny is not None else execute()
         event = "PostToolUseFailure" if fail else "PostToolUse"
         post = self.run_hooks(
             event,
@@ -817,6 +847,98 @@ class Fake:
             side,
         )
         self.out(f"\n* {name}({json.dumps(tinput)})\n")
+
+    def mcp_step(self, spec: dict, tokens: int) -> None:
+        server, tool = spec["server"], spec["tool"]
+        arguments = spec.get("arguments", {})
+        self.tool_flow(
+            f"mcp__{server}__{tool}",
+            arguments,
+            spec.get("agent"),
+            tokens,
+            lambda: self.mcp_call(server, tool, arguments),
+        )
+
+    @staticmethod
+    def mcp_call(server: str, tool: str, arguments: dict) -> tuple[str, bool]:
+        """Real claude's HTTP MCP handshake and tools/call; returns (result text, is_error)."""
+        try:
+            with open(os.path.join(config_dir(), ".claude.json")) as f:
+                cfg = (json.load(f).get("mcpServers") or {}).get(server)
+        except (OSError, ValueError):
+            cfg = None
+        if not isinstance(cfg, dict):
+            return f'MCP server "{server}" is not configured', True
+
+        def expand(v: str) -> str:
+            return ENV_REF_RE.sub(lambda m: os.environ.get(m.group(1), ""), v)
+
+        url = expand(str(cfg.get("url", "")))
+        headers = {k: expand(str(v)) for k, v in (cfg.get("headers") or {}).items()}
+        wire = {
+            **headers,
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        requests: list[dict] = []
+        responses: list[dict | None] = []
+
+        def post(method: str, params: dict | None, rid: int | None) -> dict | None:
+            body: dict = {"jsonrpc": "2.0", "method": method}
+            if rid is not None:
+                body["id"] = rid
+            if params is not None:
+                body["params"] = params
+            requests.append(body)
+            req = urllib.request.Request(  # noqa: S310
+                url, data=json.dumps(body).encode(), headers=wire, method="POST"
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+                    raw = resp.read().decode(errors="replace")
+            except urllib.error.HTTPError as e:
+                raw = e.read().decode(errors="replace")
+            except OSError as e:
+                out = {"error": {"message": f"transport error: {e}"}}
+                responses.append(out)
+                return out
+            try:
+                parsed = json.loads(raw) if raw.strip() else None
+            except ValueError:
+                parsed = None
+            out = parsed if isinstance(parsed, dict) else None
+            responses.append(out)
+            return out
+
+        post("server/discover", {}, 1)
+        post(
+            "initialize",
+            {
+                "protocolVersion": MCP_PROTOCOL,
+                "capabilities": {},
+                "clientInfo": {"name": "claude-code", "version": "0.0.0"},
+            },
+            2,
+        )
+        post("notifications/initialized", None, None)
+        answer = post("tools/call", {"name": tool, "arguments": arguments}, 3) or {}
+        with open(os.path.join(config_dir(), "fake-mcp.jsonl"), "a") as f:
+            f.write(
+                json.dumps(
+                    {"url": url, "headers": headers, "requests": requests, "responses": responses}
+                )
+                + "\n"
+            )
+        if "error" in answer:
+            err = answer["error"]
+            return str(err.get("message") if isinstance(err, dict) else err), True
+        res = answer.get("result") or {}
+        text = "".join(
+            c.get("text", "")
+            for c in res.get("content") or []
+            if isinstance(c, dict) and c.get("type") == "text"
+        )
+        return text, bool(res.get("isError"))
 
     def subagent_step(self, sub: dict) -> None:
         aid, atype = sub["id"], sub.get("type", "general-purpose")
