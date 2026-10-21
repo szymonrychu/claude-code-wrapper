@@ -6,5 +6,13 @@
     "file": "src/claude_code_wrapper/hooks.py",
     "consumers": [],
     "note": "hook action result fields: decision allow|deny|block|defer per EVENT_DECISIONS, reason, additional_context, annotations, output"
+  },
+  {
+    "name": "hook-events",
+    "kind": "schema",
+    "owner": "hook-capabilities-for-tatara",
+    "file": "src/claude_code_wrapper/config.py",
+    "consumers": [],
+    "note": "HOOK_EVENTS gains onStop and onTick; onTick action keys interval_seconds and when"
   }
 ]
