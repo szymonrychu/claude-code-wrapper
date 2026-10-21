@@ -46,5 +46,13 @@
     "file": "src/claude_code_wrapper/mcp_server.py",
     "consumers": [],
     "note": "POST /internal/mcp JSON-RPC; one tool command {name: enum of agent allowlist, params?}; claude.json mcpServers.ccw with ${CCW_*} env refs; allow rule mcp__ccw__command"
+  },
+  {
+    "name": "commands-endpoint",
+    "kind": "interface",
+    "owner": "agent-callable-slash-command",
+    "file": "src/claude_code_wrapper/api/commands.py",
+    "consumers": [],
+    "note": "POST /v1/sessions/{id}/commands {name, args?} -> 202 record; GET list and GET {command_id}"
   }
 ]
