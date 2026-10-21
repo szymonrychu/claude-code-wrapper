@@ -43,6 +43,7 @@ PARSED_DECISIONS = ("allow", "deny", "block", "defer")
 EVENT_DECISIONS: dict[str, tuple[str, ...]] = {
     event: ("allow", "deny") if event in VETO_EVENTS else ("allow",) for event in HOOK_EVENTS
 }
+EVENT_DECISIONS["onTick"] = ("allow",)
 EVENT_DECISIONS["onStop"] = ("allow", "block", "defer")
 #: Across blocking actions the strictest honoured decision wins.
 DECISION_RANK = {"allow": 0, "defer": 1, "block": 2, "deny": 2}
@@ -232,12 +233,14 @@ class HookDispatcher:
         *,
         tool_name: str | None = None,
         cwd: str | Path | None = None,
+        only_index: int | None = None,
     ) -> HookOutcome:
+        """Run `event`'s matching actions; `only_index` runs just that one action (onTick)."""
         outcome = HookOutcome()
         actions = [
             (i, a)
             for i, a in enumerate(self._cfg.for_event(event))
-            if self._matches(a.matcher, tool_name)
+            if (only_index is None or i == only_index) and self._matches(a.matcher, tool_name)
         ]
         if not actions:
             return outcome
@@ -246,7 +249,7 @@ class HookDispatcher:
         blocking: list[asyncio.Task[ActionResult]] = []
         for index, action in actions:
             coro = self._run(event, index, action, safe, run_cwd)
-            if action.blocking:
+            if action.blocking or only_index is not None:
                 blocking.append(asyncio.ensure_future(coro))
             else:
                 task = asyncio.ensure_future(coro)

@@ -32,6 +32,7 @@ HOOK_EVENTS: tuple[str, ...] = (
     "onTurn",
     "onTurnComplete",
     "onStop",
+    "onTick",
     "onAgentResponse",
     "onAgentToolCall",
     "onToolResult",
@@ -361,6 +362,8 @@ class _Action(_Model):
     blocking: bool = False
     on_error: Literal["allow", "deny"] = "allow"
     matcher: str | None = None
+    interval_seconds: float | None = Field(None, gt=0)
+    when: Literal["busy", "always"] | None = None
 
     @field_validator("matcher")
     @classmethod
@@ -405,6 +408,7 @@ class HooksConfig(_Model):
     onTurn: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onTurnComplete: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onStop: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
+    onTick: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onAgentResponse: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onAgentToolCall: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onToolResult: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
@@ -423,6 +427,23 @@ class HooksConfig(_Model):
                     raise _at(
                         f"{event}.{i}.{action.type}.matcher",
                         f"matcher is only allowed on {', '.join(TOOL_EVENTS)}",
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _tick_keys(self) -> HooksConfig:
+        for event in HOOK_EVENTS:
+            for i, action in enumerate(getattr(self, event)):
+                for key in ("interval_seconds", "when"):
+                    present = getattr(action, key) is not None
+                    if event != "onTick" and present:
+                        raise _at(
+                            f"{event}.{i}.{action.type}.{key}", f"{key} is only allowed on onTick"
+                        )
+                if event == "onTick" and action.interval_seconds is None:
+                    raise _at(
+                        f"{event}.{i}.{action.type}.interval_seconds",
+                        "interval_seconds is required on onTick",
                     )
         return self
 

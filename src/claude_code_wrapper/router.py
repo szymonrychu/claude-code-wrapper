@@ -171,6 +171,7 @@ class SessionRouter(SessionListener):
         self._tasks: list[asyncio.Task[Any]] = []
         self._background: set[asyncio.Task[Any]] = set()
         self._dropping_history = False
+        self._tick_tasks: list[asyncio.Task[Any]] = []
         self._closed = False
         # The dispatcher is built before the router; route its per-action results here.
         if getattr(dispatcher, "_on_result", None) is None:
@@ -230,6 +231,7 @@ class SessionRouter(SessionListener):
         *,
         tool_name: str | None = None,
         turn_id: str | None = None,
+        only_index: int | None = None,
     ) -> HookOutcome:
         """Run `event`'s hooks; the envelope names `turn_id`, else the running turn."""
         try:
@@ -243,7 +245,9 @@ class SessionRouter(SessionListener):
                 workdir=self.info.workdir,
                 data=data,
             )
-            return await self._dispatcher.fire(event, payload, tool_name=tool_name)
+            return await self._dispatcher.fire(
+                event, payload, tool_name=tool_name, only_index=only_index
+            )
         except Exception:  # noqa: BLE001 - user hooks never break the router
             log.exception("firing %s failed", event)
             if event == "onAgentToolCall":
@@ -662,6 +666,34 @@ class SessionRouter(SessionListener):
             {"text": ev.text, "message_id": ev.message_id, "model": ev.model},
         )
 
+    # ------------------------------------------------------------------ onTick timers
+
+    def _start_ticks(self) -> None:
+        """Start one timer per onTick action, once; claude restarts keep the same timers."""
+        if self._tick_tasks or self._closed:
+            return
+        for index, action in enumerate(self._cfg.hooks.onTick):
+            self._tick_tasks.append(asyncio.ensure_future(self._tick_loop(index, action)))
+
+    async def _tick_loop(self, index: int, action: Any) -> None:
+        interval = float(action.interval_seconds)
+        busy_only = (action.when or "busy") == "busy"
+        running: asyncio.Task[Any] | None = None
+        while True:
+            await asyncio.sleep(interval)
+            if running is not None and not running.done():
+                continue  # the previous run has not finished: skip this tick
+            session = self.session
+            turn = session.current_turn
+            if busy_only and turn is None:
+                continue
+            data = {
+                "turn_id": turn.turn_id if turn is not None else None,
+                "elapsed_seconds": session.turn_elapsed,
+                "interval_seconds": interval,
+            }
+            running = asyncio.ensure_future(self._fire("onTick", data, only_index=index))
+
     # ------------------------------------------------------------------ SessionListener
 
     def on_state(self, state: str) -> None:
@@ -669,6 +701,7 @@ class SessionRouter(SessionListener):
         if state in ("ready", "busy"):
             with contextlib.suppress(RuntimeError):
                 self.ensure_tailing()
+            self._start_ticks()
 
     def on_fatal(self, text: str, tail: str) -> None:
         data = self._report_error("fatal", text, tail=self._redactor.redact(tail))
@@ -738,6 +771,9 @@ class SessionRouter(SessionListener):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        for task in self._tick_tasks:
+            task.cancel()
+        await asyncio.gather(*self._tick_tasks, return_exceptions=True)
         await self.drain(max(drain_timeout, 0.0))
         for task in list(self._background):
             task.cancel()

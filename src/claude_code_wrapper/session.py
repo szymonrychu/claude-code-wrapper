@@ -335,6 +335,7 @@ class Session:
         self._turn_watch: asyncio.Future[None] | None = None
         self._interrupting: _PendingInterrupt | None = None
         self._last_activity = clock()
+        self._turn_started = clock()
         self._activity_persisted = self._last_activity
         self._probes: dict[str, Probe] = {}
         listener.bind(self)
@@ -603,6 +604,13 @@ class Session:
         """The running turn's live record, if any."""
         return self._turn
 
+    @property
+    def turn_elapsed(self) -> float | None:
+        """Seconds the running turn has run on the session clock, None when idle."""
+        if self._turn is None:
+            return None
+        return max(self.clock() - self._turn_started, 0.0)
+
     def _writable_pty(self) -> PtyProcess:
         """The PTY a turn or probe may be written to, else `TurnRejected(booting|dead)`."""
         if self.state == "booting":
@@ -650,6 +658,7 @@ class Session:
         )
         # Reserve before the first byte: a second submit racing this one sees busy.
         self._turn = record
+        self._turn_started = self.clock()
         self._last_activity = self._activity_persisted = self.clock()
         self._set_state("busy")
         self._persist(record)

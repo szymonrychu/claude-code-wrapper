@@ -1037,6 +1037,28 @@ exit 0
 a Stop whose `background_tasks` is non-empty is at least a `defer`. A hook `allow` cannot lift it;
 a hook `block` wins over it. With no `onStop` action and the flag off nothing changes.
 
+### `onTick`
+
+Trigger: a timer. The router starts one timer per `onTick` action when the session first reaches
+ready; it keeps running across claude restarts and stops when the session is closed. Each tick
+runs only its own action. Cannot veto: decisions, annotations and outputs are ignored, and
+`onTick` is never relayed from claude. Two action keys are specific to this event and rejected on
+every other one (the error names `hooks.onTick.<i>.<type>.interval_seconds`):
+
+- `interval_seconds` (required, greater than 0): seconds between ticks.
+- `when` (`busy` or `always`, default `busy`): `busy` skips ticks while no turn is running.
+
+A tick whose previous run of the same action has not finished is skipped, so runs never overlap.
+`data`: `turn_id` (the running turn, `null` when idle), `elapsed_seconds` (how long that turn has
+run, `null` when idle), `interval_seconds`. Use it for periodic safety pushes or metrics pushes
+without a sidecar.
+
+```yaml
+hooks:
+  onTick:
+    - {type: command, run: ./push-metrics.sh, interval_seconds: 30, when: always}
+```
+
 ### `onAgentResponse`
 
 Trigger: each main-thread assistant text block read from the transcript (subagent text excluded).
@@ -1119,6 +1141,7 @@ Decisions each event honours:
 |---|---|
 | `onCreate`, `onResume`, `onTurn`, `onAgentToolCall` | `allow`, `deny` |
 | `onStop` | `allow`, `block`, `defer` |
+| `onTick` | `allow` (decisions are ignored) |
 | every other event | `allow` |
 
 A decision the event does not honour is treated as `allow`; the `hook_result` event records the
@@ -1894,6 +1917,7 @@ hooks:
 | `hooks.onTurn` | list | `[]` | - | List of hook actions run before the prompt is pasted; a blocking deny vetoes the turn. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onTurnComplete` | list | `[]` | - | List of hook actions run on every terminal turn state. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onStop` | list | `[]` | - | List of hook actions run when claude's Stop would end the running turn; a blocking block continues the turn, a defer holds it open. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [`onStop`](#onstop). |
+| `hooks.onTick` | list | `[]` | - | List of hook actions run on a timer while the session lives. Item: the usual command or webhook action plus `interval_seconds` (required, > 0) and `when: busy\|always = busy` (both allowed only here); no `matcher`. See [`onTick`](#ontick). |
 | `hooks.onAgentResponse` | list | `[]` | - | List of hook actions run for assistant text read from the transcript. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onAgentToolCall` | list | `[]` | - | List of hook actions run on PreToolUse; a blocking deny blocks the tool call; `matcher` allowed. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onToolResult` | list | `[]` | - | List of hook actions run on PostToolUse and PostToolUseFailure; `matcher` allowed. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |

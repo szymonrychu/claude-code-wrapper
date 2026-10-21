@@ -123,6 +123,8 @@ hooks:
     # - {type: webhook, url: "https://example.com/turn-done", secret: "${HOOK_SECRET:-}"}
   onStop: []                 # claude's Stop for the running turn: allow, block or defer it
     # - {type: command, run: ./outcome-gate.sh, blocking: true}
+  onTick: []                 # timer: interval_seconds (required), when busy|always
+    # - {type: command, run: ./push-metrics.sh, interval_seconds: 30, when: always}
   onAgentResponse: []        # assistant text from the transcript
     # - {type: command, run: "jq -r .data.text >> ${CCW_SESSIONS_ROOT:-/sessions}/replies.log"}
   onAgentToolCall:           # PreToolUse; a blocking deny blocks the tool call
