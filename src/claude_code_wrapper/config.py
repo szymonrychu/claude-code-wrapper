@@ -463,6 +463,8 @@ class SessionsConfig(_Model):
     resume_on_start: bool = False
     defer_stop_on_background_tasks: bool = False
     probe_alive_token: str = Field("CCW-ALIVE", min_length=1)
+    exit_when_last_destroyed: bool = False
+    exit_when_dead: bool = False
     #: Pasted (with the same turn marker) into a resumed relaunch after a mid-turn crash, so the
     #: running turn continues instead of failing with claude_exited. Empty disables it.
     restart_continue_prompt: str = ""

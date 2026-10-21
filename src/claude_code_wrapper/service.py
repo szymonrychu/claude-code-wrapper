@@ -29,6 +29,8 @@ log = logging.getLogger(__name__)
 
 INTERNAL_HOST = "127.0.0.1"
 GRACEFUL_SHUTDOWN_SECONDS = 3
+#: Delay between an exit request and the stop, so the triggering response is sent first.
+EXIT_STOP_DELAY_SECONDS = 0.2
 STARTUP_TIMEOUT_SECONDS = 30
 _STD_ATTRS = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
     "message",
@@ -44,6 +46,14 @@ class ServiceHandle:
 
     public_port: int = 0
     internal_port: int = 0
+    exit_code: int | None = None  # set by the first exit request (sessions.exit_when_*)
+
+    def request_exit(self, code: int) -> bool:
+        """Record `code` unless an earlier request already did; True when this one won."""
+        if self.exit_code is not None:
+            return False
+        self.exit_code = code
+        return True
 
 
 class JsonFormatter(logging.Formatter):
@@ -163,6 +173,7 @@ async def run_service(
     handle: ServiceHandle | None = None,
 ) -> None:
     """Run the public and internal servers until `stop` is set or SIGTERM/SIGINT arrives.
+    An exit policy request leaves its code on `handle.exit_code`.
 
     Raises `tooling.ToolingError` when a required global mise step fails, and `OSError` when a
     port cannot be bound."""
@@ -193,6 +204,11 @@ async def _run(
         handle.public_port = socks[0].getsockname()[1]
         handle.internal_port = socks[1].getsockname()[1]
         metrics = Metrics()
+
+        def on_exit_request(code: int) -> None:
+            if handle.request_exit(code):
+                asyncio.get_running_loop().call_later(EXIT_STOP_DELAY_SECONDS, stop.set)
+
         manager = SessionManager(
             cfg,
             internal_url=f"http://{INTERNAL_HOST}:{handle.internal_port}",
@@ -200,6 +216,7 @@ async def _run(
             api_url=f"http://127.0.0.1:{handle.public_port}",
             redactor=redactor,
             metrics=metrics,
+            on_exit_request=on_exit_request,
         )
         await manager.load_persisted()
         level = cfg.server.log_level

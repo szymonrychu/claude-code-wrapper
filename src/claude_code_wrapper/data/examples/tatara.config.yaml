@@ -1,0 +1,50 @@
+# Expresses tatara's harness behaviour (turn path) as ccw hooks. No tatara code lives in ccw.
+# The hook script is tatara/tatara_hooks.py (python stdlib only); install it at $TATARA_HOOKS.
+# Environment: TATARA_TASK (task name), CALLBACK_HMAC_SECRET and DEFAULT_CALLBACK_URL (finaliser),
+# MAX_OUTCOME_REPROMPTS (default 2, always kept below claude's cap of 8 Stop blocks per turn).
+
+init:
+  git:
+    user_name: ${GIT_USER_NAME:-tatara}
+    user_email: ${GIT_USER_EMAIL:-tatara@localhost}
+
+claude:
+  env:
+    claude_code_oauth_token: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    disable_autoupdater: true
+  permission_mode: bypassPermissions
+  settings:
+    # Runs inside claude: persists the account rate limits that the finaliser reports.
+    statusLine:
+      type: command
+      command: ${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} statusline
+
+sessions:
+  idle_timeout_seconds: 0
+
+hooks:
+  onAgentToolCall:
+    # Record tatara's internal-issue reports; always allowed.
+    - type: command
+      run: ${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} capture-issue
+      matcher: mcp__tatara__report_internal_issue
+      blocking: true
+      on_error: allow
+  onToolResult:
+    # Remember whether the last submit_outcome was rejected (the gate reads it).
+    - type: command
+      run: ${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} outcome-result
+      matcher: mcp__tatara__submit_outcome
+      blocking: false
+  onStop:
+    # Send claude back while the outcome was rejected, at most MAX_OUTCOME_REPROMPTS times.
+    - type: command
+      run: ${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} outcome-gate
+      blocking: true
+      on_error: allow
+  onTurnComplete:
+    # Non-blocking on purpose: a blocking finaliser would hold claude's Stop hook.
+    - type: command
+      run: ${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} finalize
+      blocking: false
+      timeout_seconds: 300

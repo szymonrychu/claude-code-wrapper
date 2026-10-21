@@ -16,11 +16,49 @@ from claude_code_wrapper.metrics import CONTENT_TYPE, Metrics
 log = logging.getLogger(__name__)
 
 
+V1_PREFIX = "/v1"
+
+
+class _HttpMetrics:
+    """Pure ASGI middleware counting every response by route template, method and status."""
+
+    def __init__(self, app: Any, metrics: Metrics) -> None:
+        self.app = app
+        self.metrics = metrics
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        status = 0
+
+        async def wrapped(message: Any) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, wrapped)
+        except Exception:
+            self.metrics.http_panic()
+            status = status or 500
+            raise
+        finally:
+            route = scope.get("route")
+            template = getattr(route, "path", None) or "unmatched"
+            # FastAPI keeps the include prefix off the route path; restore it.
+            if template != "unmatched" and scope["path"].startswith(V1_PREFIX + "/"):
+                template = V1_PREFIX + template
+            self.metrics.http_request(template, scope["method"], status or 500)
+
+
 def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> FastAPI:
     """Build the public API around `manager`. Routers are included on the `/v1` router."""
     cfg.server.require_auth_policy()
     app = FastAPI(title="claude-code-wrapper", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.manager = manager
+    app.state.metrics = metrics
     app.state.cfg = cfg
     app.state.auth_token = cfg.server.auth_token
     manager.redactor.add([cfg.server.auth_token, cfg.server.callback_secret])
@@ -31,7 +69,7 @@ def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> Fas
             "server.auth_token is empty (allow_anonymous): authentication on /v1 is disabled"
         )
 
-    v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_auth)])
+    v1 = APIRouter(prefix=V1_PREFIX, dependencies=[Depends(require_auth)])
     v1.include_router(sessions.router)
     v1.include_router(turns.router)
     v1.include_router(events.router)
@@ -53,4 +91,6 @@ def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> Fas
             raise ApiError(503, "not_ready", "service is not ready")
         return {"status": "ready"}
 
+    if metrics is not None:
+        app.add_middleware(_HttpMetrics, metrics=metrics)
     return app

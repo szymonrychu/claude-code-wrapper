@@ -625,6 +625,8 @@ class SessionRouter(SessionListener):
 
     async def interrupt(self) -> str | None:
         turn_id = await self.session.interrupt()
+        if self._metrics is not None:
+            self._metrics.interrupt("idle" if turn_id is None else "interrupted")
         if turn_id is not None:
             self._emit("interrupted", {"turn_id": turn_id})
             await self._fire("onInterrupt", {"turn_id": turn_id}, turn_id=turn_id)
@@ -665,7 +667,9 @@ class SessionRouter(SessionListener):
                 if ev.turn_marker:
                     self._last_marker = ev.turn_marker
             elif isinstance(ev, ProbeMarker):
-                self.session.probe_delivered(ev.probe_id)
+                probe = self.session.probe_delivered(ev.probe_id)
+                if probe is not None and self._metrics is not None:
+                    self._metrics.probe_outcome("delivered")
 
     async def _on_assistant_text(self, ev: AssistantText) -> None:
         self._emit(
@@ -681,6 +685,8 @@ class SessionRouter(SessionListener):
             return
         if self._cfg.sessions.probe_alive_token in ev.text:
             for probe in self.session.probe_answered(ev.text):
+                if self._metrics is not None:
+                    self._metrics.probe_answered(probe)
                 self._emit("probe", probe.model_dump(mode="json"))
         await self._fire(
             "onAgentResponse",
@@ -749,6 +755,8 @@ class SessionRouter(SessionListener):
         self._spawn(self._fire("onError", data))
 
     def on_stall(self, turn_id: str) -> None:
+        if self._metrics is not None:
+            self._metrics.stall_suspected()
         self._emit("stall_suspected", {"turn_id": turn_id})
 
     def on_turn_resumed(self, record: Any, restart: int) -> None:
@@ -763,6 +771,8 @@ class SessionRouter(SessionListener):
             return
         if self._metrics is not None:
             self._metrics.turn_finished(record)
+            if record.state == "timeout":
+                self._metrics.interrupt("timeout")
         event = self._emit_turn_event("turn_failed", record)
         self._spawn(self._after_turn(record, event))
 

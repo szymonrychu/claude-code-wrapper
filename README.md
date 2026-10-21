@@ -532,7 +532,12 @@ Response `200`: `{"status": "ready"}`; `503 not_ready` before that.
 
 Prometheus text exposition (`ccw_sessions_active`, `ccw_sessions_created_total`,
 `ccw_turns_total`, `ccw_turn_duration_seconds`, `ccw_tool_calls_total`,
-`ccw_hook_actions_total`, `ccw_claude_restarts_total`, `ccw_turn_tokens_total`). No auth.
+`ccw_hook_actions_total`, `ccw_claude_restarts_total`, `ccw_turn_tokens_total`,
+`ccw_http_requests_total{route,method,status_code}` (route is the matched route template, or
+`unmatched`), `ccw_http_panics_total` (unhandled handler exceptions),
+`ccw_probe_outcomes_total{outcome}` (`sent`, `rejected`, `delivered`, `answered`),
+`ccw_probe_answer_seconds`, `ccw_stall_suspected_total`,
+`ccw_interrupts_total{result}` (`interrupted`, `timeout`, `idle`)). No auth.
 Response `200`, `Content-Type: text/plain; version=0.0.4`.
 
 ### Internal API
@@ -1244,6 +1249,33 @@ A plugin hook (for example the workbench plugin's) may rewrite a Bash command th
 `updatedInput`. The `tool_input` in `tool_call` events and in `onAgentToolCall` payloads is what
 Claude asked to run when the PreToolUse relay fired; the command that finally executes can differ.
 Do not treat `tool_input` as proof of what ran.
+
+
+## Hook examples
+
+Worked examples of project behaviour expressed as hooks, with no project code in ccw. Each ships
+under `src/claude_code_wrapper/data/examples/` (symlinked from `examples/`) and is tested against
+the fake claude.
+
+### tatara
+
+[`tatara.config.yaml`](examples/tatara.config.yaml) and its script
+[`tatara_hooks.py`](src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py) (python stdlib
+only, one script with subcommands) express tatara's turn path. Actions run
+`${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} <subcommand>`; the task
+name comes from `TATARA_TASK`, the callback from `DEFAULT_CALLBACK_URL` signed with
+`CALLBACK_HMAC_SECRET` (`X-Tatara-Signature: sha256=<hex>`), and `MAX_OUTCOME_REPROMPTS` (default
+2, capped below claude's 8 Stop blocks) bounds the outcome gate. Tests:
+[`tests/test_example_tatara.py`](tests/test_example_tatara.py).
+
+| Parity row | Behaviour | Hook |
+|---|---|---|
+| B1 | Finaliser: commit and push changed repos, drain issues, add account usage, post the signed callback | `onTurnComplete`, non-blocking, `finalize` (a blocking finaliser would hold claude's Stop hook) |
+| B2 | Internal issue capture, category and severity clamped (`other` / `medium`) | `onAgentToolCall`, blocking, matcher `mcp__tatara__report_internal_issue`, `capture-issue` |
+| B3 | Remember whether the last outcome was rejected | `onToolResult`, non-blocking, matcher `mcp__tatara__submit_outcome`, `outcome-result` |
+| B4 | Outcome gate: re-prompt a rejected outcome, counted in `CCW_STATE_DIR` | `onStop`, blocking, `outcome-gate` |
+| B5 | Nothing posted while an outcome re-prompt is pending | `finalize` checks the gate's state |
+| B6 | Account rate limits | `claude.settings.statusLine`, `statusline` writes `rate_limits.json`, read by `finalize` |
 
 ## Errors
 
@@ -1982,6 +2014,8 @@ sessions:
 | `sessions.defer_stop_on_background_tasks` | boolean | `false` | - | Keep the running turn open (`turn_deferred`) while a Stop reports non-empty `background_tasks`; a later Stop with none completes it. See [`onStop`](#onstop). |
 | `sessions.probe_alive_token` | string | `"CCW-ALIVE"` | - | Non-empty token a probe asks Claude to reply with; an assistant message containing it answers the probe, and the default probe text names it. |
 | `sessions.restart_continue_prompt` | string | `""` | - | Prompt pasted (with the same turn marker) into a resumed relaunch after claude crashed mid-turn, so the running turn continues instead of failing with `claude_exited` (a `turn_resumed` event); empty disables it. See "Crash during a turn" under `POST /v1/sessions/{id}/turns`. |
+| `sessions.exit_when_last_destroyed` | boolean | `false` | - | Exit 0 through the normal shutdown (hooks drained) when a DELETE or the idle reaper leaves no active session and one was created in this process; the triggering DELETE still returns its full body first. |
+| `sessions.exit_when_dead` | boolean | `false` | - | Exit 3 through the normal shutdown when a session reaches `dead`, after writing `session <id> dead: <last_fatal or "claude exited">` to `/dev/termination-log` when writable. |
 
 ### `limits`
 
@@ -2499,6 +2533,10 @@ No chart is shipped; the image runs as-is.
 - **Persistent storage**: back `paths.sessions_root` (sessions and transcripts, required to
   resume after a restart) and, if workdirs must survive, `paths.workdir_root`. The mise volume is a
   cache and may be ephemeral.
+- **Job completion and termination message**: `sessions.exit_when_last_destroyed: true` makes the
+  process exit 0 once the last session is deleted (or reaped idle), so a Job completes;
+  `sessions.exit_when_dead: true` exits 3 when a session dies and writes the reason to
+  `/dev/termination-log` for the pod's termination message. Both stop through the normal shutdown.
 - **Replicas**: one instance per project or assignment; see the [Trust model](#trust-model). Keep
   the Service cluster-internal and never expose it through a public ingress.
 

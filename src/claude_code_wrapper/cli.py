@@ -13,7 +13,7 @@ from importlib import resources
 
 from claude_code_wrapper import __version__
 from claude_code_wrapper.config import ConfigError, load_config
-from claude_code_wrapper.service import run_service
+from claude_code_wrapper.service import ServiceHandle, run_service
 from claude_code_wrapper.tooling import ToolingError
 
 EX_CONFIG = 78
@@ -67,14 +67,15 @@ def _serve(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EX_CONFIG
+    handle = ServiceHandle()
     try:
-        asyncio.run(run_service(cfg))
+        asyncio.run(run_service(cfg, handle=handle))
     except KeyboardInterrupt:
         return 0
     except (ToolingError, OSError) as exc:
         print(f"ccw: {exc}", file=sys.stderr)
         return 1
-    return 0
+    return handle.exit_code or 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
