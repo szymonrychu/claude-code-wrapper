@@ -532,7 +532,12 @@ Response `200`: `{"status": "ready"}`; `503 not_ready` before that.
 
 Prometheus text exposition (`ccw_sessions_active`, `ccw_sessions_created_total`,
 `ccw_turns_total`, `ccw_turn_duration_seconds`, `ccw_tool_calls_total`,
-`ccw_hook_actions_total`, `ccw_claude_restarts_total`, `ccw_turn_tokens_total`). No auth.
+`ccw_hook_actions_total`, `ccw_claude_restarts_total`, `ccw_turn_tokens_total`,
+`ccw_http_requests_total{route,method,status_code}` (route is the matched route template, or
+`unmatched`), `ccw_http_panics_total` (unhandled handler exceptions),
+`ccw_probe_outcomes_total{outcome}` (`sent`, `rejected`, `delivered`, `answered`),
+`ccw_probe_answer_seconds`, `ccw_stall_suspected_total`,
+`ccw_interrupts_total{result}` (`interrupted`, `timeout`, `idle`)). No auth.
 Response `200`, `Content-Type: text/plain; version=0.0.4`.
 
 ### Internal API
