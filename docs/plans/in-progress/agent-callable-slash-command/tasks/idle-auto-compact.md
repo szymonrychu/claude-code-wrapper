@@ -1,6 +1,6 @@
 ---
 title: Idle auto-compact
-status: in-progress
+status: todo
 repo: .
 value: "Long-lived sessions compact themselves while idle, so the next turn starts with a small context"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/router.py, README.md, tests/test_auto_compact.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--idle-auto-compact
 branch: agent-callable-slash-command--idle-auto-compact
 verified_head: ""
-run: ""
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Idle auto-compact
@@ -70,3 +72,5 @@ With `sessions.auto_compact.idle_seconds` set, a session that went quiet after a
 ## Notes
 
 A timer per session (asyncio, cancelled on close) or the manager's reaper loop are both fine; tests use a small idle_seconds (for example 0.3) and the fake's compact.
+
+- 2026-10-21 run agent-callable-slash-command: dependency-failed on ccw-mcp-injection-and-e2e, command-same-turn-resume

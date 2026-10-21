@@ -1,6 +1,6 @@
 ---
 title: Fake claude slash commands
-status: in-progress
+status: done
 repo: .
 value: "Every command test runs against a fake that compacts, reloads and fails like real claude, with no API spend"
 files: [tests/fake_claude/fake_claude.py, tests/test_fake_claude_commands.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--fake-claude-slash-commands
 branch: agent-callable-slash-command--fake-claude-slash-commands
-verified_head: ""
-run: ""
-provides: []
+verified_head: efd85319391b4681645b79932dde5d4c07fede8d
+run: agent-callable-slash-command
+provides: [fake-claude-commands]
+acs_for_audit: []
+process_gaps: ["Red-run evidence from the first draft is missing, because the tests were written after the code.", "TDD skipped without a listed exception; prove the tests catch the change - commit first, then for each changed non-test file: git show <merge-base>:<path> > <path>; run the test (must fail); git show HEAD:<path> > <path>; run again (must pass); paste both tails into tests.red and verification.evidence"]
 ---
 
 # Fake claude slash commands

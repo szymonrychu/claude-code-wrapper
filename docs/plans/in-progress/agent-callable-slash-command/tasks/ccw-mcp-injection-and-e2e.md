@@ -1,6 +1,6 @@
 ---
 title: ccw MCP injection and e2e
-status: in-progress
+status: todo
 repo: .
 value: "The main agent can self-compact and self-reload plugins, with the token never stored in a file"
 files: [src/claude_code_wrapper/bootstrap/claude_json.py, src/claude_code_wrapper/bootstrap/settings.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/config.py, README.md, tests/test_mcp_injection.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--ccw-mcp-injection-and-e2e
 branch: agent-callable-slash-command--ccw-mcp-injection-and-e2e
 verified_head: ""
-run: ""
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # ccw MCP injection and e2e
@@ -74,3 +76,5 @@ Sessions with agent commands get the ccw server and allow rule in their own clau
 ## Notes
 
 `CCW_INTERNAL_URL`, `CCW_SESSION_ID` and `CCW_HOOK_TOKEN` are already in claude's env (C/session.py:244-245). The fake's `fake-mcp.jsonl` shows the expanded headers it sent; the token-never-on-disk test greps the session's config dir for the token value.
+
+- 2026-10-21 run agent-callable-slash-command: dependency-failed on ccw-mcp-endpoint, command-same-turn-resume

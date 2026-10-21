@@ -1,6 +1,6 @@
 ---
 title: Command runner
-status: in-progress
+status: todo
 repo: .
 value: "Queued slash commands actually run in the session's claude, safely at an idle prompt, with results and hooks"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/commands.py, tests/test_command_runner.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-runner
 branch: agent-callable-slash-command--command-runner
 verified_head: ""
-run: ""
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Command runner
@@ -79,3 +81,5 @@ On an idle session `request_command` types the slash command at a quiet prompt, 
 ## Notes
 
 Reuses `commands.CommandQueue`, `commands.render`, `SignalBus` (task command-completion-signals), the command events, hooks and metrics (task command-event-vocabulary) and the fake's `commands` scenario key (task fake-claude-slash-commands). Tests run the World with `sessions.commands.quiet_seconds` small (for example 0.2) and short timeouts.
+
+- 2026-10-21 run agent-callable-slash-command: dependency-failed on command-completion-signals

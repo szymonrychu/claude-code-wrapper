@@ -1,6 +1,6 @@
 ---
 title: Commands public endpoint
-status: in-progress
+status: todo
 repo: .
 value: API clients can queue and read slash commands for a session without typing into it
 files: [src/claude_code_wrapper/api/commands.py, src/claude_code_wrapper/api/app.py, src/claude_code_wrapper/api/errors.py, README.md, tests/test_api_commands.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--commands-public-endpoint
 branch: agent-callable-slash-command--commands-public-endpoint
 verified_head: ""
-run: ""
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Commands public endpoint
@@ -69,3 +71,5 @@ API clients queue, list and read commands per session through `/v1/sessions/{id}
 ## Notes
 
 Design D-numbers and facts with file:line are in ../design.md.
+
+- 2026-10-21 run agent-callable-slash-command: dependency-failed on command-same-turn-resume

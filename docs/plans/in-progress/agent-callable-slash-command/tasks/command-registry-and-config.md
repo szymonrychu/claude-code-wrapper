@@ -1,6 +1,6 @@
 ---
 title: Command registry and config
-status: in-progress
+status: escalated
 repo: .
 value: "Operators decide which slash commands agents and clients may run, per service and per session"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/commands.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/router.py, README.md, tests/test_command_registry.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-registry-and-config
 branch: agent-callable-slash-command--command-registry-and-config
 verified_head: ""
-run: ""
-provides: []
+run: agent-callable-slash-command
+provides: [commands-override-model, command-validation-render-schema]
+acs_for_audit: []
+process_gaps: ["The implementer states the code was written before the tests, so there is no red run, which breaks the test-first rule in the project CLAUDE.md. No exception applies, since this is a behaviour change."]
 ---
 
 # Command registry and config

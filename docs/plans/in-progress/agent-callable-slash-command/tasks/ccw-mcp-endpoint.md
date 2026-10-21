@@ -1,6 +1,6 @@
 ---
 title: ccw MCP endpoint
-status: in-progress
+status: todo
 repo: .
 value: Claude can connect to ccw as an MCP server and call the one command tool
 files: [src/claude_code_wrapper/mcp_server.py, src/claude_code_wrapper/internal_api.py, README.md, tests/test_mcp_server.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--ccw-mcp-endpoint
 branch: agent-callable-slash-command--ccw-mcp-endpoint
 verified_head: ""
-run: ""
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # ccw MCP endpoint
@@ -73,3 +75,5 @@ The ccw MCP server on the internal API (design D1; handshake probed on claude 2.
 ## Notes
 
 Reuse the hook route's auth and lookup (C/internal_api.py:55-63, `manager.router`); the tests call the internal app with httpx `ASGITransport` (client 127.0.0.1) against a World session, as tests/test_internal_api.py does.
+
+- 2026-10-21 run agent-callable-slash-command: dependency-failed on command-runner

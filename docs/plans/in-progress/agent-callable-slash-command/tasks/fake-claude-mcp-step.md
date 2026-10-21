@@ -1,6 +1,6 @@
 ---
 title: Fake claude MCP step
-status: in-progress
+status: done
 repo: .
 value: "The agent's mcp__ccw__command call is testable end to end through the fake and the World"
 files: [tests/fake_claude/fake_claude.py, tests/conftest.py, tests/test_fake_claude_mcp.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--fake-claude-mcp-step
 branch: agent-callable-slash-command--fake-claude-mcp-step
-verified_head: ""
-run: ""
-provides: []
+verified_head: 93debd08e3ca8c97fabffd2df7f19c654d0a147a
+run: agent-callable-slash-command
+provides: [tool-flow]
+acs_for_audit: []
+process_gaps: ["TDD skipped without a listed exception; prove the tests catch the change - commit first, then for each changed non-test file: git show <merge-base>:<path> > <path>; run the test (must fail); git show HEAD:<path> > <path>; run again (must pass); paste both tails into tests.red and verification.evidence"]
 ---
 
 # Fake claude MCP step

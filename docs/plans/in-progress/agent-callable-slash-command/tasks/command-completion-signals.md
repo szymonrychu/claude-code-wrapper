@@ -1,6 +1,6 @@
 ---
 title: Command completion signals
-status: in-progress
+status: todo
 repo: .
 value: "ccw knows reliably when a typed slash command finished, and reports every compaction including Claude Code's own"
 files: [src/claude_code_wrapper/command_signals.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/hook_relay.py, README.md, tests/test_command_signals.py, tests/test_hook_relay.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-completion-signals
 branch: agent-callable-slash-command--command-completion-signals
 verified_head: ""
-run: ""
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Command completion signals
@@ -75,3 +77,5 @@ PreCompact and PostCompact reach ccw through the relay, every main-chain compact
 ## Notes
 
 Uses the fake's `auto_compact` step and `/compact` (part `fake-claude-commands`) for the world tests and the transcript events of task transcript-command-entries. A world test can type `/compact` itself with the session's PTY (`session.pty.send_prompt`) at idle; the runner that does it for real is task command-runner.
+
+- 2026-10-21 run agent-callable-slash-command: dependency-failed on command-event-vocabulary

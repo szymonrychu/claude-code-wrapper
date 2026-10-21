@@ -1,6 +1,6 @@
 ---
 title: Command same-turn resume
-status: in-progress
+status: todo
 repo: .
 value: "The agent keeps working in the same turn after its own /compact or /reload-plugins, with one turn record"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, README.md, tests/test_command_turn_resume.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-same-turn-resume
 branch: agent-callable-slash-command--command-same-turn-resume
 verified_head: ""
-run: ""
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Command same-turn resume
@@ -74,3 +76,5 @@ A command queued during a turn runs after that turn's Stop is answered, the cont
 ## Notes
 
 Tests drive it with the fake: a turn whose steps end normally after a client `request_command` (or with the `mcp` step once task ccw-mcp-injection-and-e2e lands; not needed here), and a second scenario turn whose regex matches the continue prompt. Use `sessions.commands.quiet_seconds` small.
+
+- 2026-10-21 run agent-callable-slash-command: dependency-failed on command-runner-failures

@@ -1,6 +1,6 @@
 ---
 title: Command event vocabulary
-status: in-progress
+status: todo
 repo: .
 value: "Clients and hooks can observe and veto commands and see every compaction, with bounded metrics"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/events.py, src/claude_code_wrapper/metrics.py, README.md, tests/test_command_vocabulary.py, tests/test_event_log.py, tests/test_config.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-event-vocabulary
 branch: agent-callable-slash-command--command-event-vocabulary
 verified_head: ""
-run: ""
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Command event vocabulary
@@ -67,3 +69,5 @@ The five event types, the two hook events and the three metric families exist, a
 ## Notes
 
 tests/test_e2e_lifecycle.py builds a hook for every HOOK_EVENTS entry; keep it green (the new events simply never fire there). tests/test_readme_api.py requires a README section for every event type and hook event.
+
+- 2026-10-21 run agent-callable-slash-command: dependency-failed on command-registry-and-config

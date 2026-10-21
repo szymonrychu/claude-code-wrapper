@@ -1,6 +1,6 @@
 ---
 title: Slash commands docs
-status: in-progress
+status: todo
 repo: .
 value: "Operators can find how to enable, call and limit slash commands, with working examples for tatara and magic-trainer"
 files: [README.md, config.example.yaml, src/claude_code_wrapper/data/examples/workbench.config.yaml, src/claude_code_wrapper/data/examples/tatara.config.yaml, src/claude_code_wrapper/data/examples/magic-trainer.config.yaml, tests/test_slash_commands_docs.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--slash-commands-docs
 branch: agent-callable-slash-command--slash-commands-docs
 verified_head: ""
-run: ""
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Slash commands docs
@@ -68,3 +70,5 @@ README explains the tool, endpoint, lifecycle, config, auto-compact and limits i
 ## Notes
 
 Design D-numbers and facts with file:line are in ../design.md.
+
+- 2026-10-21 run agent-callable-slash-command: dependency-failed on ccw-mcp-injection-and-e2e, commands-public-endpoint, idle-auto-compact

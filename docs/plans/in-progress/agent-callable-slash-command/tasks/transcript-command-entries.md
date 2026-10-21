@@ -1,6 +1,6 @@
 ---
 title: Transcript command entries
-status: in-progress
+status: done
 repo: .
 value: "Compact summaries and command echoes stop resurfacing old turn markers, so Stops after a compaction are not dropped as stale"
 files: [src/claude_code_wrapper/transcript.py, tests/test_transcript_commands.py, tests/fixtures/transcripts/commands.jsonl]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--transcript-command-entries
 branch: agent-callable-slash-command--transcript-command-entries
-verified_head: ""
-run: ""
-provides: []
+verified_head: be8b8c428e513a3b998871736d1483e6cc80d508
+run: agent-callable-slash-command
+provides: [transcript-command-events]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Transcript command entries

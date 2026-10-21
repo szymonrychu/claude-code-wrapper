@@ -1,6 +1,6 @@
 ---
 title: Command runner failures
-status: in-progress
+status: todo
 repo: .
 value: "A crash, destroy, shutdown or interrupt during a command never leaves a session stuck busy or typing"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/manager.py, tests/test_command_runner_failures.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-runner-failures
 branch: agent-callable-slash-command--command-runner-failures
 verified_head: ""
-run: ""
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Command runner failures
@@ -65,3 +67,5 @@ Every way a command can be cut short on an idle session (crash, destroy, shutdow
 ## Notes
 
 The fake's `hang` outcomes keep a command running so the test can crash, destroy or interrupt mid-command; `{"exit": code}` is not reachable from a slash command, so crash the fake by killing its pid (`session.pty`), as tests/test_turn_continuity.py does.
+
+- 2026-10-21 run agent-callable-slash-command: dependency-failed on command-runner
