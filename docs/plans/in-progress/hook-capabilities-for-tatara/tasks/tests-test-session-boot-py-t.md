@@ -56,4 +56,3 @@ tests/test_session_boot.py::test_restart_budget_exhausted_dead looks flaky: it o
 ## Notes
 
 Discovered in task `passthrough-env-globs` during run `hook-capabilities-for-tatara`.
-
