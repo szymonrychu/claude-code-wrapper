@@ -118,9 +118,9 @@ def test_tool_schema_is_flat():
 
 
 async def test_unknown_top_level_argument_rejected():
-    import tests.test_mcp_server as t
+    import test_mcp_server as t
 
-    m = t.FakeManager()
+    m = t.FakeManager(["compact"])
     async with t.client(m) as c:
         r = await c.post(
             "/internal/mcp",
