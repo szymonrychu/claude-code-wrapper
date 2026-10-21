@@ -120,7 +120,9 @@ def seed_claude_json(
     _deep_merge(data, claude_cfg.claude_json)
     if ccw_mcp:
         data.setdefault("mcpServers", {})["ccw"] = copy.deepcopy(CCW_MCP_ENTRY)
-    elif isinstance(data.get("mcpServers"), dict):
-        data["mcpServers"].pop("ccw", None)
+    elif (
+        isinstance(data.get("mcpServers"), dict) and data["mcpServers"].get("ccw") == CCW_MCP_ENTRY
+    ):
+        del data["mcpServers"]["ccw"]
     atomic_write(target, json.dumps(data, indent=2))
     return target

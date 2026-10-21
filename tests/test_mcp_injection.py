@@ -41,6 +41,16 @@ def test_seed_removes_stale_ccw_entry(tmp_path):
     assert "ccw" not in data.get("mcpServers", {})
 
 
+def test_seed_keeps_user_defined_ccw_entry(tmp_path):
+    from claude_code_wrapper.config import McpHttp
+
+    srv = McpHttp(type="http", url="http://user")
+    cfg = ClaudeConfig(mcp_servers={"ccw": srv})
+    seed_claude_json(tmp_path / "c", tmp_path / "w", cfg, object(), ccw_mcp=False)
+    data = json.loads((tmp_path / "c" / ".claude.json").read_text())
+    assert data["mcpServers"]["ccw"]["url"] == "http://user"
+
+
 def test_seed_default_has_no_ccw(tmp_path):
     assert "ccw" not in seeded(tmp_path).get("mcpServers", {})
 
