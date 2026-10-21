@@ -38,7 +38,7 @@ class Stub:
 
     def router(self, session_id: str):
         if self._session is None:
-            raise InvalidState("dead")
+            raise InvalidState(session_id, "dead")
         return SimpleNamespace(session=self._session)
 
 
