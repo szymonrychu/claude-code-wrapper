@@ -116,8 +116,13 @@ async def interrupt(session_id: str, request: Request) -> Any:
 
 @router.post("/sessions/{session_id}/probe", status_code=202)
 async def start_probe(session_id: str, request: Request, body: ProbeRequest | None = None) -> Any:
-    live = _live_router(request, session_id)
     metrics = request.app.state.metrics
+    try:
+        live = _live_router(request, session_id)
+    except ApiError:
+        if metrics is not None:
+            metrics.probe_outcome("rejected")
+        raise
     try:
         probe = await live.session.probe(body.text if body is not None else None)
     except TurnRejected as exc:

@@ -102,6 +102,13 @@ def test_probe_sent_and_rejected_outcomes() -> None:
     assert sample(m, "ccw_probe_outcomes_total", outcome="sent") == 1
 
 
+def test_probe_to_dead_session_counted_rejected() -> None:
+    m = Metrics()
+    c = client_for(m, Stub(None))
+    assert c.post("/v1/sessions/abc/probe").status_code == 503
+    assert sample(m, "ccw_probe_outcomes_total", outcome="rejected") == 1
+
+
 async def test_probe_outcomes_and_answer_seconds(tmp_path: Path) -> None:
     m = Metrics()
     h = with_metrics(Harness(tmp_path), m)
