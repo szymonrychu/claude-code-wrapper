@@ -88,9 +88,17 @@ def test_restart_continue_prompt_defaults_off() -> None:
 # ---------------------------------------------------------------- the continued turn
 
 
-async def test_crash_mid_turn_continues_and_completes(world: World, tmp_path: Path) -> None:
+async def continued_turn(world: World, **sections: Any) -> tuple[SessionManager, str, str, Any]:
+    """Crash mid-turn once, resume, and wait for the same turn to complete."""
+    m, _, sid, claude_sid = await start(world, [CRASH, RESUME], **sections)
+    record = await m.router(sid).submit_turn("go now", callback_url=f"{world.url}/cb")
+    await world.until(lambda: record.state != "running")
+    return m, sid, claude_sid, record
+
+
+async def test_crash_mid_turn_continues_same_turn(world: World, tmp_path: Path) -> None:
     completes = tmp_path / "completes.jsonl"
-    m, cfg, sid, claude_sid = await start(
+    m, cfg, sid, _ = await start(
         world, [CRASH, RESUME], hooks={"onTurnComplete": [counter(completes)]}
     )
     slow_relaunch(cfg, [CRASH, RESUME], 1.0)
@@ -107,21 +115,11 @@ async def test_crash_mid_turn_continues_and_completes(world: World, tmp_path: Pa
     [done] = turns_of(m, sid)
     assert done.turn_id == tid and done.state == "completed"
     assert done.final_text == "part two"
-    # Usage spans both claude processes: "part one" before the crash, "part two" after.
-    assert done.usage is not None and done.usage["output_tokens"] == 4
-    assert of_type(world, sid, "turn_resumed") == [{"turn_id": tid, "restart": 1}]
     assert of_type(world, sid, "turn_failed") == []
     assert [e["record"]["turn_id"] for e in of_type(world, sid, "turn_completed")] == [tid]
     await world.until(lambda: len(jsonl(completes)) == 1 and world.callbacks)
     assert [c["type"] for c in world.callbacks] == ["turn_completed"]
     assert m.get(sid)["state"] == "ready" and m.get(sid)["restarts"] == 1
-
-    # The original prompt was not re-pasted; the continue prompt carries the same marker.
-    prompts = user_prompts(transcript(world, sid, claude_sid))
-    assert [p for p in prompts if p.startswith("go now")] == [f"go now\n\n<!-- ccw turn: {tid} -->"]
-    assert [p for p in prompts if p.startswith("Resume")] == [
-        f"{CONTINUE}\n\n<!-- ccw turn: {tid} -->"
-    ]
     argvs = world.interactive_argvs()
     assert len(argvs) == 2 and "--resume" in argvs[1]
     # The session takes the next turn normally.
@@ -129,10 +127,36 @@ async def test_crash_mid_turn_continues_and_completes(world: World, tmp_path: Pa
     await world.until(lambda: nxt.state == "completed")
 
 
+async def test_continue_prompt_carries_same_marker(world: World) -> None:
+    _, sid, claude_sid, record = await continued_turn(world)
+    assert record.state == "completed"
+    tid = record.turn_id
+    # The original prompt was not re-pasted; the continue prompt carries the same marker.
+    prompts = user_prompts(transcript(world, sid, claude_sid))
+    assert [p for p in prompts if p.startswith("go now")] == [f"go now\n\n<!-- ccw turn: {tid} -->"]
+    assert [p for p in prompts if p.startswith("Resume")] == [
+        f"{CONTINUE}\n\n<!-- ccw turn: {tid} -->"
+    ]
+
+
+async def test_turn_resumed_event(world: World) -> None:
+    m, sid, _, record = await continued_turn(world)
+    assert record.state == "completed"
+    assert of_type(world, sid, "turn_resumed") == [{"turn_id": record.turn_id, "restart": 1}]
+    assert m.get(sid)["restarts"] == 1
+
+
+async def test_usage_spans_crash(world: World) -> None:
+    _, _, _, record = await continued_turn(world)
+    assert record.state == "completed" and record.final_text == "part two"
+    # Usage spans both claude processes: "part one" before the crash, "part two" after.
+    assert record.usage is not None and record.usage["output_tokens"] == 4
+
+
 # ---------------------------------------------------------------- failing as today, once
 
 
-async def test_budget_exhausted_fails_once(world: World, tmp_path: Path) -> None:
+async def test_budget_exhausted_fails_turn_once(world: World, tmp_path: Path) -> None:
     completes = tmp_path / "completes.jsonl"
     crash_again = {"match": "^Resume", "steps": [{"text": "part two"}, {"exit": 4}]}
     m, _, sid, _ = await start(
@@ -154,6 +178,34 @@ async def test_budget_exhausted_fails_once(world: World, tmp_path: Path) -> None
     assert [c["type"] for c in world.callbacks] == ["turn_failed"]
     assert of_type(world, sid, "turn_completed") == []
     assert [t.error for t in turns_of(m, sid)] == ["claude_exited"]
+
+
+async def test_off_by_default_fails_as_today(world: World, tmp_path: Path) -> None:
+    completes = tmp_path / "completes.jsonl"
+    # The option empty (the default) with restarts left: the crash fails the turn at once.
+    m, cfg, sid, claude_sid = await start(
+        world,
+        [CRASH, RESUME],
+        sessions={"restart_continue_prompt": ""},
+        hooks={"onTurnComplete": [counter(completes)]},
+    )
+    assert cfg.sessions.restart_continue_prompt == "" and cfg.sessions.max_restarts > 0
+    record = await m.router(sid).submit_turn("go now", callback_url=f"{world.url}/cb")
+
+    await world.until(lambda: record.state != "running")
+    assert record.state == "failed" and record.error == "claude_exited"
+    failed = of_type(world, sid, "turn_failed")
+    assert [(e["record"]["turn_id"], e["record"]["error"]) for e in failed] == [
+        (record.turn_id, "claude_exited")
+    ]
+    await world.until(lambda: len(jsonl(completes)) == 1 and world.callbacks)
+    assert [c["type"] for c in world.callbacks] == ["turn_failed"]
+    # The session still restarts (resumed) and is ready, but nothing is continued.
+    await world.until(lambda: m.get(sid)["state"] == "ready" and m.get(sid)["restarts"] == 1)
+    assert of_type(world, sid, "turn_resumed") == []
+    assert of_type(world, sid, "turn_completed") == []
+    assert [t.error for t in turns_of(m, sid)] == ["claude_exited"]
+    assert not [p for p in user_prompts(transcript(world, sid, claude_sid)) if "Resume" in p]
 
 
 async def test_no_restarts_left_fails_at_once(world: World) -> None:
@@ -198,7 +250,7 @@ async def test_fresh_relaunch_cannot_continue(harness: Harness) -> None:  # noqa
 # ---------------------------------------------------------------- limits and ends during recovery
 
 
-async def test_turn_limits_measure_from_the_original_start(world: World) -> None:
+async def test_turn_max_seconds_spans_crash(world: World) -> None:
     resume_slow = {"match": "^Resume", "steps": [{"sleep": 30}]}
     m, cfg, sid, _ = await start(
         world,
@@ -252,7 +304,7 @@ async def test_interrupt_during_recovery_ends_turn(world: World) -> None:
     assert nxt.state == "running"
 
 
-async def test_destroy_during_recovery_stops_turn(world: World) -> None:
+async def test_destroy_during_recovery_fails_turn(world: World) -> None:
     m, cfg, sid, claude_sid = await start(world, [CRASH, RESUME])
     slow_relaunch(cfg, [CRASH, RESUME], 2.0)
     record = await m.router(sid).submit_turn("go now")
