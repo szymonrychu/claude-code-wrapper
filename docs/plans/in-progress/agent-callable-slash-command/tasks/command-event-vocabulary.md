@@ -1,6 +1,6 @@
 ---
 title: Command event vocabulary
-status: in-progress
+status: done
 repo: .
 value: "Clients and hooks can observe and veto commands and see every compaction, with bounded metrics"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/events.py, src/claude_code_wrapper/metrics.py, README.md, tests/test_command_vocabulary.py, tests/test_event_log.py, tests/test_config.py]
@@ -10,14 +10,14 @@ owns: [command-events, command-hooks, command-metrics]
 uses: []
 model: sonnet
 estimate: 45
-actual: ""
+actual: 4
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-event-vocabulary
 branch: agent-callable-slash-command--command-event-vocabulary
-verified_head: ""
+verified_head: b675ce60100461444f7f2cfa09b5963d9dc865d6
 run: agent-callable-slash-command
 provides: []
-acs_for_audit: []
+acs_for_audit: [AC2]
 process_gaps: []
 ---
 

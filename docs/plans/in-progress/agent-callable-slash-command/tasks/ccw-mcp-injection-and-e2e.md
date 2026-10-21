@@ -1,6 +1,6 @@
 ---
 title: ccw MCP injection and e2e
-status: in-progress
+status: todo
 repo: .
 value: "The main agent can self-compact and self-reload plugins, with the token never stored in a file"
 files: [src/claude_code_wrapper/bootstrap/claude_json.py, src/claude_code_wrapper/bootstrap/settings.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/config.py, README.md, tests/test_mcp_injection.py]

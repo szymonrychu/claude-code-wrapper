@@ -1,6 +1,6 @@
 ---
 title: Command runner failures
-status: in-progress
+status: todo
 repo: .
 value: "A crash, destroy, shutdown or interrupt during a command never leaves a session stuck busy or typing"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/manager.py, tests/test_command_runner_failures.py]

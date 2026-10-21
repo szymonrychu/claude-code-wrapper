@@ -1,6 +1,6 @@
 ---
 title: Command runner
-status: in-progress
+status: escalated
 repo: .
 value: "Queued slash commands actually run in the session's claude, safely at an idle prompt, with results and hooks"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/commands.py, tests/test_command_runner.py]
@@ -10,13 +10,13 @@ owns: [command-request-api]
 uses: [command-queue, commands-config, command-signals, compact-relay-events, command-events, command-hooks, command-metrics, fake-claude-commands]
 model: opus
 estimate: 90
-actual: ""
+actual: 21
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-runner
-branch: agent-callable-slash-command--command-runner
-verified_head: ""
+branch: "HEAD of worktree agent-callable-slash-command--command-runner (commit f6312c2)"
+verified_head: f6312c2f59640f7771d9fe3583c3da9f4a0375b8
 run: agent-callable-slash-command
-provides: []
+provides: [session-command-slot, command-runner-queue]
 acs_for_audit: []
 process_gaps: []
 ---

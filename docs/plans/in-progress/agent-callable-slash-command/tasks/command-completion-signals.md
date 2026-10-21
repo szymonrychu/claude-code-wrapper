@@ -1,6 +1,6 @@
 ---
 title: Command completion signals
-status: in-progress
+status: done
 repo: .
 value: "ccw knows reliably when a typed slash command finished, and reports every compaction including Claude Code's own"
 files: [src/claude_code_wrapper/command_signals.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/hook_relay.py, README.md, tests/test_command_signals.py, tests/test_hook_relay.py]
@@ -10,13 +10,13 @@ owns: [command-signals, compact-relay-events]
 uses: [fake-claude-commands, transcript-command-events, command-events, command-metrics]
 model: sonnet
 estimate: 75
-actual: ""
+actual: 2
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-completion-signals
 branch: agent-callable-slash-command--command-completion-signals
-verified_head: ""
+verified_head: adb86a35a0a87515caf8f093e8ad7f3c0910cbc9
 run: agent-callable-slash-command
-provides: []
+provides: [command-signals, compact-relay-events]
 acs_for_audit: []
 process_gaps: []
 ---

@@ -1,6 +1,6 @@
 ---
 title: Command same-turn resume
-status: in-progress
+status: todo
 repo: .
 value: "The agent keeps working in the same turn after its own /compact or /reload-plugins, with one turn record"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, README.md, tests/test_command_turn_resume.py]
