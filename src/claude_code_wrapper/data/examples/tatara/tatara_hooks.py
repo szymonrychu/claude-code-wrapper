@@ -6,18 +6,24 @@
   outcome-result onToolResult (non-blocking, matcher mcp__tatara__submit_outcome)
   outcome-gate   onStop (blocking): re-prompt while the last submit_outcome was rejected
   statusline     claude.settings.statusLine command (runs inside claude)
+  ttl-gate       onTurn (blocking): deny turns after AGENT_POD_TTL_SECONDS, admit one handoff turn
+  safety-push    onTick (when busy): git push the task branch of every repo, never commit
+  metrics-push   onTick (when always): forward ccw's /metrics to OPERATOR_PUSH_URL
+  bootstrap      init.setup_commands: skeleton of tatara's bootstrap (clone, branch, CLAUDE.md, MCP)
 
 Hook context comes from the env ccw sets: CCW_STATE_DIR, CCW_CLAUDE_CONFIG_DIR, CCW_WORKDIR.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -288,12 +294,208 @@ def post(payload: dict[str, Any]) -> int:
         return 1
 
 
+# ---------------------------------------------------------------- ttl gate
+
+
+def ttl_gate() -> int:
+    """First turn records t0. Past the TTL ordinary turns are denied and one handoff turn is
+    admitted (metadata.handoff true); the slot is only consumed after the TTL."""
+    try:
+        ttl = float(os.environ.get("AGENT_POD_TTL_SECONDS") or 0)
+    except ValueError:
+        ttl = 0.0
+    metadata = (envelope().get("data") or {}).get("metadata") or {}
+    path = state_dir() / "ttl.json"
+    doc = read_json(path)
+    if not isinstance(doc, dict) or "t0" not in doc:
+        doc = {"t0": time.time(), "handoff_used": False}
+    expired = ttl > 0 and time.time() - float(doc["t0"]) >= ttl
+    verdict: dict[str, Any] = {"decision": "allow"}
+    if expired:
+        if metadata.get("handoff") is True and not doc.get("handoff_used"):
+            doc["handoff_used"] = True
+        else:
+            verdict = {"decision": "deny", "reason": "pod ttl exceeded"}
+    write_atomic(path, json.dumps(doc))
+    print(json.dumps(verdict))
+    return 0
+
+
+# ---------------------------------------------------------------- safety push
+
+
+def hook_workdir() -> Path:
+    return Path(os.environ.get("CCW_WORKDIR") or ".")
+
+
+def safety_push() -> int:
+    """Push only. Commits belong to the finaliser, so uncommitted work is never touched."""
+    branch = os.environ.get("TASK_BRANCH") or "HEAD"
+    workdir = hook_workdir()
+    failed = 0
+    for repo in find_repos(workdir):
+        result = git(repo, "push", "origin", branch)
+        if result.returncode != 0:
+            failed += 1
+            print(f"{repo.relative_to(workdir)}: {result.stderr.strip()}", file=sys.stderr)
+    return 1 if failed else 0
+
+
+# ---------------------------------------------------------------- metrics push
+
+
+def metrics_push() -> int:
+    target = os.environ.get("OPERATOR_PUSH_URL")
+    if not target:
+        return 0
+    api = (os.environ.get("CCW_API_URL") or "").rstrip("/")
+    headers = {"Content-Type": "text/plain; version=0.0.4"}
+    for name in ("RUN_ID", "POD_NAME"):
+        headers[name] = os.environ.get(name, "")
+    try:
+        with urllib.request.urlopen(f"{api}/metrics", timeout=10) as resp:
+            text = resp.read()
+        request = urllib.request.Request(target, data=text, headers=headers)
+        with urllib.request.urlopen(request, timeout=20):
+            return 0
+    except (OSError, ValueError) as e:
+        print(f"metrics push failed: {e}", file=sys.stderr)
+        return 1
+
+
+# ---------------------------------------------------------------- bootstrap
+
+BLOCK_START = "<!-- tatara:{name} -->"
+BLOCK_END = "<!-- /tatara:{name} -->"
+DIRECTIVES = {
+    "headless": (
+        "You run headless: nobody answers questions. Decide on your own, "
+        "and report blockers through the tatara tools instead of asking."
+    ),
+    "auto-push": (
+        "Commit your work on the task branch and push it to origin as you go; "
+        "unpushed work is lost when the pod is replaced."
+    ),
+}
+
+
+def drop_block(text: str, name: str) -> str:
+    start, end = BLOCK_START.format(name=name), BLOCK_END.format(name=name)
+    head, found, rest = text.partition(start)
+    if not found:
+        return text
+    return head + rest.partition(end)[2].lstrip("\n")
+
+
+def write_directives(config_dir: Path) -> None:
+    """Add the directive blocks to CLAUDE.md, replacing earlier copies so reruns do not stack."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    target = config_dir / "CLAUDE.md"
+    text = target.read_text() if target.exists() else ""
+    for name, body in DIRECTIVES.items():
+        text = drop_block(text, name).rstrip("\n")
+        block = f"{BLOCK_START.format(name=name)}\n{body}\n{BLOCK_END.format(name=name)}\n"
+        text = (text + "\n\n" if text else "") + block
+    write_atomic(target, text)
+
+
+def repo_specs() -> list[tuple[str, str]]:
+    raw = os.environ.get("TATARA_REPOS")
+    if raw:
+        items = json.loads(raw)
+        if not isinstance(items, list):
+            raise ValueError("TATARA_REPOS must be a JSON list of {url, branch}")
+        return [(str(i["url"]), str(i.get("branch") or "main")) for i in items]
+    url = os.environ.get("REPO_URL")
+    return [(url, os.environ.get("REPO_BRANCH") or "main")] if url else []
+
+
+def owner_repo(url: str) -> Path:
+    parts = [p for p in url.replace(":", "/").rstrip("/").split("/") if p]
+    name = parts[-1].removesuffix(".git")
+    return Path(parts[-2] if len(parts) > 1 else "_") / name
+
+
+def clone_env() -> dict[str, str]:
+    env = dict(os.environ)
+    token = env.get("GIT_TOKEN")
+    if token:  # config via env keeps the token out of argv
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        env.update(
+            GIT_CONFIG_COUNT="1",
+            GIT_CONFIG_KEY_0="http.extraHeader",
+            GIT_CONFIG_VALUE_0=f"Authorization: Basic {basic}",
+        )
+    return env
+
+
+def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, env=clone_env(), capture_output=True, text=True, check=False
+    )
+
+
+def must_git(args: list[str], cwd: Path, what: str) -> str:
+    result = run_git(args, cwd)
+    if result.returncode != 0:
+        raise RuntimeError(f"{what} failed: {(result.stderr or result.stdout).strip()}")
+    return result.stdout
+
+
+def prepare_repo(workdir: Path, url: str, base: str, task_branch: str, full: bool) -> None:
+    dest = workdir / owner_repo(url)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not (dest / ".git").exists():
+        depth = [] if full else ["--depth", "1"]
+        must_git(["clone", *depth, "--branch", base, url, str(dest)], workdir, f"clone {url}")
+    if not task_branch:
+        return
+    listed = run_git(["ls-remote", "--exit-code", "--heads", "origin", task_branch], dest)
+    if listed.returncode == 0:
+        depth = [] if full else ["--depth", "1"]
+        refspec = f"+refs/heads/{task_branch}:refs/remotes/origin/{task_branch}"
+        must_git(["fetch", *depth, "origin", refspec], dest, f"fetch {task_branch}")
+        must_git(["checkout", "-B", task_branch, f"origin/{task_branch}"], dest, "checkout")
+    else:
+        must_git(["checkout", "-B", task_branch], dest, f"create {task_branch}")
+
+
+def bootstrap() -> int:
+    """A skeleton of tatara's bootstrap, not a port: it clones the repos, puts the task branch
+    in place, writes the CLAUDE.md directive blocks and the MCP config. Tatara's Go bootstrap
+    does more (credentials helpers, sparse checkouts, retries) and stays the reference."""
+    workdir = Path.cwd()
+    try:
+        specs = repo_specs()
+        mcp = os.environ.get("TATARA_EXTRA_MCP_SERVERS")
+        servers = json.loads(mcp) if mcp else None
+        if servers is not None and not isinstance(servers, dict):
+            raise ValueError("TATARA_EXTRA_MCP_SERVERS must be a JSON object")
+        full = (os.environ.get("TATARA_WORKSPACE_FULL_CLONE") or "").lower() in {"1", "true", "yes"}
+        task_branch = os.environ.get("TASK_BRANCH") or ""
+        for url, base in specs:
+            prepare_repo(workdir, url, base, task_branch, full)
+        config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        if config_dir:
+            write_directives(Path(config_dir))
+        if servers:
+            write_atomic(workdir / ".mcp.json", json.dumps({"mcpServers": servers}, indent=2))
+    except (RuntimeError, ValueError, KeyError, TypeError, OSError) as e:
+        print(f"bootstrap: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 COMMANDS = {
     "finalize": finalize,
     "capture-issue": capture_issue,
     "outcome-result": outcome_result,
     "outcome-gate": outcome_gate,
     "statusline": statusline,
+    "ttl-gate": ttl_gate,
+    "safety-push": safety_push,
+    "metrics-push": metrics_push,
+    "bootstrap": bootstrap,
 }
 
 

@@ -2,17 +2,48 @@
 # The hook script is tatara/tatara_hooks.py (python stdlib only); install it at $TATARA_HOOKS.
 # Environment: TATARA_TASK (task name), CALLBACK_HMAC_SECRET and DEFAULT_CALLBACK_URL (finaliser),
 # MAX_OUTCOME_REPROMPTS (default 2, always kept below claude's cap of 8 Stop blocks per turn).
+# Lifecycle: AGENT_POD_TTL_SECONDS (ttl-gate), BRANCH_PUSH_INTERVAL_SECONDS (safety-push),
+# OPERATOR_PUSH_URL, RUN_ID and POD_NAME (metrics-push), TATARA_REPOS or REPO_URL/REPO_BRANCH,
+# TASK_BRANCH and TATARA_EXTRA_MCP_SERVERS (bootstrap). MODEL, EFFORT and PERMISSION_MODE tune claude.
 
 init:
   git:
     user_name: ${GIT_USER_NAME:-tatara}
     user_email: ${GIT_USER_EMAIL:-tatara@localhost}
+  # Skeleton of tatara's bootstrap; runs once with the allow-listed tool env (claude.passthrough_env).
+  setup_commands:
+    - ${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} bootstrap
 
 claude:
   env:
     claude_code_oauth_token: ${CLAUDE_CODE_OAUTH_TOKEN:-}
     disable_autoupdater: true
-  permission_mode: bypassPermissions
+  model: ${MODEL:-}
+  effort: ${EFFORT:-}
+  permission_mode: ${PERMISSION_MODE:-bypassPermissions}
+  # Explicit globs plus excludes, never "*". Hook-only secrets stay out of claude and the tools.
+  passthrough_env:
+    - TATARA_*
+    - CLI_OIDC_*
+    - OIDC_ISSUER
+    - RUN_ID
+    - POD_NAME
+    - GIT_TOKEN
+    - REPO_URL
+    - REPO_BRANCH
+    - TASK_BRANCH
+    - MISE_ALWAYS_KEEP_DOWNLOAD
+  passthrough_env_exclude:
+    - CALLBACK_HMAC_SECRET
+    - OPERATOR_PUSH_*
+  permissions:
+    deny:
+      - EnterPlanMode
+      - ExitPlanMode
+      - Bash(git push --force*)
+      - Bash(git push -f*)
+      - Bash(git push * --delete*)
+      - Bash(rm -rf /*)
   settings:
     # Runs inside claude: persists the account rate limits that the finaliser reports.
     statusLine:
@@ -21,8 +52,32 @@ claude:
 
 sessions:
   idle_timeout_seconds: 0
+  # Pod policy: the service exits when claude is dead for good, so the pod restarts.
+  exit_when_dead: true
+  probe_alive_token: TATARA-ALIVE
+  restart_continue_prompt: "Claude was restarted. Continue the task where you left off."
+  ask_user_question: deny
 
 hooks:
+  onTurn:
+    # Pod TTL: deny ordinary turns once AGENT_POD_TTL_SECONDS passed; one handoff turn is admitted.
+    - type: command
+      run: ${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} ttl-gate
+      blocking: true
+      on_error: allow
+  onTick:
+    # Push only, never commit: the finaliser owns commits.
+    - type: command
+      run: ${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} safety-push
+      interval_seconds: ${BRANCH_PUSH_INTERVAL_SECONDS:-120}
+      when: busy
+      blocking: false
+      timeout_seconds: 120
+    - type: command
+      run: ${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} metrics-push
+      interval_seconds: 30
+      when: always
+      blocking: false
   onAgentToolCall:
     # Record tatara's internal-issue reports; always allowed.
     - type: command
