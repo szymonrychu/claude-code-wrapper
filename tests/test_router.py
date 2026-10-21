@@ -450,6 +450,7 @@ async def test_exception_in_handler_returns_allow(tmp_path):
         "PostToolUse", {"tool_use_id": "t", "tool_name": "Bash", "tool_response": "ok"}
     )
     assert r == {"stdout": "", "stderr": "", "exit_code": 0}
+    await h.router.drain(5)
     (ev,) = h.events("error")
     assert ev.data["kind"] == "hook_relay" and "kaput" in ev.data["message"]
     assert h.hook_posts[0]["event"] == "onError"

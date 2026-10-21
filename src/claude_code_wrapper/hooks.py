@@ -330,7 +330,9 @@ class HookDispatcher:
             res.ok = False
             res.error = self._redactor.redact(str(e) or type(e).__name__)
             res.decision = action.on_error if action.blocking else "allow"
-            if res.decision == "deny":
+            if event == "onStop" and res.decision == "deny":
+                res.decision = "block"  # onStop has no deny: a failed gate blocks the stop
+            if res.decision in ("deny", "block"):
                 res.reason = f"hook {event}[{index}] failed: {res.error}"
             if not action.blocking:
                 log.warning("hook %s[%d] failed: %s", event, index, res.error)
