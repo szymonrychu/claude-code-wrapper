@@ -5,7 +5,7 @@ repo: .
 value: Closes the fail-open and hardening findings of the epic review before the epic closes
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py, tests/test_epic_review_fixes.py, README.md]
 verify: "uv run pytest tests/test_epic_review_fixes.py -q && mise run lint && mise run test"
-depends_on: []
+depends_on: [magic-trainer-example, tests-test-session-boot-py-t]
 owns: []
 uses: []
 model: sonnet
@@ -51,17 +51,18 @@ Epic-review remediation (whole-diff review + security review, 2026-10-21). Fix a
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+Keeps: router.gate_fail_mode(hooks, tool_name|None) semantics (None = every blocking onAgentToolCall action), hooks.EVENT_DECISIONS, the onStop decision set allow|block|defer, the relay deny output shape, tatara_hooks.py CLI subcommands.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+No PreToolUse or onStop path fails open when a deny gate is configured; the fail-closed deny is not delayed by onError hooks; the hook state dir is 0700; the tatara finaliser never signs with an empty key. Full suite green.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_epic_review_fixes.py with the five AC-named tests; run `uv run pytest tests/test_epic_review_fixes.py -q`: expect 5 failures for the reasons in the requirement.
+- Fix router.py (items 1, 3), hooks.py (item 2), manager.py (item 4), tatara_hooks.py (item 5); README onStop note (item 2).
+- Run `uv run pytest tests/test_epic_review_fixes.py -q`: 5 passed; then `mise run lint && mise run test`: all passed.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Findings come from the epic whole-diff review and security review (router.py ~366-372 except branch, hooks.py `_run` ~330-345, manager.py ~1179 state_dir mkdir, tatara_hooks.py ~282 CALLBACK_HMAC_SECRET). Use the existing `world` fixture (tests/conftest.py) and fake claude; do not edit tests/conftest.py or tests/fake_claude. Dismissed by the orchestrator: DELETE/turn body read before size cap (authenticated callers only), /metrics unauthenticated (by design), HMAC timestamp (would break the tatara operator contract).

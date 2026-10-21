@@ -37,7 +37,7 @@ ccw already matches the tatara and magic-trainer harnesses on the interactive co
 
 ## Time
 
-Estimate: 1380 min | Actual: 96 min | Remaining estimate: 0 min
+Estimate: 1440 min | Actual: 96 min | Remaining estimate: 60 min
 
 ## Review
 
