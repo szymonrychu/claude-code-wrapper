@@ -651,6 +651,34 @@ event: turn_failed
 data: {"seq":15,"ts":"2026-10-20T09:03:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_failed","data":{"record":{"turn_id":"turn-1k9x2p1b8c0e","state":"failed","error":"claude_exited","...":"..."}}}
 ```
 
+### `turn_continued`
+
+Emitted when a blocking `onStop` action blocked the end of the running turn: claude was sent back
+to work with the reason and the turn stays `running` (the session stays `busy`). No
+`onTurnComplete` and no callback; the turn completes on a later allowed Stop.
+
+`data`: `turn_id`, `reason` (what claude was told), `stop_hook_active` (true when this Stop
+already followed an earlier block).
+
+```
+event: turn_continued
+data: {"seq":10,"ts":"2026-10-20T09:01:05.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_continued","data":{"turn_id":"turn-1k9x2m0q4zw8","reason":"write outcome.json first","stop_hook_active":false}}
+```
+
+### `turn_deferred`
+
+Emitted when the end of the running turn was deferred, by `sessions.defer_stop_on_background_tasks`
+or an `onStop` `defer`: claude was answered allow, but the turn stays `running` and the session
+`busy` until a later Stop is allowed. `sessions.turn_stall_seconds`, `limits.turn_max_seconds` and
+interrupt still apply to it.
+
+`data`: `turn_id`, `background_tasks` (the Stop payload's list, `[]` when absent).
+
+```
+event: turn_deferred
+data: {"seq":11,"ts":"2026-10-20T09:01:06.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_deferred","data":{"turn_id":"turn-1k9x2m0q4zw8","background_tasks":[{"id":"b1","type":"local_bash","status":"running","description":"npm test"}]}}
+```
+
 ### `assistant_text`
 
 Emitted for each assistant text block read from the transcript (main thread and subagents).
@@ -789,7 +817,8 @@ data: {"seq":20,"ts":"2026-10-20T09:02:03.250Z","session_id":"ses_3f9a1c0b7d42",
 Emitted for every user hook action that ran (command or webhook), blocking or not.
 
 `data`: `event` (hook event name), `index` (action index in the event's list), `type` (`command` or
-`webhook`), `ok` (false when the action errored), `decision` (`allow` or `deny`), `duration_ms`,
+`webhook`), `ok` (false when the action errored), `decision` (`allow`, `deny`, `block` or
+`defer`, as honoured by the event), `duration_ms`,
 `error` (null or the redacted failure), `output` (only when the action returned one), and
 `invalid_decision` (only when the action returned a decision its event does not honour).
 
@@ -879,6 +908,8 @@ Semantics:
 - Non-blocking actions run in the background and never delay anything; they are drained on shutdown.
 - Blocking actions are awaited. Where the event can veto (`onCreate`, `onResume`, `onTurn`,
   `onAgentToolCall`), any blocking `deny` wins across actions. On other events `deny` is ignored.
+  On `onStop` the strictest decision wins: `block` over `defer` over `allow`; the reason is the
+  first such action's (index order).
 - A blocking action that errors or times out follows its `on_error`; a non-blocking failure is
   only logged. Every action run emits a `hook_result` event.
 - Payloads are redacted of secrets before delivery.
@@ -927,6 +958,51 @@ Trigger: every terminal turn state: the Stop relay for `completed`, and the rout
 `interrupted` and `timeout`. Cannot veto. `data`: the full turn record (same fields as
 `GET /v1/sessions/{id}/turns/{turn_id}`), with `state` telling which terminal state was reached.
 Turn callbacks (`callbackUrl`) follow the same rule.
+
+### `onStop`
+
+Trigger: Claude's Stop, relayed when it would end the running turn (a busy session, this
+session's claude session id, the running turn's marker). A Stop with no turn running (a
+background completion, recorded as an `origin: "agent"` turn) and a stale or foreign Stop fire no
+`onStop`. Only the lead's Stop is gated: teammates fire `TeammateIdle`, not the parent Stop.
+`data`: `turn_id`, `stop_hook_active` (true when this Stop follows a block), `last_assistant_message`,
+`background_tasks`, `session_crons` (lists from the Stop payload, `[]` when absent),
+`transcript_path` (null when absent).
+
+Decisions (blocking actions; any other decision, `deny` included, is treated as `allow` and
+recorded as `invalid_decision`):
+
+- `allow`: the turn completes as usual (one `turn_completed`, one `onTurnComplete`, one callback);
+  its usage is summed over every leg of the turn.
+- `block` with a `reason`: claude gets `{"decision": "block", "reason": R}` from the relay and
+  keeps working on the same turn; the turn stays `running`, a `turn_continued` event is logged.
+  A command action exiting `2` is a block with its trimmed stderr as the reason.
+- `defer`: claude is answered allow, but the turn stays `running` and the session `busy`; a
+  `turn_deferred` event is logged. `turn_stall_seconds`, `limits.turn_max_seconds` and interrupt
+  still end it; a later Stop that is allowed completes it.
+
+Claude caps consecutive Stop blocks at 8 per turn and then ends the turn regardless, so a gate
+script must count its blocks itself, for example in a file under `CCW_STATE_DIR`, and allow
+before the cap:
+
+```sh
+#!/bin/sh
+# outcome-gate.sh: send claude back until outcome.json exists, at most 3 times per turn
+payload=$(cat)
+turn=$(printf '%s' "$payload" | jq -r '.turn_id')
+count_file="$CCW_STATE_DIR/stop-blocks-$turn"
+n=$(cat "$count_file" 2>/dev/null || echo 0)
+if [ ! -f "$CCW_WORKDIR/outcome.json" ] && [ "$n" -lt 3 ]; then
+  echo $((n + 1)) > "$count_file"
+  echo "write outcome.json before you finish" >&2
+  exit 2
+fi
+exit 0
+```
+
+`sessions.defer_stop_on_background_tasks: true` adds a built-in defer, decided before the hooks:
+a Stop whose `background_tasks` is non-empty is at least a `defer`. A hook `allow` cannot lift it;
+a hook `block` wins over it. With no `onStop` action and the flag off nothing changes.
 
 ### `onAgentResponse`
 
@@ -983,8 +1059,8 @@ hook (onCreate) fires, kept across stop and resume and removed by purge. `CCW_AP
 service environment. The working directory is the session workdir. The process runs in its own
 process group and is killed with its children on timeout.
 
-Exit codes: `0` allow; `2` deny, with trimmed stderr (up to 2000 chars) as the reason; any other
-exit code, or a timeout, is an error handled by `on_error`.
+Exit codes: `0` allow; `2` deny (a block on `onStop`), with trimmed stderr (up to 2000 chars) as
+the reason; any other exit code, or a timeout, is an error handled by `on_error`.
 
 Stdout on exit 0 may be a JSON object; other output is ignored:
 
@@ -992,7 +1068,7 @@ Stdout on exit 0 may be a JSON object; other output is ignored:
 {"decision": "deny", "reason": "writes are blocked", "additional_context": "Use the staging branch."}
 ```
 
-`decision` is `allow`, `deny`, `block` or `defer`, `reason` is shown to Claude on a deny,
+`decision` is `allow`, `deny`, `block` or `defer`, `reason` is shown to Claude on a deny or block,
 `additional_context` is appended to what Claude sees (for `onAgentToolCall` and `onToolResult`).
 Two more optional fields, honoured on blocking actions only (a non-blocking action's are ignored):
 
@@ -1008,6 +1084,7 @@ Decisions each event honours:
 | Event | Honoured decisions |
 |---|---|
 | `onCreate`, `onResume`, `onTurn`, `onAgentToolCall` | `allow`, `deny` |
+| `onStop` | `allow`, `block`, `defer` |
 | every other event | `allow` |
 
 A decision the event does not honour is treated as `allow`; the `hook_result` event records the
@@ -1782,6 +1859,7 @@ hooks:
 | `hooks.onDestroy` | list | `[]` | - | List of hook actions run after claude stopped. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onTurn` | list | `[]` | - | List of hook actions run before the prompt is pasted; a blocking deny vetoes the turn. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onTurnComplete` | list | `[]` | - | List of hook actions run on every terminal turn state. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.onStop` | list | `[]` | - | List of hook actions run when claude's Stop would end the running turn; a blocking block continues the turn, a defer holds it open. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [`onStop`](#onstop). |
 | `hooks.onAgentResponse` | list | `[]` | - | List of hook actions run for assistant text read from the transcript. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onAgentToolCall` | list | `[]` | - | List of hook actions run on PreToolUse; a blocking deny blocks the tool call; `matcher` allowed. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onToolResult` | list | `[]` | - | List of hook actions run on PostToolUse and PostToolUseFailure; `matcher` allowed. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
@@ -1810,6 +1888,7 @@ sessions:
 | `sessions.ask_user_question` | enum (forward, deny, allow) | `"forward"` | - | `forward` surfaces AskUserQuestion as a question event, `deny` refuses it, `allow` lets claude ask in the TUI. |
 | `sessions.turn_marker` | boolean | `true` | - | Tag each turn so completion can be correlated with its prompt. |
 | `sessions.resume_on_start` | boolean | `false` | - | Resume known sessions when the service starts instead of listing them as stopped. |
+| `sessions.defer_stop_on_background_tasks` | boolean | `false` | - | Keep the running turn open (`turn_deferred`) while a Stop reports non-empty `background_tasks`; a later Stop with none completes it. See [`onStop`](#onstop). |
 
 ### `limits`
 

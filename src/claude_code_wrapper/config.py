@@ -31,6 +31,7 @@ HOOK_EVENTS: tuple[str, ...] = (
     "onDestroy",
     "onTurn",
     "onTurnComplete",
+    "onStop",
     "onAgentResponse",
     "onAgentToolCall",
     "onToolResult",
@@ -403,6 +404,7 @@ class HooksConfig(_Model):
     onDestroy: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onTurn: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onTurnComplete: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
+    onStop: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onAgentResponse: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onAgentToolCall: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onToolResult: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
@@ -437,6 +439,7 @@ class SessionsConfig(_Model):
     ask_user_question: Literal["forward", "deny", "allow"] = "forward"
     turn_marker: bool = True
     resume_on_start: bool = False
+    defer_stop_on_background_tasks: bool = False
 
 
 class LimitsConfig(_Model):

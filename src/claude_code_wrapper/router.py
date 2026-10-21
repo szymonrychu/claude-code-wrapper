@@ -58,6 +58,7 @@ QUESTION_DENY_REASON = (
     "end your turn now and wait for their reply in the next message."
 )
 DEFAULT_DENY_REASON = "Denied by a wrapper hook."
+DEFAULT_BLOCK_REASON = "A wrapper onStop hook asked you to continue."
 #: Seconds `close()` waits for background hooks and callbacks before cancelling them.
 CLOSE_DRAIN_SECONDS = 5.0
 
@@ -99,6 +100,18 @@ def _additional_context(event_name: str, context: str) -> str:
     return json.dumps(
         {"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": context}}
     )
+
+
+def _block_output(reason: str) -> str:
+    return json.dumps({"decision": "block", "reason": reason})
+
+
+def _str_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _list_or_empty(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list) else []
 
 
 def _response_text(payload: Mapping[str, Any]) -> str:
@@ -402,6 +415,9 @@ class SessionRouter(SessionListener):
 
     async def _on_stop(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         await self._flush_transcripts()
+        held = await self._stop_gate(payload)
+        if held is not None:
+            return held
         per_model = self._usage.as_dict()
         usage: dict[str, int] | None = None
         if per_model:
@@ -424,6 +440,48 @@ class SessionRouter(SessionListener):
             event = self._emit_turn_event("turn_completed", record)
             await self._after_turn(record, event)
         return _allow()
+
+    async def _stop_gate(self, payload: Mapping[str, Any]) -> RelayResponse | None:
+        """onStop for a Stop that would end the running turn; the relay answer if it stays open.
+
+        None means "complete as today": no gate is configured, the Stop does not target the
+        running turn (stale, foreign, or a background completion while ready), or the gate
+        allowed it. A block sends claude back to work with the reason, a defer answers claude
+        allow; either way the turn stays running and busy and its usage keeps accumulating.
+        """
+        sessions = self._cfg.sessions
+        if not (self._cfg.hooks.onStop or sessions.defer_stop_on_background_tasks):
+            return None
+        session = self.session
+        record = session.stop_target(payload, self._last_marker)
+        if record is None or record is not session.current_turn:
+            return None
+        tasks = _list_or_empty(payload.get("background_tasks"))
+        active = bool(payload.get("stop_hook_active"))
+        data = {
+            "turn_id": record.turn_id,
+            "stop_hook_active": active,
+            "last_assistant_message": _str_or_none(payload.get("last_assistant_message")),
+            "background_tasks": tasks,
+            "session_crons": _list_or_empty(payload.get("session_crons")),
+            "transcript_path": _str_or_none(payload.get("transcript_path")),
+        }
+        # The built-in defer is decided first; a hook allow cannot lift it, a hook block wins.
+        builtin_defer = sessions.defer_stop_on_background_tasks and bool(tasks)
+        outcome = await self._fire("onStop", data, turn_id=record.turn_id)
+        if record.terminal:
+            return _allow()  # the turn ended (interrupt, timeout, exit) while the gate ran
+        if outcome.decision == "block":
+            reason = outcome.reason or DEFAULT_BLOCK_REASON
+            self._emit(
+                "turn_continued",
+                {"turn_id": record.turn_id, "reason": reason, "stop_hook_active": active},
+            )
+            return {"stdout": _block_output(reason), "stderr": "", "exit_code": 0}
+        if outcome.decision == "defer" or builtin_defer:
+            self._emit("turn_deferred", {"turn_id": record.turn_id, "background_tasks": tasks})
+            return _allow()
+        return None
 
     async def _on_subagent(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         started = event_name == "SubagentStart"

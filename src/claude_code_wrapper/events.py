@@ -23,6 +23,8 @@ EVENT_TYPES: list[str] = [
     "turn_rejected",
     "turn_completed",
     "turn_failed",
+    "turn_continued",
+    "turn_deferred",
     "assistant_text",
     "thinking",
     "tool_call",

@@ -39,10 +39,13 @@ OUTPUT_CAP_BYTES = 256 * 1024
 ANNOTATIONS_CAP_BYTES = 16 * 1024
 PARSED_DECISIONS = ("allow", "deny", "block", "defer")
 # Decisions each event honours; anything else is treated as allow. The one place
-# that knows deny only counts on VETO_EVENTS.
+# that knows deny only counts on VETO_EVENTS and block/defer only on onStop.
 EVENT_DECISIONS: dict[str, tuple[str, ...]] = {
     event: ("allow", "deny") if event in VETO_EVENTS else ("allow",) for event in HOOK_EVENTS
 }
+EVENT_DECISIONS["onStop"] = ("allow", "block", "defer")
+#: Across blocking actions the strictest honoured decision wins.
+DECISION_RANK = {"allow": 0, "defer": 1, "block": 2, "deny": 2}
 
 
 def build_payload(
@@ -255,8 +258,8 @@ class HookDispatcher:
             outcome.results.append(res)
             if res.additional_context:
                 contexts.append(res.additional_context)
-            if res.decision == "deny" and outcome.decision == "allow":
-                outcome.decision = "deny"
+            if DECISION_RANK[res.decision] > DECISION_RANK[outcome.decision]:
+                outcome.decision = res.decision
                 outcome.reason = res.reason
             if res.annotations:
                 outcome.annotations.update(res.annotations)
@@ -394,7 +397,8 @@ class HookDispatcher:
             return _parse_decision(out.decode(errors="replace"))
         stderr = err.decode(errors="replace").strip()
         if code == 2:
-            return {"decision": "deny", "reason": stderr[:STDERR_CAP]}
+            decision = "block" if event == "onStop" else "deny"
+            return {"decision": decision, "reason": stderr[:STDERR_CAP]}
         raise RuntimeError(f"exit {code}: {stderr[:200]}" if stderr else f"exit {code}")
 
     async def _webhook(

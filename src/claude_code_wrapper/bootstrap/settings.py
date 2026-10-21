@@ -19,6 +19,7 @@ _GATED_EVENTS = (
     "onAgentToolCall",
     "onToolResult",
     "onTurnComplete",
+    "onStop",
     "onSubagentStart",
     "onSubagentStop",
 )

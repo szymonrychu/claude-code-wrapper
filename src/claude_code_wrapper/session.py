@@ -722,19 +722,15 @@ class Session:
         record.tool_calls += 1
         self._persist(record)
 
-    def complete(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        usage: dict[str, Any] | None = None,
-        model_tokens: dict[str, Any] | None = None,
-        marker_turn_id: str | None = None,
+    def stop_target(
+        self, payload: Mapping[str, Any], marker_turn_id: str | None = None
     ) -> TurnRecord | None:
-        """Apply a Stop hook payload; the completed record, or None when it was stale.
+        """The record a Stop hook payload applies to, or None when it is stale.
 
         A Stop for another claude session, a booting or dead session, or (while busy) carrying
-        the marker of another turn changes nothing. A Stop while ready with no turn running is
-        a background completion (Workflow, Monitor) and becomes an `origin="agent"` record.
+        the marker of another turn targets nothing. While busy it targets the running turn
+        (`current_turn`). A Stop while ready with no turn running is a background completion
+        (Workflow, Monitor) and targets a new, not yet persisted `origin="agent"` record.
         """
         if payload.get("session_id") != self.spec.claude_session_id:
             log.info(
@@ -753,16 +749,29 @@ class Session:
                     record.turn_id,
                 )
                 return None
-        elif self.state == "ready" and record is None:
+            return record
+        if self.state == "ready" and record is None:
             now = now_iso()
-            record = TurnRecord(
+            return TurnRecord(
                 turn_id=new_turn_id(),
                 session_id=self.spec.session_id,
                 origin="agent",
                 started_at=now,
                 last_activity_at=now,
             )
-        else:
+        return None
+
+    def complete(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        usage: dict[str, Any] | None = None,
+        model_tokens: dict[str, Any] | None = None,
+        marker_turn_id: str | None = None,
+    ) -> TurnRecord | None:
+        """Apply a Stop hook payload to its `stop_target`; the completed record, or None."""
+        record = self.stop_target(payload, marker_turn_id)
+        if record is None:
             return None
         message = payload.get("last_assistant_message")
         record.final_text = message if isinstance(message, str) else None
