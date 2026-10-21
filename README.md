@@ -971,9 +971,16 @@ failure. Cannot veto. `data`: `kind` (`fatal`, `exited`, `restart`, `hook_relay`
 
 ### Command actions
 
-The payload envelope is written to stdin. Environment: the service's child environment plus the
-action's `env`, and `CCW_EVENT`, `CCW_SESSION_ID`, `CCW_TURN_ID`, `CCW_WORKDIR`,
-`CCW_CLAUDE_CONFIG_DIR`. The working directory is the session workdir. The process runs in its own
+The payload envelope is written to stdin. Environment: the FULL service environment (every
+variable of the ccw process, including secrets such as `CCW_AUTH_TOKEN`), then the action's `env`,
+then `CCW_EVENT`, `CCW_SESSION_ID`, `CCW_TURN_ID`, `CCW_WORKDIR`, `CCW_CLAUDE_CONFIG_DIR`,
+`CCW_STATE_DIR` and `CCW_API_URL` (service-managed, they win over the action's `env`).
+`CCW_STATE_DIR` is `<session_dir>/hook-state`, a per-session directory created before the first
+hook (onCreate) fires, kept across stop and resume and removed by purge. `CCW_API_URL` is
+`http://127.0.0.1:<public port>`. `CCW_CLAUDE_CONFIG_DIR` is the same path as the session's
+`CLAUDE_CONFIG_DIR`. By contrast `init.setup_commands` get the allow-listed tool environment
+(base vars, passthrough, claude env, mise, `CLAUDE_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`), not the full
+service environment. The working directory is the session workdir. The process runs in its own
 process group and is killed with its children on timeout.
 
 Exit codes: `0` allow; `2` deny, with trimmed stderr (up to 2000 chars) as the reason; any other

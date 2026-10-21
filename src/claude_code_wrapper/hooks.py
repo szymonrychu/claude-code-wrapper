@@ -206,6 +206,8 @@ class HookDispatcher:
         base_env: Mapping[str, str],
         default_cwd: str | Path,
         config_dir: str | Path | None = None,
+        state_dir: str | Path | None = None,
+        api_url: str = "",
         transport: httpx.AsyncBaseTransport | None = None,
         on_result: Callable[[ActionResult], None] | None = None,
     ) -> None:
@@ -214,6 +216,8 @@ class HookDispatcher:
         self._base_env = dict(base_env)
         self._default_cwd = str(default_cwd)
         self._config_dir = str(config_dir) if config_dir is not None else ""
+        self._state_dir = str(state_dir) if state_dir is not None else ""
+        self._api_url = api_url
         self._transport = transport
         self._on_result = on_result
         self._pending: set[asyncio.Task[Any]] = set()
@@ -361,6 +365,8 @@ class HookDispatcher:
             "CCW_TURN_ID": str(payload.get("turn_id") or ""),
             "CCW_WORKDIR": str(payload.get("workdir") or ""),
             "CCW_CLAUDE_CONFIG_DIR": self._config_dir,
+            "CCW_STATE_DIR": self._state_dir,
+            "CCW_API_URL": self._api_url,
         }
         proc = await asyncio.create_subprocess_exec(
             "sh",

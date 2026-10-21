@@ -197,6 +197,7 @@ async def _run(
             cfg,
             internal_url=f"http://{INTERNAL_HOST}:{handle.internal_port}",
             service_env=dict(os.environ),
+            api_url=f"http://127.0.0.1:{handle.public_port}",
             redactor=redactor,
             metrics=metrics,
         )
