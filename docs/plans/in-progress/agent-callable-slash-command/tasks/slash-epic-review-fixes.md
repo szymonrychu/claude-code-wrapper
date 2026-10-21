@@ -1,6 +1,6 @@
 ---
 title: Slash epic review fixes
-status: todo
+status: in-progress
 repo: .
 value: Closes a high-severity command-smuggling hole and a tool schema the Anthropic API may reject before the epic closes
 files: [src/claude_code_wrapper/commands.py, src/claude_code_wrapper/mcp_server.py, src/claude_code_wrapper/data/config.example.yaml, README.md, tests/test_slash_review_fixes.py, tests/test_command_registry.py, tests/test_mcp_server.py]
@@ -12,8 +12,8 @@ model: sonnet
 estimate: 75
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--slash-epic-review-fixes
+branch: agent-callable-slash-command--slash-epic-review-fixes
 verified_head: ""
 run: ""
 provides: []
