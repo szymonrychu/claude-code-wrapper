@@ -1,6 +1,6 @@
 ---
 title: tatara example turn hooks
-status: in-progress
+status: escalated
 repo: .
 value: "A tested worked example of tatara's finaliser, issue capture, outcome gate and statusline as ccw hooks"
 files: [src/claude_code_wrapper/data/examples/tatara.config.yaml, src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py, examples/tatara.config.yaml, README.md, tests/test_example_tatara.py]
@@ -14,11 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--tatara-example-turn-hooks
 branch: hook-capabilities-for-tatara--tatara-example-turn-hooks
-verified_head: ""
+verified_head: 37c838cd4d6c982af6e282c2e3dfaa15114f6918
 run: hook-capabilities-for-tatara
 provides: []
 acs_for_audit: []
-process_gaps: []
+process_gaps: ["Verifier 'worktree not clean' is an artifact: examples/tatara.config.yaml is a regular 59-byte file containing the link text in the working tree, while HEAD stores it as a symlink (mode 120000). The committed tree is correct. In the dirty worktree the two symlink-dependent tests fail (test_tatara_config_loads_and_ships, test_every_example_config_loads[tatara.config.yaml]). Restoring the symlink (git checkout -- examples/tatara.config.yaml) clears it.", "Red/green evidence for the TDD gate. This round changed only tests; the script and config were committed with their tests in 4e580c2. The orchestrator owns the tests.red record."]
 ---
 
 # tatara example turn hooks

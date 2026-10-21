@@ -1,6 +1,6 @@
 ---
 title: tatara example lifecycle
-status: in-progress
+status: todo
 repo: .
 value: "A tested worked example of tatara's bootstrap, TTL gate, safety and metrics pushes and pod policy as ccw config"
 files: [src/claude_code_wrapper/data/examples/tatara.config.yaml, src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py, README.md, tests/test_example_tatara_lifecycle.py]
