@@ -49,6 +49,7 @@ class StubSession:
         self.reject: str | None = None
         self.state = "ready"
         self.submitted_turn_ids: list[str | None] = []
+        self.command_active = False
 
     @property
     def current_turn(self):
