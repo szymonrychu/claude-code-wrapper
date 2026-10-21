@@ -1,6 +1,6 @@
 ---
 title: Epic review fixes
-status: in-progress
+status: escalated
 repo: .
 value: Closes the fail-open and hardening findings of the epic review before the epic closes
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py, tests/test_epic_review_fixes.py, README.md]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--epic-review-fixes
 branch: hook-capabilities-for-tatara--epic-review-fixes
-verified_head: ""
-run: ""
+verified_head: unknown
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Epic review fixes
@@ -32,11 +34,11 @@ Epic-review remediation (whole-diff review + security review, 2026-10-21). Fix a
 
 ## Acceptance conditions
 
-- AC1: a PreToolUse payload without tool_name plus a dispatcher exception is denied when a matcher-scoped on_error deny gate exists [evidence: test:tests/test_epic_review_fixes.py::test_pretooluse_missing_tool_name_fails_closed]
-- AC2: a crashing blocking onStop action with on_error deny blocks the Stop with its reason [evidence: test:tests/test_epic_review_fixes.py::test_onstop_on_error_deny_blocks]
-- AC3: the PreToolUse fail-closed deny is returned without waiting for a slow onError hook [evidence: test:tests/test_epic_review_fixes.py::test_pretooluse_deny_not_delayed_by_onerror]
-- AC4: CCW_STATE_DIR is created with mode 0o700 [evidence: test:tests/test_epic_review_fixes.py::test_state_dir_mode_0700]
-- AC5: the tatara finaliser refuses to post with an empty CALLBACK_HMAC_SECRET [evidence: test:tests/test_epic_review_fixes.py::test_tatara_finaliser_refuses_empty_secret]
+- AC1: a PreToolUse payload without tool_name plus a dispatcher exception is denied when a matcher-scoped on_error deny gate exists [evidence: test:tests/test_epic_review_fixes.py::test_pretooluse_empty_tool_name_fails_closed]
+- AC2: a crashing blocking onStop action with on_error deny blocks the Stop with its reason [evidence: test:tests/test_epic_review_fixes.py::test_failed_blocking_onstop_with_deny_blocks]
+- AC3: the PreToolUse fail-closed deny is returned without waiting for a slow onError hook [evidence: test:tests/test_epic_review_fixes.py::test_relay_deny_returned_before_slow_on_error]
+- AC4: CCW_STATE_DIR is created with mode 0o700 [evidence: test:tests/test_epic_review_fixes.py::test_hook_state_dir_is_private]
+- AC5: the tatara finaliser refuses to post with an empty CALLBACK_HMAC_SECRET [evidence: test:tests/test_epic_review_fixes.py::test_callback_refuses_empty_hmac_secret]
 - AC6: README onStop section states that on_error deny maps to block [evidence: command:grep -qi "on_error: deny" README.md]
 - AC7: lint and the full suite stay green [evidence: command:mise run lint && mise run test]
 
