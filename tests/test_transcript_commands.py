@@ -104,7 +104,8 @@ def test_sidechain_flag_and_redaction():
         {
             "type": "user",
             "message": {
-                "content": "<command-name>/x</command-name><command-args>hunter2-secret-value</command-args>"
+                "content": "<command-name>/x</command-name>"
+                "<command-args>hunter2-secret-value</command-args>"
             },
         }
     )
