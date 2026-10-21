@@ -44,3 +44,12 @@ Estimate: 195 min | Actual: 0 min | Remaining estimate: 135 min
 ## Review
 
 Filled when the epic reaches stage `review`: the verdict, the findings acted on, the findings dropped.
+
+Verdict: pass (2026-10-21)
+
+Epic review, github-ci-pipeline-with-harb, 2026-10-21.
+- All 3 tasks verified by verify-task.py (ci-pre-commit-gate 735fd7e by the run's verifier; ci-integration-tests 56e1849 and ci-workflows-and-readme 203bc51 hand-verified after verifier deaths, see task notes) and merged into main (b3df7cb, 25cfe5e).
+- Two defects surfaced only on GitHub runners and were fixed test-first on main: 3f03c34 test(cli) fake claude on PATH (4 CLI tests needed a real claude; red reproduced locally by stripping PATH), f9cb057 ci chunked regctl push (Cloudflare 413 on layers >100MB; test_push_is_chunked_under_the_cloudflare_body_limit red then green, local buildx OCI + regctl import checked).
+- Pipeline evidence: GitHub run 39563069162 on f9cb057: pre-commit, unit, integration, build-push all success; image harbor.szymonrichert.pl/containers/claude-code-wrapper:f9cb057 present (manifest sha256:968b4402...).
+- Local: mise run precommit all hooks Passed; mise run lint All checks passed; mise run test 620 passed, 7 deselected (integration, run separately: 7 passed).
+- Release workflow not exercised yet (needs a semver tag); covered by test_release_workflow.
