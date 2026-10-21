@@ -1,6 +1,6 @@
 ---
 title: CI workflows and README
-status: in-progress
+status: done
 repo: .
 value: "Merges to main build, test and push the image to Harbor; tags release it"
 files: [.github/workflows/build.yaml, .github/workflows/release.yaml, renovate.json, tests/test_ci_workflows.py, README.md]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/github-ci-pipeline-with-harb--ci-workflows-and-readme
 branch: github-ci-pipeline-with-harb--ci-workflows-and-readme
-verified_head: ""
+verified_head: 203bc51d456a7a595a4e2123cb064d0677feac72
 run: github-ci-pipeline-with-harb
 provides: []
 acs_for_audit: []
@@ -36,11 +36,11 @@ Add the GitHub Actions pipeline, release flow, renovate config, a test pinning t
 
 ## Acceptance conditions
 
-- AC1: build.yaml chains pre-commit, unit, integration and build-push via needs and gates login/push on a push to main [evidence: test:tests/test_ci_workflows.py::test_build_job_order_and_push_gating]
-- AC2: every action in every workflow is pinned to a 40-char SHA with a version comment [evidence: test:tests/test_ci_workflows.py::test_actions_pinned_by_sha]
-- AC3: images go only to harbor.szymonrichert.pl/containers/claude-code-wrapper, with no Docker Hub, PyPI or GHCR reference [evidence: test:tests/test_ci_workflows.py::test_harbor_only]
-- AC4: release.yaml triggers on semver tags and retags the sha image as X.Y.Z and latest [evidence: test:tests/test_ci_workflows.py::test_release_retags_version_and_latest]
-- AC5: workflow permissions are contents read and renovate.json pins digests [evidence: test:tests/test_ci_workflows.py::test_permissions_and_renovate]
+- AC1: build.yaml chains pre-commit, unit, integration and build-push via needs and gates login/push on a push to main [evidence: test:tests/test_ci_workflows.py::test_job_chain]
+- AC2: every action in every workflow is pinned to a 40-char SHA with a version comment [evidence: test:tests/test_ci_workflows.py::test_every_uses_is_pinned_with_version_comment]
+- AC3: images go only to harbor.szymonrichert.pl/containers/claude-code-wrapper, with no Docker Hub, PyPI or GHCR reference [evidence: test:tests/test_ci_workflows.py::test_no_forbidden_registries_anywhere]
+- AC4: release.yaml triggers on semver tags and retags the sha image as X.Y.Z and latest [evidence: test:tests/test_ci_workflows.py::test_release_workflow]
+- AC5: workflow permissions are contents read and renovate.json pins digests [evidence: test:tests/test_ci_workflows.py::test_permissions_read_only]
 - AC6: README documents the pipeline, secrets, release and bootstrap steps [evidence: doc-section:README.md#CI]
 - AC7: lint and the default suite stay green [evidence: command:mise run lint && mise run test]
 
@@ -72,3 +72,5 @@ Pushing to main runs pre-commit, unit, integration, then pushes :<shortsha> to H
 Harbor `containers` project has tag immutability: push :<shortsha> once, only on push to main; a rerun of a main build may 412, so treat it as fatal-free only by gating, never by re-pushing. GITHUB_TOKEN tag pushes do not trigger workflows (irrelevant: tags are pushed by the user). Username `robot$gitlab` must be passed through secrets, never an unquoted shell. HARBOR_URL is a bare host with no scheme. Reference: hikvision-doorbell build.yaml/release.yaml; mise steps from magic-cards-model ci.yml (mise install, mise run install).
 
 - 2026-10-21 run github-ci-pipeline-with-harb: dependency-failed on ci-integration-tests
+
+- 2026-10-21 hand-verified: run verifier died (verify-agent-died); verify-task.py --base main passed on 203bc51 (tdd failedOnBase/passedOnHead, AC6-7 met, mise run test green). AC1-5 evidence refs renamed to the tests the implementer wrote; companions: AC1 also test_push_and_login_gated_on_main_push, AC3 also test_image_refs_use_harbor_containers, AC5 also test_renovate_pins_digests. Pinned action SHAs checked against upstream tags (checkout v7.0.0, mise-action v4.3.0, cache v6.1.0).
