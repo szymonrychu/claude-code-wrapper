@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
 import pytest
 from test_router import Harness
 
+from claude_code_wrapper.bootstrap.settings import render_settings
 from claude_code_wrapper.command_signals import SignalBus
+from claude_code_wrapper.config import Config
+from claude_code_wrapper.hook_relay import CLAUDE_HOOK_EVENTS
+from claude_code_wrapper.internal_api import create_internal_app
+from claude_code_wrapper.metrics import Metrics
 from claude_code_wrapper.transcript import CommandInvoked, CommandOutput, CompactBoundary
 
 
@@ -91,4 +97,105 @@ async def test_command_entries_publish_main_chain_only(h):
     out = await h.router.signals.wait(lambda s: s.kind == "command_output", after=0, timeout=0.1)
     assert inv.data == {"name": "compact", "args": "x"}
     assert out.data == {"stdout": "out", "stderr": "err"}
+    assert h.events("compacted") == []
+
+
+def _boundary_data(trigger="auto"):
+    return {"trigger": trigger, "pre_tokens": 100, "post_tokens": 10, "duration_ms": 5}
+
+
+async def test_compact_relays_installed_and_accepted(tmp_path):
+    doc = render_settings(tmp_path, Config(), relay_command="/opt/ccw-hook")
+    for event in ("PreCompact", "PostCompact"):
+        assert event in CLAUDE_HOOK_EVENTS
+        (group,) = doc["hooks"][event]
+        assert group["hooks"][0]["command"] == f"/opt/ccw-hook {event}"
+
+    seen = []
+
+    class R:
+        async def handle_claude_hook(self, event, payload):
+            seen.append(event)
+            return {"stdout": "", "stderr": "", "exit_code": 0}
+
+    class M:
+        def hook_token_matches(self, sid, token):
+            return True
+
+        def router(self, sid):
+            return R()
+
+    app = create_internal_app(M())  # type: ignore[arg-type]
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 1))
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        hdr = {"X-CCW-Session": "s1", "X-CCW-Hook-Token": "t"}
+        for event in ("PreCompact", "PostCompact"):
+            r = await c.post(f"/internal/hooks/{event}", json={}, headers=hdr)
+            assert r.status_code == 200
+    assert seen == ["PreCompact", "PostCompact"]
+
+
+async def test_boundary_emits_compacted_event(h):
+    metrics = Metrics()
+    h.router._metrics = metrics
+    ev = CompactBoundary(trigger="manual", pre_tokens=100, post_tokens=10, duration_ms=5)
+    await h.router._on_transcript_events([ev])
+    (e,) = h.events("compacted")
+    assert e.data == _boundary_data("manual")
+    assert 'ccw_compactions_total{trigger="manual"} 1.0' in metrics.render().decode()
+
+
+async def test_auto_compaction_reported(h):
+    metrics = Metrics()
+    h.router._metrics = metrics
+    await h.router.handle_claude_hook("PreCompact", {"trigger": "auto"})
+    await h.router._on_transcript_events(
+        [CompactBoundary(trigger="auto", pre_tokens=100, post_tokens=10, duration_ms=5)]
+    )
+    await h.router.handle_claude_hook("PostCompact", {"trigger": "auto"})
+    (e,) = h.events("compacted")
+    assert e.data == _boundary_data("auto")
+    assert 'ccw_compactions_total{trigger="auto"} 1.0' in metrics.render().decode()
+
+
+async def test_compact_relays_publish_signals(h):
+    await test_pre_and_post_compact_relays_publish(h)
+
+
+async def test_command_lines_publish_signals(h):
+    await h.router._on_transcript_events(
+        [CommandInvoked(name="compact", args="x"), CommandOutput(stdout="o", stderr="e")]
+    )
+    kinds = [
+        (await h.router.signals.wait(lambda s: True, after=i, timeout=0.1)).kind for i in (0, 1)
+    ]
+    assert kinds == ["command_invoked", "command_output"]
+
+
+async def test_signal_bus_wait_after_mark():
+    bus = SignalBus()
+    mark = bus.mark()
+    published = bus.publish("post_compact", {"x": 1})
+    sig = await bus.wait(lambda s: s.kind == "post_compact", after=mark, timeout=1)
+    assert sig == published and sig.seq == mark + 1
+
+
+async def test_signal_bus_timeout_and_bound():
+    bus = SignalBus()
+    assert await bus.wait(lambda s: True, after=0, timeout=0.01) is None
+    for i in range(100):
+        bus.publish("command_output", {"i": i})
+    assert await bus.wait(lambda s: s.data["i"] < 36, after=0, timeout=0.01) is None
+    assert (await bus.wait(lambda s: True, after=0, timeout=0.01)).data["i"] == 36
+
+
+async def test_sidechain_lines_ignored(h):
+    await h.router._on_transcript_events(
+        [
+            CommandInvoked(name="s", sidechain=True),
+            CommandOutput(stdout="s", sidechain=True),
+            CompactBoundary(trigger="auto", sidechain=True),
+        ]
+    )
+    assert h.router.signals.mark() == 0
     assert h.events("compacted") == []
