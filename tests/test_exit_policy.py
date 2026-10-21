@@ -23,7 +23,7 @@ def test_defaults_off() -> None:
     assert cfg.sessions.exit_when_dead is False
 
 
-async def test_last_destroyed_requests_exit_zero(world: World) -> None:
+async def test_last_destroy_stops_service_exit_0(world: World) -> None:
     codes: list[int] = []
     m = world.manager(
         world.cfg(sessions={"exit_when_last_destroyed": True}), on_exit_request=codes.append
@@ -36,7 +36,7 @@ async def test_last_destroyed_requests_exit_zero(world: World) -> None:
     assert codes == [0]
 
 
-async def test_never_created_session_does_not_trigger(world: World) -> None:
+async def test_no_exit_before_any_session(world: World) -> None:
     codes: list[int] = []
     m = world.manager(
         world.cfg(sessions={"exit_when_last_destroyed": True, "idle_timeout_seconds": 0.3}),
@@ -48,7 +48,7 @@ async def test_never_created_session_does_not_trigger(world: World) -> None:
     assert codes == []
 
 
-async def test_idle_reaper_triggers_exit(world: World) -> None:
+async def test_idle_reaper_emptying_triggers_exit(world: World) -> None:
     codes: list[int] = []
     m = world.manager(
         world.cfg(sessions={"exit_when_last_destroyed": True, "idle_timeout_seconds": 0.4}),
@@ -70,7 +70,7 @@ async def test_shutdown_does_not_trigger(world: World) -> None:
     assert codes == []
 
 
-async def test_off_by_default(world: World) -> None:
+async def test_defaults_keep_service_running(world: World) -> None:
     codes: list[int] = []
     m = world.manager(world.cfg(), on_exit_request=codes.append)
     sid = (await m.create(CreateSessionRequest()))["session_id"]
@@ -78,7 +78,7 @@ async def test_off_by_default(world: World) -> None:
     assert codes == []
 
 
-async def test_dead_requests_exit_3_and_writes_termination_log(
+async def test_dead_session_exits_3_and_writes_termination_log(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     log = tmp_path / "termination-log"
@@ -90,7 +90,7 @@ async def test_dead_requests_exit_3_and_writes_termination_log(
     )
     sid = (await m.create(CreateSessionRequest(prompt="crash now")))["session_id"]
     await wait_until(lambda: codes == [3], timeout=15)
-    assert log.read_text().startswith(f"session {sid} dead: ")
+    assert log.read_text() == f"session {sid} dead: claude exited"
 
 
 async def test_dead_skips_unwritable_termination_log(
@@ -186,7 +186,7 @@ def test_first_exit_request_wins() -> None:
     assert handle.exit_code == 3
 
 
-def test_serve_returns_exit_code(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_cli_serve_returns_exit_code(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from claude_code_wrapper import cli
 
     async def fake_run(cfg, *, handle=None, **kw):
