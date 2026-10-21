@@ -31,6 +31,8 @@ HOOK_EVENTS: tuple[str, ...] = (
     "onDestroy",
     "onTurn",
     "onTurnComplete",
+    "onStop",
+    "onTick",
     "onAgentResponse",
     "onAgentToolCall",
     "onToolResult",
@@ -171,6 +173,7 @@ class ClaudeConfig(_Model):
     extra_args: list[str] = Field(default_factory=list)
     env: ClaudeEnv = Field(default_factory=ClaudeEnv)  # type: ignore[valid-type]
     passthrough_env: list[str] = Field(default_factory=list)
+    passthrough_env_exclude: list[str] = Field(default_factory=list)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     settings: dict[str, Any] = Field(default_factory=dict)
     claude_json: dict[str, Any] = Field(default_factory=dict)
@@ -360,6 +363,8 @@ class _Action(_Model):
     blocking: bool = False
     on_error: Literal["allow", "deny"] = "allow"
     matcher: str | None = None
+    interval_seconds: float | None = Field(None, gt=0)
+    when: Literal["busy", "always"] | None = None
 
     @field_validator("matcher")
     @classmethod
@@ -403,6 +408,8 @@ class HooksConfig(_Model):
     onDestroy: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onTurn: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onTurnComplete: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
+    onStop: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
+    onTick: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onAgentResponse: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onAgentToolCall: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onToolResult: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
@@ -424,6 +431,23 @@ class HooksConfig(_Model):
                     )
         return self
 
+    @model_validator(mode="after")
+    def _tick_keys(self) -> HooksConfig:
+        for event in HOOK_EVENTS:
+            for i, action in enumerate(getattr(self, event)):
+                for key in ("interval_seconds", "when"):
+                    present = getattr(action, key) is not None
+                    if event != "onTick" and present:
+                        raise _at(
+                            f"{event}.{i}.{action.type}.{key}", f"{key} is only allowed on onTick"
+                        )
+                if event == "onTick" and action.interval_seconds is None:
+                    raise _at(
+                        f"{event}.{i}.{action.type}.interval_seconds",
+                        "interval_seconds is required on onTick",
+                    )
+        return self
+
     def for_event(self, event: str) -> list[CommandAction | WebhookAction]:
         return getattr(self, event)
 
@@ -437,6 +461,11 @@ class SessionsConfig(_Model):
     ask_user_question: Literal["forward", "deny", "allow"] = "forward"
     turn_marker: bool = True
     resume_on_start: bool = False
+    defer_stop_on_background_tasks: bool = False
+    probe_alive_token: str = Field("CCW-ALIVE", min_length=1)
+    #: Pasted (with the same turn marker) into a resumed relaunch after a mid-turn crash, so the
+    #: running turn continues instead of failing with claude_exited. Empty disables it.
+    restart_continue_prompt: str = ""
 
 
 class LimitsConfig(_Model):

@@ -13,6 +13,8 @@ def test_event_types_exact():
         "turn_rejected",
         "turn_completed",
         "turn_failed",
+        "turn_continued",
+        "turn_deferred",
         "assistant_text",
         "thinking",
         "tool_call",

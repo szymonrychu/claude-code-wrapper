@@ -69,6 +69,10 @@ def new_turn_id() -> str:
     return "turn-" + base36(_next_ns())
 
 
+#: Characters of the answering assistant text kept on a probe.
+PROBE_ANSWER_MAX = 2000
+
+
 def new_probe_id() -> str:
     """`probe-<base36 nanoseconds>`, from the same strictly increasing source as turn ids."""
     return "probe-" + base36(_next_ns())
@@ -97,6 +101,8 @@ class TurnRecord(BaseModel):
     last_activity_at: str | None = None
     stall_suspected_since: str | None = None
     tool_calls: int = 0
+    annotations: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def terminal(self) -> bool:
@@ -107,8 +113,22 @@ class TurnRecord(BaseModel):
         return {name: getattr(self, name) for name in SUMMARY_FIELDS}
 
 
+#: A turn's annotations may not exceed this many bytes serialised.
+ANNOTATIONS_MAX_BYTES = 16 * 1024
+#: A turn's client-supplied metadata may not exceed this many bytes serialised.
+METADATA_MAX_BYTES = 16 * 1024
+
+
+def merged_annotations(current: dict[str, Any], new: dict[str, Any]) -> dict[str, Any] | None:
+    """`current` shallow-merged with `new` (later keys win); None if the result is over 16 KiB."""
+    merged = {**current, **new}
+    if len(json.dumps(merged, ensure_ascii=False).encode()) > ANNOTATIONS_MAX_BYTES:
+        return None
+    return merged
+
+
 class Probe(BaseModel):
-    """A liveness probe: text pasted without taking the turn slot, answered with `CCW-ALIVE`."""
+    """A liveness probe: text pasted without taking the turn slot, answered with the alive token."""
 
     model_config = ConfigDict(validate_assignment=True)
 
@@ -118,6 +138,8 @@ class Probe(BaseModel):
     created_at: str
     delivered_at: str | None = None
     answered_at: str | None = None
+    #: The main-chain assistant text that answered the probe, capped at PROBE_ANSWER_MAX.
+    answer: str | None = None
 
 
 class StoreReadOnly(RuntimeError):

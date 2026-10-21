@@ -7,17 +7,21 @@ call the session ready on a ready marker or output quiescence, never before `min
 (a submit while the TUI is still painting exits claude). A boot that never gets there is
 relaunched once; a crash after boot is relaunched within `max_restarts`, with `--resume` only
 when the transcript exists (resuming a conversation that was never written exits claude at once
-and burns the budget). The ring is emptied before every relaunch so the old screen cannot
-satisfy the new boot's dialog or marker checks.
+and burns the budget). With `sessions.restart_continue_prompt` set, a turn running when claude
+crashes is held (still `running`) across the relaunch; a resumed relaunch is sent the continue
+prompt with the same turn marker and the turn goes on (`on_turn_resumed`). The ring is emptied
+before every relaunch so the old screen cannot satisfy the new boot's dialog or marker checks.
 
 Turns (D13): one at a time. `submit` reserves the slot and persists the record before the first
 byte is written, then pastes the prompt (with a `<!-- ccw turn: <id> -->` marker, because Stop
 payloads carry no turn id) and sends CR as a separate write. A turn ends exactly once, on the
 first of: a matching Stop (`complete`), an interrupt (resolved by the transcript interrupt line or
 a second ESC after `interrupt_settle_seconds`, since claude runs no Stop hook for an interrupted
-turn), a fatal pattern on screen, claude exiting, the hard `turn_max_seconds` limit, or `stop`.
-Every end frees the slot, persists the record and calls `on_turn_end`. A quiet turn is only
-reported (`on_stall`), never failed: silence is not a stall.
+turn), a fatal pattern on screen, claude exiting (unless the turn is held for continuation, then
+when the relaunch is dead, fails to boot or is fresh), the hard `turn_max_seconds` limit (measured
+from the original submit, across a crash), or `stop`. Every end frees the slot, persists the
+record and calls `on_turn_end`. A quiet turn is only reported (`on_stall`), never failed:
+silence is not a stall.
 
 The screen is never the source of turn results; it is read only for boot, fatal patterns and
 debug tails, and every tail that leaves this module is redacted.
@@ -28,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import contextlib
+import fnmatch
 import inspect
 import logging
 import os
@@ -42,7 +47,17 @@ from .config import BootConfig, BootDialog, LimitsConfig, SessionsConfig
 from .pty_proc import PtyClosed, PtyProcess
 from .redact import Redactor
 from .ring import Ring, _squash, strip_ansi
-from .turns import Origin, Probe, TurnRecord, TurnState, new_probe_id, new_turn_id, now_iso
+from .turns import (
+    PROBE_ANSWER_MAX,
+    Origin,
+    Probe,
+    TurnRecord,
+    TurnState,
+    merged_annotations,
+    new_probe_id,
+    new_turn_id,
+    now_iso,
+)
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +76,13 @@ DANGEROUS_FLAG = "--dangerously-skip-permissions"
 BASE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "USER", "SHELL", "TMPDIR")
 GATE_FAIL_MODES = ("allow", "deny")
 ESC = b"\x1b"
-DEFAULT_PROBE_TEXT = "Reply with CCW-ALIVE and one sentence on what you are doing, then continue."
+
+
+def default_probe_text(token: str) -> str:
+    return f"Reply with {token} and one sentence on what you are doing, then continue."
+
+
+DEFAULT_PROBE_TEXT = default_probe_text("CCW-ALIVE")
 #: The turn watchdog re-checks at least this often, so a cleared stall re-arms promptly.
 TURN_WATCH_MAX_SLEEP = 0.25
 #: `note_activity` appends `last_activity_at` to turns.jsonl at most this often (it runs on every
@@ -153,6 +174,43 @@ def build_argv(spec: SessionSpec) -> list[str]:
     return _argv(spec, resume=spec.resume or os.path.isfile(transcript_path_for(spec)))
 
 
+MANAGED_ENV_NAMES = frozenset(
+    {
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_CODE_PROJECT_DIR_NAME",
+        "GIT_CONFIG_GLOBAL",
+        "CCW_SESSION_ID",
+        "CCW_INTERNAL_URL",
+        "CCW_HOOK_TOKEN",
+        "CCW_TOOL_GATE_FAIL",
+        "CCW_GATE_TIMEOUT",
+    }
+)
+
+
+def passthrough_names(
+    service_env: Mapping[str, str], patterns: Iterable[str], exclude: Iterable[str] = ()
+) -> list[str]:
+    """Service env names selected by `fnmatchcase` patterns minus the exclude patterns.
+
+    `CCW_*` names and service-managed names are never selected, even through `*`; a
+    refused literal pattern is logged. Shared by `build_env` and the setup-command env.
+    """
+    excludes = list(exclude)
+    chosen: list[str] = []
+    for pattern in patterns:
+        if pattern.startswith("CCW_") or pattern in MANAGED_ENV_NAMES:
+            log.warning("passthrough of %s refused: service-managed or service-private", pattern)
+        for name in service_env:
+            if name in chosen or name.startswith("CCW_") or name in MANAGED_ENV_NAMES:
+                continue
+            if fnmatch.fnmatchcase(name, pattern) and not any(
+                fnmatch.fnmatchcase(name, e) for e in excludes
+            ):
+                chosen.append(name)
+    return sorted(chosen)
+
+
 def build_env(
     *,
     service_env: Mapping[str, str],
@@ -166,6 +224,7 @@ def build_env(
     gate_timeout: float,
     mise_env: Mapping[str, str] | None,
     passthrough: Iterable[str],
+    passthrough_exclude: Iterable[str] = (),
 ) -> dict[str, str]:
     """The complete claude child env, built from an allow-list rather than filtered.
 
@@ -188,11 +247,8 @@ def build_env(
         "CCW_GATE_TIMEOUT": f"{gate_timeout:g}",
     }
     env = {name: service_env[name] for name in BASE_ENV if name in service_env}
-    for name in passthrough:
-        if name.startswith("CCW_") or name in managed:
-            log.warning("passthrough of %s refused: service-managed or service-private", name)
-        elif name in service_env:
-            env[name] = service_env[name]
+    for name in passthrough_names(service_env, passthrough, passthrough_exclude):
+        env[name] = service_env[name]
     env["TERM"] = "xterm-256color"
     env.update(claude_env.to_env())
     env.update(mise_env or {})
@@ -227,6 +283,9 @@ class SessionListener:
 
     def on_stall(self, turn_id: str) -> None:
         """The running turn has been quiet for `turn_stall_seconds`."""
+
+    def on_turn_resumed(self, record: Any, restart: int) -> None:
+        """A turn held across a crash was continued in the resumed relaunch number `restart`."""
 
     def on_turn_end(self, record: Any) -> None:
         """A turn reached a terminal state."""
@@ -325,7 +384,10 @@ class Session:
         self._turn: TurnRecord | None = None
         self._turn_watch: asyncio.Future[None] | None = None
         self._interrupting: _PendingInterrupt | None = None
+        #: The running turn while claude is relaunched after a crash (continuation, K12).
+        self._held: TurnRecord | None = None
         self._last_activity = clock()
+        self._turn_started = clock()
         self._activity_persisted = self._last_activity
         self._probes: dict[str, Probe] = {}
         listener.bind(self)
@@ -523,8 +585,14 @@ class Session:
         if self._stopping or self.state not in ("ready", "busy"):
             return
         record = self._turn
-        if record is not None:  # never re-pasted: the client decides whether to retry
-            self._end_turn(record, "failed", error="claude_exited", next_state=None)
+        if record is not None:
+            if (
+                self.restarts < self.spec.max_restarts
+                and self.spec.sessions.restart_continue_prompt
+            ):
+                self._held = record  # stays running; _recover continues or fails it
+            else:  # never re-pasted: the client decides whether to retry
+                self._end_turn(record, "failed", error="claude_exited", next_state=None)
         log.warning(
             "session %s: claude exited unexpectedly code=%s tail=%r",
             self.spec.session_id,
@@ -552,6 +620,7 @@ class Session:
                 self.spec.session_id,
                 self.spec.max_restarts,
             )
+            self._fail_held()
             self._set_state("dead")
             self._notify("on_exit", code)
             return
@@ -561,10 +630,43 @@ class Session:
         try:
             resumed = await self._boot(resume=os.path.isfile(self.transcript_path))
         except BootError as exc:
-            if exc.code != "stopped":
+            if exc.code != "stopped":  # a stop ended the held turn itself
+                self._fail_held()
                 self._notify("on_exit", code)
             return
+        if not resumed:
+            self._fail_held()  # a fresh claude has no conversation to continue
         self._notify("on_restart", self.restarts, resumed)
+        if resumed and self._held is not None and not self._stopping:
+            await self._continue_held(self._held)
+
+    def _fail_held(self) -> None:
+        record = self._held
+        if record is not None:
+            self._end_turn(record, "failed", error="claude_exited", next_state=None)
+
+    async def _continue_held(self, record: TurnRecord) -> None:
+        """Retake the slot for the held turn and paste the continue prompt with its marker."""
+        pty = self.pty
+        assert pty is not None
+        self._held = None
+        self._set_state("busy")
+        self._notify("on_turn_resumed", record, self.restarts)
+        log.info(
+            "session %s: turn %s continued after restart %d",
+            self.spec.session_id,
+            record.turn_id,
+            self.restarts,
+        )
+        try:
+            await pty.send_prompt(
+                self._with_marker(self.spec.sessions.restart_continue_prompt, record),
+                self.spec.boot.submit_delay_seconds,
+            )
+        except PtyClosed:
+            self._end_turn(
+                record, "failed", error="claude_exited", next_state="ready" if pty.alive else None
+            )
 
     # -- stop ------------------------------------------------------------------------------
 
@@ -594,6 +696,13 @@ class Session:
         """The running turn's live record, if any."""
         return self._turn
 
+    @property
+    def turn_elapsed(self) -> float | None:
+        """Seconds the running turn has run on the session clock, None when idle."""
+        if self._turn is None:
+            return None
+        return max(self.clock() - self._turn_started, 0.0)
+
     def _writable_pty(self) -> PtyProcess:
         """The PTY a turn or probe may be written to, else `TurnRejected(booting|dead)`."""
         if self.state == "booting":
@@ -602,6 +711,13 @@ class Session:
             raise TurnRejected("dead")
         return self.pty
 
+    def check_submittable(self) -> PtyProcess:
+        """Raise `TurnRejected(booting|dead|busy)` if a turn cannot start now (no side effects)."""
+        pty = self._writable_pty()
+        if self.state == "busy" or self._turn is not None:
+            raise TurnRejected("busy")
+        return pty
+
     async def submit(
         self,
         text: str,
@@ -609,6 +725,8 @@ class Session:
         origin: Origin = "client",
         callback_url: str | None = None,
         turn_id: str | None = None,
+        annotations: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> TurnRecord:
         """Start a turn: reserve the slot, persist the record, then paste and CR.
 
@@ -616,9 +734,7 @@ class Session:
         Raises `TurnRejected` (booting, dead, busy). A claude that exits under the write fails
         the turn with `claude_exited`; the record is returned either way.
         """
-        pty = self._writable_pty()
-        if self.state == "busy" or self._turn is not None:
-            raise TurnRejected("busy")
+        pty = self.check_submittable()
         now = now_iso()
         record = TurnRecord(
             turn_id=turn_id or new_turn_id(),
@@ -629,19 +745,21 @@ class Session:
             callback_url=callback_url,
             started_at=now,
             last_activity_at=now,
+            annotations=dict(annotations or {}),
+            metadata=dict(metadata or {}),
         )
         # Reserve before the first byte: a second submit racing this one sees busy.
         self._turn = record
+        self._turn_started = self.clock()
         self._last_activity = self._activity_persisted = self.clock()
         self._set_state("busy")
         self._persist(record)
         self._arm_watch(record)
-        prompt = text
-        if self.spec.sessions.turn_marker:
-            prompt += f"\n\n<!-- ccw turn: {record.turn_id} -->"
         log.info("session %s: turn %s submitted (%s)", self.spec.session_id, record.turn_id, origin)
         try:
-            await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
+            await pty.send_prompt(
+                self._with_marker(text, record), self.spec.boot.submit_delay_seconds
+            )
         except PtyClosed:
             # A claude that died is handled by the exit path (relaunch or dead); a live one
             # whose write failed gets its slot back here.
@@ -650,12 +768,33 @@ class Session:
             )
         return record
 
+    def _with_marker(self, text: str, record: TurnRecord) -> str:
+        if not self.spec.sessions.turn_marker:
+            return text
+        return f"{text}\n\n<!-- ccw turn: {record.turn_id} -->"
+
+    def annotate(self, record: TurnRecord, annotations: dict[str, Any]) -> bool:
+        """Shallow-merge hook annotations into `record` and persist it.
+
+        False (nothing changed) when the merge would exceed the 16 KiB cap.
+        """
+        merged = merged_annotations(record.annotations, annotations)
+        if merged is None:
+            return False
+        record.annotations = merged
+        self._persist(record)
+        return True
+
     def _arm_watch(self, record: TurnRecord) -> None:
         if self.spec.sessions.turn_stall_seconds > 0 or self.spec.limits.turn_max_seconds > 0:
             self._turn_watch = self._track(asyncio.ensure_future(self._watch_turn(record)))
 
     async def _watch_turn(self, record: TurnRecord) -> None:
-        """Report a quiet turn once per quiet period; end it as `timeout` at the hard limit."""
+        """Report a quiet turn once per quiet period; end it as `timeout` at the hard limit.
+
+        It keeps running while the turn is held across a crash, so both clocks measure from
+        the original submit; a held turn at the limit just ends (there is no claude to ESC).
+        """
         stall = self.spec.sessions.turn_stall_seconds
         limit = self.spec.limits.turn_max_seconds
         started = self.clock()
@@ -668,7 +807,10 @@ class Session:
                     record.turn_id,
                     limit,
                 )
-                await self._interrupt(record, "timeout")
+                if self._held is record:
+                    self._end_turn(record, "timeout", next_state=None)
+                else:
+                    await self._interrupt(record, "timeout")
                 return
             wait = TURN_WATCH_MAX_SLEEP
             if limit > 0:
@@ -717,19 +859,15 @@ class Session:
         record.tool_calls += 1
         self._persist(record)
 
-    def complete(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        usage: dict[str, Any] | None = None,
-        model_tokens: dict[str, Any] | None = None,
-        marker_turn_id: str | None = None,
+    def stop_target(
+        self, payload: Mapping[str, Any], marker_turn_id: str | None = None
     ) -> TurnRecord | None:
-        """Apply a Stop hook payload; the completed record, or None when it was stale.
+        """The record a Stop hook payload applies to, or None when it is stale.
 
         A Stop for another claude session, a booting or dead session, or (while busy) carrying
-        the marker of another turn changes nothing. A Stop while ready with no turn running is
-        a background completion (Workflow, Monitor) and becomes an `origin="agent"` record.
+        the marker of another turn targets nothing. While busy it targets the running turn
+        (`current_turn`). A Stop while ready with no turn running is a background completion
+        (Workflow, Monitor) and targets a new, not yet persisted `origin="agent"` record.
         """
         if payload.get("session_id") != self.spec.claude_session_id:
             log.info(
@@ -748,16 +886,29 @@ class Session:
                     record.turn_id,
                 )
                 return None
-        elif self.state == "ready" and record is None:
+            return record
+        if self.state == "ready" and record is None:
             now = now_iso()
-            record = TurnRecord(
+            return TurnRecord(
                 turn_id=new_turn_id(),
                 session_id=self.spec.session_id,
                 origin="agent",
                 started_at=now,
                 last_activity_at=now,
             )
-        else:
+        return None
+
+    def complete(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        usage: dict[str, Any] | None = None,
+        model_tokens: dict[str, Any] | None = None,
+        marker_turn_id: str | None = None,
+    ) -> TurnRecord | None:
+        """Apply a Stop hook payload to its `stop_target`; the completed record, or None."""
+        record = self.stop_target(payload, marker_turn_id)
+        if record is None:
             return None
         message = payload.get("last_assistant_message")
         record.final_text = message if isinstance(message, str) else None
@@ -778,6 +929,8 @@ class Session:
         """The single terminal transition: free the slot, persist, notify. Once per turn."""
         if record.terminal:
             return False
+        if self._held is record:
+            self._held = None  # nothing is pasted for it after the relaunch
         if self._turn is record:
             self._turn = None
             watch, self._turn_watch = self._turn_watch, None
@@ -820,9 +973,13 @@ class Session:
 
         One ESC, then up to `interrupt_settle_seconds` for the transcript interrupt line
         (`on_interrupted`); without it a second ESC. claude runs no Stop hook for an
-        interrupted turn, so the turn is ended here either way and the slot freed.
+        interrupted turn, so the turn is ended here either way and the slot freed. A turn held
+        across a crash ends at once: there is no claude to send ESC to, and nothing is pasted.
         """
         record = self._turn
+        if record is not None and self._held is record:
+            self._end_turn(record, "interrupted", next_state=None)
+            return record.turn_id
         if record is None or self.state != "busy":
             return None
         return await self._interrupt(record, "interrupted")
@@ -847,7 +1004,8 @@ class Session:
                     pending.done.wait(), self.spec.sessions.interrupt_settle_seconds
                 )
             except TimeoutError:
-                if not record.terminal:
+                # A turn held across a crash: the second ESC would hit the booting relaunch.
+                if not record.terminal and self._held is not record:
                     log.warning(
                         "session %s: no interrupt line for %s after %gs, second ESC",
                         self.spec.session_id,
@@ -884,12 +1042,14 @@ class Session:
         """Write a liveness probe without taking the slot (ready or busy).
 
         The probe is pending until the router sees its marker in the transcript
-        (`probe_delivered`) and answered once assistant text with `CCW-ALIVE` follows
-        (`probe_answered`). Raises `TurnRejected` (booting, dead).
+        (`probe_delivered`) and answered once assistant text with the alive token follows
+        (`probe_answered`, which records the answer text). Raises `TurnRejected` (booting, dead).
         """
         pty = self._writable_pty()
         probe = Probe(
-            probe_id=new_probe_id(), text=text or DEFAULT_PROBE_TEXT, created_at=now_iso()
+            probe_id=new_probe_id(),
+            text=text or default_probe_text(self.spec.sessions.probe_alive_token),
+            created_at=now_iso(),
         )
         self._probes[probe.probe_id] = probe
         while len(self._probes) > MAX_PROBES:
@@ -914,11 +1074,13 @@ class Session:
             probe.delivered_at = now_iso()
         return probe
 
-    def probe_answered(self) -> list[Probe]:
-        """Assistant text with `CCW-ALIVE` arrived: every delivered probe is answered."""
+    def probe_answered(self, answer: str = "") -> list[Probe]:
+        """Main-chain assistant text with the alive token arrived: every delivered probe is
+        answered, keeping the first `PROBE_ANSWER_MAX` characters of `answer`."""
         answered = [p for p in self._probes.values() if p.state == "delivered"]
         now = now_iso()
         for probe in answered:
             probe.state = "answered"
             probe.answered_at = now
+            probe.answer = answer[:PROBE_ANSWER_MAX]
         return answered

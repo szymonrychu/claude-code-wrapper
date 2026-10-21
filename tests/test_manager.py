@@ -9,24 +9,19 @@ the hook token) and records callback POSTs, so Stop hooks complete turns end to 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import inspect
 import json
 import os
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
-import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from conftest import World, jsonl, turns_of, wait_turn, wait_until
 
 from claude_code_wrapper import manager as manager_mod
 from claude_code_wrapper.bootstrap.settings import relay_timeouts
 from claude_code_wrapper.claude_env import ClaudeEnv
-from claude_code_wrapper.config import Config
 from claude_code_wrapper.events import EventLog
 from claude_code_wrapper.manager import (
     CreateFailed,
@@ -36,7 +31,6 @@ from claude_code_wrapper.manager import (
     InvalidState,
     ResumeUnavailable,
     ResumeVetoed,
-    SessionManager,
     SessionNotFound,
     TooManySessions,
 )
@@ -44,33 +38,8 @@ from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.session import PUBLIC_STATES, Session
 from claude_code_wrapper.turns import TurnStore
 
-BOOT = {
-    "timeout_seconds": 5.0,
-    "min_boot_seconds": 0.2,
-    "idle_ready_seconds": 30.0,
-    "submit_delay_seconds": 0.1,
-    "dialogs": [
-        {"pattern": "Bypass Permissions mode", "keys": ["\x1b[B", "\r"], "delay_seconds": 0.05}
-    ],
-}
-FAKE_BOOT = {"bypass_dialog": True, "min_seconds": 0.1}
 SECRET_TOKEN = "sk-ant-oat01-overridesecret0123456789"
 SECRET_EXTRA = "extra-secret-value-0123456789"
-
-
-async def wait_until(pred: Callable[[], Any], timeout: float = 15.0) -> None:
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if pred():
-            return
-        await asyncio.sleep(0.05)
-    raise AssertionError("condition not met in time")
-
-
-def jsonl(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def record_hook(path: Path, **kw: Any) -> dict:
@@ -93,137 +62,6 @@ def pid_alive(pid: int | None) -> bool:
     except ProcessLookupError:
         return False
     return True
-
-
-class World:
-    """Config factory, managers under test, the loopback hook server and callback capture."""
-
-    def __init__(self, tmp_path: Path, fake_bin: Path, scenario_file) -> None:
-        self.tmp = tmp_path
-        self.bin = fake_bin
-        self.scenario_file = scenario_file
-        self.log = tmp_path / "fake.log"
-        self.managers: list[SessionManager] = []
-        self.callbacks: list[dict] = []
-        self.url = ""
-        self._server: uvicorn.Server | None = None
-        self._task: asyncio.Task | None = None
-
-    # ---- loopback server
-
-    def _manager_for(self, session_id: str) -> SessionManager | None:
-        for m in reversed(self.managers):
-            with contextlib.suppress(SessionNotFound, InvalidState):
-                m.router(session_id)
-                return m
-        return None
-
-    async def start_server(self) -> None:
-        app = FastAPI()
-
-        @app.post("/internal/hooks/{event}")
-        async def hook(event: str, request: Request) -> JSONResponse:
-            sid = request.headers.get("x-ccw-session", "")
-            m = self._manager_for(sid)
-            if m is None or not m.hook_token_matches(sid, request.headers.get("x-ccw-hook-token")):
-                return JSONResponse({"error": "forbidden"}, status_code=403)
-            out = await m.router(sid).handle_claude_hook(event, await request.json())
-            return JSONResponse(dict(out))
-
-        @app.post("/cb")
-        async def callback(request: Request) -> JSONResponse:
-            self.callbacks.append(await request.json())
-            return JSONResponse({})
-
-        config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="off")
-        self._server = uvicorn.Server(config)
-        self._task = asyncio.ensure_future(self._server.serve())
-        await wait_until(lambda: self._server.started, 10)
-        port = self._server.servers[0].sockets[0].getsockname()[1]
-        self.url = f"http://127.0.0.1:{port}"
-
-    async def close(self) -> None:
-        for m in self.managers:
-            with contextlib.suppress(Exception):
-                await m.shutdown()
-        if self._server is not None:
-            self._server.should_exit = True
-            assert self._task is not None
-            await self._task
-
-    # ---- config and managers
-
-    def cfg(self, scenario: dict | None = None, **sections: Any) -> Config:
-        scenario_path = self.scenario_file({"boot": FAKE_BOOT, **(scenario or {})})
-        claude = sections.pop("claude", {})
-        env = claude.pop("env", {})
-        extra = {
-            "FAKE_CLAUDE_SCENARIO": str(scenario_path),
-            "FAKE_CLAUDE_LOG": str(self.log),
-            **env.pop("extra", {}),
-        }
-        data: dict[str, Any] = {
-            "server": {"callback_secret": "cb-secret-0123456789"},
-            "paths": {
-                "workdir_root": str(self.tmp / "workdir"),
-                "sessions_root": str(self.tmp / "sessions"),
-            },
-            "claude": {
-                "binary": str(self.bin),
-                "boot": BOOT,
-                **claude,
-                "env": {**env, "extra": extra},
-            },
-            "mise": {"trusted_paths": [str(self.tmp / "workdir")]},
-            "sessions": {"interrupt_settle_seconds": 2},
-            "limits": {"shutdown_timeout_seconds": 2},
-        }
-        for key, value in sections.items():
-            data[key] = {**data.get(key, {}), **value}
-        return Config.model_validate(data)
-
-    def manager(self, cfg: Config, **kw: Any) -> SessionManager:
-        m = SessionManager(
-            cfg,
-            internal_url=self.url,
-            service_env=dict(os.environ),
-            redactor=kw.pop("redactor", None) or Redactor(),
-            **kw,
-        )
-        self.managers.append(m)
-        return m
-
-    def session_dir(self, session_id: str) -> Path:
-        return self.tmp / "sessions" / session_id
-
-    def meta(self, session_id: str) -> dict:
-        return json.loads((self.session_dir(session_id) / "session.json").read_text())
-
-    def events(self, session_id: str) -> list[dict]:
-        return jsonl(self.session_dir(session_id) / "events.jsonl")
-
-    def interactive_argvs(self) -> list[list[str]]:
-        return [e["argv"] for e in jsonl(self.log) if e["argv"][:1] != ["plugin"]]
-
-
-@pytest.fixture
-async def world(tmp_path: Path, fake_claude_bin: Path, scenario_file):
-    w = World(tmp_path, fake_claude_bin, scenario_file)
-    await w.start_server()
-    yield w
-    await w.close()
-
-
-def turns_of(m: SessionManager, session_id: str) -> list:
-    return m.open_turns(session_id).list()
-
-
-async def wait_turn(m: SessionManager, session_id: str, state: str = "completed") -> Any:
-    def done() -> Any:
-        return [t for t in turns_of(m, session_id) if t.state == state]
-
-    await wait_until(done)
-    return done()[-1]
 
 
 def marketplace(root: Path, name: str = "wb") -> Path:
@@ -1058,3 +896,16 @@ async def test_shutdown_stops_all(world: World, tmp_path: Path) -> None:
     assert sorted(p["session_id"] for p in fired) == sorted(ids)
     with pytest.raises(InvalidState):
         await m.create(CreateSessionRequest())
+
+
+async def test_world_until_names_what_it_waited_for(world: World) -> None:
+    await world.until(lambda: True)
+    with pytest.raises(AssertionError, match="never-true-marker"):
+        await world.until(lambda: False, timeout=0.2, what="never-true-marker")
+
+
+async def test_world_wait_turn_returns_completed_turn(world: World) -> None:
+    m = world.manager(world.cfg())
+    snap = await m.create(CreateSessionRequest(prompt="hi"))
+    turn = await world.wait_turn(m, snap["session_id"])
+    assert turn.state == "completed"

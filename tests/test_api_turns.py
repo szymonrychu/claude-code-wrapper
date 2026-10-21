@@ -47,8 +47,10 @@ class StubRouter:
         self.raise_on: Exception | None = None
         self.interrupted: str | None = None
 
-    async def submit_turn(self, text, *, files=None, callback_url=None, origin="client"):
-        self.calls.append(("submit", text, files, callback_url))
+    async def submit_turn(
+        self, text, *, files=None, callback_url=None, origin="client", metadata=None
+    ):
+        self.calls.append(("submit", text, files, callback_url, metadata))
         if self.raise_on is not None:
             raise self.raise_on
         return TurnRecord(turn_id="turn-1", session_id=SID, text=text, started_at=now_iso())
@@ -113,7 +115,7 @@ def test_submit_turn_202(client: TestClient, stub: StubManager) -> None:
     r = post(client, {"text": "hello", "files": {"a.txt": "x"}, "callbackUrl": "http://h/cb"})
     assert r.status_code == 202
     assert r.json() == {"turn_id": "turn-1", "state": "running"}
-    assert stub.router_obj.calls == [("submit", "hello", {"a.txt": "x"}, "http://h/cb")]
+    assert stub.router_obj.calls == [("submit", "hello", {"a.txt": "x"}, "http://h/cb", {})]
 
 
 def test_template_turn_rendered(client: TestClient, stub: StubManager) -> None:

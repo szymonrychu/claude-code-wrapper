@@ -121,6 +121,10 @@ hooks:
     # - {type: webhook, url: "https://policy.example.com/turn", secret: "${HOOK_SECRET:-}", blocking: true}
   onTurnComplete: []         # every terminal turn state
     # - {type: webhook, url: "https://example.com/turn-done", secret: "${HOOK_SECRET:-}"}
+  onStop: []                 # claude's Stop for the running turn: allow, block or defer it
+    # - {type: command, run: ./outcome-gate.sh, blocking: true}
+  onTick: []                 # timer: interval_seconds (required), when busy|always
+    # - {type: command, run: ./push-metrics.sh, interval_seconds: 30, when: always}
   onAgentResponse: []        # assistant text from the transcript
     # - {type: command, run: "jq -r .data.text >> ${CCW_SESSIONS_ROOT:-/sessions}/replies.log"}
   onAgentToolCall:           # PreToolUse; a blocking deny blocks the tool call
@@ -150,6 +154,8 @@ sessions:
   ask_user_question: forward # forward | deny | allow
   turn_marker: true          # tag each turn so completion can be correlated
   resume_on_start: false     # resume known sessions when the service starts
+  defer_stop_on_background_tasks: false  # hold a turn open while its Stop lists background tasks
+  probe_alive_token: CCW-ALIVE  # token a probe asks Claude to reply with
 
 limits:
   max_prompt_bytes: 1048576

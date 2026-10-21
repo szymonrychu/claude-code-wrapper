@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from claude_code_wrapper.manager import InvalidState
 from claude_code_wrapper.prompts import resolve_prompt
 from claude_code_wrapper.router import SessionRouter, TurnVetoed
 from claude_code_wrapper.session import TurnRejected
+from claude_code_wrapper.turns import METADATA_MAX_BYTES
 from claude_code_wrapper.workdir import FileWriteError
 
 router = APIRouter()
@@ -40,6 +42,7 @@ class TurnRequest(BaseModel):
     variables: dict[str, Any] | None = None
     files: dict[str, str] | None = None
     callback_url: str | None = Field(default=None, alias="callbackUrl")
+    metadata: dict[str, Any] | None = None
 
 
 class ProbeRequest(BaseModel):
@@ -72,13 +75,16 @@ async def submit_turn(session_id: str, body: TurnRequest, request: Request) -> A
     assert text is not None
     if len(text.encode("utf-8")) > cfg.limits.max_prompt_bytes:
         raise ApiError(413, "too_large", f"prompt exceeds {cfg.limits.max_prompt_bytes} bytes")
+    metadata = body.metadata or {}
+    if len(json.dumps(metadata, ensure_ascii=False).encode("utf-8")) > METADATA_MAX_BYTES:
+        raise ApiError(413, "too_large", f"metadata exceeds {METADATA_MAX_BYTES} bytes")
     url = body.callback_url
     if url is not None:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ApiError(400, "invalid_callback_url", "callbackUrl must be an http or https URL")
     try:
-        record = await live.submit_turn(text, files=body.files, callback_url=url)
+        record = await live.submit_turn(text, files=body.files, callback_url=url, metadata=metadata)
     except TurnRejected as exc:
         raise _rejected(exc) from exc
     except TurnVetoed as exc:
@@ -129,6 +135,7 @@ async def get_probe(session_id: str, probe_id: str, request: Request) -> Any:
         "created_at": probe.created_at,
         "delivered_at": probe.delivered_at,
         "answered_at": probe.answered_at,
+        "answer": probe.answer,
     }
 
 

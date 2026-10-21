@@ -197,6 +197,7 @@ Response `201`:
   "updated_at": "2026-10-20T09:00:14.882+00:00",
   "last_activity_at": "2026-10-20T09:00:14.882+00:00",
   "turns_completed": 0,
+  "outstanding_subagents": 0,
   "current_turn_id": null,
   "stall_suspected_since": null,
   "last_fatal": null,
@@ -209,7 +210,7 @@ Response `201`:
 
 Snapshot fields: `state` is one of `creating`, `ready`, `busy`, `stopped`, `failed`, `dead`;
 `step` is the create/resume step last entered (on `failed`, the one that failed, with `error:
-{"step", "message"}`); `current_turn_id` is the running turn; `last_fatal` is the last fatal
+{"step", "message"}`); `outstanding_subagents` is the number of subagents started and not yet stopped (0 for stopped and persisted sessions); `current_turn_id` is the running turn; `last_fatal` is the last fatal
 screen text; `pid` is the claude pid while alive; `env` shows set values with secrets masked as
 `***`.
 
@@ -303,6 +304,7 @@ Request body (exactly one of `text` and `template`):
 | `variables` | object | no | values for the template's `{{name}}` placeholders; only with `template` |
 | `files` | object (path to content) | no | files written into the workdir before the prompt is pasted; relative paths only, limited by `limits.max_files_per_turn` and `limits.max_file_bytes` |
 | `callbackUrl` | string | no | `http`/`https` URL that receives this turn's terminal-state callback (and its questions); overrides the session's `callbackUrl` |
+| `metadata` | object | no | client-supplied JSON object kept on the turn record (`metadata`) and given to `onTurn` hooks as `data.metadata`, so hooks can gate on it; at most 16 KiB serialised |
 
 Response `202`:
 
@@ -320,10 +322,24 @@ Response `202`:
 | 403 | `vetoed` | a blocking `onTurn` action denied (a `turn_rejected` event is logged) |
 | 404 | `not_found` | unknown session |
 | 409 | `busy` | a turn is already running |
-| 413 | `too_large` | prompt over `limits.max_prompt_bytes`, or `files` over the per-file or count limits |
-| 422 | `invalid_request` | invalid body, or `unknown_template`, `unknown_variable`, `missing_variable` |
+| 413 | `too_large` | prompt over `limits.max_prompt_bytes`, `metadata` over 16 KiB, or `files` over the per-file or count limits |
+| 422 | `invalid_request` | invalid body (including `metadata` that is not an object), or `unknown_template`, `unknown_variable`, `missing_variable` |
 | 503 | `booting` | the session is still booting |
 | 503 | `dead` | the session is stopped, failed or dead |
+
+Crash during a turn: when claude exits mid-turn it is relaunched (with `--resume` when the
+transcript exists) within `sessions.max_restarts`. By default the turn fails with `claude_exited`
+and is never re-pasted; the client decides whether to retry. With
+`sessions.restart_continue_prompt` set and restarts left, the turn stays `running` instead (no
+`turn_failed`, no `onTurnComplete`, no callback; the session shows `creating` while claude
+relaunches, then `busy`). Once the relaunch is resumed, the continue prompt is pasted with the
+same `<!-- ccw turn: <turn_id> -->` marker, a `turn_resumed` event is logged, and the turn
+completes on that claude's Stop as usual, with `usage` summed across the crash. The turn fails with
+`claude_exited` exactly once when the restart budget is exhausted (the session is `dead`), the
+relaunch fails to boot, or the relaunch is fresh (no transcript, so nothing to continue).
+`limits.turn_max_seconds` and `sessions.turn_stall_seconds` keep measuring from the original
+submit across the crash; an interrupt, `stop` or `DELETE` during the relaunch ends the turn
+(`interrupted`, `timeout` or `session_stopped`) and nothing is pasted afterwards.
 
 ### `GET /v1/sessions/{id}/turns`
 
@@ -370,7 +386,9 @@ Response `200`:
   "completed_at": "2026-10-20T09:01:09.455+00:00",
   "last_activity_at": "2026-10-20T09:01:09.401+00:00",
   "stall_suspected_since": null,
-  "tool_calls": 2
+  "tool_calls": 2,
+  "annotations": {"pending_tasks": 1},
+  "metadata": {"handoff": true}
 }
 ```
 
@@ -379,7 +397,9 @@ Claude's last assistant message (set on completed turns); `error` names why a tu
 (`claude_exited`, `session_stopped`, or the fatal pattern matched on screen); `usage` sums token
 counts across models, `model_tokens` breaks them down per model; `stall_suspected_since` is set
 while no activity has been seen for `sessions.turn_stall_seconds` (reported, never fatal);
-`tool_calls` counts tool results seen.
+`tool_calls` counts tool results seen; `annotations` is the object hooks tagged the turn with
+(`{}` when none did, see "Turn annotations" under Hooks); `metadata` is the object the client
+sent on submit (`{}` when none, and for `initial` and `agent` turns).
 
 Errors: `401 unauthorized`, `404 not_found` (unknown session or turn).
 
@@ -399,15 +419,15 @@ Errors: `401 unauthorized`, `404 not_found`, `503 dead` (the session is not runn
 ### `POST /v1/sessions/{id}/probe`
 
 Write a liveness probe into the TUI without taking the turn slot (allowed while `busy`). The probe
-asks Claude to reply with `CCW-ALIVE`; it is `pending` until the transcript shows it was
-delivered, `delivered` after, and `answered` once an assistant message containing `CCW-ALIVE`
-arrives. State changes of an answered probe emit a `probe` event.
+asks Claude to reply with `sessions.probe_alive_token` (default `CCW-ALIVE`); it is `pending` until the transcript shows it was
+delivered, `delivered` after, and `answered` once an assistant message containing the token
+arrives; that main-chain text (first 2000 characters) is kept as the probe `answer`. State changes of an answered probe emit a `probe` event.
 
 Auth: bearer. Path parameter: `id`. Request body (optional):
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `text` | string | no | probe text; the default asks Claude to reply with `CCW-ALIVE` and continue |
+| `text` | string | no | probe text; the default asks Claude to reply with the configured token and continue |
 
 Response `202`: `{"probe_id": "probe-1k9x2n7c1a5d", "state": "pending"}`.
 
@@ -425,8 +445,11 @@ Response `200`:
 {"probe_id": "probe-1k9x2n7c1a5d", "state": "answered",
  "created_at": "2026-10-20T09:02:00.100+00:00",
  "delivered_at": "2026-10-20T09:02:00.700+00:00",
- "answered_at": "2026-10-20T09:02:03.250+00:00"}
+ "answered_at": "2026-10-20T09:02:03.250+00:00",
+ "answer": "CCW-ALIVE I am running the test suite."}
 ```
+
+`answer` is `null` until the probe is answered.
 
 Errors: `401 unauthorized`, `404 not_found` (unknown probe; probes are remembered in memory only),
 `503 dead`.
@@ -634,7 +657,7 @@ Emitted when the Stop hook ended a turn normally. Also POSTed to the turn's (els
 
 ```
 event: turn_completed
-data: {"seq":12,"ts":"2026-10-20T09:01:09.455Z","session_id":"ses_3f9a1c0b7d42","type":"turn_completed","data":{"record":{"turn_id":"turn-1k9x2m0q4zw8","session_id":"ses_3f9a1c0b7d42","origin":"client","state":"completed","text":"hi","final_text":"Hello!","stop_reason":"end_turn","usage":{"input_tokens":120,"output_tokens":48},"model_tokens":null,"error":null,"callbackUrl":null,"started_at":"2026-10-20T09:01:00.010+00:00","completed_at":"2026-10-20T09:01:09.455+00:00","last_activity_at":null,"stall_suspected_since":null,"tool_calls":0}}}
+data: {"seq":12,"ts":"2026-10-20T09:01:09.455Z","session_id":"ses_3f9a1c0b7d42","type":"turn_completed","data":{"record":{"turn_id":"turn-1k9x2m0q4zw8","session_id":"ses_3f9a1c0b7d42","origin":"client","state":"completed","text":"hi","final_text":"Hello!","stop_reason":"end_turn","usage":{"input_tokens":120,"output_tokens":48},"model_tokens":null,"error":null,"callbackUrl":null,"started_at":"2026-10-20T09:01:00.010+00:00","completed_at":"2026-10-20T09:01:09.455+00:00","last_activity_at":null,"stall_suspected_since":null,"tool_calls":0,"annotations":{},"metadata":{}}}}
 ```
 
 ### `turn_failed`
@@ -649,6 +672,48 @@ the callback URL.
 ```
 event: turn_failed
 data: {"seq":15,"ts":"2026-10-20T09:03:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_failed","data":{"record":{"turn_id":"turn-1k9x2p1b8c0e","state":"failed","error":"claude_exited","...":"..."}}}
+```
+
+### `turn_continued`
+
+Emitted when a blocking `onStop` action blocked the end of the running turn: claude was sent back
+to work with the reason and the turn stays `running` (the session stays `busy`). No
+`onTurnComplete` and no callback; the turn completes on a later allowed Stop.
+
+`data`: `turn_id`, `reason` (what claude was told), `stop_hook_active` (true when this Stop
+already followed an earlier block).
+
+```
+event: turn_continued
+data: {"seq":10,"ts":"2026-10-20T09:01:05.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_continued","data":{"turn_id":"turn-1k9x2m0q4zw8","reason":"write outcome.json first","stop_hook_active":false}}
+```
+
+### `turn_deferred`
+
+Emitted when the end of the running turn was deferred, by `sessions.defer_stop_on_background_tasks`
+or an `onStop` `defer`: claude was answered allow, but the turn stays `running` and the session
+`busy` until a later Stop is allowed. `sessions.turn_stall_seconds`, `limits.turn_max_seconds` and
+interrupt still apply to it.
+
+`data`: `turn_id`, `background_tasks` (the Stop payload's list, `[]` when absent).
+
+```
+event: turn_deferred
+data: {"seq":11,"ts":"2026-10-20T09:01:06.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_deferred","data":{"turn_id":"turn-1k9x2m0q4zw8","background_tasks":[{"id":"b1","type":"local_bash","status":"running","description":"npm test"}]}}
+```
+
+### `turn_resumed`
+
+Emitted when a turn that was running when claude crashed is continued in the resumed relaunch
+(`sessions.restart_continue_prompt` set): the continue prompt was pasted with the turn's marker,
+the session is `busy` again and the turn stays `running` until a later Stop completes it. See
+"Crash during a turn" under `POST /v1/sessions/{id}/turns`.
+
+`data`: `turn_id`, `restart` (the relaunch number, the session's `restarts` count).
+
+```
+event: turn_resumed
+data: {"seq":14,"ts":"2026-10-20T09:02:10.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_resumed","data":{"turn_id":"turn-1k9x2m0q4zw8","restart":1}}
 ```
 
 ### `assistant_text`
@@ -674,16 +739,31 @@ event: thinking
 data: {"seq":9,"ts":"2026-10-20T09:01:03.000Z","session_id":"ses_3f9a1c0b7d42","type":"thinking","data":{"text":"The user greets me.","message_id":"msg_01","agent_id":null}}
 ```
 
+### `usage`
+
+Emitted once per assistant `message_id` (the same dedupe as the per-turn usage totals) for
+main-chain and subagent messages, so per-agent token use is derivable. Not emitted while a
+resumed transcript's history is being dropped.
+
+`data`: `message_id`, `model`, `agent_id` (null for the main agent), `input_tokens`,
+`output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`.
+
+```
+event: usage
+data: {"seq":10,"ts":"2026-10-20T09:01:05.000Z","session_id":"ses_3f9a1c0b7d42","type":"usage","data":{"message_id":"msg_01","model":"claude-sonnet-4-5","agent_id":null,"input_tokens":120,"output_tokens":48,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}
+```
+
 ### `tool_call`
 
 Emitted from the PreToolUse relay, before the tool runs (and before `onAgentToolCall` fires).
 
 `data`: `tool_use_id`, `tool_name`, `tool_input` (as Claude sent it; a plugin hook that rewrites
-Bash through `updatedInput` can make the executed command differ from this).
+Bash through `updatedInput` can make the executed command differ from this), `agent_id` and
+`agent_type` (the subagent or teammate that acted; null for the main agent).
 
 ```
 event: tool_call
-data: {"seq":11,"ts":"2026-10-20T09:01:06.000Z","session_id":"ses_3f9a1c0b7d42","type":"tool_call","data":{"tool_use_id":"toolu_01","tool_name":"Bash","tool_input":{"command":"ls"}}}
+data: {"seq":11,"ts":"2026-10-20T09:01:06.000Z","session_id":"ses_3f9a1c0b7d42","type":"tool_call","data":{"tool_use_id":"toolu_01","tool_name":"Bash","tool_input":{"command":"ls"},"agent_id":null,"agent_type":null}}
 ```
 
 ### `tool_result`
@@ -691,18 +771,18 @@ data: {"seq":11,"ts":"2026-10-20T09:01:06.000Z","session_id":"ses_3f9a1c0b7d42",
 Emitted from the PostToolUse and PostToolUseFailure relays.
 
 `data`: `tool_use_id`, `tool_name`, `is_error` (boolean), `response` (text, truncated when very
-long).
+long), `agent_id`, `agent_type` (null for the main agent).
 
 ```
 event: tool_result
-data: {"seq":12,"ts":"2026-10-20T09:01:07.000Z","session_id":"ses_3f9a1c0b7d42","type":"tool_result","data":{"tool_use_id":"toolu_01","tool_name":"Bash","is_error":false,"response":"README.md\nsrc"}}
+data: {"seq":12,"ts":"2026-10-20T09:01:07.000Z","session_id":"ses_3f9a1c0b7d42","type":"tool_result","data":{"tool_use_id":"toolu_01","tool_name":"Bash","is_error":false,"response":"README.md\nsrc","agent_id":null,"agent_type":null}}
 ```
 
 ### `tool_denied`
 
 Emitted when a blocking `onAgentToolCall` action denied a tool call; Claude receives the reason.
 
-`data`: `tool_use_id`, `tool_name`, `reason`.
+`data`: `tool_use_id`, `tool_name`, `reason`, `agent_id`, `agent_type`.
 
 ```
 event: tool_denied
@@ -777,11 +857,11 @@ data: {"seq":19,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42",
 Emitted when a liveness probe is answered.
 
 `data`: the probe: `probe_id`, `state` (`answered`), `text`, `created_at`, `delivered_at`,
-`answered_at`.
+`answered_at`, `answer` (the answering assistant text, at most 2000 characters).
 
 ```
 event: probe
-data: {"seq":20,"ts":"2026-10-20T09:02:03.250Z","session_id":"ses_3f9a1c0b7d42","type":"probe","data":{"probe_id":"probe-1k9x2n7c1a5d","state":"answered","text":"Reply with CCW-ALIVE ...","created_at":"2026-10-20T09:02:00.100+00:00","delivered_at":"2026-10-20T09:02:00.700+00:00","answered_at":"2026-10-20T09:02:03.250+00:00"}}
+data: {"seq":20,"ts":"2026-10-20T09:02:03.250Z","session_id":"ses_3f9a1c0b7d42","type":"probe","data":{"probe_id":"probe-1k9x2n7c1a5d","state":"answered","text":"Reply with CCW-ALIVE ...","created_at":"2026-10-20T09:02:00.100+00:00","delivered_at":"2026-10-20T09:02:00.700+00:00","answered_at":"2026-10-20T09:02:03.250+00:00","answer":"CCW-ALIVE I am running the test suite."}}
 ```
 
 ### `hook_result`
@@ -789,8 +869,10 @@ data: {"seq":20,"ts":"2026-10-20T09:02:03.250Z","session_id":"ses_3f9a1c0b7d42",
 Emitted for every user hook action that ran (command or webhook), blocking or not.
 
 `data`: `event` (hook event name), `index` (action index in the event's list), `type` (`command` or
-`webhook`), `ok` (false when the action errored), `decision` (`allow` or `deny`), `duration_ms`,
-`error` (null or the redacted failure).
+`webhook`), `ok` (false when the action errored), `decision` (`allow`, `deny`, `block` or
+`defer`, as honoured by the event), `duration_ms`,
+`error` (null or the redacted failure), `output` (only when the action returned one), and
+`invalid_decision` (only when the action returned a decision its event does not honour).
 
 ```
 event: hook_result
@@ -878,6 +960,8 @@ Semantics:
 - Non-blocking actions run in the background and never delay anything; they are drained on shutdown.
 - Blocking actions are awaited. Where the event can veto (`onCreate`, `onResume`, `onTurn`,
   `onAgentToolCall`), any blocking `deny` wins across actions. On other events `deny` is ignored.
+  On `onStop` the strictest decision wins: `block` over `defer` over `allow`; the reason is the
+  first such action's (index order).
 - A blocking action that errors or times out follows its `on_error`; a non-blocking failure is
   only logged. Every action run emits a `hook_result` event.
 - Payloads are redacted of secrets before delivery.
@@ -892,12 +976,24 @@ Payload envelope (command stdin, webhook body):
   "turn_id": "turn-1k9x2m0q4zw8",
   "ts": "2026-10-20T09:01:00.011Z",
   "workdir": "/workdir/review-pr-42",
-  "data": {"text": "hi", "files": [], "origin": "client"}
+  "data": {"text": "hi", "files": [], "origin": "client", "metadata": {}}
 }
 ```
 
 `turn_id` is the turn the event belongs to, else the running turn, else null. `data` per event is
 below.
+
+### Turn annotations
+
+A blocking action may return `annotations` (an object). They are shallow-merged (later keys win)
+into the running turn's record, which clients read as `annotations` in `GET .../turns/{turn_id}`
+and in `turn_completed` / `turn_failed` events and callbacks. Only turn-scoped events annotate:
+`onTurn` (applied when the turn starts), `onAgentToolCall`, `onToolResult`, `onStop` (every
+leg, whether it allows, blocks or defers, so the values are in the `turn_completed` event and
+callback) and `onTurnComplete` (merged into the terminal record and persisted again: visible in
+`GET` turn, but the callback already sent is not re-sent). Annotations from any other event are
+ignored. A merge that would take a turn's annotations above 16 KiB serialised is dropped and an
+`error` event of kind `annotations_too_large` is emitted.
 
 ### `onCreate`
 
@@ -918,7 +1014,8 @@ stopped session snapshot.
 
 Trigger: the router, before the prompt is pasted (also for `initial` and `agent` origins). Blocking:
 a `deny` vetoes the turn (`403 vetoed`, `turn_rejected` event). `data`: `text`, `files` (list of
-workdir-relative paths about to be written), `origin`.
+workdir-relative paths about to be written), `origin`, `metadata` (the submit body's object, `{}`
+when absent).
 
 ### `onTurnComplete`
 
@@ -926,6 +1023,73 @@ Trigger: every terminal turn state: the Stop relay for `completed`, and the rout
 `interrupted` and `timeout`. Cannot veto. `data`: the full turn record (same fields as
 `GET /v1/sessions/{id}/turns/{turn_id}`), with `state` telling which terminal state was reached.
 Turn callbacks (`callbackUrl`) follow the same rule.
+
+### `onStop`
+
+Trigger: Claude's Stop, relayed when it would end the running turn (a busy session, this
+session's claude session id, the running turn's marker). A Stop with no turn running (a
+background completion, recorded as an `origin: "agent"` turn) and a stale or foreign Stop fire no
+`onStop`. Only the lead's Stop is gated: teammates fire `TeammateIdle`, not the parent Stop.
+`data`: `turn_id`, `stop_hook_active` (true when this Stop follows a block), `last_assistant_message`,
+`background_tasks`, `session_crons` (lists from the Stop payload, `[]` when absent),
+`transcript_path` (null when absent).
+
+Decisions (blocking actions; any other decision, `deny` included, is treated as `allow` and
+recorded as `invalid_decision`):
+
+- `allow`: the turn completes as usual (one `turn_completed`, one `onTurnComplete`, one callback);
+  its usage is summed over every leg of the turn.
+- `block` with a `reason`: claude gets `{"decision": "block", "reason": R}` from the relay and
+  keeps working on the same turn; the turn stays `running`, a `turn_continued` event is logged.
+  A command action exiting `2` is a block with its trimmed stderr as the reason.
+- `defer`: claude is answered allow, but the turn stays `running` and the session `busy`; a
+  `turn_deferred` event is logged. `turn_stall_seconds`, `limits.turn_max_seconds` and interrupt
+  still end it; a later Stop that is allowed completes it.
+
+Claude caps consecutive Stop blocks at 8 per turn and then ends the turn regardless, so a gate
+script must count its blocks itself, for example in a file under `CCW_STATE_DIR`, and allow
+before the cap:
+
+```sh
+#!/bin/sh
+# outcome-gate.sh: send claude back until outcome.json exists, at most 3 times per turn
+payload=$(cat)
+turn=$(printf '%s' "$payload" | jq -r '.turn_id')
+count_file="$CCW_STATE_DIR/stop-blocks-$turn"
+n=$(cat "$count_file" 2>/dev/null || echo 0)
+if [ ! -f "$CCW_WORKDIR/outcome.json" ] && [ "$n" -lt 3 ]; then
+  echo $((n + 1)) > "$count_file"
+  echo "write outcome.json before you finish" >&2
+  exit 2
+fi
+exit 0
+```
+
+`sessions.defer_stop_on_background_tasks: true` adds a built-in defer, decided before the hooks:
+a Stop whose `background_tasks` is non-empty is at least a `defer`. A hook `allow` cannot lift it;
+a hook `block` wins over it. With no `onStop` action and the flag off nothing changes.
+
+### `onTick`
+
+Trigger: a timer. The router starts one timer per `onTick` action when the session first reaches
+ready; it keeps running across claude restarts and stops when the session is closed. Each tick
+runs only its own action. Cannot veto: decisions, annotations and outputs are ignored, and
+`onTick` is never relayed from claude. Two action keys are specific to this event and rejected on
+every other one (the error names `hooks.onTick.<i>.<type>.interval_seconds`):
+
+- `interval_seconds` (required, greater than 0): seconds between ticks.
+- `when` (`busy` or `always`, default `busy`): `busy` skips ticks while no turn is running.
+
+A tick whose previous run of the same action has not finished is skipped, so runs never overlap.
+`data`: `turn_id` (the running turn, `null` when idle), `elapsed_seconds` (how long that turn has
+run, `null` when idle), `interval_seconds`. Use it for periodic safety pushes or metrics pushes
+without a sidecar.
+
+```yaml
+hooks:
+  onTick:
+    - {type: command, run: ./push-metrics.sh, interval_seconds: 30, when: always}
+```
 
 ### `onAgentResponse`
 
@@ -936,13 +1100,18 @@ Cannot veto. `data`: `text`, `message_id`, `model`.
 
 Trigger: Claude's PreToolUse, relayed before the tool runs. Supports `matcher`. Blocking: a `deny`
 blocks the tool call (Claude is told the reason, a `tool_denied` event is logged); an action's
-`additional_context` is returned to Claude. `data`: `tool_use_id`, `tool_name`, `tool_input`.
+`additional_context` is returned to Claude. `data`: `tool_use_id`, `tool_name`, `tool_input`,
+`agent_id`, `agent_type` (null for the main agent).
+The gate fails closed: a ccw-side failure (relay error, unusable event, redaction failure) denies
+the tool call when a matching blocking action has `on_error: deny`, with the reason
+`ccw hook relay failed: <ExceptionType>`; with no such action the call is allowed and the failure
+is reported as an `error` event.
 
 ### `onToolResult`
 
 Trigger: PostToolUse and PostToolUseFailure. Supports `matcher`. Cannot veto; a blocking action's
 `additional_context` is returned to Claude as hook context. `data`: `tool_use_id`, `tool_name`,
-`is_error`, `response`.
+`is_error`, `response`, `agent_id`, `agent_type` (null for the main agent).
 
 ### `onSubagentStart`
 
@@ -966,13 +1135,20 @@ failure. Cannot veto. `data`: `kind` (`fatal`, `exited`, `restart`, `hook_relay`
 
 ### Command actions
 
-The payload envelope is written to stdin. Environment: the service's child environment plus the
-action's `env`, and `CCW_EVENT`, `CCW_SESSION_ID`, `CCW_TURN_ID`, `CCW_WORKDIR`,
-`CCW_CLAUDE_CONFIG_DIR`. The working directory is the session workdir. The process runs in its own
+The payload envelope is written to stdin. Environment: the FULL service environment (every
+variable of the ccw process, including secrets such as `CCW_AUTH_TOKEN`), then the action's `env`,
+then `CCW_EVENT`, `CCW_SESSION_ID`, `CCW_TURN_ID`, `CCW_WORKDIR`, `CCW_CLAUDE_CONFIG_DIR`,
+`CCW_STATE_DIR` and `CCW_API_URL` (service-managed, they win over the action's `env`).
+`CCW_STATE_DIR` is `<session_dir>/hook-state`, a per-session directory created before the first
+hook (onCreate) fires, kept across stop and resume and removed by purge. `CCW_API_URL` is
+`http://127.0.0.1:<public port>`. `CCW_CLAUDE_CONFIG_DIR` is the same path as the session's
+`CLAUDE_CONFIG_DIR`. By contrast `init.setup_commands` get the allow-listed tool environment
+(base vars, passthrough, claude env, mise, `CLAUDE_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`), not the full
+service environment. The working directory is the session workdir. The process runs in its own
 process group and is killed with its children on timeout.
 
-Exit codes: `0` allow; `2` deny, with trimmed stderr (up to 2000 chars) as the reason; any other
-exit code, or a timeout, is an error handled by `on_error`.
+Exit codes: `0` allow; `2` deny (a block on `onStop`), with trimmed stderr (up to 2000 chars) as
+the reason; any other exit code, or a timeout, is an error handled by `on_error`.
 
 Stdout on exit 0 may be a JSON object; other output is ignored:
 
@@ -980,8 +1156,28 @@ Stdout on exit 0 may be a JSON object; other output is ignored:
 {"decision": "deny", "reason": "writes are blocked", "additional_context": "Use the staging branch."}
 ```
 
-`decision` is `allow` or `deny`, `reason` is shown to Claude on a deny, `additional_context` is
-appended to what Claude sees (for `onAgentToolCall` and `onToolResult`).
+`decision` is `allow`, `deny`, `block` or `defer`, `reason` is shown to Claude on a deny or block,
+`additional_context` is appended to what Claude sees (for `onAgentToolCall` and `onToolResult`).
+Two more optional fields, honoured on blocking actions only (a non-blocking action's are ignored):
+
+- `annotations`: a JSON object. The blocking actions' annotations are shallow-merged in action
+  index order (later keys win). Above 16 KiB serialised they are dropped and the action result
+  records an error.
+- `output`: any JSON value, redacted of secrets and then carried on the `hook_result` event and in
+  the outcome's per-action `outputs` list. Above 256 KiB serialised it is replaced by
+  `{"truncated": true, "bytes": <n>}`.
+
+Decisions each event honours:
+
+| Event | Honoured decisions |
+|---|---|
+| `onCreate`, `onResume`, `onTurn`, `onAgentToolCall` | `allow`, `deny` |
+| `onStop` | `allow`, `block`, `defer` |
+| `onTick` | `allow` (decisions are ignored) |
+| every other event | `allow` |
+
+A decision the event does not honour is treated as `allow`; the `hook_result` event records the
+original as `invalid_decision` and it never vetoes. Without the new fields behaviour is unchanged.
 
 ```sh
 #!/bin/sh
@@ -1001,7 +1197,9 @@ The payload envelope is POSTed as JSON. Headers: `Content-Type: application/json
 `X-CCW-Signature: sha256=<hex HMAC-SHA256(secret, raw request body)>`. A 2xx is success; a
 connection error or non-2xx is retried `retries` times (default 3) with 0.5 s doubling backoff,
 then counts as a failed action (`on_error` for blocking ones). A blocking webhook's 2xx JSON body
-uses the same decision shape as command stdout.
+uses the same shape as command stdout: `decision`, `reason`, `additional_context`, `annotations`
+and `output`, with the same per-event decision table and the same 16 KiB / 256 KiB caps (see
+[Command actions](#command-actions)).
 
 Verify the signature over the raw bytes, with a constant-time compare.
 
@@ -1221,7 +1419,8 @@ claude:
 | `claude.effort` | string | `""` | - | Value for `--effort`; empty uses Claude's default. |
 | `claude.permission_mode` | string | `"bypassPermissions"` | - | Written to `settings.json` as `permissions.defaultMode`. |
 | `claude.extra_args` | list | `[]` | - | Extra argv appended after the service flags. `--dangerously-skip-permissions` is rejected (it adds a boot dialog). |
-| `claude.passthrough_env` | list | `[]` | - | List of env var names copied from the service environment into Claude's environment when present (for example `GH_TOKEN`, `SSH_AUTH_SOCK`). |
+| `claude.passthrough_env` | list | `[]` | - | List of env var name patterns (`fnmatch`, case-sensitive; a plain name matches only itself, `GH_*` matches by prefix) copied from the service environment into Claude's environment and the setup-command environment when present. `CCW_*` names and service-managed names are never passed, even through `*` (the refusal is logged). Warning: `*` hands every service secret to Claude; use explicit globs plus `passthrough_env_exclude`. |
+| `claude.passthrough_env_exclude` | list | `[]` | - | List of `fnmatch` patterns removing names matched by `claude.passthrough_env`, for example `["*_SECRET*", "AWS_*"]`. |
 | `claude.permissions.allow` | list | `[]` | - | List of allow rules, for example `Bash(git status:*)`. |
 | `claude.permissions.deny` | list | `["EnterPlanMode", "ExitPlanMode"]` | - | List of deny rules. Plan-mode tools are denied by default. |
 | `claude.settings` | map | `{}` | - | Map deep-merged into `settings.json`; hook lists are appended to the service's own hooks. |
@@ -1750,6 +1949,8 @@ hooks:
 | `hooks.onDestroy` | list | `[]` | - | List of hook actions run after claude stopped. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onTurn` | list | `[]` | - | List of hook actions run before the prompt is pasted; a blocking deny vetoes the turn. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onTurnComplete` | list | `[]` | - | List of hook actions run on every terminal turn state. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.onStop` | list | `[]` | - | List of hook actions run when claude's Stop would end the running turn; a blocking block continues the turn, a defer holds it open. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [`onStop`](#onstop). |
+| `hooks.onTick` | list | `[]` | - | List of hook actions run on a timer while the session lives. Item: the usual command or webhook action plus `interval_seconds` (required, > 0) and `when: busy\|always = busy` (both allowed only here); no `matcher`. See [`onTick`](#ontick). |
 | `hooks.onAgentResponse` | list | `[]` | - | List of hook actions run for assistant text read from the transcript. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onAgentToolCall` | list | `[]` | - | List of hook actions run on PreToolUse; a blocking deny blocks the tool call; `matcher` allowed. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onToolResult` | list | `[]` | - | List of hook actions run on PostToolUse and PostToolUseFailure; `matcher` allowed. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
@@ -1778,6 +1979,9 @@ sessions:
 | `sessions.ask_user_question` | enum (forward, deny, allow) | `"forward"` | - | `forward` surfaces AskUserQuestion as a question event, `deny` refuses it, `allow` lets claude ask in the TUI. |
 | `sessions.turn_marker` | boolean | `true` | - | Tag each turn so completion can be correlated with its prompt. |
 | `sessions.resume_on_start` | boolean | `false` | - | Resume known sessions when the service starts instead of listing them as stopped. |
+| `sessions.defer_stop_on_background_tasks` | boolean | `false` | - | Keep the running turn open (`turn_deferred`) while a Stop reports non-empty `background_tasks`; a later Stop with none completes it. See [`onStop`](#onstop). |
+| `sessions.probe_alive_token` | string | `"CCW-ALIVE"` | - | Non-empty token a probe asks Claude to reply with; an assistant message containing it answers the probe, and the default probe text names it. |
+| `sessions.restart_continue_prompt` | string | `""` | - | Prompt pasted (with the same turn marker) into a resumed relaunch after claude crashed mid-turn, so the running turn continues instead of failing with `claude_exited` (a `turn_resumed` event); empty disables it. See "Crash during a turn" under `POST /v1/sessions/{id}/turns`. |
 
 ### `limits`
 

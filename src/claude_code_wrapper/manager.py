@@ -46,7 +46,7 @@ from .bootstrap.settings import relay_timeouts, render_settings
 from .claude_env import SECRET_KEY_RE, ClaudeEnv
 from .config import Config, InitialPromptTemplate
 from .events import EventLog
-from .hooks import RETRY_BASE_SECONDS, HookDispatcher, HookOutcome, build_payload
+from .hooks import RETRY_BASE_SECONDS, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
 from .plugins import install_plugins
 from .prompts import render_template, resolve_prompt
@@ -60,6 +60,7 @@ from .session import (
     SessionSpec,
     TurnRejected,
     build_env,
+    passthrough_names,
 )
 from .tooling import install_workdir, mise_env
 from .turns import TurnStore, now_iso
@@ -258,6 +259,7 @@ class SessionManager:
         internal_url: str,
         service_env: Mapping[str, str],
         redactor: Redactor,
+        api_url: str = "",
         relay_command: str | None = None,
         reaper_interval: float = REAPER_INTERVAL_SECONDS,
         metrics: Metrics | None = None,
@@ -266,6 +268,7 @@ class SessionManager:
         self.cfg = cfg
         self.internal_url = internal_url
         self.service_env = dict(service_env)
+        self.api_url = api_url
         self.redactor = redactor
         self.started = False
         self._relay_command = relay_command
@@ -578,9 +581,12 @@ class SessionManager:
         service and config (base vars, passthrough, claude env, mise), without the CCW_* relay
         plumbing that only the claude child needs."""
         env = {n: self.service_env[n] for n in BASE_ENV if n in self.service_env}
-        for name in self.cfg.claude.passthrough_env:
-            if name in self.service_env and not name.startswith("CCW_"):
-                env[name] = self.service_env[name]
+        for name in passthrough_names(
+            self.service_env,
+            self.cfg.claude.passthrough_env,
+            self.cfg.claude.passthrough_env_exclude,
+        ):
+            env[name] = self.service_env[name]
         env.update(ctx.claude_env.to_env())
         env.update(mise_env(self.cfg.mise))
         env["CLAUDE_CONFIG_DIR"] = str(ctx.config_dir)
@@ -589,8 +595,7 @@ class SessionManager:
         return env
 
     def _gate_fail(self) -> str:
-        deny = any(a.blocking and a.on_error == "deny" for a in self.cfg.hooks.onAgentToolCall)
-        return "deny" if deny else "allow"
+        return gate_fail_mode(self.cfg.hooks)
 
     def _child_env(self, ctx: _Active) -> dict[str, str]:
         return build_env(
@@ -605,6 +610,7 @@ class SessionManager:
             gate_timeout=relay_timeouts(self.cfg).attempt_timeout,
             mise_env=mise_env(self.cfg.mise),
             passthrough=self.cfg.claude.passthrough_env,
+            passthrough_exclude=self.cfg.claude.passthrough_env_exclude,
         )
 
     def _wire(self, ctx: _Active, env: dict[str, str], resume: bool) -> None:
@@ -1108,12 +1114,16 @@ class SessionManager:
         if cwd is None:
             cwd = ctx.session_dir if ctx.session_dir.is_dir() else Path(self._root)
         if ctx.dispatcher is None or ctx.dispatcher_cwd != cwd:
+            state_dir = ctx.session_dir / "hook-state"
+            state_dir.mkdir(parents=True, exist_ok=True)
             ctx.dispatcher = HookDispatcher(
                 self.cfg.hooks,
                 self.redactor,
                 base_env=self.service_env,
                 default_cwd=cwd,
                 config_dir=ctx.config_dir,
+                state_dir=state_dir,
+                api_url=self.api_url,
             )
             ctx.dispatcher_cwd = cwd
             self._dispatchers.add(ctx.dispatcher)
@@ -1191,6 +1201,9 @@ class SessionManager:
             current=current,
             live=live,
             last_activity_at=self._last_activity_iso(ctx),
+            outstanding_subagents=(
+                ctx.router.outstanding_subagents if ctx.router is not None else 0
+            ),
         )
 
     def _persisted_snapshot(self, meta: dict[str, Any]) -> dict[str, Any]:
@@ -1222,6 +1235,7 @@ class SessionManager:
         current: Any,
         live: dict[str, Any],
         last_activity_at: str | None,
+        outstanding_subagents: int = 0,
     ) -> dict[str, Any]:
         return {
             "session_id": meta["session_id"],
@@ -1238,6 +1252,7 @@ class SessionManager:
             "updated_at": meta.get("updated_at"),
             "last_activity_at": last_activity_at,
             "turns_completed": turns_completed,
+            "outstanding_subagents": outstanding_subagents,
             "current_turn_id": current.turn_id if current is not None else None,
             "stall_suspected_since": (
                 current.stall_suspected_since if current is not None else None

@@ -70,7 +70,20 @@ class StubSession:
         self.calls.append(("complete", payload, usage, model_tokens, marker_turn_id))
         return self.complete_result
 
-    async def submit(self, text, *, origin="client", callback_url=None, turn_id=None):
+    def check_submittable(self):
+        if self.reject:
+            raise TurnRejected(self.reject)
+
+    async def submit(
+        self,
+        text,
+        *,
+        origin="client",
+        callback_url=None,
+        turn_id=None,
+        annotations=None,
+        metadata=None,
+    ):
         if self.reject:
             raise TurnRejected(self.reject)
         self.calls.append(("submit", text, origin, callback_url))
@@ -96,11 +109,12 @@ class StubSession:
             probe.state = "delivered"
         return probe
 
-    def probe_answered(self):
+    def probe_answered(self, answer=""):
         self.calls.append(("probe_answered",))
         out = [p for p in self.probes.values() if p.state == "delivered"]
         for p in out:
             p.state = "answered"
+            p.answer = answer[:2000]
         return out
 
 
@@ -225,7 +239,13 @@ async def test_pretooluse_deny_returns_deny_json_and_tool_denied(tmp_path):
     out = json.loads(r["stdout"])["hookSpecificOutput"]
     assert out["permissionDecision"] == "deny" and out["permissionDecisionReason"] == "no bash"
     (ev,) = h.events("tool_denied")
-    assert ev.data == {"tool_use_id": "tu1", "tool_name": "Bash", "reason": "no bash"}
+    assert ev.data == {
+        "tool_use_id": "tu1",
+        "tool_name": "Bash",
+        "reason": "no bash",
+        "agent_id": None,
+        "agent_type": None,
+    }
     assert h.hook_posts[0]["data"]["tool_name"] == "Bash"
     await h.router.close()
 
@@ -544,7 +564,12 @@ async def test_on_turn_veto_rejects_submit(tmp_path):
     assert ei.value.reason == "not now"
     assert h.events("turn_rejected")[0].data == {"reason": "not now"}
     assert not h.calls("submit") and not (h.workdir / "f.txt").exists()
-    assert h.hook_posts[0]["data"] == {"text": "hi", "files": ["f.txt"], "origin": "client"}
+    assert h.hook_posts[0]["data"] == {
+        "text": "hi",
+        "files": ["f.txt"],
+        "origin": "client",
+        "metadata": {},
+    }
     await h.router.close()
 
 
@@ -604,6 +629,20 @@ async def test_hook_results_emitted(tmp_path):
     await h.router.submit_turn("hi")
     (ev,) = h.events("hook_result")
     assert ev.data["event"] == "onTurn" and ev.data["ok"] is True
+    await h.router.close()
+
+
+async def test_hook_result_event_carries_output_and_invalid_decision(tmp_path):
+    from claude_code_wrapper.hooks import ActionResult
+
+    h = Harness(tmp_path, hooks={})
+    h.router.on_hook_result(
+        ActionResult("onTurn", 0, "command", ok=True, output={"a": 1}, invalid_decision="block")
+    )
+    h.router.on_hook_result(ActionResult("onTurn", 1, "command", ok=True))
+    first, second = h.events("hook_result")
+    assert first.data["output"] == {"a": 1} and first.data["invalid_decision"] == "block"
+    assert "output" not in second.data and "invalid_decision" not in second.data
     await h.router.close()
 
 
