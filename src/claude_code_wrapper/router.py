@@ -796,8 +796,13 @@ class SessionRouter(SessionListener):
 
     # ------------------------------------------------------------------ lifecycle
 
-    async def close(self, drain_timeout: float = CLOSE_DRAIN_SECONDS) -> None:
-        """Stop tailing, wait up to `drain_timeout` for background fires, then cancel them."""
+    async def close(
+        self, drain_timeout: float = CLOSE_DRAIN_SECONDS, *, emit_closed: bool = True
+    ) -> None:
+        """Stop tailing, wait up to `drain_timeout` for background fires, then cancel them.
+
+        `emit_closed=False` leaves `session_closed` to the caller (the manager emits it
+        after onDestroy)."""
         if self._closed:
             return
         with contextlib.suppress(Exception):
@@ -819,4 +824,5 @@ class SessionRouter(SessionListener):
         await self.drain(max(drain_timeout, 0.0))
         for task in list(self._background):
             task.cancel()
-        self._emit("session_closed", {})
+        if emit_closed:
+            self._emit("session_closed", {})

@@ -254,7 +254,20 @@ Auth: bearer. Path parameter: `id`. Query parameter: `purge` (boolean, default `
 true, the session directory and a non-mounted workdir are deleted afterwards; a mounted workdir is
 never deleted.
 
-Response `200`: the stopped snapshot; with `purge=true` it also carries `"purged": true`.
+Request body (optional): `{"hook_input": <object>}`, no other keys. It reaches `onDestroy` as
+`data.input` (`null` when there is no body, and on a SIGTERM shutdown). A body over 1 MiB is
+rejected with `413 too_large`.
+
+Response `200`: the stopped snapshot; with `purge=true` it also carries `"purged": true`. It also
+carries `hook_outputs`: `[{index, ok, output, error}]`, one entry per blocking `onDestroy` action
+(the `output` the action returned); `hook_outputs` collects only blocking `onDestroy` actions. Non-blocking actions' outputs are not returned. `hook_outputs`
+is `[]` when there are no blocking actions or the session was not active. The same list is sent as
+the [`destroy_output`](#destroy_output) event.
+
+Timing: `onDestroy` runs after claude stopped and before any purge, and `DELETE` returns after it.
+On `DELETE` each action is bounded by its own `timeout_seconds`. On SIGTERM the service gives
+`onDestroy` 25% of `limits.shutdown_timeout_seconds`, so a long review (for example a `claude -p`
+action) must be triggered with `DELETE`, not left to shutdown.
 
 | Status | Code | When |
 |---|---|---|
@@ -262,7 +275,8 @@ Response `200`: the stopped snapshot; with `purge=true` it also carries `"purged
 | 401 | `unauthorized` | missing or wrong token |
 | 404 | `not_found` | unknown session |
 | 409 | `invalid_state` | the session is still `creating` |
-| 422 | `invalid_request` | `purge` is not a boolean |
+| 413 | `too_large` | body over 1 MiB |
+| 422 | `invalid_request` | `purge` is not a boolean, or the body is not `{"hook_input": object}` |
 
 ### `POST /v1/sessions/{id}/resume`
 
@@ -898,6 +912,18 @@ event: error
 data: {"seq":22,"ts":"2026-10-20T09:05:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"error","data":{"kind":"exited","message":"claude exited with code 1","code":1}}
 ```
 
+### `destroy_output`
+
+Emitted once per destroy, after `onDestroy` finished and before `session_closed`.
+
+`data`: `outputs`: the `hook_outputs` list of blocking `onDestroy` actions (`[{index, ok, output,
+error}]`, `[]` when none). Also emitted on a SIGTERM shutdown when `onDestroy` completes in time.
+
+```
+event: destroy_output
+data: {"seq":22,"ts":"2026-10-20T09:09:59.000Z","session_id":"ses_3f9a1c0b7d42","type":"destroy_output","data":{"outputs":[{"index":0,"ok":true,"output":{"verdict":"pass"},"error":null}]}}
+```
+
 ### `session_closed`
 
 The last event of a session's stream: sent when the session is destroyed or the service stops.
@@ -1013,7 +1039,9 @@ Trigger: the manager, after a resumed claude is ready. Blocking: a `deny` aborts
 ### `onDestroy`
 
 Trigger: the manager, after claude stopped. Awaited with a bounded budget; cannot veto. `data`: the
-stopped session snapshot.
+stopped session snapshot plus `input`: the `hook_input` of the `DELETE` body (`null` when absent and
+on shutdown). The `output` of each blocking action is returned in the `DELETE` response as
+`hook_outputs` (non-blocking outputs are not returned).
 
 ### `onTurn`
 

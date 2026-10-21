@@ -40,6 +40,7 @@ EVENT_TYPES: list[str] = [
     "probe",
     "hook_result",
     "error",
+    "destroy_output",
     "session_closed",
 ]
 
