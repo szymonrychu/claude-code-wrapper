@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from conftest import World, wait_until
+from conftest import World, jsonl, wait_until
 
 from claude_code_wrapper import manager as manager_mod
 from claude_code_wrapper.config import Config
@@ -115,8 +115,8 @@ async def test_dead_without_flag_does_not_exit(world: World) -> None:
     assert codes == []
 
 
-async def test_service_exits_after_delete_response(world: World, tmp_path: Path) -> None:
-    cfg = world.cfg(sessions={"exit_when_last_destroyed": True})
+async def _serve(world: World, **sessions: object) -> tuple[ServiceHandle, asyncio.Task, str]:
+    cfg = world.cfg(**sessions)
     cfg = cfg.model_copy(
         update={
             "server": cfg.server.model_copy(
@@ -133,17 +133,49 @@ async def test_service_exits_after_delete_response(world: World, tmp_path: Path)
     ready = asyncio.Event()
     task = asyncio.create_task(run_service(cfg, ready=ready, handle=handle))
     await asyncio.wait_for(ready.wait(), 20)
-    pub = f"http://127.0.0.1:{handle.public_port}"
-    h = {"Authorization": "Bearer tok-abcdefgh"}
+    return handle, task, f"http://127.0.0.1:{handle.public_port}"
+
+
+_AUTH = {"Authorization": "Bearer tok-abcdefgh"}
+
+
+async def test_last_destroy_delete_response_complete_before_exit(
+    world: World, tmp_path: Path
+) -> None:
+    out = tmp_path / "on_destroy.jsonl"
+    hook = {"type": "command", "run": f"cat >> '{out}'; echo >> '{out}'"}
+    handle, task, pub = await _serve(
+        world, sessions={"exit_when_last_destroyed": True}, hooks={"onDestroy": [hook]}
+    )
     async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.post(f"{pub}/v1/sessions", json={}, headers=h)
+        r = await c.post(f"{pub}/v1/sessions", json={}, headers=_AUTH)
         assert r.status_code == 201
         sid = r.json()["session_id"]
-        d = await c.delete(f"{pub}/v1/sessions/{sid}", headers=h)
+        d = await c.delete(f"{pub}/v1/sessions/{sid}", headers=_AUTH)
         assert d.status_code == 200
-        assert d.json()["session_id"] == sid
+        body = d.json()
+        assert body["session_id"] == sid
+        assert body["state"] == "stopped"
+        if "hook_outputs" in body:
+            assert isinstance(body["hook_outputs"], list | dict)
     await asyncio.wait_for(task, 20)
     assert handle.exit_code == 0
+
+
+async def test_shutdown_drains_on_destroy_before_exit(world: World, tmp_path: Path) -> None:
+    out = tmp_path / "on_destroy.jsonl"
+    hook = {"type": "command", "run": f"cat >> '{out}'; echo >> '{out}'"}
+    handle, task, pub = await _serve(
+        world, sessions={"exit_when_last_destroyed": True}, hooks={"onDestroy": [hook]}
+    )
+    async with httpx.AsyncClient(timeout=20) as c:
+        a = (await c.post(f"{pub}/v1/sessions", json={}, headers=_AUTH)).json()["session_id"]
+        b = (await c.post(f"{pub}/v1/sessions", json={}, headers=_AUTH)).json()["session_id"]
+        await c.delete(f"{pub}/v1/sessions/{a}", headers=_AUTH)
+        await c.delete(f"{pub}/v1/sessions/{b}", headers=_AUTH)
+    await asyncio.wait_for(task, 20)
+    assert handle.exit_code == 0
+    assert sorted(p["session_id"] for p in jsonl(out)) == sorted([a, b])
 
 
 def test_first_exit_request_wins() -> None:
