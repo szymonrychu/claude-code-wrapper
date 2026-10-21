@@ -1,6 +1,6 @@
 ---
 title: Busy check before turn files
-status: in-progress
+status: done
 repo: .
 value: "A rejected turn never rewrites files under the running turn (DEF-2)"
 files: [src/claude_code_wrapper/session.py, src/claude_code_wrapper/router.py, tests/test_submit_busy_first.py]
@@ -10,13 +10,15 @@ owns: []
 uses: []
 model: sonnet
 estimate: 45
-actual: ""
+actual: 3
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--busy-check-before-turn-files
 branch: hook-capabilities-for-tatara--busy-check-before-turn-files
-verified_head: ""
-run: ""
+verified_head: bc871004811767d817dbd73fdabda4fd1b824d37
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Busy check before turn files

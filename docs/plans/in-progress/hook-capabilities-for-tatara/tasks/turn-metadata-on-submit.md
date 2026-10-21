@@ -1,6 +1,6 @@
 ---
 title: Turn metadata on submit
-status: in-progress
+status: done
 repo: .
 value: "Clients can attach metadata to a turn for hooks to gate on, e.g. tatara handoff (K6)"
 files: [src/claude_code_wrapper/api/turns.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/turns.py, README.md, tests/test_turn_metadata.py]
@@ -10,13 +10,15 @@ owns: [turn-metadata]
 uses: [ccw-world-fixture]
 model: sonnet
 estimate: 60
-actual: ""
+actual: 2
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--turn-metadata-on-submit
 branch: hook-capabilities-for-tatara--turn-metadata-on-submit
-verified_head: ""
-run: ""
+verified_head: 82111ae2c4f741d86fbb9a32edfdf3c9946fdd6c
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: []
+process_gaps: [No captured red-run output for the test-first cycle]
 ---
 
 # Turn metadata on submit

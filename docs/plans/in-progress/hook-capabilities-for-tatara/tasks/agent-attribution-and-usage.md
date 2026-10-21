@@ -1,6 +1,6 @@
 ---
 title: Agent attribution and usage
-status: in-progress
+status: done
 repo: .
 value: "Tool events and usage say which agent acted, so per-role activity and tokens are derivable (K5)"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/events.py, README.md, tests/test_agent_attribution.py]
@@ -10,13 +10,15 @@ owns: [agent-attribution]
 uses: [fake-claude-scenarios, ccw-world-fixture]
 model: sonnet
 estimate: 60
-actual: ""
+actual: 1
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--agent-attribution-and-usage
 branch: hook-capabilities-for-tatara--agent-attribution-and-usage
-verified_head: ""
-run: ""
-provides: []
+verified_head: a3a894b089a9fc18408b8e6154fc75ac18e19a01
+run: hook-capabilities-for-tatara
+provides: [agent-attribution]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Agent attribution and usage

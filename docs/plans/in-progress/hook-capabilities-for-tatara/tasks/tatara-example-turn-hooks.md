@@ -1,6 +1,6 @@
 ---
 title: tatara example turn hooks
-status: in-progress
+status: todo
 repo: .
 value: "A tested worked example of tatara's finaliser, issue capture, outcome gate and statusline as ccw hooks"
 files: [src/claude_code_wrapper/data/examples/tatara.config.yaml, src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py, examples/tatara.config.yaml, README.md, tests/test_example_tatara.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--tatara-example-turn-hooks
 branch: hook-capabilities-for-tatara--tatara-example-turn-hooks
 verified_head: ""
-run: ""
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # tatara example turn hooks
@@ -78,3 +80,5 @@ A reader can see, run and test how tatara's turn-complete callback, internal iss
 
 - Parity rows B1-B6 (design Research). Finaliser non-blocking (R4). Gate counts in CCW_STATE_DIR (R2).
 - No tatara names in `src/claude_code_wrapper/*.py` (anti-goal).
+
+- 2026-10-21 run hook-capabilities-for-tatara: dependency-failed on service-exit-policy, missing-metric-families

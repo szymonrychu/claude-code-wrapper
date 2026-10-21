@@ -1,6 +1,6 @@
 ---
 title: onTick timed hook
-status: in-progress
+status: done
 repo: .
 value: "Periodic hook actions for safety pushes and metrics pushes without sidecars (K7)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/router.py, README.md, tests/test_on_tick.py]
@@ -10,13 +10,15 @@ owns: [on-tick-event]
 uses: [ccw-world-fixture]
 model: sonnet
 estimate: 75
-actual: ""
+actual: 5
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--ontick-timed-hook
 branch: hook-capabilities-for-tatara--ontick-timed-hook
-verified_head: ""
-run: ""
-provides: []
+verified_head: bfd57c9cdc706e2dc604ee43f87dc14c53e712ac
+run: hook-capabilities-for-tatara
+provides: [dispatcher-fire-only-index, session-turn-elapsed]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # onTick timed hook

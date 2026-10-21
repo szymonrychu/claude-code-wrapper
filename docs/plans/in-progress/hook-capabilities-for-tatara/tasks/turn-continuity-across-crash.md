@@ -1,6 +1,6 @@
 ---
 title: Turn continuity across crash
-status: in-progress
+status: done
 repo: .
 value: "A claude crash mid-turn no longer loses the turn when a continue prompt is configured (K12)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/events.py, README.md, tests/test_turn_continuity.py]
@@ -10,13 +10,15 @@ owns: []
 uses: [fake-claude-scenarios, ccw-world-fixture]
 model: opus
 estimate: 90
-actual: ""
+actual: 15
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--turn-continuity-across-crash
-branch: hook-capabilities-for-tatara--turn-continuity-across-crash
-verified_head: ""
-run: ""
-provides: []
+branch: "HEAD of worktree hook-capabilities-for-tatara--turn-continuity-across-crash (commit ff97716)"
+verified_head: ff9771694d6ae9696e1aa7ef9bc48e8a428a15ed
+run: hook-capabilities-for-tatara
+provides: [session-on-turn-resumed]
+acs_for_audit: []
+process_gaps: ["The e2e fix (51eb5d7) duplicates a fix other branches may carry; integration must keep exactly one"]
 ---
 
 # Turn continuity across crash

@@ -1,6 +1,6 @@
 ---
 title: PreToolUse gate fails closed
-status: in-progress
+status: done
 repo: .
 value: "A deny gate can no longer be bypassed by a ccw-side failure (DEF-1)"
 files: [src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/manager.py, README.md, tests/test_pretooluse_fail_closed.py]
@@ -10,13 +10,15 @@ owns: []
 uses: []
 model: sonnet
 estimate: 60
-actual: ""
+actual: 4
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--pretooluse-gate-fails-closed
 branch: hook-capabilities-for-tatara--pretooluse-gate-fails-closed
-verified_head: ""
-run: ""
+verified_head: 6873e133c793ab1cb9f0bf22ed414b007ec8b883
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # PreToolUse gate fails closed

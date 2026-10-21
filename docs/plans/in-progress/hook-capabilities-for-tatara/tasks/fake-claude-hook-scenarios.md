@@ -1,6 +1,6 @@
 ---
 title: Fake claude hook scenarios
-status: in-progress
+status: done
 repo: .
 value: Lets every new hook capability be tested end to end against the fake claude
 files: [tests/fake_claude/fake_claude.py, tests/conftest.py, tests/test_fake_claude.py, tests/test_manager.py]
@@ -10,13 +10,15 @@ owns: [fake-claude-scenarios, ccw-world-fixture]
 uses: []
 model: sonnet
 estimate: 75
-actual: ""
+actual: 12
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--fake-claude-hook-scenarios
 branch: hook-capabilities-for-tatara--fake-claude-hook-scenarios
-verified_head: ""
-run: ""
-provides: []
+verified_head: a3d44310f82cd0e9d24bd601f413e9cf8e36db59
+run: hook-capabilities-for-tatara
+provides: [world-fixture-helpers]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Fake claude hook scenarios

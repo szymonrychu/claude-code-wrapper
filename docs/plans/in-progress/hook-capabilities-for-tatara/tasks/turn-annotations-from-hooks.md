@@ -1,6 +1,6 @@
 ---
 title: Turn annotations from hooks
-status: in-progress
+status: done
 repo: .
 value: "Hooks can tag a turn record (pending tasks, outcomes) that clients see in GET turn and callbacks (K2)"
 files: [src/claude_code_wrapper/turns.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, README.md, tests/test_turn_annotations.py]
@@ -10,13 +10,15 @@ owns: [turn-annotations]
 uses: [hook-result-fields, on-stop-event, ccw-world-fixture]
 model: sonnet
 estimate: 45
-actual: ""
+actual: 5
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--turn-annotations-from-hooks
 branch: hook-capabilities-for-tatara--turn-annotations-from-hooks
-verified_head: ""
-run: ""
-provides: []
+verified_head: b1cb4fa106cb2ac2c62c630058a3a804e0a7a202
+run: hook-capabilities-for-tatara
+provides: [turn-annotations]
+acs_for_audit: []
+process_gaps: ["The implementer says the implementation was written before the tests, so there is no red run, which breaks the test-first rule."]
 ---
 
 # Turn annotations from hooks

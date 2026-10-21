@@ -1,6 +1,6 @@
 ---
 title: Outstanding subagent count
-status: in-progress
+status: done
 repo: .
 value: "The session snapshot shows how many subagents are still running (K10)"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/manager.py, README.md, tests/test_outstanding_subagents.py]
@@ -10,13 +10,15 @@ owns: []
 uses: [ccw-world-fixture]
 model: sonnet
 estimate: 45
-actual: ""
+actual: 1
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--outstanding-subagent-count
 branch: hook-capabilities-for-tatara--outstanding-subagent-count
-verified_head: ""
-run: ""
+verified_head: be7b6e4234a565492fa017c209d5a092a86aac31
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: [AC2]
+process_gaps: []
 ---
 
 # Outstanding subagent count

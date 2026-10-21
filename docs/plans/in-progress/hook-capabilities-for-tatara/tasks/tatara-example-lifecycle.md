@@ -1,6 +1,6 @@
 ---
 title: tatara example lifecycle
-status: in-progress
+status: todo
 repo: .
 value: "A tested worked example of tatara's bootstrap, TTL gate, safety and metrics pushes and pod policy as ccw config"
 files: [src/claude_code_wrapper/data/examples/tatara.config.yaml, src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py, README.md, tests/test_example_tatara_lifecycle.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--tatara-example-lifecycle
 branch: hook-capabilities-for-tatara--tatara-example-lifecycle
 verified_head: ""
-run: ""
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # tatara example lifecycle
@@ -70,3 +72,5 @@ The tatara example covers pod bootstrap, the TTL/handoff admission, the safety a
 
 - Parity rows C1-C11, D1, D4-D6, E1, A9. Bootstrap is a documented skeleton of tatara's Go bootstrap, not a port.
 - R5: explicit globs plus excludes, never `*`.
+
+- 2026-10-21 run hook-capabilities-for-tatara: dependency-failed on tatara-example-turn-hooks

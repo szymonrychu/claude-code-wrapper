@@ -1,6 +1,6 @@
 ---
 title: Probe token and answer
-status: in-progress
+status: done
 repo: .
 value: "Probes answer with the operator's own token and expose the answer text (K9)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/turns.py, src/claude_code_wrapper/api/turns.py, README.md, tests/test_probe_token.py]
@@ -10,13 +10,15 @@ owns: [probe-alive-token]
 uses: [ccw-world-fixture]
 model: sonnet
 estimate: 60
-actual: ""
+actual: 7
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--probe-token-and-answer
 branch: hook-capabilities-for-tatara--probe-token-and-answer
-verified_head: ""
-run: ""
+verified_head: 9b395f80a230b1fbb28320985f415e73108316a3
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Probe token and answer

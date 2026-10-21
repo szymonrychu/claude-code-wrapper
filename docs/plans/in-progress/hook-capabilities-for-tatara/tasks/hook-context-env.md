@@ -1,6 +1,6 @@
 ---
 title: Hook context env
-status: in-progress
+status: done
 repo: .
 value: "Hook scripts get a per-session state dir and the API URL, and the env docs tell the truth (K4, DEF-3)"
 files: [src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/service.py, README.md, tests/test_hook_context_env.py]
@@ -10,13 +10,15 @@ owns: [hook-context-env]
 uses: [ccw-world-fixture]
 model: sonnet
 estimate: 60
-actual: ""
+actual: 6
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--hook-context-env
 branch: hook-capabilities-for-tatara--hook-context-env
-verified_head: ""
-run: ""
+verified_head: 97ff8c1526374573075825e4c4527c076be67594
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Hook context env

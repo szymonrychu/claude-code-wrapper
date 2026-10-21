@@ -1,6 +1,6 @@
 ---
 title: Destroy hook input output
-status: in-progress
+status: escalated
 repo: .
 value: "DELETE can feed an onDestroy hook and return its output, e.g. the magic-trainer review (K3)"
 files: [src/claude_code_wrapper/api/sessions.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/events.py, README.md, tests/test_destroy_io.py]
@@ -10,13 +10,15 @@ owns: [destroy-io]
 uses: [hook-result-fields, ccw-world-fixture]
 model: sonnet
 estimate: 75
-actual: ""
+actual: 10
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--destroy-hook-input-output
 branch: hook-capabilities-for-tatara--destroy-hook-input-output
 verified_head: ""
-run: ""
-provides: []
+run: hook-capabilities-for-tatara
+provides: [destroy-io]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Destroy hook input output

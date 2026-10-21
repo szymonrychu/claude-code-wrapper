@@ -1,6 +1,6 @@
 ---
 title: Hook result fields
-status: in-progress
+status: done
 repo: .
 value: "Hooks can return annotations and output, the base for stop gates, turn tags and destroy reviews"
 files: [src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/router.py, README.md, tests/test_hook_result_fields.py]
@@ -10,13 +10,15 @@ owns: [hook-result-fields]
 uses: []
 model: sonnet
 estimate: 60
-actual: ""
+actual: 2
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--hook-result-fields
 branch: hook-capabilities-for-tatara--hook-result-fields
-verified_head: ""
-run: ""
-provides: []
+verified_head: 2056e564397f3f9b7d0bde24e365a6ec4ffd5739
+run: hook-capabilities-for-tatara
+provides: [hook-result-fields]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Hook result fields

@@ -1,6 +1,6 @@
 ---
 title: Stop gate onStop event
-status: in-progress
+status: done
 repo: .
 value: "Turns can be continued or held open past a Stop, closing mtg seat-pair completion and tatara outcome re-prompts (K1)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/bootstrap/settings.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/events.py, README.md, tests/test_stop_gate.py]
@@ -10,13 +10,15 @@ owns: [on-stop-event]
 uses: [hook-result-fields, fake-claude-scenarios, ccw-world-fixture]
 model: opus
 estimate: 90
-actual: ""
+actual: 20
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--stop-gate-onstop-event
 branch: hook-capabilities-for-tatara--stop-gate-onstop-event
-verified_head: ""
-run: ""
-provides: []
+verified_head: 9bb87060b48fbeedb78bf9b10534e910ea660cde
+run: hook-capabilities-for-tatara
+provides: [decision-rank, stop-target, stop-gate]
+acs_for_audit: [AC9]
+process_gaps: []
 ---
 
 # Stop gate onStop event

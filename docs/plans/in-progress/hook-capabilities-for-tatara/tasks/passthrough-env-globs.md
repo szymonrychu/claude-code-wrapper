@@ -1,6 +1,6 @@
 ---
 title: Passthrough env globs
-status: in-progress
+status: done
 repo: .
 value: "Arbitrary operator env names reach claude by pattern, with excludes for secrets (K11)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/manager.py, README.md, tests/test_passthrough_globs.py]
@@ -10,13 +10,15 @@ owns: [passthrough-globs]
 uses: []
 model: sonnet
 estimate: 60
-actual: ""
+actual: 3
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--passthrough-env-globs
 branch: hook-capabilities-for-tatara--passthrough-env-globs
-verified_head: ""
-run: ""
-provides: []
+verified_head: f23b9ba8ac2e54465496801c9ccd461321f7ad8b
+run: hook-capabilities-for-tatara
+provides: [passthrough-globs]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Passthrough env globs

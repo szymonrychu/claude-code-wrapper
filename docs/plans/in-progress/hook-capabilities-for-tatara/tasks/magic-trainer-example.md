@@ -1,6 +1,6 @@
 ---
 title: magic-trainer example
-status: in-progress
+status: todo
 repo: .
 value: "A tested worked example of magic-trainer's seat-pair completion, review, narration and exit as ccw hooks"
 files: [src/claude_code_wrapper/data/examples/magic-trainer.config.yaml, src/claude_code_wrapper/data/examples/magic-trainer/mtg_hooks.py, examples/magic-trainer.config.yaml, README.md, tests/test_example_magic_trainer.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--magic-trainer-example
 branch: hook-capabilities-for-tatara--magic-trainer-example
 verified_head: ""
-run: ""
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # magic-trainer example
@@ -73,3 +75,5 @@ A reader can see, run and test how magic-trainer's seat-pair completion, the cla
 
 - Parity rows #5, #9, #13-#15, #18, #19, #21-#25. R1 fallback via the transcript. Review timing per design D7 (after claude stopped, before purge).
 - No mtg names in `src/claude_code_wrapper/*.py` (anti-goal).
+
+- 2026-10-21 run hook-capabilities-for-tatara: dependency-failed on tatara-example-turn-hooks, tatara-example-lifecycle

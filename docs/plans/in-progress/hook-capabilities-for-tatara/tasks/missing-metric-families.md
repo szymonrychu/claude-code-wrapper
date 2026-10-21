@@ -1,6 +1,6 @@
 ---
 title: Missing metric families
-status: in-progress
+status: todo
 repo: .
 value: "HTTP, probe, stall and interrupt metrics that tatara alerts depend on (K13)"
 files: [src/claude_code_wrapper/metrics.py, src/claude_code_wrapper/api/app.py, src/claude_code_wrapper/api/turns.py, src/claude_code_wrapper/router.py, README.md, tests/test_metric_families.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--missing-metric-families
 branch: hook-capabilities-for-tatara--missing-metric-families
 verified_head: ""
-run: ""
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Missing metric families
@@ -70,3 +72,5 @@ K13 missing metric families (design D17).
 ## Notes
 
 - Use the route template, never the raw path, as the label.
+
+- 2026-10-21 run hook-capabilities-for-tatara: dependency-failed on destroy-hook-input-output

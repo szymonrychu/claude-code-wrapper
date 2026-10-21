@@ -1,6 +1,6 @@
 ---
 title: Service exit policy
-status: in-progress
+status: todo
 repo: .
 value: "The process exits when its last session is deleted or a session dies, for k8s Jobs and pod death signals (K8)"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/service.py, src/claude_code_wrapper/cli.py, README.md, tests/test_exit_policy.py]
@@ -15,8 +15,10 @@ review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--service-exit-policy
 branch: hook-capabilities-for-tatara--service-exit-policy
 verified_head: ""
-run: ""
+run: hook-capabilities-for-tatara
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Service exit policy
@@ -72,3 +74,5 @@ K8 exit policy (design D12). Owns part `exit-policy`.
 
 - Design D12: not a hook (`kill -TERM $PPID` gives the wrong code, no termination message and races the dispatcher drain).
 - Shutdown must not re-enter the trigger; the first exit request wins.
+
+- 2026-10-21 run hook-capabilities-for-tatara: dependency-failed on destroy-hook-input-output
