@@ -1,0 +1,8 @@
+[
+  {
+    "task": "command-runner",
+    "accept": true,
+    "reason": "gate-repeat on parking wording is a false positive: the flagged text describes /reload-plugins behaviour (claude prints 'Run /reload-plugins --force to apply' and leaves the plugin cache as is), not deferred work; verification passed on f6312c2",
+    "at": "2026-10-21T18:54:09Z"
+  }
+]

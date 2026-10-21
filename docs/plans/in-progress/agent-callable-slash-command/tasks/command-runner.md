@@ -1,6 +1,6 @@
 ---
 title: Command runner
-status: escalated
+status: done
 repo: .
 value: "Queued slash commands actually run in the session's claude, safely at an idle prompt, with results and hooks"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/commands.py, tests/test_command_runner.py]
@@ -77,6 +77,10 @@ On an idle session `request_command` types the slash command at a quiet prompt, 
 - Implement request_command and the runner in router.py and begin_command, end_command, send_command and the last-output clock in session.py; extend commands.py only where the runner needs it.
 - Run `uv run pytest tests/test_command_runner.py tests/test_router.py tests/test_session_turns.py tests/test_stop_gate.py tests/test_turn_continuity.py -q && mise run lint`.
 - A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
+
+## Ruling
+
+- 2026-10-21 accepted: gate-repeat on parking wording is a false positive: the flagged text describes /reload-plugins behaviour (claude prints 'Run /reload-plugins --force to apply' and leaves the plugin cache as is), not deferred work; verification passed on f6312c2
 
 ## Notes
 
