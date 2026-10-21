@@ -14,6 +14,12 @@ from claude_code_wrapper import __version__, cli
 from claude_code_wrapper.tooling import ToolingError
 
 
+@pytest.fixture(autouse=True)
+def _fake_claude_on_path(fake_claude_bin: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """serve preflights `claude` on PATH; never depend on a real one being installed."""
+    monkeypatch.setenv("PATH", f"{fake_claude_bin.parent}{os.pathsep}{os.environ['PATH']}")
+
+
 def write_cfg(tmp_path: Path, body: str | None = None) -> Path:
     p = tmp_path / "config.yaml"
     p.write_text(
