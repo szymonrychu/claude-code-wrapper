@@ -697,3 +697,52 @@ async def test_fatal_fires_on_error(tmp_path):
     assert h.events("error")[0].data["kind"] == "fatal"
     assert h.hook_posts[0]["event"] == "onError" and h.hook_posts[0]["data"]["kind"] == "fatal"
     await h.router.close()
+
+
+# ---------------------------------------------------------------- ccw commands (D2)
+async def test_router_commands_default_and_override(tmp_path):
+    from claude_code_wrapper.config import CommandsConfig
+
+    h = Harness(tmp_path)
+    assert h.router.commands_cfg is h.cfg.sessions.commands
+    assert h.router.commands.cfg is h.router.commands_cfg
+    custom = CommandsConfig(agent=["compact"])
+    r = SessionRouter(
+        None, h.log, h.dispatcher, h.redactor, h.cfg, session_info=h.router.info, commands=custom
+    )
+    assert r.commands_cfg is custom and r.commands.cfg is custom
+    await r.close()
+    await h.router.close()
+
+
+async def test_ccw_tool_denied_for_subagent_before_user_hook(tmp_path):
+    h = Harness(tmp_path, hooks={"onAgentToolCall": [webhook()]})
+    r = await h.router.handle_claude_hook(
+        "PreToolUse",
+        {
+            "tool_use_id": "tu9",
+            "tool_name": "mcp__ccw__command",
+            "tool_input": {"name": "compact"},
+            "agent_id": "ag1",
+            "agent_type": "Explore",
+        },
+    )
+    out = json.loads(r["stdout"])["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
+    assert out["permissionDecisionReason"] == (
+        "ccw commands are available to the main agent only; "
+        "subagents and teammates cannot call mcp__ccw__command."
+    )
+    (ev,) = h.events("tool_denied")
+    assert ev.data["agent_id"] == "ag1" and ev.data["agent_type"] == "Explore"
+    assert ev.data["tool_name"] == "mcp__ccw__command"
+    assert h.hook_posts == [] and not h.events("tool_call")
+    await h.router.close()
+
+
+async def test_ccw_tool_allowed_for_main_agent(h):
+    r = await h.router.handle_claude_hook(
+        "PreToolUse", {"tool_use_id": "t", "tool_name": "mcp__ccw__command", "tool_input": {}}
+    )
+    assert r["stdout"] == ""
+    assert h.events("tool_call") and not h.events("tool_denied")

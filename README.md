@@ -175,6 +175,7 @@ Request body (all fields optional):
 | `template` | string | name of a configured prompt template to use as the initial prompt (instead of `prompt`) |
 | `variables` | object of string | values for the template's `{{name}}` placeholders |
 | `callbackUrl` | string | `http`/`https` URL that receives turn-terminal and question callbacks for this session (a turn's own `callbackUrl` wins) |
+| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`; all optional, unset fields inherit); unknown command names are rejected; stored with the session and reapplied on resume |
 
 When neither `prompt` nor `template` is given, `prompts.initial_prompt` (if configured) is used.
 Secret `env` overrides are never persisted; resend them on resume.
@@ -2090,6 +2091,12 @@ sessions:
 | `sessions.restart_continue_prompt` | string | `""` | - | Prompt pasted (with the same turn marker) into a resumed relaunch after claude crashed mid-turn, so the running turn continues instead of failing with `claude_exited` (a `turn_resumed` event); empty disables it. See "Crash during a turn" under `POST /v1/sessions/{id}/turns`. |
 | `sessions.exit_when_last_destroyed` | boolean | `false` | - | Exit 0 through the normal shutdown (hooks drained) when a DELETE or the idle reaper leaves no active session and one was created in this process; the triggering DELETE still returns its full body first. |
 | `sessions.exit_when_dead` | boolean | `false` | - | Exit 3 through the normal shutdown when a session reaches `dead`, after writing `session <id> dead: <last_fatal or "claude exited">` to `/dev/termination-log` when writable. |
+| `sessions.commands.agent` | list of string | `[]` | - | Slash commands the main agent may queue through the ccw MCP tool; any of `compact`, `context`, `mcp`, `reload-plugins`, `reload-skills`. Empty allows none. |
+| `sessions.commands.client` | list of string | `[]` | - | Slash commands API clients may queue; same names as `agent`. Empty allows none. |
+| `sessions.commands.timeout_seconds` | map of number | `{"compact": 600, "default": 60}` | - | Seconds a command may run before it fails with `timeout`; keys are a command name or `default`, values > 0. |
+| `sessions.commands.continue_prompt` | string | `"The slash commands you queued have run. Continue the task you were working on."` | - | Non-empty text that resumes the agent after its queued commands ran. |
+| `sessions.commands.allow_force` | boolean | `false` | - | Allow `force: true` on `reload-plugins` (typed as `--force`). |
+| `sessions.commands.quiet_seconds` | number | `1.5` | - | Seconds of PTY silence to wait for before typing a command, >= 0. |
 
 ### `limits`
 

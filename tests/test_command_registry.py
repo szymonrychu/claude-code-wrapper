@@ -1,0 +1,201 @@
+"""Command registry, queue, config and the main-agent guard (design D1-D3)."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from pydantic import ValidationError
+
+from claude_code_wrapper.commands import (
+    BUILTIN_COMMANDS,
+    CommandQueue,
+    CommandRejected,
+    effective_commands,
+    params_schema,
+    render,
+    validate_params,
+)
+from claude_code_wrapper.config import (
+    CommandsConfig,
+    CommandsOverride,
+    Config,
+    ConfigError,
+    load_config,
+)
+from claude_code_wrapper.manager import CreateSessionRequest
+
+ALL = ["compact", "reload-plugins", "reload-skills", "mcp", "context"]
+
+
+def cfg(**kw) -> CommandsConfig:
+    return CommandsConfig(agent=ALL, client=ALL, **kw)
+
+
+def rejected(fn, *a, **kw) -> CommandRejected:
+    with pytest.raises(CommandRejected) as e:
+        fn(*a, **kw)
+    return e.value
+
+
+# ------------------------------------------------------------------ config
+def test_defaults_change_nothing():
+    c = Config().sessions.commands
+    assert c.agent == [] and c.client == []
+    assert c.timeout_seconds == {"compact": 600, "default": 60}
+    assert c.continue_prompt and c.allow_force is False and c.quiet_seconds == 1.5
+
+
+def test_unknown_name_error_path(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text("sessions:\n  commands:\n    agent: [compact, clear]\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(p)
+    assert str(e.value) == (
+        "sessions.commands.agent.1: unknown command 'clear'; "
+        "allowed: compact, context, mcp, reload-plugins, reload-skills"
+    )
+
+
+def test_unknown_client_and_timeout_key(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text("sessions:\n  commands:\n    client: [nope]\n    timeout_seconds: {bogus: 5}\n")
+    with pytest.raises(ConfigError) as e:
+        load_config(p)
+    msg = str(e.value)
+    assert "sessions.commands.client.0: unknown command 'nope'" in msg
+    assert "sessions.commands.timeout_seconds.bogus: unknown command 'bogus'" in msg
+    p.write_text("sessions:\n  commands:\n    timeout_seconds: {compact: 0}\n")
+    with pytest.raises(ConfigError, match=r"timeout_seconds\.compact: must be greater than 0"):
+        load_config(p)
+
+
+def test_bounds_and_extra_forbid():
+    with pytest.raises(ValidationError):
+        CommandsConfig(quiet_seconds=-1)
+    with pytest.raises(ValidationError):
+        CommandsConfig(continue_prompt="")
+    with pytest.raises(ValidationError):
+        CommandsConfig(nope=1)
+
+
+# ------------------------------------------------------------------ params
+def test_validate_params():
+    assert validate_params("compact", None, allow_force=False) == {}
+    assert validate_params("compact", {"instructions": "keep X"}, allow_force=False)
+    assert (
+        "takes no params"
+        in rejected(validate_params, "context", {"a": 1}, allow_force=False).message
+    )
+    e = rejected(validate_params, "compact", {"x": 1}, allow_force=False)
+    assert e.code == "invalid_params" and "instructions" in e.message
+    assert (
+        rejected(validate_params, "compact", {"instructions": 3}, allow_force=False).code
+        == "invalid_params"
+    )
+    assert (
+        rejected(validate_params, "reload-plugins", {"force": "y"}, allow_force=True).code
+        == "invalid_params"
+    )
+    assert (
+        rejected(validate_params, "reload-plugins", {"force": True}, allow_force=False).code
+        == "force_not_allowed"
+    )
+    assert validate_params("reload-plugins", {"force": True}, allow_force=True) == {"force": True}
+    assert validate_params("reload-plugins", {"force": False}, allow_force=False)
+    assert rejected(validate_params, "mcp", {}, allow_force=False).code == "invalid_params"
+    assert (
+        rejected(validate_params, "mcp", {"action": "list"}, allow_force=False).code
+        == "invalid_params"
+    )
+    for bad in ("a\nb", "a\x1bb", "a\rb", "x" * 2001):
+        assert (
+            rejected(validate_params, "compact", {"instructions": bad}, allow_force=False).code
+            == "invalid_params"
+        )
+    validate_params("compact", {"instructions": "x" * 2000}, allow_force=False)
+
+
+def test_render():
+    assert render("compact", {}) == "/compact"
+    assert render("compact", {"instructions": "keep X"}) == "/compact keep X"
+    assert render("reload-plugins", {}) == "/reload-plugins"
+    assert render("reload-plugins", {"force": True}) == "/reload-plugins --force"
+    assert render("reload-skills", {}) == "/reload-skills"
+    assert render("mcp", {"action": "reconnect"}) == "/mcp reconnect all"
+    assert render("mcp", {"action": "reconnect", "server": "gh"}) == "/mcp reconnect gh"
+    assert render("context", {}) == "/context"
+
+
+def test_params_schema():
+    s = params_schema(["compact", "mcp"])
+    assert s["properties"]["name"]["enum"] == ["compact", "mcp"]
+    assert len(s["oneOf"]) == 2
+    json.dumps(s)
+    assert set(BUILTIN_COMMANDS) == set(ALL)
+
+
+# ------------------------------------------------------------------ queue
+def test_origin_allowlists():
+    q = CommandQueue(CommandsConfig(agent=["compact"], client=["context"]))
+    assert rejected(q.request, "context", {}, origin="agent", turn_id="t").code == "not_allowed"
+    assert rejected(q.request, "compact", {}, origin="client", turn_id="t").code == "not_allowed"
+    assert q.request("context", {}, origin="client", turn_id=None)[1]
+    assert q.request("compact", {}, origin="idle", turn_id=None)[1]
+    assert rejected(q.request, "context", {}, origin="idle", turn_id=None).code == "not_allowed"
+    assert CommandQueue(CommandsConfig()).cfg.agent == []
+
+
+def test_coalesce_cap_and_lifecycle():
+    q = CommandQueue(cfg())
+    a, new = q.request("compact", {"instructions": "first"}, origin="agent", turn_id="t1")
+    assert new and a.id.startswith("cmd_") and a.state == "queued" and a.created_at
+    b, new = q.request("compact", {"instructions": "second"}, origin="client", turn_id="t1")
+    assert b is a and not new and a.args == {"instructions": "first"}
+    for n in ("reload-plugins", "reload-skills", "context"):
+        q.request(n, {}, origin="agent", turn_id="t1")
+    assert (
+        rejected(q.request, "mcp", {"action": "reconnect"}, origin="agent", turn_id="t1").code
+        == "queue_full"
+    )
+    assert q.next() is a and len(q.pending()) == 4
+    q.start(a)
+    assert a.state == "running" and a.started_at and q.next() is not a
+    q.finish(a, "completed", result="ok", output="x")
+    assert a.finished_at and a.result == "ok" and q.get(a.id) is a
+    q.finish(a, "failed", error="boom")
+    assert a.state == "completed" and a.error is None
+    # a finished name can be queued again
+    assert q.request("compact", {}, origin="agent", turn_id="t2")[1]
+
+
+def test_cancel_queued_and_history_cap():
+    q = CommandQueue(cfg())
+    r1, _ = q.request("compact", {}, origin="agent", turn_id="t1")
+    r2, _ = q.request("context", {}, origin="agent", turn_id="t2")
+    assert q.cancel_queued("t1") == [r1] and r1.state == "cancelled"
+    assert r2.state == "queued"
+    q.cancel_queued()
+    assert r2.state == "cancelled"
+    for _ in range(120):
+        r, _ = q.request("context", {}, origin="agent", turn_id=None)
+        q.finish(r, "completed")
+    items = q.list()
+    assert len(items) == 100 and items[-1] is r
+
+
+def test_effective_commands():
+    base = CommandsConfig(agent=["compact"], allow_force=True)
+    out = effective_commands(base, CommandsOverride(client=["context"], quiet_seconds=0))
+    assert out.agent == ["compact"] and out.client == ["context"]
+    assert out.quiet_seconds == 0 and out.allow_force is True
+    assert effective_commands(base, None) is base
+
+
+def test_create_request_override_validates():
+    req = CreateSessionRequest.model_validate({"commands": {"agent": ["compact"]}})
+    assert req.commands.agent == ["compact"]
+    with pytest.raises(ValidationError, match="unknown command 'clear'"):
+        CreateSessionRequest.model_validate({"commands": {"agent": ["clear"]}})
+    with pytest.raises(ValidationError):
+        CreateSessionRequest.model_validate({"commands": {"bogus": 1}})
