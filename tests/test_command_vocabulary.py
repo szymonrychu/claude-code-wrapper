@@ -60,7 +60,7 @@ def test_command_metric_families_render():
     m = Metrics()
     m.command_finished("compact", "agent", "cancelled", 1.0)
     m.compaction("manual")
-    text = m.render().decode() if isinstance(m.render(), bytes) else m.render()
+    text = m.render().decode()
     for fam in ("ccw_commands_total", "ccw_command_duration_seconds", "ccw_compactions_total"):
         assert fam in text
     assert 'command="compact"' in text and 'origin="agent"' in text and 'result="cancelled"' in text
