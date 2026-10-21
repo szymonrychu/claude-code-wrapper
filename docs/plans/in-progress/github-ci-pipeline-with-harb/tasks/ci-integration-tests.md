@@ -1,6 +1,6 @@
 ---
 title: CI integration tests
-status: blocked
+status: done
 repo: .
 value: The built container is proven to serve and run a full session before any image is pushed
 files: [mise.toml, pyproject.toml, scripts/integration.sh, docker-compose.ci.yml, tests/integration/config.ci.yaml, tests/integration/conftest.py, tests/integration/test_container_http.py]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/github-ci-pipeline-with-harb--ci-integration-tests
 branch: github-ci-pipeline-with-harb--ci-integration-tests
-verified_head: unknown
+verified_head: 56e18498a8029ba7be98a6426809fd23f2c0a575
 run: github-ci-pipeline-with-harb
 provides: []
 acs_for_audit: []
@@ -38,7 +38,7 @@ Add integration tests that exercise the real container over HTTP, run by a singl
 - AC1: mise.toml defines test:integration running scripts/integration.sh, which brings the stack up with the CI override, waits boundedly for health, runs the integration suite and always runs compose down -v [evidence: command:bash -c 'grep -q "tests/integration" scripts/integration.sh && grep -q "down -v" scripts/integration.sh && grep -q "test:integration" mise.toml']
 - AC2: integration tests are marked integration and excluded from the default suite [evidence: command:test "$(uv run pytest --collect-only -q 2>&1 | grep -c tests/integration)" = 0]
 - AC3: the integration suite passes against the real built container with the fake claude [evidence: command:mise run test:integration]
-- AC4: the integration tests cover health, auth 401, config redaction, sessions list and a full create-turn-destroy lifecycle [evidence: command:uv run pytest tests/integration --collect-only -q | grep -c "::" | grep -qE "^([5-9]|[1-9][0-9])$"]
+- AC4: the integration tests cover health, auth 401, config redaction, sessions list and a full create-turn-destroy lifecycle [evidence: command:uv run pytest tests/integration --collect-only -m integration | grep -c "::" | grep -qE "^([5-9]|[1-9][0-9])$"]
 - AC5: scripts/integration.sh is shellcheck clean and lint and the default suite stay green [evidence: command:shellcheck scripts/integration.sh && mise run lint && mise run test]
 
 ## Files
@@ -69,3 +69,5 @@ mise task `test:integration`; scripts/integration.sh; docker-compose.ci.yml (ove
 ## Notes
 
 Fake claude runs inside the container with /app/.venv/bin/python; the container user is uid 1000. Compose already has ccw-ready gating on health; the script still polls. Reference: magic-cards-model-api test:pg. Use -p ccw-it. No real credentials anywhere.
+
+- 2026-10-21 hand-verified: verify-task.py --base 735fd7e passed on 56e1849 (tdd failedOnBase/passedOnHead, AC1-3,5 met); the run's verifier died on --prev-head unknown with Docker Desktop wedged. AC4's evidence command used -q on top of addopts -q (per-file counts, 0 '::' lines); corrected to -m integration, which collects 7 tests covering health, 401, redaction, sessions list, lifecycle.
