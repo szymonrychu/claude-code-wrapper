@@ -22,7 +22,6 @@ provides: []
 # Command completion signals
 
 ## Requirement
-
 Completion signals for commands and the `compacted` event (design D4 step 3 signal sources, D7). Owns parts `command-signals` (C/command_signals.py) and `compact-relay-events` (C/hook_relay.py).
 
 - `hook_relay.CLAUDE_HOOK_EVENTS` gains `PreCompact` and `PostCompact` (appended); `render_settings` installs relay groups for them through its existing loop; the internal API accepts them; tests/test_hook_relay.py::test_constants pins the new tuple.
@@ -35,10 +34,6 @@ Completion signals for commands and the `compacted` event (design D4 step 3 sign
   - sidechain (subagent) versions publish nothing and emit nothing;
   - `compacted` comes only from the boundary, so one compaction is one event even when PostCompact also arrives; Claude Code's own compaction (trigger auto) is reported the same way.
 - README: `### POST /internal/hooks/{event}` lists PreCompact and PostCompact; `### compacted` says it covers manual and auto compactions.
-
-Interfaces: `command_signals.Signal`, `command_signals.SignalBus.publish/mark/wait`, `SessionRouter.signals`; `CLAUDE_HOOK_EVENTS` with PreCompact and PostCompact.
-
-Notes: uses the fake's `auto_compact` step and `/compact` (part `fake-claude-commands`) for the world tests and the transcript events of task transcript-command-entries. A world test can type `/compact` itself with the session's PTY (`session.pty.send_prompt`) at idle; the runner that does it for real is task command-runner.
 
 ## Acceptance conditions
 
@@ -64,17 +59,19 @@ Notes: uses the fake's `auto_compact` step and `/compact` (part `fake-claude-com
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+`command_signals.Signal`, `command_signals.SignalBus.publish/mark/wait`, `SessionRouter.signals`; `CLAUDE_HOOK_EVENTS` with PreCompact and PostCompact.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+PreCompact and PostCompact reach ccw through the relay, every main-chain compaction yields one `compacted` event and metric, and the router publishes completion signals that a waiter started after a mark can never miss.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Update tests/test_hook_relay.py::test_constants and write tests/test_command_signals.py (SignalBus unit tests, router tests fed with relay payloads and transcript lines, a World test with the fake's auto_compact step); run them and see them fail.
+- Add command_signals.py, the relay events, the router handlers and the README lines.
+- Run `uv run pytest tests/test_command_signals.py tests/test_hook_relay.py tests/test_bootstrap_settings.py tests/test_internal_api.py tests/test_router.py tests/test_readme_api.py -q && mise run lint`.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Uses the fake's `auto_compact` step and `/compact` (part `fake-claude-commands`) for the world tests and the transcript events of task transcript-command-entries. A world test can type `/compact` itself with the session's PTY (`session.pty.send_prompt`) at idle; the runner that does it for real is task command-runner.

@@ -22,7 +22,6 @@ provides: []
 # Fake claude slash commands
 
 ## Requirement
-
 Teach the fake claude (`tests/fake_claude/fake_claude.py`) Claude Code's local slash commands, so every later task tests the command lifecycle against it (design D4, D7, D8; the transcript and hook shapes are in design.md "Facts"). Owns part `fake-claude-commands`. This task does not edit `tests/conftest.py`.
 
 - Interactive input whose submitted text (stripped) starts with `/` plus a known name runs a local command instead of a turn: no UserPromptSubmit, no Stop hook, no assistant line, the idle footer after it. Known names: `compact`, `reload-plugins`, `reload-skills`, `mcp`, `context`. An unknown `/name` prints `Unknown command: /name` and returns to idle with no transcript line.
@@ -35,10 +34,6 @@ Teach the fake claude (`tests/fake_claude/fake_claude.py`) Claude Code's local s
 - Turn step `{"auto_compact": {"pre_tokens": N}}`: inside a turn, runs PreCompact and PostCompact with `trigger: "auto"` and writes the boundary (trigger `auto`) and summary lines, then continues the steps (models Claude Code's own compaction).
 - The module docstring documents every new step, scenario key and file (it is the fake's spec).
 - Existing tests/test_fake_claude.py stays green.
-
-Interfaces: part `fake-claude-commands` = the scenario `commands` key, the `auto_compact` step, `fake-inputs.jsonl`, and the transcript and hook shapes above.
-
-Notes: Hooks run as today (`run_hooks` with settings.json `hooks.<Event>`); PreCompact and PostCompact hook groups only exist once ccw installs relays for them (task command-completion-signals), so the tests here install recording hooks directly in settings.json (tests/fixtures/hooks/record_hook.sh). Order of the boundary and summary lines follows real 2.1.30x transcripts: boundary first.
 
 ## Acceptance conditions
 
@@ -62,17 +57,19 @@ Notes: Hooks run as today (`run_hooks` with settings.json `hooks.<Event>`); PreC
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+part `fake-claude-commands` = the scenario `commands` key, the `auto_compact` step, `fake-inputs.jsonl`, and the transcript and hook shapes above.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Typing `/compact`, `/reload-plugins`, `/reload-skills`, `/mcp reconnect` or `/context` into the fake under a PTY produces the same transcript entries, hook calls and failure modes real claude 2.1.30x produces, selectable per scenario, and every input is logged with the fake's busy or idle state.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_fake_claude_commands.py (fake under a PTY via the existing helpers of tests/test_fake_claude.py, recording hooks from tests/fixtures/hooks/record_hook.sh in settings.json); run `uv run pytest tests/test_fake_claude_commands.py -q` and see every test fail.
+- Implement slash-command dispatch, the compact flow and its outcomes, the stdout commands, `fake-inputs.jsonl` and the `auto_compact` step in tests/fake_claude/fake_claude.py; update the module docstring.
+- Run `uv run pytest tests/test_fake_claude_commands.py tests/test_fake_claude.py -q && mise run lint`; expect all passed and lint clean.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Hooks run as today (`run_hooks` with settings.json `hooks.<Event>`); PreCompact and PostCompact hook groups only exist once ccw installs relays for them (task command-completion-signals), so the tests here install recording hooks directly in settings.json (tests/fixtures/hooks/record_hook.sh). Order of the boundary and summary lines follows real 2.1.30x transcripts: boundary first.

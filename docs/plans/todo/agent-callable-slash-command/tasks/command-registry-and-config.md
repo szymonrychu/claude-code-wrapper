@@ -22,7 +22,6 @@ provides: []
 # Command registry and config
 
 ## Requirement
-
 Command registry, per-session queue, config and the main-agent guard (design D3, D2, D1 params). Owns parts `command-queue` (C/commands.py) and `commands-config` (C/config.py). Nothing here runs a command; task command-runner does.
 
 - `config.py`: `CommandsConfig` at `sessions.commands` (extra forbid): `agent: list[str] = []`, `client: list[str] = []`, `timeout_seconds: dict[str, float] = {"compact": 600, "default": 60}` (keys: a built-in name or `default`; values > 0), `continue_prompt: str` (non-empty default telling the agent its queued commands ran and to continue the task), `allow_force: bool = False`, `quiet_seconds: float = 1.5` (>= 0). Any name outside the built-in set in `agent`, `client` or `timeout_seconds` keys is a ConfigError at its path, naming the allowed set, for example `sessions.commands.agent.0: unknown command 'clear'; allowed: compact, context, mcp, reload-plugins, reload-skills`. With nothing configured both lists are empty and behaviour is unchanged.
@@ -37,8 +36,6 @@ Command registry, per-session queue, config and the main-agent guard (design D3,
 - `manager.py`: `CreateSessionRequest.commands` (optional, same fields all optional, extra forbid, same unknown-name rule) is stored in the session meta and reapplied on resume; the manager passes `effective_commands(cfg.sessions.commands, meta override)` to the router.
 - `router.py`: `SessionRouter.__init__(..., commands: CommandsConfig | None = None)` keeps `self.commands_cfg` (the config default when None) and `self.commands = CommandQueue(self.commands_cfg)`. D2: in `_on_pre_tool_use`, a `tool_name` starting with `mcp__ccw__` whose payload has a non-empty `agent_id` is denied before any user hook, with reason `ccw commands are available to the main agent only; subagents and teammates cannot call mcp__ccw__command.` and a `tool_denied` event carrying the attribution; the main agent's call (no agent_id) goes on as today.
 - README: a config row for every `sessions.commands.*` key (tests/test_readme_config.py) and the `commands` field of the `POST /v1/sessions` body.
-
-Interfaces: `commands.BUILTIN_COMMANDS`, `commands.CommandRejected(code, message)`, `commands.validate_params`, `commands.render`, `commands.params_schema`, `commands.CommandRecord`, `commands.CommandQueue`, `commands.effective_commands`; `config.CommandsConfig` at `sessions.commands`; `SessionRouter(commands=...)`, `SessionRouter.commands`, `SessionRouter.commands_cfg`.
 
 ## Acceptance conditions
 
@@ -67,17 +64,19 @@ Interfaces: `commands.BUILTIN_COMMANDS`, `commands.CommandRejected(code, message
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+`commands.BUILTIN_COMMANDS`, `commands.CommandRejected(code, message)`, `commands.validate_params`, `commands.render`, `commands.params_schema`, `commands.CommandRecord`, `commands.CommandQueue`, `commands.effective_commands`; `config.CommandsConfig` at `sessions.commands`; `SessionRouter(commands=...)`, `SessionRouter.commands`, `SessionRouter.commands_cfg`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`sessions.commands` validates against the built-in command set, each session has a CommandQueue enforcing allowlists, coalescing and the cap, a create request can override the lists per session, and a subagent's ccw tool call is denied.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_command_registry.py (pure unit tests for commands.py and config, World tests for the override and the PreToolUse refusal); run it and see it fail.
+- Add CommandsConfig to config.py, the new commands.py, the CreateSessionRequest field and meta plumbing in manager.py, the router kwarg and the PreToolUse refusal in router.py, the README rows.
+- Run `uv run pytest tests/test_command_registry.py tests/test_config.py tests/test_manager.py tests/test_router.py tests/test_api_sessions.py tests/test_readme_config.py tests/test_readme_api.py -q && mise run lint`.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Design D-numbers and facts with file:line are in ../design.md.

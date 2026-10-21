@@ -22,7 +22,6 @@ provides: []
 # Command same-turn resume
 
 ## Requirement
-
 Same-turn lifecycle: a command queued during a turn runs at that turn's Stop and the agent resumes in the same turn (design D4 steps 2, 4, 5, 6, 7; user decision). Owns part `continue-turn` (C/session.py).
 
 - Stop gate (C/router.py `_stop_gate`): it also gates when the queue holds commands for the running turn, with no onStop hook and no `defer_stop_on_background_tasks` configured. Order on a Stop that targets the running turn: onStop fires first; a block wins (`turn_continued`, the commands stay queued); a hook defer or the background-task defer wins next (`turn_deferred` as today, commands stay queued and run at the later Stop that is not deferred); otherwise answer allow, emit `turn_deferred {turn_id, reason: "command", commands: [ids]}` and start the runner only after the relay response has been returned to claude (spawned after the handler returns, never awaited inside it). The existing `turn_deferred` gains `reason: "hook"` or `"background_tasks"`.
@@ -34,10 +33,6 @@ Same-turn lifecycle: a command queued during a turn runs at that turn's Stop and
 - turn_max_seconds (D4.7) keeps counting through the command: a turn hitting the limit during a command ends `timeout`, the running command gets ESC and fails `timeout`, queued ones are cancelled, no continuation.
 - A command requested by the client during a turn takes the same path as an agent one.
 - README: `### turn_deferred` documents `reason` and `commands`, `### turn_resumed` documents `cause`, `### onStop` says pending commands defer the Stop after the hook allows.
-
-Interfaces: `Session.continue_turn(record, text)`; `turn_deferred.reason`, `turn_resumed.cause`.
-
-Notes: tests drive it with the fake: a turn whose steps end normally after a client `request_command` (or with the `mcp` step once task ccw-mcp-injection-and-e2e lands; not needed here), and a second scenario turn whose regex matches the continue prompt. Use `sessions.commands.quiet_seconds` small.
 
 ## Acceptance conditions
 
@@ -63,17 +58,19 @@ Notes: tests drive it with the fake: a turn whose steps end normally after a cli
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+`Session.continue_turn(record, text)`; `turn_deferred.reason`, `turn_resumed.cause`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A command queued during a turn runs after that turn's Stop is answered, the continue prompt with the same marker resumes the agent, and one turn record covers the whole span, including the interrupt, crash and time-limit paths.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_command_turn_resume.py (scenario turns that end after a client request_command plus a continuation turn matching the continue prompt); run it and see it fail.
+- Extend _stop_gate, factor Session.continue_turn out of _continue_held, wire the runner's end to the continuation, add the reason and cause fields and the README notes.
+- Run `uv run pytest tests/test_command_turn_resume.py tests/test_stop_gate.py tests/test_turn_continuity.py tests/test_session_turns.py tests/test_command_runner.py tests/test_command_runner_failures.py tests/test_readme_api.py -q && mise run lint`.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Tests drive it with the fake: a turn whose steps end normally after a client `request_command` (or with the `mcp` step once task ccw-mcp-injection-and-e2e lands; not needed here), and a second scenario turn whose regex matches the continue prompt. Use `sessions.commands.quiet_seconds` small.

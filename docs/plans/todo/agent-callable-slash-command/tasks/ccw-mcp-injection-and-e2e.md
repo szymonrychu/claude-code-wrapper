@@ -22,7 +22,6 @@ provides: []
 # ccw MCP injection and e2e
 
 ## Requirement
-
 Inject the ccw MCP server into each session's claude config and prove the agent path end to end with the fake (design D1, D2; goal "main agent can self-compact and self-reload plugins").
 
 - `bootstrap/claude_json.py` `seed_claude_json(..., ccw_mcp: bool = False)`: when true, writes `mcpServers.ccw = {"type": "http", "url": "${CCW_INTERNAL_URL}/internal/mcp", "headers": {"X-CCW-Session": "${CCW_SESSION_ID}", "X-CCW-Hook-Token": "${CCW_HOOK_TOKEN}"}, "alwaysLoad": true}` exactly, so the token value is never written to a file (claude 2.1.304 and 2.1.306 expand these references, probed); when false, removes a `ccw` entry left by an earlier activation. Runs on create and on resume (both go through `_bootstrap`).
@@ -35,10 +34,6 @@ Inject the ccw MCP server into each session's claude config and prove the agent 
   - subagent: an `mcp` step with `agent` gets the main-agent-only tool error, no command is queued and the turn completes normally;
   - disabled: with an empty agent list the fake's step gets "MCP server not configured" (no `ccw` entry).
 - README: `### claude` notes the injected `ccw` server, its reserved name and the allow rule.
-
-Interfaces: `seed_claude_json(..., ccw_mcp=False)`, `render_settings(..., ccw_mcp=False)`.
-
-Notes: `CCW_INTERNAL_URL`, `CCW_SESSION_ID` and `CCW_HOOK_TOKEN` are already in claude's env (C/session.py:244-245). The fake's `fake-mcp.jsonl` shows the expanded headers it sent; the token-never-on-disk test greps the session's config dir for the token value.
 
 ## Acceptance conditions
 
@@ -63,17 +58,19 @@ Notes: `CCW_INTERNAL_URL`, `CCW_SESSION_ID` and `CCW_HOOK_TOKEN` are already in 
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+`seed_claude_json(..., ccw_mcp=False)`, `render_settings(..., ccw_mcp=False)`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Sessions with agent commands get the ccw server and allow rule in their own claude config with env references only, and the fake agent self-compacts and self-reloads in the same turn through it.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_mcp_injection.py (bootstrap unit tests and World e2e tests with the fake's `mcp` step); run it and see it fail.
+- Add the ccw_mcp parameter to seed_claude_json and render_settings, the manager wiring, the reserved-name validator and the README note.
+- Run `uv run pytest tests/test_mcp_injection.py tests/test_bootstrap_home.py tests/test_bootstrap_settings.py tests/test_config.py tests/test_readme_config.py tests/test_manager.py -q && mise run lint`.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+`CCW_INTERNAL_URL`, `CCW_SESSION_ID` and `CCW_HOOK_TOKEN` are already in claude's env (C/session.py:244-245). The fake's `fake-mcp.jsonl` shows the expanded headers it sent; the token-never-on-disk test greps the session's config dir for the token value.

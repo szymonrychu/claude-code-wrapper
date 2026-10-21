@@ -22,7 +22,6 @@ provides: []
 # Commands public endpoint
 
 ## Requirement
-
 Public commands endpoint for clients (design D5; user decision, redundancy with the turns endpoint accepted).
 
 - `POST /v1/sessions/{id}/commands` with body `{name, args?}` (extra forbid; `args` an object, default `{}`) -> 202 with the CommandRecord JSON; origin `client`, so the session's client allowlist applies; same auth as every `/v1` route.
@@ -31,8 +30,6 @@ Public commands endpoint for clients (design D5; user decision, redundancy with 
 - Same queue and lifecycle as the agent tool: on an idle session the command runs at once; during a turn it waits for the Stop and the turn resumes (task command-same-turn-resume); the record read back shows its final state.
 - `api/app.py` includes the new router on `/v1`; the http metrics route template covers the new routes.
 - README: `### POST /v1/sessions/{id}/commands`, `### GET /v1/sessions/{id}/commands`, `### GET /v1/sessions/{id}/commands/{command_id}`, and the four error codes in `## Errors` (tests/test_readme_api.py requires routes and error codes).
-
-Interfaces: `api/commands.py` router; error codes `command_not_allowed`, `invalid_command`, `command_queue_full`, `command_not_found`.
 
 ## Acceptance conditions
 
@@ -56,17 +53,19 @@ Interfaces: `api/commands.py` router; error codes `command_not_allowed`, `invali
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+`api/commands.py` router; error codes `command_not_allowed`, `invalid_command`, `command_queue_full`, `command_not_found`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+API clients queue, list and read commands per session through `/v1/sessions/{id}/commands`, with documented error codes, on the same lifecycle as the agent tool.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_api_commands.py with the existing API test client pattern of tests/test_api_turns.py; run it and see it fail.
+- Add api/commands.py, include it in api/app.py, add the error codes in api/errors.py, document routes and codes in README.
+- Run `uv run pytest tests/test_api_commands.py tests/test_api_turns.py tests/test_api_sessions.py tests/test_metric_families.py tests/test_readme_api.py -q && mise run lint`.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Design D-numbers and facts with file:line are in ../design.md.

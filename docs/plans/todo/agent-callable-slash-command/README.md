@@ -21,7 +21,7 @@ Claude Code slash commands such as /compact and /reload-plugins are not tools th
 
 ## Goals
 
-- Main agent can self-compact and self-reload plugins through a ccw-owned MCP tool; other allowlisted slash commands through run_command.
+- Main agent can self-compact, self-reload plugins and run the other allowlisted slash commands through one ccw-owned MCP tool, `mcp__ccw__command`.
 - Commands run at the turn's Stop and the agent resumes in the same turn with a continuation prompt; idle sessions run them immediately.
 - Clients can queue commands with POST /v1/sessions/{id}/commands and read them back.
 - Optional auto-compact after a configured inactivity time.
@@ -37,7 +37,7 @@ Claude Code slash commands such as /compact and /reload-plugins are not tools th
 
 ## Time
 
-Derived by `ticket.py tasks` and `apply-run` from the task `estimate` and `actual` fields; never edit by hand. Report only, never a budget.
+Estimate: 990 min | Actual: 0 min | Remaining estimate: 990 min
 
 ## Review
 

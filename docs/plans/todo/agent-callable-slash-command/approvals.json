@@ -1,0 +1,56 @@
+[
+  {
+    "id": "A",
+    "text": "An internal ccw MCP tool, exactly one (`command`, input {name: enum of the session's agent allowlist, params?}), lets the main agent self-compact, self-reload plugins and run the other allowlisted slash commands it cannot call directly; subagent and teammate calls are refused; the token is never stored in a file.",
+    "decisions": ["D1", "D2", "D3"],
+    "tasks": [
+      "fake-claude-mcp-step",
+      "command-registry-and-config",
+      "ccw-mcp-endpoint",
+      "ccw-mcp-injection-and-e2e"
+    ],
+    "status": "approved"
+  },
+  {
+    "id": "B",
+    "text": "Same-turn lifecycle: a command queued during a turn runs at the turn's Stop at an idle prompt and the agent resumes in the same turn; idle sessions run it at once; events, onCommand (veto) and onCommandComplete hooks, PreCompact and PostCompact relays, and command and compaction metrics.",
+    "decisions": ["D3", "D4", "D7"],
+    "tasks": [
+      "fake-claude-slash-commands",
+      "command-event-vocabulary",
+      "command-completion-signals",
+      "command-runner",
+      "command-runner-failures",
+      "command-same-turn-resume"
+    ],
+    "status": "approved"
+  },
+  {
+    "id": "C",
+    "text": "Public endpoint POST /v1/sessions/{id}/commands plus GET of one command and the list, on the same queue and lifecycle (redundancy with the turns endpoint accepted).",
+    "decisions": ["D5"],
+    "tasks": ["commands-public-endpoint"],
+    "status": "approved"
+  },
+  {
+    "id": "D",
+    "text": "Optional auto-compact after a configured inactivity time (sessions.auto_compact), once per idle gap, never extending the idle reaper.",
+    "decisions": ["D6"],
+    "tasks": ["idle-auto-compact"],
+    "status": "approved"
+  },
+  {
+    "id": "E",
+    "text": "Transcript parser fix, always on: compact summaries, meta entries and command echoes are not prompts, so old turn markers cannot make Stops look stale.",
+    "decisions": ["D8"],
+    "tasks": ["transcript-command-entries"],
+    "status": "approved"
+  },
+  {
+    "id": "F",
+    "text": "Docs and examples: README Slash commands section, config.example.yaml and workbench example snippets, auto_compact blocks in the tatara and magic-trainer examples.",
+    "decisions": ["D9"],
+    "tasks": ["slash-commands-docs"],
+    "status": "approved"
+  }
+]

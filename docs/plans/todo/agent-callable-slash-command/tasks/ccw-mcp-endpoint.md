@@ -22,7 +22,6 @@ provides: []
 # ccw MCP endpoint
 
 ## Requirement
-
 The ccw MCP server on the internal API (design D1; handshake probed on claude 2.1.304 and 2.1.306, design.md "Facts"). Owns part `ccw-mcp-server` (C/mcp_server.py).
 
 - `POST /internal/mcp` on the internal app: loopback only (403 otherwise), `X-CCW-Session` plus `X-CCW-Hook-Token` checked with `manager.hook_token_matches` (constant time) else 403; the body is one JSON-RPC 2.0 message (an array -> error -32600; invalid JSON -> -32700); responses are `application/json`.
@@ -35,10 +34,6 @@ The ccw MCP server on the internal API (design D1; handshake probed on claude 2.
 - `GET` and `DELETE /internal/mcp` -> 405.
 - The session's allowlist is the router's `commands_cfg.agent` (per-session override included).
 - README: `### POST /internal/mcp` (tests/test_readme_api.py requires every internal route), with the tool schema, the success text, the errors, and that GET and DELETE answer 405.
-
-Interfaces: `mcp_server.handle(router, message: dict) -> tuple[int, dict | None]` (status, JSON body; None for 202) used by `internal_api`; route `POST /internal/mcp`.
-
-Notes: reuse the hook route's auth and lookup (C/internal_api.py:55-63, `manager.router`); the tests call the internal app with httpx `ASGITransport` (client 127.0.0.1) against a World session, as tests/test_internal_api.py does.
 
 ## Acceptance conditions
 
@@ -62,17 +57,19 @@ Notes: reuse the hook route's auth and lookup (C/internal_api.py:55-63, `manager
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+`mcp_server.handle(router, message: dict) -> tuple[int, dict | None]` (status, JSON body; None for 202) used by `internal_api`; route `POST /internal/mcp`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`POST /internal/mcp` answers claude's handshake and exposes the one `command` tool for the session's agent allowlist; a tools/call queues the command with origin agent.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_mcp_server.py with httpx ASGITransport against create_internal_app and a World session; run it and see it fail.
+- Add mcp_server.py and the route in internal_api.py; document the route in README.
+- Run `uv run pytest tests/test_mcp_server.py tests/test_internal_api.py tests/test_readme_api.py -q && mise run lint`.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Reuse the hook route's auth and lookup (C/internal_api.py:55-63, `manager.router`); the tests call the internal app with httpx `ASGITransport` (client 127.0.0.1) against a World session, as tests/test_internal_api.py does.

@@ -22,7 +22,6 @@ provides: []
 # Slash commands docs
 
 ## Requirement
-
 Docs and examples for slash commands and auto-compact (design D9). README sections owned by earlier tasks (config rows, routes, events, hooks) stay where they are; this task adds the narrative section and the examples.
 
 - README `## Slash commands`, placed after `## Hook examples`, with `### The ccw command tool` (tool name, input schema, per-command params, success text, errors, main agent only, claude.json and allow-rule injection with env references), `### Commands endpoint` (the three routes, link to their API sections), `### Lifecycle` (queued during a turn -> runs at Stop -> same-turn resume with the continue prompt; idle sessions run at once and are busy meanwhile; onStop block and background defer keep commands queued; interrupt, crash and turn_max_seconds), `### Configuration` (a full `sessions.commands` example), `### Idle auto-compact` (`sessions.auto_compact`, once per idle gap, min_context_tokens, reaper interaction, Claude Code's own idle compaction left as is and reported as `compacted`), `### Limits` (session-replacing, dialog and skill commands are not supported; no automatic `--force`; `--force` only with allow_force; the completion signals ccw relies on).
@@ -31,8 +30,6 @@ Docs and examples for slash commands and auto-compact (design D9). README sectio
 - `src/claude_code_wrapper/data/examples/tatara.config.yaml` and `src/claude_code_wrapper/data/examples/magic-trainer.config.yaml`: an `auto_compact` block (idle_seconds 1800, instructions suited to each project) and `commands.agent: [compact, reload-plugins]` under `sessions`. `examples/*.config.yaml` are symlinks to these files, so they are not edited.
 - README `## Hook examples`: the tatara and magic-trainer bullets mention the auto-compact block.
 - Every example config still loads (tests/test_examples.py) and the existing example tests (tests/test_example_tatara.py, tests/test_example_tatara_lifecycle.py, tests/test_example_magic_trainer.py) stay green without being edited.
-
-Interfaces: none.
 
 ## Acceptance conditions
 
@@ -55,17 +52,19 @@ Interfaces: none.
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+none.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+README explains the tool, endpoint, lifecycle, config, auto-compact and limits in one section, and the workbench, tatara and magic-trainer examples enable the feature and still load.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_slash_commands_docs.py; run it and see it fail.
+- Write the README section, the config.example.yaml blocks and the three example blocks.
+- Run `uv run pytest tests/test_slash_commands_docs.py tests/test_examples.py tests/test_example_tatara.py tests/test_example_tatara_lifecycle.py tests/test_example_magic_trainer.py tests/test_readme_api.py tests/test_readme_config.py -q && mise run lint`.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Design D-numbers and facts with file:line are in ../design.md.

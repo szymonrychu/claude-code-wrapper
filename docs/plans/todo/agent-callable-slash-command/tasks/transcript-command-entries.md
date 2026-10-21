@@ -22,7 +22,6 @@ provides: []
 # Transcript command entries
 
 ## Requirement
-
 Transcript parser fix, always on (design D8). Compact summaries quote "All user messages", so today an old `<!-- ccw turn: ... -->` marker resurfaces as a UserPrompt and makes the next Stop look stale (C/transcript.py:146-158, 179-181). Owns part `transcript-command-events`.
 
 - `parse_line` on a `user` line:
@@ -37,8 +36,6 @@ Transcript parser fix, always on (design D8). Compact summaries quote "All user 
 - The new dataclasses (`CommandInvoked`, `CommandOutput`, `CompactBoundary`) derive from `_Event` (sidechain and agent_id flags attached as for the others) and join the `Event` union; the redactor applies to `args`, `stdout` and `stderr`.
 - `TranscriptTailer` delivers them through its callback like the other events; `SessionRouter._on_transcript_events` ignores unknown event types today (its isinstance chain), so the router needs no change here.
 - Fixture `tests/fixtures/transcripts/commands.jsonl` with lines in the 2.1.30x shapes from design.md "Facts": a command echo, local-command stdout as a system `local_command` line and as a user entry, a `compact_boundary` line, an `isCompactSummary` summary quoting `<!-- ccw turn: t_old -->`, an `isMeta` caveat line, and one ordinary prompt. Every test here parses from it or from inline lines of the same shape.
-
-Interfaces: part `transcript-command-events` = `transcript.CommandInvoked{name, args}`, `transcript.CommandOutput{stdout, stderr}`, `transcript.CompactBoundary{trigger, pre_tokens, post_tokens, duration_ms}`.
 
 ## Acceptance conditions
 
@@ -61,17 +58,19 @@ Interfaces: part `transcript-command-events` = `transcript.CommandInvoked{name, 
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+part `transcript-command-events` = `transcript.CommandInvoked{name, args}`, `transcript.CommandOutput{stdout, stderr}`, `transcript.CompactBoundary{trigger, pre_tokens, post_tokens, duration_ms}`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+parse_line turns command echoes, local-command output and compact boundaries into typed events and never returns a UserPrompt (or a marker) for a compact summary or a meta entry, while real prompts parse as before.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/fixtures/transcripts/commands.jsonl and tests/test_transcript_commands.py; run `uv run pytest tests/test_transcript_commands.py -q` and see it fail.
+- Add CommandInvoked, CommandOutput and CompactBoundary to src/claude_code_wrapper/transcript.py and the user and system line rules.
+- Run `uv run pytest tests/test_transcript_commands.py tests/test_transcript.py tests/test_router.py -q && mise run lint`.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Design D-numbers and facts with file:line are in ../design.md.

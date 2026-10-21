@@ -22,7 +22,6 @@ provides: []
 # Fake claude MCP step
 
 ## Requirement
-
 Give the fake claude an MCP tool step that talks HTTP JSON-RPC to the server configured in its claude.json, and let the test World forward the internal API, so the agent-side `mcp__ccw__command` path is testable end to end (design D1, D2; probe results in design.md "Facts"). Owns parts `fake-claude-mcp` and `world-internal-forward`. This is the only task in the epic that edits `tests/conftest.py`.
 
 - New turn step `{"mcp": {"server": "ccw", "tool": "command", "arguments": {...}, "agent": {"id": A, "type": T}}}` (`agent` optional):
@@ -34,10 +33,6 @@ Give the fake claude an MCP tool step that talks HTTP JSON-RPC to the server con
   - appends `{url, headers, requests, responses}` to `$CLAUDE_CONFIG_DIR/fake-mcp.jsonl` so tests can assert what was sent (header values included, which is how a test proves env expansion happened in the fake and the token did not come from a file).
 - `tests/conftest.py` World: its loopback server forwards every request under `/internal/` except `/internal/hooks/*` (methods POST, GET, DELETE) to `claude_code_wrapper.internal_api.create_internal_app(manager)` of the manager owning the request's `X-CCW-Session` header, through `httpx.ASGITransport` with a client address of 127.0.0.1, one app cached per manager; method, path, query, headers and body pass through; the internal app's status, headers and body come back unchanged. No manager for the header: 403. The existing hook route and every existing fixture keep their behaviour.
 - Fake module docstring documents the step and `fake-mcp.jsonl`.
-
-Interfaces: part `fake-claude-mcp` = the `mcp` step and `fake-mcp.jsonl`; part `world-internal-forward` = World forwarding `/internal/*` (not hooks) to `create_internal_app(manager)`.
-
-Notes: until task ccw-mcp-endpoint adds `/internal/mcp`, the forwarded request gets the internal app's 404; the tests here use a stub JSON-RPC server inside the test for the step, and `/internal/healthz` through the World for the forward.
 
 ## Acceptance conditions
 
@@ -57,17 +52,19 @@ Notes: until task ccw-mcp-endpoint adds `/internal/mcp`, the forwarded request g
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+part `fake-claude-mcp` = the `mcp` step and `fake-mcp.jsonl`; part `world-internal-forward` = World forwarding `/internal/*` (not hooks) to `create_internal_app(manager)`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A scenario step can make the fake call `mcp__ccw__command` over HTTP exactly as claude does (env-expanded url and headers, server/discover then initialize then tools/call), and the World routes such calls to the real internal app of the right manager.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_fake_claude_mcp.py: a stub JSON-RPC server inside the test for the step tests, and a World session plus GET /internal/healthz through the World for the forward test; run it and see it fail.
+- Implement the `mcp` step in tests/fake_claude/fake_claude.py and the `/internal/*` forward in tests/conftest.py (httpx.ASGITransport, one cached app per manager).
+- Run `uv run pytest tests/test_fake_claude_mcp.py tests/test_fake_claude.py tests/test_fake_claude_commands.py -q && mise run lint`; expect all passed.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Until task ccw-mcp-endpoint adds `/internal/mcp`, the forwarded request gets the internal app's 404; the tests here use a stub JSON-RPC server inside the test for the step, and `/internal/healthz` through the World for the forward.

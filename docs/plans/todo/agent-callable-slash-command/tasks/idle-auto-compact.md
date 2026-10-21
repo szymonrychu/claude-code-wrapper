@@ -22,7 +22,6 @@ provides: []
 # Idle auto-compact
 
 ## Requirement
-
 Optional compaction after a configured inactivity time (design D6; user decision). Owns part `auto-compact-config` (C/config.py).
 
 - `config.py`: `AutoCompactConfig` at `sessions.auto_compact` (extra forbid): `idle_seconds: float = 0` (>= 0; 0 is off), `instructions: str = ""` (same one-line rule as compact params), `min_context_tokens: int = 0` (>= 0). Validator: `idle_seconds > 0` with `idle_timeout_seconds > 0` and `idle_seconds >= idle_timeout_seconds` is a ConfigError at `sessions.auto_compact.idle_seconds` (the reaper would stop the session first).
@@ -32,10 +31,6 @@ Optional compaction after a configured inactivity time (design D6; user decision
 - Reaper (C/manager.py `_last_activity`): events of an idle-origin command (the command_* events whose record origin is idle, and every event emitted between its command_started and its command_completed or command_failed) do not count as activity, so an auto-compact never extends `idle_timeout_seconds`; the same rule applies to the idle clock of auto-compact itself.
 - Exit policies are unaffected; shutdown during an auto compact abandons it (task command-runner-failures).
 - README: config rows for `sessions.auto_compact.*` and a paragraph in `### sessions` on when it fires, the once-per-gap rule and the reaper interaction.
-
-Interfaces: `config.AutoCompactConfig` at `sessions.auto_compact`; `SessionRouter.context_tokens` (last main-chain context size).
-
-Notes: a timer per session (asyncio, cancelled on close) or the manager's reaper loop are both fine; tests use a small idle_seconds (for example 0.3) and the fake's compact.
 
 ## Acceptance conditions
 
@@ -59,17 +54,19 @@ Notes: a timer per session (asyncio, cancelled on close) or the manager's reaper
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+`config.AutoCompactConfig` at `sessions.auto_compact`; `SessionRouter.context_tokens` (last main-chain context size).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+With `sessions.auto_compact.idle_seconds` set, a session that went quiet after a turn compacts once with origin idle, below min_context_tokens it does not, and the idle reaper clock is unaffected.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_auto_compact.py (World, small idle_seconds, the fake's compact); run it and see it fail.
+- Add AutoCompactConfig and its validator, the per-session timer and the reaper rule in manager.py, context_tokens tracking in router.py, the README rows.
+- Run `uv run pytest tests/test_auto_compact.py tests/test_manager.py tests/test_exit_policy.py tests/test_config.py tests/test_readme_config.py -q && mise run lint`.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+A timer per session (asyncio, cancelled on close) or the manager's reaper loop are both fine; tests use a small idle_seconds (for example 0.3) and the fake's compact.

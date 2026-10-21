@@ -22,7 +22,6 @@ provides: []
 # Command runner
 
 ## Requirement
-
 The command request API and the runner, on an idle session (design D3 request, D4 steps 1, 3 and 8, D7 emission). The turn integration is task command-same-turn-resume; crash, shutdown and race handling is task command-runner-failures. Owns part `command-request-api` (C/router.py).
 
 - `SessionRouter.request_command(name, params=None, *, origin) -> CommandRecord`: `validate_params` with `commands_cfg.allow_force`, then `self.commands.request(...)` with `turn_id` = the running turn's id when busy, else None. `CommandRejected` propagates to the caller unchanged. A new record emits `command_queued {record}`; a coalesced duplicate returns the existing record and emits nothing. When the session is ready with no turn and the runner is idle, the runner starts at once (idle path); when a turn is running the command stays queued (the Stop gate of task command-same-turn-resume starts it).
@@ -38,10 +37,6 @@ The command request API and the runner, on an idle session (design D3 request, D
      - timeout: send ESC once, failed, error `timeout`;
   6. emit `command_completed {record}` or `command_failed {record}`, count `Metrics.command_finished(name, origin, state, seconds)`, fire `onCommandComplete` with the record, then the next queued command.
 - Never type while a turn is running or while another write is in flight: in the fake's `fake-inputs.jsonl` every command line has state idle.
-
-Interfaces: `SessionRouter.request_command(name, params=None, *, origin) -> CommandRecord`; `Session.begin_command()`, `Session.end_command()`, `Session.send_command(line)`, `Session.last_output_at`.
-
-Notes: reuses `commands.CommandQueue`, `commands.render`, `SignalBus` (task command-completion-signals), the command events, hooks and metrics (task command-event-vocabulary) and the fake's `commands` scenario key (task fake-claude-slash-commands). Tests run the World with `sessions.commands.quiet_seconds` small (for example 0.2) and short timeouts.
 
 ## Acceptance conditions
 
@@ -68,17 +63,19 @@ Notes: reuses `commands.CommandQueue`, `commands.render`, `SignalBus` (task comm
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+`SessionRouter.request_command(name, params=None, *, origin) -> CommandRecord`; `Session.begin_command()`, `Session.end_command()`, `Session.send_command(line)`, `Session.last_output_at`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+On an idle session `request_command` types the slash command at a quiet prompt, detects its completion or failure, emits the events, fires the hooks, counts the metrics and runs queued commands one by one, with the session busy meanwhile.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_command_runner.py against the World and the fake's `commands` scenario key (small quiet_seconds and timeouts); run it and see it fail.
+- Implement request_command and the runner in router.py and begin_command, end_command, send_command and the last-output clock in session.py; extend commands.py only where the runner needs it.
+- Run `uv run pytest tests/test_command_runner.py tests/test_router.py tests/test_session_turns.py tests/test_stop_gate.py tests/test_turn_continuity.py -q && mise run lint`.
+- A retirement test, if any, asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Reuses `commands.CommandQueue`, `commands.render`, `SignalBus` (task command-completion-signals), the command events, hooks and metrics (task command-event-vocabulary) and the fake's `commands` scenario key (task fake-claude-slash-commands). Tests run the World with `sessions.commands.quiet_seconds` small (for example 0.2) and short timeouts.
