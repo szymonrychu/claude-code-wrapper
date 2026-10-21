@@ -110,6 +110,24 @@ def _output_text(sig: Signal) -> str:
     return "\n".join(p for p in parts if p)[:COMMAND_OUTPUT_CHARS]
 
 
+def _results_line(records: list[CommandRecord]) -> str:
+    """`Command results: <name> <state>[ <result or error>]; ...` for the continue prompt."""
+    parts = []
+    for r in records:
+        detail = r.result if r.state == "completed" else r.error
+        parts.append(f"{r.name} {r.state}" + (f" {detail}" if detail else ""))
+    return "Command results: " + ("; ".join(parts) if parts else "none")
+
+
+def _abort_reason(record: TurnRecord) -> str:
+    """Why the commands of a turn that ended in `record.state` fail."""
+    if record.state in ("interrupted", "timeout"):
+        return record.state
+    if record.error in ("claude_exited", "session_stopped"):
+        return record.error
+    return "turn_failed"
+
+
 class TurnVetoed(Exception):
     """An `onTurn` hook denied the turn."""
 
@@ -224,6 +242,8 @@ class SessionRouter(SessionListener):
         self._abort: str | None = None
         #: The record the runner is working on, so an abort can fail it.
         self._current: CommandRecord | None = None
+        #: The running turn whose Stop was answered while its slash commands run (D4).
+        self._commands_turn: TurnRecord | None = None
         # The dispatcher is built before the router; route its per-action results here.
         if getattr(dispatcher, "_on_result", None) is None:
             dispatcher._on_result = self.on_hook_result
@@ -580,18 +600,28 @@ class SessionRouter(SessionListener):
     async def _stop_gate(self, payload: Mapping[str, Any]) -> RelayResponse | None:
         """onStop for a Stop that would end the running turn; the relay answer if it stays open.
 
-        None means "complete as today": no gate is configured, the Stop does not target the
-        running turn (stale, foreign, or a background completion while ready), or the gate
-        allowed it. A block sends claude back to work with the reason, a defer answers claude
-        allow; either way the turn stays running and busy and its usage keeps accumulating.
+        None means "complete as today": no gate is configured and no command is queued, the
+        Stop does not target the running turn (stale, foreign, or a background completion while
+        ready), or the gate allowed it with nothing queued. A block sends claude back to work
+        with the reason, a defer answers claude allow; either way the turn stays running and
+        busy, its usage keeps accumulating and queued commands stay queued. Queued commands
+        after an allow: answer allow and run them once this answer is back with claude (D4.2);
+        the turn then resumes with the continue prompt.
         """
         sessions = self._cfg.sessions
-        if not (self._cfg.hooks.onStop or sessions.defer_stop_on_background_tasks):
+        if not (
+            self._cfg.hooks.onStop
+            or sessions.defer_stop_on_background_tasks
+            or self.commands.pending()
+            or self._commands_turn is not None
+        ):
             return None
         session = self.session
         record = session.stop_target(payload, self._last_marker)
         if record is None or record is not session.current_turn:
             return None
+        if record is self._commands_turn:
+            return _allow()  # a background Stop while the commands run: the turn goes on
         tasks = _list_or_empty(payload.get("background_tasks"))
         active = bool(payload.get("stop_hook_active"))
         data = {
@@ -615,10 +645,31 @@ class SessionRouter(SessionListener):
                 {"turn_id": record.turn_id, "reason": reason, "stop_hook_active": active},
             )
             return {"stdout": _block_output(reason), "stderr": "", "exit_code": 0}
+        commands = [r.id for r in self.commands.pending()]
         if outcome.decision == "defer" or builtin_defer:
-            self._emit("turn_deferred", {"turn_id": record.turn_id, "background_tasks": tasks})
+            reason = "hook" if outcome.decision == "defer" else "background_tasks"
+            self._emit_deferred(record, reason, tasks, commands)
             return _allow()
-        return None
+        if not commands or not session.hold_for_commands(record):
+            return None
+        self._commands_turn = record
+        self._emit_deferred(record, "command", tasks, commands)
+        # Started on the next loop pass: after this handler returned the answer to the relay.
+        asyncio.get_running_loop().call_soon(self._start_turn_runner, record)
+        return _allow()
+
+    def _emit_deferred(
+        self, record: TurnRecord, reason: str, tasks: list[Any], commands: list[str]
+    ) -> None:
+        self._emit(
+            "turn_deferred",
+            {
+                "turn_id": record.turn_id,
+                "reason": reason,
+                "background_tasks": tasks,
+                "commands": commands,
+            },
+        )
 
     @property
     def outstanding_subagents(self) -> int:
@@ -713,7 +764,11 @@ class SessionRouter(SessionListener):
         session = self.session
         if session.command_active and self.runner_active:
             return await self._interrupt_command()
+        runner = self._runner if self.runner_active else None
         turn_id = await session.interrupt()
+        if runner is not None and turn_id is not None:
+            # The turn's commands: on_turn_end aborted the runner; let it settle the records.
+            await asyncio.wait({runner}, timeout=CLOSE_DRAIN_SECONDS)
         if self._metrics is not None:
             self._metrics.interrupt("idle" if turn_id is None else "interrupted")
         if turn_id is not None:
@@ -861,6 +916,81 @@ class SessionRouter(SessionListener):
         self._runner.add_done_callback(self._log_failure)
         return True
 
+    def _start_turn_runner(self, record: TurnRecord) -> None:
+        """Run the queue for the running turn `record` whose Stop was answered (D4.3)."""
+        if self._closed or record.terminal or record is not self.session.current_turn:
+            if self._commands_turn is record:
+                self._commands_turn = None
+            return
+        previous = self._runner if self.runner_active else None
+        self._runner = asyncio.ensure_future(self._run_turn(record, previous))
+        self._runner.add_done_callback(self._log_failure)
+
+    async def _run_turn(
+        self, record: TurnRecord, previous: asyncio.Task[Any] | None = None
+    ) -> None:
+        """Run every queued command, then resume `record` with the continue prompt (D4.4).
+
+        An abort (interrupt, turn_max_seconds, crash, stop) ESCs the command being typed or
+        awaited when claude still lives, fails it, cancels the queued ones and resumes nothing.
+        `previous` is a runner still finishing (one at a time); this one waits for it.
+        """
+        try:
+            if previous is not None:
+                await asyncio.wait({previous})
+            # The Stop answer travels back to claude; claude repaints its prompt meanwhile.
+            await asyncio.sleep(self.commands_cfg.quiet_seconds)
+            done = await self._run_queue()
+            await self._resume_turn(record, done)
+        except asyncio.CancelledError:
+            reason = self._abort
+            if reason is None:
+                raise
+            current = self._current
+            if reason in ("interrupted", "timeout") and current and current.state == "running":
+                with contextlib.suppress(PtyClosed, TurnRejected):
+                    await self.session.send_escape()
+            await self._fail_commands(reason)
+        finally:
+            self._abort = None
+            self._current = None
+            if self._commands_turn is record:
+                self._commands_turn = None
+
+    async def _resume_turn(self, record: TurnRecord, done: list[CommandRecord]) -> None:
+        session = self.session
+        if done and done[-1].error == "claude_exited":
+            return  # claude died under a command: K12 decides the turn
+        # Typed at a quiet prompt, like a command; a screen that never settles still gets it
+        # (claude queues input typed while it responds) rather than leaving the turn hanging.
+        quiet = self.commands_cfg.quiet_seconds
+        await session.wait_quiet(quiet, self._command_timeout("default"))
+        if self._closed or record.terminal or record is not session.current_turn:
+            return
+        self._commands_turn = None  # from here on a Stop is the continuation's
+        ids = [r.id for r in done]
+        text = f"{self.commands_cfg.continue_prompt}\n\n{_results_line(done)}"
+        self._last_marker = record.turn_id  # the continuation's Stop completes this record
+        self._emit("turn_resumed", {"turn_id": record.turn_id, "cause": "command", "commands": ids})
+        await session.continue_turn(record, text)
+
+    def _end_turn_commands(self, record: TurnRecord) -> None:
+        """A turn ended without completing: its commands never resume it (D4.5-D4.7).
+
+        The runner working for it is aborted (the running command fails, the queued ones are
+        cancelled); without a runner its queued commands are cancelled at once, before anything
+        can start them on the now ready session.
+        """
+        if self._commands_turn is record:
+            self._commands_turn = None
+            if self.runner_active:
+                self._abort_runner(_abort_reason(record))
+                return
+        started = time.monotonic()
+        for rec in self.commands.pending():
+            if rec.turn_id == record.turn_id and self._settle_command(rec, "cancelled", started):
+                self._spawn(self._fire_command_complete(rec))
+
     async def _run_idle(self) -> None:
         try:
             await self._run_queue()
@@ -908,6 +1038,12 @@ class SessionRouter(SessionListener):
         while (record := self.commands.next()) is not None:
             await self._run_command(record)
             done.append(record)
+            if record.error == "claude_exited":
+                # Nothing more reaches claude: the exit path relaunches or ends the session.
+                started = time.monotonic()
+                for rest in self.commands.pending():
+                    await self._finish_quietly(rest, "cancelled", started)
+                break
         return done
 
     def _emit_command(self, type: str, record: CommandRecord) -> LogEvent:
@@ -1026,8 +1162,22 @@ class SessionRouter(SessionListener):
         output: str | None = None,
     ) -> None:
         """D4 step 6: final event, metric, onCommandComplete."""
+        if self._settle_command(record, state, started, result=result, error=error, output=output):
+            await self._fire_command_complete(record)
+
+    def _settle_command(
+        self,
+        record: CommandRecord,
+        state: Any,
+        started: float,
+        *,
+        result: str | None = None,
+        error: str | None = None,
+        output: str | None = None,
+    ) -> bool:
+        """Finish `record` with its final event and metric; False when it already finished."""
         if record.state in ("completed", "failed", "cancelled"):
-            return
+            return False
         self.commands.finish(record, state, result=result, error=error, output=output)
         self._emit_command(
             "command_completed" if state == "completed" else "command_failed", record
@@ -1036,6 +1186,9 @@ class SessionRouter(SessionListener):
             self._metrics.command_finished(
                 record.name, record.origin, state, time.monotonic() - started
             )
+        return True
+
+    async def _fire_command_complete(self, record: CommandRecord) -> None:
         await self._fire(
             "onCommandComplete", record.model_dump(mode="json"), turn_id=record.turn_id
         )
@@ -1120,12 +1273,17 @@ class SessionRouter(SessionListener):
         # The continue prompt carries this turn's marker, so its Stop completes the same record;
         # the usage totals are not reset, so they span the crash.
         self._last_marker = record.turn_id
-        self._emit("turn_resumed", {"turn_id": record.turn_id, "restart": restart})
+        if self._commands_turn is record:
+            self._commands_turn = None  # the crash aborted its commands
+        self._emit(
+            "turn_resumed", {"turn_id": record.turn_id, "restart": restart, "cause": "restart"}
+        )
 
     def on_turn_end(self, record: Any) -> None:
         # Completed turns are finished by the Stop hook handler, which also has the usage.
         if record.state == "completed" or record.state not in TERMINAL_STATES:
             return
+        self._end_turn_commands(record)
         if self._metrics is not None:
             self._metrics.turn_finished(record)
             if record.state == "timeout":

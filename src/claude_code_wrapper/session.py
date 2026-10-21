@@ -11,6 +11,10 @@ and burns the budget). With `sessions.restart_continue_prompt` set, a turn runni
 crashes is held (still `running`) across the relaunch; a resumed relaunch is sent the continue
 prompt with the same turn marker and the turn goes on (`on_turn_resumed`). The ring is emptied
 before every relaunch so the old screen cannot satisfy the new boot's dialog or marker checks.
+`continue_turn` is that paste for any caller: the router also uses it to resume a turn after the
+slash commands it ran at the turn's Stop (`hold_for_commands` marks that command phase, in which
+claude sits at its prompt with no turn of its own: an interrupt or the time limit ends the turn at
+once, and a transcript interrupt line belongs to the command, not to the turn).
 
 Turns (D13): one at a time. `submit` reserves the slot and persists the record before the first
 byte is written, then pastes the prompt (with a `<!-- ccw turn: <id> -->` marker, because Stop
@@ -386,9 +390,13 @@ class Session:
         self._interrupting: _PendingInterrupt | None = None
         #: The running turn while claude is relaunched after a crash (continuation, K12).
         self._held: TurnRecord | None = None
+        #: The running turn while the router runs its slash commands (`hold_for_commands`).
+        self._commands_turn: TurnRecord | None = None
         self._last_activity = clock()
         #: Session clock time of the last PTY output (the runner's quiet-screen wait).
         self.last_output = clock()
+        #: Session clock time of the last command line, continuation or key written.
+        self.last_input = clock()
         #: A slash command run holds the slot with no turn record (`begin_command`).
         self._command_active = False
         self._turn_started = clock()
@@ -591,6 +599,7 @@ class Session:
         self._exited.set()  # a booting claude: the boot wait sees this
         if self._stopping or self.state not in ("ready", "busy"):
             return
+        self._commands_turn = None  # a held turn continues with the restart prompt
         record = self._turn
         if record is not None:
             if (
@@ -654,8 +663,6 @@ class Session:
 
     async def _continue_held(self, record: TurnRecord) -> None:
         """Retake the slot for the held turn and paste the continue prompt with its marker."""
-        pty = self.pty
-        assert pty is not None
         self._held = None
         self._set_state("busy")
         self._notify("on_turn_resumed", record, self.restarts)
@@ -665,15 +672,39 @@ class Session:
             record.turn_id,
             self.restarts,
         )
+        await self.continue_turn(record, self.spec.sessions.restart_continue_prompt)
+
+    async def continue_turn(self, record: TurnRecord, text: str) -> bool:
+        """Resume the running turn `record`: paste `text` with its turn marker, then CR.
+
+        Claude's next Stop carries the same marker, so it completes the same record; nothing
+        about the record is reset. Ends the command phase (`hold_for_commands`). False, and
+        nothing is written, unless `record` is the running turn of a live claude; a write that
+        fails ends the turn `failed` with `claude_exited`.
+        """
+        pty = self.pty
+        if (
+            pty is None
+            or record.terminal
+            or record is not self._turn
+            or self.state not in ("ready", "busy")
+        ):
+            return False
+        if self._commands_turn is record:
+            self._commands_turn = None
+        self._set_state("busy")
         try:
             await pty.send_prompt(
-                self._with_marker(self.spec.sessions.restart_continue_prompt, record),
-                self.spec.boot.submit_delay_seconds,
+                self._with_marker(text, record), self.spec.boot.submit_delay_seconds
             )
         except PtyClosed:
             self._end_turn(
                 record, "failed", error="claude_exited", next_state="ready" if pty.alive else None
             )
+            return False
+        finally:
+            self.last_input = self.clock()
+        return True
 
     # -- stop ------------------------------------------------------------------------------
 
@@ -938,6 +969,8 @@ class Session:
             return False
         if self._held is record:
             self._held = None  # nothing is pasted for it after the relaunch
+        if self._commands_turn is record:
+            self._commands_turn = None
         if self._turn is record:
             self._turn = None
             watch, self._turn_watch = self._turn_watch, None
@@ -1001,11 +1034,16 @@ class Session:
             self._set_state("ready")
 
     async def wait_quiet(self, seconds: float, timeout: float) -> bool:
-        """Wait until the PTY has been silent for `seconds`; False after `timeout`."""
+        """Wait until the PTY has been silent for `seconds`; False after `timeout`.
+
+        Silent every way: no output, nothing written (a command line, a continuation, an ESC)
+        and no hook relay or transcript line (`note_activity`) for `seconds`, so claude has read
+        the last write and finished the hook it was in before the next line is typed.
+        """
         deadline = self.clock() + timeout
         while True:
             now = self.clock()
-            quiet = now - self.last_output
+            quiet = now - max(self.last_output, self.last_input, self._last_activity)
             if quiet >= seconds:
                 return True
             if now >= deadline:
@@ -1019,11 +1057,32 @@ class Session:
         """
         pty = self._writable_pty()
         log.info("session %s: typing %r", self.spec.session_id, line)
-        await pty.send_prompt(line, self.spec.boot.submit_delay_seconds)
+        try:
+            await pty.send_prompt(line, self.spec.boot.submit_delay_seconds)
+        finally:
+            self.last_input = self.clock()
 
     async def send_escape(self) -> None:
         """One ESC, for a slash command that did not finish in time."""
         await self._send_key(ESC)
+
+    @property
+    def commands_turn(self) -> TurnRecord | None:
+        """The running turn whose Stop was answered while slash commands run for it."""
+        return self._commands_turn
+
+    def hold_for_commands(self, record: TurnRecord) -> bool:
+        """Mark the command phase of the running turn `record` (its Stop was answered allow).
+
+        The turn stays running and the session busy; claude is at its prompt with no turn of
+        its own until `continue_turn`. Meanwhile an interrupt or `turn_max_seconds` ends the
+        turn at once (no ESC from here: the router ESCs the command it is running), and a
+        transcript interrupt line is the command's. False unless `record` is the running turn.
+        """
+        if record.terminal or record is not self._turn or self.state != "busy":
+            return False
+        self._commands_turn = record
+        return True
 
     # -- interrupt -------------------------------------------------------------------------
 
@@ -1057,6 +1116,10 @@ class Session:
     async def _run_interrupt(self, pending: _PendingInterrupt) -> None:
         record = pending.record
         try:
+            if self._commands_turn is record:
+                # claude runs no turn: there is no interrupt line to wait for.
+                self._end_turn(record, pending.final)
+                return
             await self._send_key(ESC)
             try:
                 await asyncio.wait_for(
@@ -1083,6 +1146,7 @@ class Session:
             return
         with contextlib.suppress(PtyClosed):  # the exit path ends the turn
             await pty.write(key)
+        self.last_input = self.clock()
 
     def on_interrupted(self) -> None:
         """The transcript shows an interrupt: end the running turn (pending or unprompted)."""
@@ -1090,6 +1154,8 @@ class Session:
         if record is None:
             return
         pending = self._interrupting
+        if self._commands_turn is record and (pending is None or pending.record is not record):
+            return  # an ESC'd slash command, not the turn
         final: TurnState = "interrupted"
         if pending is not None and pending.record is record:
             final = pending.final

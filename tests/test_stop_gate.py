@@ -254,7 +254,12 @@ async def test_defer_flag_keeps_turn_busy_until_tasks_empty(world: World):
     record = await router.submit_turn("go")
     await world.until(lambda: of_type(world, sid, "turn_deferred"))
     assert of_type(world, sid, "turn_deferred") == [
-        {"turn_id": record.turn_id, "background_tasks": [TASK]}
+        {
+            "turn_id": record.turn_id,
+            "reason": "background_tasks",
+            "background_tasks": [TASK],
+            "commands": [],
+        }
     ]
     assert router.session.current_turn is record and m.get(sid)["state"] == "busy"
     done = await wait_turn(m, sid)

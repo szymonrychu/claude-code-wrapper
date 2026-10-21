@@ -142,7 +142,9 @@ async def test_continue_prompt_carries_same_marker(world: World) -> None:
 async def test_turn_resumed_event(world: World) -> None:
     m, sid, _, record = await continued_turn(world)
     assert record.state == "completed"
-    assert of_type(world, sid, "turn_resumed") == [{"turn_id": record.turn_id, "restart": 1}]
+    assert of_type(world, sid, "turn_resumed") == [
+        {"turn_id": record.turn_id, "restart": 1, "cause": "restart"}
+    ]
     assert m.get(sid)["restarts"] == 1
 
 
@@ -169,7 +171,9 @@ async def test_budget_exhausted_fails_turn_once(world: World, tmp_path: Path) ->
 
     await world.until(lambda: record.state != "running")
     assert record.state == "failed" and record.error == "claude_exited"
-    assert of_type(world, sid, "turn_resumed") == [{"turn_id": record.turn_id, "restart": 1}]
+    assert of_type(world, sid, "turn_resumed") == [
+        {"turn_id": record.turn_id, "restart": 1, "cause": "restart"}
+    ]
     failed = of_type(world, sid, "turn_failed")
     assert [(e["record"]["turn_id"], e["record"]["error"]) for e in failed] == [
         (record.turn_id, "claude_exited")
