@@ -43,6 +43,7 @@ from .pty_proc import PtyClosed, PtyProcess
 from .redact import Redactor
 from .ring import Ring, _squash, strip_ansi
 from .turns import (
+    PROBE_ANSWER_MAX,
     Origin,
     Probe,
     TurnRecord,
@@ -70,7 +71,13 @@ DANGEROUS_FLAG = "--dangerously-skip-permissions"
 BASE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "USER", "SHELL", "TMPDIR")
 GATE_FAIL_MODES = ("allow", "deny")
 ESC = b"\x1b"
-DEFAULT_PROBE_TEXT = "Reply with CCW-ALIVE and one sentence on what you are doing, then continue."
+
+
+def default_probe_text(token: str) -> str:
+    return f"Reply with {token} and one sentence on what you are doing, then continue."
+
+
+DEFAULT_PROBE_TEXT = default_probe_text("CCW-ALIVE")
 #: The turn watchdog re-checks at least this often, so a cleared stall re-arms promptly.
 TURN_WATCH_MAX_SLEEP = 0.25
 #: `note_activity` appends `last_activity_at` to turns.jsonl at most this often (it runs on every
@@ -932,12 +939,14 @@ class Session:
         """Write a liveness probe without taking the slot (ready or busy).
 
         The probe is pending until the router sees its marker in the transcript
-        (`probe_delivered`) and answered once assistant text with `CCW-ALIVE` follows
-        (`probe_answered`). Raises `TurnRejected` (booting, dead).
+        (`probe_delivered`) and answered once assistant text with the alive token follows
+        (`probe_answered`, which records the answer text). Raises `TurnRejected` (booting, dead).
         """
         pty = self._writable_pty()
         probe = Probe(
-            probe_id=new_probe_id(), text=text or DEFAULT_PROBE_TEXT, created_at=now_iso()
+            probe_id=new_probe_id(),
+            text=text or default_probe_text(self.spec.sessions.probe_alive_token),
+            created_at=now_iso(),
         )
         self._probes[probe.probe_id] = probe
         while len(self._probes) > MAX_PROBES:
@@ -962,11 +971,13 @@ class Session:
             probe.delivered_at = now_iso()
         return probe
 
-    def probe_answered(self) -> list[Probe]:
-        """Assistant text with `CCW-ALIVE` arrived: every delivered probe is answered."""
+    def probe_answered(self, answer: str = "") -> list[Probe]:
+        """Main-chain assistant text with the alive token arrived: every delivered probe is
+        answered, keeping the first `PROBE_ANSWER_MAX` characters of `answer`."""
         answered = [p for p in self._probes.values() if p.state == "delivered"]
         now = now_iso()
         for probe in answered:
             probe.state = "answered"
             probe.answered_at = now
+            probe.answer = answer[:PROBE_ANSWER_MAX]
         return answered

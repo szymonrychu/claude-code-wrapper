@@ -404,15 +404,15 @@ Errors: `401 unauthorized`, `404 not_found`, `503 dead` (the session is not runn
 ### `POST /v1/sessions/{id}/probe`
 
 Write a liveness probe into the TUI without taking the turn slot (allowed while `busy`). The probe
-asks Claude to reply with `CCW-ALIVE`; it is `pending` until the transcript shows it was
-delivered, `delivered` after, and `answered` once an assistant message containing `CCW-ALIVE`
-arrives. State changes of an answered probe emit a `probe` event.
+asks Claude to reply with `sessions.probe_alive_token` (default `CCW-ALIVE`); it is `pending` until the transcript shows it was
+delivered, `delivered` after, and `answered` once an assistant message containing the token
+arrives; that main-chain text (first 2000 characters) is kept as the probe `answer`. State changes of an answered probe emit a `probe` event.
 
 Auth: bearer. Path parameter: `id`. Request body (optional):
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `text` | string | no | probe text; the default asks Claude to reply with `CCW-ALIVE` and continue |
+| `text` | string | no | probe text; the default asks Claude to reply with the configured token and continue |
 
 Response `202`: `{"probe_id": "probe-1k9x2n7c1a5d", "state": "pending"}`.
 
@@ -430,8 +430,11 @@ Response `200`:
 {"probe_id": "probe-1k9x2n7c1a5d", "state": "answered",
  "created_at": "2026-10-20T09:02:00.100+00:00",
  "delivered_at": "2026-10-20T09:02:00.700+00:00",
- "answered_at": "2026-10-20T09:02:03.250+00:00"}
+ "answered_at": "2026-10-20T09:02:03.250+00:00",
+ "answer": "CCW-ALIVE I am running the test suite."}
 ```
+
+`answer` is `null` until the probe is answered.
 
 Errors: `401 unauthorized`, `404 not_found` (unknown probe; probes are remembered in memory only),
 `503 dead`.
@@ -825,11 +828,11 @@ data: {"seq":19,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42",
 Emitted when a liveness probe is answered.
 
 `data`: the probe: `probe_id`, `state` (`answered`), `text`, `created_at`, `delivered_at`,
-`answered_at`.
+`answered_at`, `answer` (the answering assistant text, at most 2000 characters).
 
 ```
 event: probe
-data: {"seq":20,"ts":"2026-10-20T09:02:03.250Z","session_id":"ses_3f9a1c0b7d42","type":"probe","data":{"probe_id":"probe-1k9x2n7c1a5d","state":"answered","text":"Reply with CCW-ALIVE ...","created_at":"2026-10-20T09:02:00.100+00:00","delivered_at":"2026-10-20T09:02:00.700+00:00","answered_at":"2026-10-20T09:02:03.250+00:00"}}
+data: {"seq":20,"ts":"2026-10-20T09:02:03.250Z","session_id":"ses_3f9a1c0b7d42","type":"probe","data":{"probe_id":"probe-1k9x2n7c1a5d","state":"answered","text":"Reply with CCW-ALIVE ...","created_at":"2026-10-20T09:02:00.100+00:00","delivered_at":"2026-10-20T09:02:00.700+00:00","answered_at":"2026-10-20T09:02:03.250+00:00","answer":"CCW-ALIVE I am running the test suite."}}
 ```
 
 ### `hook_result`
@@ -1947,6 +1950,7 @@ sessions:
 | `sessions.turn_marker` | boolean | `true` | - | Tag each turn so completion can be correlated with its prompt. |
 | `sessions.resume_on_start` | boolean | `false` | - | Resume known sessions when the service starts instead of listing them as stopped. |
 | `sessions.defer_stop_on_background_tasks` | boolean | `false` | - | Keep the running turn open (`turn_deferred`) while a Stop reports non-empty `background_tasks`; a later Stop with none completes it. See [`onStop`](#onstop). |
+| `sessions.probe_alive_token` | string | `"CCW-ALIVE"` | - | Non-empty token a probe asks Claude to reply with; an assistant message containing it answers the probe, and the default probe text names it. |
 
 ### `limits`
 

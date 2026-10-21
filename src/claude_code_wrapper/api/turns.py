@@ -135,6 +135,7 @@ async def get_probe(session_id: str, probe_id: str, request: Request) -> Any:
         "created_at": probe.created_at,
         "delivered_at": probe.delivered_at,
         "answered_at": probe.answered_at,
+        "answer": probe.answer,
     }
 
 

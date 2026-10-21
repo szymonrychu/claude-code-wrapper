@@ -59,7 +59,6 @@ from .workdir import safe_write_files
 
 log = logging.getLogger(__name__)
 
-ALIVE_TOKEN = "CCW-ALIVE"
 QUESTION_DENY_REASON = (
     "Question forwarded to the API client. Ask the user in plain text, "
     "end your turn now and wait for their reply in the next message."
@@ -660,8 +659,8 @@ class SessionRouter(SessionListener):
         )
         if ev.sidechain:
             return
-        if ALIVE_TOKEN in ev.text:
-            for probe in self.session.probe_answered():
+        if self._cfg.sessions.probe_alive_token in ev.text:
+            for probe in self.session.probe_answered(ev.text):
                 self._emit("probe", probe.model_dump(mode="json"))
         await self._fire(
             "onAgentResponse",

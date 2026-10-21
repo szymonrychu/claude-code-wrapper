@@ -155,6 +155,7 @@ sessions:
   turn_marker: true          # tag each turn so completion can be correlated
   resume_on_start: false     # resume known sessions when the service starts
   defer_stop_on_background_tasks: false  # hold a turn open while its Stop lists background tasks
+  probe_alive_token: CCW-ALIVE  # token a probe asks Claude to reply with
 
 limits:
   max_prompt_bytes: 1048576

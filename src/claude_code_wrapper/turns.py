@@ -69,6 +69,10 @@ def new_turn_id() -> str:
     return "turn-" + base36(_next_ns())
 
 
+#: Characters of the answering assistant text kept on a probe.
+PROBE_ANSWER_MAX = 2000
+
+
 def new_probe_id() -> str:
     """`probe-<base36 nanoseconds>`, from the same strictly increasing source as turn ids."""
     return "probe-" + base36(_next_ns())
@@ -124,7 +128,7 @@ def merged_annotations(current: dict[str, Any], new: dict[str, Any]) -> dict[str
 
 
 class Probe(BaseModel):
-    """A liveness probe: text pasted without taking the turn slot, answered with `CCW-ALIVE`."""
+    """A liveness probe: text pasted without taking the turn slot, answered with the alive token."""
 
     model_config = ConfigDict(validate_assignment=True)
 
@@ -134,6 +138,8 @@ class Probe(BaseModel):
     created_at: str
     delivered_at: str | None = None
     answered_at: str | None = None
+    #: The main-chain assistant text that answered the probe, capped at PROBE_ANSWER_MAX.
+    answer: str | None = None
 
 
 class StoreReadOnly(RuntimeError):

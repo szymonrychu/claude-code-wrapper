@@ -461,6 +461,7 @@ class SessionsConfig(_Model):
     turn_marker: bool = True
     resume_on_start: bool = False
     defer_stop_on_background_tasks: bool = False
+    probe_alive_token: str = Field("CCW-ALIVE", min_length=1)
 
 
 class LimitsConfig(_Model):

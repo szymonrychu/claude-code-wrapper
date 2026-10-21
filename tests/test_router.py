@@ -109,11 +109,12 @@ class StubSession:
             probe.state = "delivered"
         return probe
 
-    def probe_answered(self):
+    def probe_answered(self, answer=""):
         self.calls.append(("probe_answered",))
         out = [p for p in self.probes.values() if p.state == "delivered"]
         for p in out:
             p.state = "answered"
+            p.answer = answer[:2000]
         return out
 
 
