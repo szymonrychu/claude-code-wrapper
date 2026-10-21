@@ -1,6 +1,6 @@
 ---
 title: CI pre-commit gate
-status: todo
+status: in-progress
 repo: .
 value: "Every push is checked by the same hooks locally and in CI, and the tree is clean under them"
 files: [.pre-commit-config.yaml, mise.toml, tests/test_precommit_config.py, tests/fixtures/hooks/record_hook.sh]

@@ -1,6 +1,6 @@
 ---
 title: CI integration tests
-status: todo
+status: in-progress
 repo: .
 value: The built container is proven to serve and run a full session before any image is pushed
 files: [mise.toml, pyproject.toml, scripts/integration.sh, docker-compose.ci.yml, tests/integration/config.ci.yaml, tests/integration/conftest.py, tests/integration/test_container_http.py]
