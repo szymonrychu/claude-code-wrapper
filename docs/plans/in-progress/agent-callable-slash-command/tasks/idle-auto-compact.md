@@ -1,6 +1,6 @@
 ---
 title: Idle auto-compact
-status: todo
+status: in-progress
 repo: .
 value: "Long-lived sessions compact themselves while idle, so the next turn starts with a small context"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/router.py, README.md, tests/test_auto_compact.py]

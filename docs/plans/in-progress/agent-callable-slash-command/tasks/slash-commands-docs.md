@@ -1,6 +1,6 @@
 ---
 title: Slash commands docs
-status: todo
+status: in-progress
 repo: .
 value: "Operators can find how to enable, call and limit slash commands, with working examples for tatara and magic-trainer"
 files: [README.md, config.example.yaml, src/claude_code_wrapper/data/examples/workbench.config.yaml, src/claude_code_wrapper/data/examples/tatara.config.yaml, src/claude_code_wrapper/data/examples/magic-trainer.config.yaml, tests/test_slash_commands_docs.py]
