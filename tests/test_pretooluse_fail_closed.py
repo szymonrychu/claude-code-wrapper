@@ -116,3 +116,61 @@ async def test_other_events_still_swallow(tmp_path):
     )
     assert r["stdout"] == ""
     await h.router.close()
+
+
+async def test_dispatcher_exception_denies_when_gate_denies(tmp_path):
+    await test_failure_denies_with_matching_gate(tmp_path)
+
+
+async def test_redaction_failure_denies(tmp_path):
+    h = Harness(tmp_path, hooks={"onAgentToolCall": [webhook(on_error="deny")]})
+
+    def boom(_):
+        raise RuntimeError("redact")
+
+    real = h.redactor.redact_obj
+    h.redactor.redact_obj = boom  # type: ignore[method-assign]
+    r = await h.router.handle_claude_hook("PreToolUse", PRE)
+    h.redactor.redact_obj = real  # type: ignore[method-assign]
+    out = json.loads(r["stdout"])["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
+    await h.router.close()
+
+
+async def test_emit_failure_denies(tmp_path):
+    h = Harness(tmp_path, hooks={"onAgentToolCall": [webhook(on_error="deny")]})
+
+    def emit(type, data=None):
+        raise OSError("disk")
+
+    real = h.router._emit
+    h.router._emit = emit  # type: ignore[method-assign]
+    r = await h.router.handle_claude_hook("PreToolUse", PRE)
+    h.router._emit = real  # type: ignore[method-assign]
+    assert json.loads(r["stdout"])["hookSpecificOutput"]["permissionDecision"] == "deny"
+    await h.router.close()
+
+
+async def test_unmatched_tool_still_allows(tmp_path):
+    h = Harness(tmp_path, hooks={"onAgentToolCall": [webhook(on_error="deny", matcher="Read")]})
+    await _break_fire(h)
+    r = await h.router.handle_claude_hook("PreToolUse", PRE)
+    assert r["stdout"] == "" and r["exit_code"] == 0
+    await h.router.close()
+
+
+async def test_no_deny_gate_allows_on_exception(tmp_path):
+    h = Harness(tmp_path, hooks={"onAgentToolCall": [webhook()]})
+    await _break_fire(h)
+    r = await h.router.handle_claude_hook("PreToolUse", PRE)
+    assert r["stdout"] == "" and r["exit_code"] == 0
+    await h.router.close()
+
+
+async def test_error_and_tool_denied_events_emitted(tmp_path):
+    h = Harness(tmp_path, hooks={"onAgentToolCall": [webhook(on_error="deny")]})
+    await _break_fire(h)
+    await h.router.handle_claude_hook("PreToolUse", PRE)
+    assert h.events("error")[0].data["kind"] == "hook_relay"
+    assert h.events("tool_denied")
+    await h.router.close()
