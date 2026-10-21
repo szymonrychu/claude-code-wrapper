@@ -368,3 +368,4 @@ none
 ## Irreversible operations in scope
 
 none
+- builder ruling 2026-10-21: dropped discovered task mise-shim-for-ruff-has-no-ve: `mise run lint` uses `uv run ruff` and passes in every worktree; the reported shim error came from the verifier environment running bare ruff, not from the repo.

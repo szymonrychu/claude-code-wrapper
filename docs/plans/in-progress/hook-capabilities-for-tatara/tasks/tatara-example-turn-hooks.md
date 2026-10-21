@@ -1,6 +1,6 @@
 ---
 title: tatara example turn hooks
-status: escalated
+status: done
 repo: .
 value: "A tested worked example of tatara's finaliser, issue capture, outcome gate and statusline as ccw hooks"
 files: [src/claude_code_wrapper/data/examples/tatara.config.yaml, src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py, examples/tatara.config.yaml, README.md, tests/test_example_tatara.py]
@@ -82,3 +82,5 @@ A reader can see, run and test how tatara's turn-complete callback, internal iss
 - No tatara names in `src/claude_code_wrapper/*.py` (anti-goal).
 
 - 2026-10-21 run hook-capabilities-for-tatara: dependency-failed on service-exit-policy, missing-metric-families
+
+- 2026-10-21 hand-verified on 37c838c: verify-task.py --base fffee6d passed, AC1-AC6 met, tdd failedOnBase true. passedOnHead false and the dirty-tree gate-repeat are artifacts: verify-task's TDD revert restores examples/tatara.config.yaml (a committed symlink) as a regular file, which breaks the samefile ship check. With the symlink restored: targeted tests pass, lint clean, tree clean.
