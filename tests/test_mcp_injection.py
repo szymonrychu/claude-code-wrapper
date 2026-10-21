@@ -31,14 +31,22 @@ def seeded(tmp_path: Path, **kw) -> dict:
     return json.loads((tmp_path / "c" / ".claude.json").read_text())
 
 
-def test_seed_writes_ccw_entry_exactly(tmp_path):
+def test_claude_json_has_ccw_server_with_env_refs(tmp_path):
     assert seeded(tmp_path, ccw_mcp=True)["mcpServers"]["ccw"] == ENTRY
 
 
-def test_seed_removes_stale_ccw_entry(tmp_path):
+def test_disabled_removes_ccw_server_and_allow(tmp_path):
     seeded(tmp_path, ccw_mcp=True)
     data = seeded(tmp_path, ccw_mcp=False)
     assert "ccw" not in data.get("mcpServers", {})
+    doc = render_settings(tmp_path, Config(), relay_command="/r", ccw_mcp=True)
+    assert ALLOW in doc["permissions"]["allow"]
+    doc = render_settings(tmp_path, Config(), relay_command="/r", ccw_mcp=False)
+    assert ALLOW not in doc["permissions"]["allow"]
+    doc = render_settings(tmp_path, Config(), relay_command="/r", ccw_mcp=True)
+    assert ALLOW in doc["permissions"]["allow"]
+    doc = render_settings(tmp_path, Config(), relay_command="/r", ccw_mcp=False)
+    assert ALLOW not in doc["permissions"]["allow"]
 
 
 def test_seed_keeps_user_defined_ccw_entry(tmp_path):
@@ -55,7 +63,7 @@ def test_seed_default_has_no_ccw(tmp_path):
     assert "ccw" not in seeded(tmp_path).get("mcpServers", {})
 
 
-def test_settings_allow_rule_once_and_removed(tmp_path):
+def test_settings_allow_ccw_command(tmp_path):
     doc = render_settings(tmp_path, Config(), relay_command="/r", ccw_mcp=True)
     assert doc["permissions"]["allow"].count(ALLOW) == 1
     doc = render_settings(tmp_path, Config(), relay_command="/r", ccw_mcp=True)
@@ -64,7 +72,7 @@ def test_settings_allow_rule_once_and_removed(tmp_path):
     assert ALLOW not in doc["permissions"]["allow"]
 
 
-def test_config_reserves_ccw_name():
+def test_reserved_ccw_server_name_rejected():
     srv = {"ccw": {"type": "http", "url": "http://x"}}
     Config.model_validate({"claude": {"mcp_servers": srv}})
     with pytest.raises(Exception) as exc:
@@ -112,7 +120,7 @@ def tool_results(world: World, m, sid: str) -> list[dict]:
     return out
 
 
-async def test_self_compact_end_to_end(world: World):
+async def test_agent_self_compact_same_turn_e2e(world: World):
     go = {"match": "^go", "steps": [mcp_step(), {"text": "queued, ending"}]}
     m, sid, router = await start(world, [go, RESUMED])
     turn = await router.submit_turn("go")
@@ -143,7 +151,20 @@ async def test_self_compact_end_to_end(world: World):
             assert token not in p.read_bytes().decode(errors="replace"), p
 
 
-async def test_self_reload_plugins_end_to_end(world: World):
+async def test_token_never_written_to_disk(world: World):
+    go = {"match": "^go", "steps": [mcp_step(), {"text": "queued, ending"}]}
+    m, sid, router = await start(world, [go, RESUMED])
+    await router.submit_turn("go")
+    await world.wait_turn(m, sid)
+    fake = jsonl(world.session_dir(sid) / "config" / "fake-mcp.jsonl")
+    token = fake[0]["headers"]["X-CCW-Hook-Token"]
+    assert token and "${" not in token
+    for p in world.session_dir(sid).rglob("*"):
+        if p.is_file() and p.name != "fake-mcp.jsonl":
+            assert token not in p.read_bytes().decode(errors="replace"), p
+
+
+async def test_agent_reload_plugins_e2e(world: World):
     step = mcp_step()
     step["mcp"]["arguments"] = {"name": "reload-plugins"}
     go = {"match": "^go", "steps": [step, {"text": "queued, ending"}]}
@@ -159,7 +180,7 @@ async def test_self_reload_plugins_end_to_end(world: World):
     assert "reload-plugins" in [i["text"].removeprefix("/") for i in inputs(world, sid)][1]
 
 
-async def test_subagent_call_is_refused(world: World):
+async def test_subagent_call_refused_e2e(world: World):
     go = {
         "match": "^go",
         "steps": [mcp_step(agent={"id": "a1", "type": "Explore"}), {"text": "done"}],
