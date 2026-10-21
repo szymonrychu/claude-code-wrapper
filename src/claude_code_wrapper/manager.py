@@ -211,6 +211,8 @@ class _Active:
     background: set[asyncio.Task[Any]] = field(default_factory=set)
     closed: asyncio.Event = field(default_factory=asyncio.Event)
     activated: float = field(default_factory=time.time)
+    hook_outputs: list[dict[str, Any]] = field(default_factory=list)
+    closed_emitted: bool = False
 
     @property
     def session_id(self) -> str:
@@ -694,9 +696,13 @@ class SessionManager:
 
     # ------------------------------------------------------------------ destroy
 
-    async def destroy(self, session_id: str, purge: bool = False) -> dict[str, Any]:
-        """Stop the session and fire onDestroy; files stay unless `purge` (D19)."""
+    async def destroy(
+        self, session_id: str, purge: bool = False, hook_input: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Stop the session and fire onDestroy with `hook_input` as `data.input`; files stay
+        unless `purge` (D19). The result carries `hook_outputs` of the blocking actions."""
         ctx = self._active.get(session_id)
+        outputs: list[dict[str, Any]] = []
         if ctx is not None:
             if ctx.phase == "creating":
                 raise InvalidState(session_id, "creating")
@@ -709,9 +715,12 @@ class SessionManager:
                         ctx,
                         grace=self.cfg.limits.shutdown_timeout_seconds,
                         hook_timeout=self._hook_bound("onDestroy"),
+                        hook_input=hook_input,
                     )
                 )
+            outputs = ctx.hook_outputs
         snapshot = self._persisted_snapshot(self._read_meta(session_id))
+        snapshot["hook_outputs"] = list(outputs)
         if purge:
             self._purge(session_id)
             snapshot["purged"] = True
@@ -724,12 +733,17 @@ class SessionManager:
         grace: float,
         hook_timeout: float,
         close_timeout: float | None = None,
+        hook_input: dict[str, Any] | None = None,
     ) -> asyncio.Task[None]:
         """Run the destroy as a tracked task (shutdown awaits, and past its bound cancels)."""
         ctx.phase = "closing"
         return self._spawn(
             self._destroy_active(
-                ctx, grace=grace, hook_timeout=hook_timeout, close_timeout=close_timeout
+                ctx,
+                grace=grace,
+                hook_timeout=hook_timeout,
+                close_timeout=close_timeout,
+                hook_input=hook_input,
             )
         )
 
@@ -740,30 +754,46 @@ class SessionManager:
         grace: float,
         hook_timeout: float,
         close_timeout: float | None = None,
+        hook_input: dict[str, Any] | None = None,
     ) -> None:
         try:
-            await self._teardown(ctx, grace, close_timeout=close_timeout)
+            await self._teardown(ctx, grace, close_timeout=close_timeout, emit_closed=False)
             ctx.meta.update(state="stopped")
             self._save(ctx)
             loop = asyncio.get_running_loop()
             deadline = loop.time() + max(hook_timeout, 0.0)
+            data = {**self._snapshot(ctx, state="stopped"), "input": hook_input}
             try:
-                await asyncio.wait_for(
-                    self._fire(ctx, "onDestroy", self._snapshot(ctx, state="stopped")),
-                    max(hook_timeout, 0.0),
+                outcome = await asyncio.wait_for(
+                    self._fire(ctx, "onDestroy", data), max(hook_timeout, 0.0)
                 )
+                ctx.hook_outputs = list(outcome.outputs)
             except TimeoutError:
                 log.warning("session %s: onDestroy exceeded %gs", ctx.session_id, hook_timeout)
+            self._emit(ctx, "destroy_output", {"outputs": ctx.hook_outputs})
+            self._emit_closed(ctx)
             if ctx.dispatcher is not None:
                 # Awaited: non-blocking actions (and other hooks still running) finish too.
                 await ctx.dispatcher.drain(max(deadline - loop.time(), 0.0))
         finally:
             # Cancelled by shutdown before claude was down: its kill path finishes the ctx.
+            self._emit_closed(ctx)
             if self._active.get(ctx.session_id) is not ctx:
                 self._finish(ctx)
 
+    def _emit_closed(self, ctx: _Active) -> None:
+        """The single `session_closed` of a session (the router no longer emits it)."""
+        if ctx.router is not None and not ctx.closed_emitted:
+            ctx.closed_emitted = True
+            self._emit(ctx, "session_closed", {})
+
     async def _teardown(
-        self, ctx: _Active, grace: float, *, close_timeout: float | None = None
+        self,
+        ctx: _Active,
+        grace: float,
+        *,
+        close_timeout: float | None = None,
+        emit_closed: bool = True,
     ) -> None:
         """Stop claude (if started) and close the router (its drain bounded by
         `close_timeout`, else the router default); the slot is free afterwards."""
@@ -779,11 +809,13 @@ class SessionManager:
         if ctx.router is not None:
             try:
                 if close_timeout is None:
-                    await ctx.router.close()
+                    await ctx.router.close(emit_closed=False)
                 else:
-                    await ctx.router.close(drain_timeout=close_timeout)
+                    await ctx.router.close(drain_timeout=close_timeout, emit_closed=False)
             except Exception:
                 log.exception("session %s: closing the router failed", ctx.session_id)
+        if emit_closed:
+            self._emit_closed(ctx)
         if self._active.get(ctx.session_id) is ctx:
             del self._active[ctx.session_id]
             if self.metrics is not None:
@@ -975,6 +1007,7 @@ class SessionManager:
                     grace=grace,
                     hook_timeout=min(self._hook_bound("onDestroy"), budget * SHUTDOWN_HOOK_SHARE),
                     close_timeout=budget * SHUTDOWN_CLOSE_SHARE,
+                    hook_input=None,
                 )
                 continue
             if ctx.phase == "creating" and ctx.task is not None and not ctx.task.done():

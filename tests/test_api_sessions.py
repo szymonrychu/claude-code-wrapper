@@ -76,7 +76,7 @@ class StubManager:
         self._maybe()
         return snap(sid)
 
-    async def destroy(self, sid, purge=False):
+    async def destroy(self, sid, purge=False, hook_input=None):
         self.calls.append(("destroy", sid, purge))
         self._maybe()
         return snap(sid, "stopped", **({"purged": True} if purge else {}))

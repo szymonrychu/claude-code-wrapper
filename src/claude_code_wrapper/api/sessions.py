@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from claude_code_wrapper.api.errors import ApiError
 from claude_code_wrapper.api.redaction import _out
@@ -25,6 +25,31 @@ class ResumeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     env: ClaudeEnv | None = None  # type: ignore[valid-type]
+
+
+#: Largest DELETE body accepted (design D7).
+MAX_DESTROY_BODY_BYTES = 1024 * 1024
+
+
+class DestroyRequest(BaseModel):
+    """Optional `DELETE /v1/sessions/{id}` body: handed to onDestroy as `data.input`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hook_input: dict[str, Any] | None = None
+
+
+async def _destroy_body(request: Request) -> DestroyRequest | None:
+    raw = await request.body()
+    if len(raw) > MAX_DESTROY_BODY_BYTES:
+        raise ApiError(413, "too_large", f"body exceeds {MAX_DESTROY_BODY_BYTES} bytes")
+    if not raw.strip():
+        return None
+    try:
+        return DestroyRequest.model_validate_json(raw)
+    except ValidationError as exc:
+        detail = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+        raise ApiError(422, "invalid_request", detail) from exc
 
 
 @router.post("/sessions", status_code=201)
@@ -51,7 +76,12 @@ async def get_session(session_id: str, request: Request) -> Any:
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str, request: Request, purge: bool = False) -> Any:
-    return _out(request, await request.app.state.manager.destroy(session_id, purge=purge))
+    body = await _destroy_body(request)
+    hook_input = body.hook_input if body is not None else None
+    return _out(
+        request,
+        await request.app.state.manager.destroy(session_id, purge=purge, hook_input=hook_input),
+    )
 
 
 @router.post("/sessions/{session_id}/resume")
