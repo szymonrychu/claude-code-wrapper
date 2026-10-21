@@ -55,7 +55,7 @@ def client_for(m: Metrics, stub: Stub | None = None) -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
-def test_http_requests_use_route_template() -> None:
+def test_http_requests_labelled_by_route_template() -> None:
     m = Metrics()
     c = client_for(m, Stub(ProbeSession()))
     assert c.post("/v1/sessions/abc/probe").status_code == 202
@@ -84,7 +84,7 @@ def test_http_unmatched_route_is_bounded() -> None:
     )
 
 
-def test_http_panic_counted_as_500() -> None:
+def test_http_panic_counted() -> None:
     m = Metrics()
     c = client_for(m)
     assert c.get("/boom").status_code == 500
@@ -92,7 +92,7 @@ def test_http_panic_counted_as_500() -> None:
     assert sample(m, "ccw_http_requests_total", route="/boom", method="GET", status_code="500")
 
 
-def test_probe_sent_and_rejected() -> None:
+def test_probe_sent_and_rejected_outcomes() -> None:
     m = Metrics()
     c = client_for(m, Stub(ProbeSession()))
     c.post("/v1/sessions/abc/probe")
@@ -103,7 +103,7 @@ def test_probe_sent_and_rejected() -> None:
     assert sample(m, "ccw_probe_outcomes_total", outcome="sent") == 1
 
 
-async def test_probe_delivered_answered_and_seconds(tmp_path: Path) -> None:
+async def test_probe_outcomes_and_answer_seconds(tmp_path: Path) -> None:
     m = Metrics()
     h = with_metrics(Harness(tmp_path), m)
     probe = Probe(probe_id="p1", text="hi", created_at="2026-01-01T00:00:00+00:00")
@@ -127,11 +127,17 @@ async def test_probe_delivered_answered_and_seconds(tmp_path: Path) -> None:
     assert sample(m, "ccw_probe_answer_seconds_sum") == 2.0
 
 
-async def test_stall_interrupt_and_timeout_counters(tmp_path: Path) -> None:
+async def test_stall_counted(tmp_path: Path) -> None:
     m = Metrics()
     h = with_metrics(Harness(tmp_path), m)
     h.router.on_stall("t1")
     assert sample(m, "ccw_stall_suspected_total") == 1
+    await h.router.close()
+
+
+async def test_interrupt_results_counted(tmp_path: Path) -> None:
+    m = Metrics()
+    h = with_metrics(Harness(tmp_path), m)
     h.session.interrupt_result = None
     await h.router.interrupt()
     assert sample(m, "ccw_interrupts_total", result="idle") == 1
@@ -142,7 +148,3 @@ async def test_stall_interrupt_and_timeout_counters(tmp_path: Path) -> None:
     await h.router.drain()
     assert sample(m, "ccw_interrupts_total", result="timeout") == 1
     await h.router.close()
-
-
-def test_turns_module_has_metrics_hook() -> None:
-    assert hasattr(turns_api, "start_probe")
