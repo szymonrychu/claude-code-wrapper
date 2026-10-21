@@ -142,6 +142,10 @@ hooks:
     # - {type: command, run: "echo subagent stopped"}
   onInterrupt: []
     # - {type: command, run: "echo interrupted"}
+  onCommand: []              # a queued slash command is about to run (blocking, can deny)
+    # - {type: command, run: "./check-command.sh"}
+  onCommandComplete: []      # a command reached its final state
+    # - {type: command, run: "echo command done"}
   onError: []                # fatal pattern, crash, boot timeout, step failure, relay error
     # - {type: webhook, url: "https://alerts.example.com/ccw"}
 

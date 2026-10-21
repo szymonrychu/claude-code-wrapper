@@ -39,9 +39,11 @@ HOOK_EVENTS: tuple[str, ...] = (
     "onSubagentStart",
     "onSubagentStop",
     "onInterrupt",
+    "onCommand",
+    "onCommandComplete",
     "onError",
 )
-VETO_EVENTS: tuple[str, ...] = ("onCreate", "onResume", "onTurn", "onAgentToolCall")
+VETO_EVENTS: tuple[str, ...] = ("onCreate", "onResume", "onTurn", "onAgentToolCall", "onCommand")
 TOOL_EVENTS: tuple[str, ...] = ("onAgentToolCall", "onToolResult")
 WELL_KNOWN_MARKETPLACES = frozenset({"claude-plugins-official"})
 _PLUGIN_ID = re.compile(r"^[^@\s]+@[^@\s]+$")
@@ -416,6 +418,8 @@ class HooksConfig(_Model):
     onSubagentStart: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onSubagentStop: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onInterrupt: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
+    onCommand: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
+    onCommandComplete: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onError: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
 
     @model_validator(mode="after")

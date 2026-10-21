@@ -9,6 +9,7 @@ from typing import Any
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from prometheus_client import generate_latest as _generate_latest
 
+from .config import BUILTIN_COMMAND_NAMES
 from .turns import TurnRecord
 
 MAX_TOOL_LABELS = 50
@@ -79,6 +80,18 @@ class Metrics:
         self._interrupts = Counter(
             "ccw_interrupts_total", "Interrupts by result.", ["result"], registry=reg
         )
+        self._commands = Counter(
+            "ccw_commands_total",
+            "Slash commands that reached a final state.",
+            ["command", "origin", "result"],
+            registry=reg,
+        )
+        self._command_duration = Histogram(
+            "ccw_command_duration_seconds", "Command duration.", ["command"], registry=reg
+        )
+        self._compactions = Counter(
+            "ccw_compactions_total", "Compactions by trigger.", ["trigger"], registry=reg
+        )
         self._tools_seen: set[str] = set()
 
     # ------------------------------------------------------------------ sessions
@@ -145,6 +158,16 @@ class Metrics:
     def interrupt(self, result: str) -> None:
         """`interrupted`, `timeout` or `idle` (no running turn)."""
         self._interrupts.labels(result).inc()
+
+    def command_finished(self, command: str, origin: str, result: str, seconds: float) -> None:
+        """`result` is the final state: completed, failed or cancelled."""
+        name = command if command in BUILTIN_COMMAND_NAMES else "other"
+        self._commands.labels(name, origin, result).inc()
+        self._command_duration.labels(name).observe(max(0.0, seconds))
+
+    def compaction(self, trigger: str) -> None:
+        """`manual`, `auto` or `unknown` (anything else counts as unknown)."""
+        self._compactions.labels(trigger if trigger in ("manual", "auto") else "unknown").inc()
 
     # ------------------------------------------------------------------ exposition
 

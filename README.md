@@ -552,7 +552,11 @@ Prometheus text exposition (`ccw_sessions_active`, `ccw_sessions_created_total`,
 `unmatched`), `ccw_http_panics_total` (unhandled handler exceptions),
 `ccw_probe_outcomes_total{outcome}` (`sent`, `rejected`, `delivered`, `answered`),
 `ccw_probe_answer_seconds`, `ccw_stall_suspected_total`,
-`ccw_interrupts_total{result}` (`interrupted`, `timeout`, `idle`)). No auth.
+`ccw_interrupts_total{result}` (`interrupted`, `timeout`, `idle`),
+`ccw_commands_total{command,origin,result}` (`command` is a built-in command name, anything else
+counts as `other`; `result` is the final state: `completed`, `failed`, `cancelled`),
+`ccw_command_duration_seconds{command}` (histogram),
+`ccw_compactions_total{trigger}` (`manual`, `auto`, `unknown`)). No auth.
 Response `200`, `Content-Type: text/plain; version=0.0.4`.
 
 ### Internal API
@@ -899,6 +903,36 @@ event: hook_result
 data: {"seq":21,"ts":"2026-10-20T09:01:06.100Z","session_id":"ses_3f9a1c0b7d42","type":"hook_result","data":{"event":"onAgentToolCall","index":0,"type":"command","ok":true,"decision":"deny","duration_ms":41,"error":null}}
 ```
 
+### `command_queued`
+
+Emitted when a slash command is accepted into the session's command queue.
+
+`data`: `{record}`, the CommandRecord fields (`command_id`, `name`, `args`, `origin`, `state`, `turn_id`, `error` and the timestamps).
+
+### `command_started`
+
+Emitted when the command is typed into Claude Code at an idle prompt.
+
+`data`: `{record}`, the CommandRecord fields (`command_id`, `name`, `args`, `origin`, `state`, `turn_id`, `error` and the timestamps).
+
+### `command_completed`
+
+Emitted when the command finished successfully.
+
+`data`: `{record}`, the CommandRecord fields (`command_id`, `name`, `args`, `origin`, `state`, `turn_id`, `error` and the timestamps).
+
+### `command_failed`
+
+Emitted when the command failed (including `vetoed` by an `onCommand` hook) or was cancelled.
+
+`data`: `{record}`, the CommandRecord fields (`command_id`, `name`, `args`, `origin`, `state`, `turn_id`, `error` and the timestamps).
+
+### `compacted`
+
+Emitted for every compaction, including Claude Code's own (auto or manual).
+
+`data`: `trigger` (`manual`, `auto` or `unknown`), `pre_tokens`, `post_tokens`, `duration_ms`.
+
 ### `error`
 
 Emitted for fatal conditions and failures.
@@ -1160,6 +1194,15 @@ Trigger: SubagentStop. Awaited when blocking; cannot veto. `data`: `agent_id`, `
 ### `onInterrupt`
 
 Trigger: the router, when an interrupt request is accepted. Cannot veto. `data`: `turn_id`.
+
+### `onCommand`
+
+Trigger: a queued slash command is about to run. Awaited; can veto: a `deny` fails the command
+with error `vetoed`. `data`: `command_id`, `name`, `args`, `origin`, `turn_id`.
+
+### `onCommandComplete`
+
+Trigger: a command reached its final state. Cannot veto. `data`: the final CommandRecord.
 
 ### `onError`
 
