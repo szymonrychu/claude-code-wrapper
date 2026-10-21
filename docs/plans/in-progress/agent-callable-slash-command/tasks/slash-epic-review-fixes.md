@@ -53,17 +53,18 @@ Epic-review remediation (whole-diff review, security review, scope audit, 2026-1
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+Keeps commands.validate_params / render / params_schema signatures, the MCP JSON-RPC surface (initialize, tools/list, tools/call), the single tool `command`, CommandRejected codes and the public endpoint error mapping.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+No param can inject a newline or second command into the PTY; the tool schema is flat; unknown tool arguments are rejected; README and example config match the code; full suite green.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write tests/test_slash_review_fixes.py with the four AC-named tests and commit them; run `uv run pytest tests/test_slash_review_fixes.py -q`: expect failures for the reasons in the requirement.
+- Fix commands.py (items 1, 2), mcp_server.py (item 3); update shape assertions in tests/test_command_registry.py and tests/test_mcp_server.py for the flat schema; README (items 4, 5); config.example.yaml comment (item 6).
+- Run the targeted tests, then `mise run lint && mise run test`: all passed.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Findings: security review (commands.py:36,71-90,108 server param unvalidated; router.py:528 subagent bypass -> document), whole-diff review (README :1015-1033 command_id; mcp_server.py:475-482 extra keys dropped; commands.py:154 top-level oneOf), scope audit (config.example.yaml:166 '/sessions/'). Name tests exactly as the AC refs. examples/*.config.yaml are symlinks; never write at those paths. Do not edit tests/conftest.py or tests/fake_claude.
