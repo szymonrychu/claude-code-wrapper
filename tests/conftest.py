@@ -14,12 +14,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from claude_code_wrapper.config import Config
+from claude_code_wrapper.internal_api import create_internal_app
 from claude_code_wrapper.manager import InvalidState, SessionManager, SessionNotFound
 from claude_code_wrapper.redact import Redactor
 
@@ -79,6 +81,7 @@ class World:
         self.url = ""
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
+        self._internal: dict[int, httpx.AsyncClient] = {}
 
     # ---- loopback server
 
@@ -88,6 +91,13 @@ class World:
                 m.router(session_id)
                 return m
         return None
+
+    def _internal_client(self, m: SessionManager) -> httpx.AsyncClient:
+        """One in-process client per manager onto its internal app (client address 127.0.0.1)."""
+        if id(m) not in self._internal:
+            transport = httpx.ASGITransport(app=create_internal_app(m), client=("127.0.0.1", 0))
+            self._internal[id(m)] = httpx.AsyncClient(transport=transport, base_url="http://ccw")
+        return self._internal[id(m)]
 
     async def start_server(self) -> None:
         app = FastAPI()
@@ -100,6 +110,25 @@ class World:
                 return JSONResponse({"error": "forbidden"}, status_code=403)
             out = await m.router(sid).handle_claude_hook(event, await request.json())
             return JSONResponse(dict(out))
+
+        @app.api_route("/internal/{path:path}", methods=["POST", "GET", "DELETE"])
+        async def internal(path: str, request: Request) -> Response:
+            m = self._manager_for(request.headers.get("x-ccw-session", ""))
+            if m is None:
+                return JSONResponse({"error": "forbidden"}, status_code=403)
+            r = await self._internal_client(m).request(
+                request.method,
+                f"/internal/{path}",
+                params=request.query_params.multi_items(),
+                headers=[(k, v) for k, v in request.headers.items() if k != "host"],
+                content=await request.body(),
+            )
+            skip = {"content-length", "transfer-encoding", "connection"}
+            return Response(
+                r.content,
+                status_code=r.status_code,
+                headers={k: v for k, v in r.headers.items() if k.lower() not in skip},
+            )
 
         @app.post("/cb")
         async def callback(request: Request) -> JSONResponse:
@@ -114,6 +143,8 @@ class World:
         self.url = f"http://127.0.0.1:{port}"
 
     async def close(self) -> None:
+        for client in self._internal.values():
+            await client.aclose()
         for m in self.managers:
             with contextlib.suppress(Exception):
                 await m.shutdown()
