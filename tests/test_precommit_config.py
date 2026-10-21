@@ -26,6 +26,13 @@ def _hooks():
     return [h for repo in CONFIG["repos"] for h in repo["hooks"]]
 
 
+def test_config_hooks_and_pinned_revs():
+    test_every_rev_is_a_pinned_tag()
+    test_required_hook_ids_present()
+    test_ruff_rev_matches_uv_lock()
+    test_uv_lockfile_hook_and_commit_msg_stage()
+
+
 def test_every_rev_is_a_pinned_tag():
     for repo in CONFIG["repos"]:
         if repo["repo"] == "local":
@@ -55,6 +62,6 @@ def test_uv_lockfile_hook_and_commit_msg_stage():
     assert "commit-msg" in hooks["conventional-pre-commit"]["stages"]
 
 
-def test_mise_precommit_task_runs_pre_commit():
+def test_mise_precommit_task():
     mise = tomllib.loads((ROOT / "mise.toml").read_text())
     assert "pre-commit run" in mise["tasks"]["precommit"]["run"]
