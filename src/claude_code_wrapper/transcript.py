@@ -277,10 +277,14 @@ def _system_events(obj: dict, redactor: Redactor | None) -> list[_Made]:
 def _user_events(content: Any, redactor: Redactor | None) -> list[_Made]:
     if isinstance(content, str):
         return _prompt_events(content, redactor)
-    made: list[_Made] = []
-    for block in content if isinstance(content, list) else []:
-        if not isinstance(block, dict):
-            continue
+    blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+    texts = [
+        b["text"] for b in blocks if b.get("type") == "text" and isinstance(b.get("text"), str)
+    ]
+    joined = "\n".join(texts)
+    echo = joined.lstrip().startswith(_COMMAND_PREFIXES + _OUTPUT_PREFIXES)
+    made: list[_Made] = _prompt_events(joined, redactor) if echo else []
+    for block in blocks:
         if block.get("type") == "tool_result":
             text = _truncate(_flatten(block.get("content")))
             made.append(
@@ -293,7 +297,7 @@ def _user_events(content: Any, redactor: Redactor | None) -> list[_Made]:
                     },
                 )
             )
-        elif block.get("type") == "text" and isinstance(block.get("text"), str):
+        elif not echo and block.get("type") == "text" and isinstance(block.get("text"), str):
             made.extend(_prompt_events(block["text"], redactor))
     return made
 

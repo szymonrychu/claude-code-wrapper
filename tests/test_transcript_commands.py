@@ -8,6 +8,7 @@ from claude_code_wrapper.transcript import (
     CommandInvoked,
     CommandOutput,
     CompactBoundary,
+    TranscriptTailer,
     UserPrompt,
     parse_line,
 )
@@ -39,8 +40,19 @@ def test_command_message_first_in_text_blocks():
             },
         }
     )
-    events = parse_line(line)
-    assert events and all(isinstance(e, CommandInvoked) for e in events)
+    assert parse_line(line) == [CommandInvoked(name="x", args="")]
+
+
+def test_command_blocks_are_joined_into_one_event():
+    blocks = [
+        "<command-message>x</command-message>",
+        "<command-name>/x</command-name>",
+        "<command-args>do it</command-args>",
+    ]
+    line = json.dumps(
+        {"type": "user", "message": {"content": [{"type": "text", "text": t} for t in blocks]}}
+    )
+    assert parse_line(line) == [CommandInvoked(name="x", args="do it")]
 
 
 def test_system_local_command_is_output():
@@ -118,3 +130,60 @@ def test_sidechain_flag_and_redaction():
         }
     )
     assert "hunter2-secret-value" not in parse_line(out, redactor=redactor)[0].stdout
+
+
+# Acceptance-named aliases over the cases above.
+
+
+def test_compact_summary_is_not_a_prompt():
+    assert parse_line(LINES[4]) == []
+
+
+def test_meta_entry_is_not_a_prompt():
+    assert parse_line(LINES[5]) == []
+
+
+def test_command_echo_parsed():
+    test_command_echo_is_command_invoked()
+    test_command_without_args_has_empty_args()
+
+
+def test_local_command_output_parsed():
+    test_system_local_command_is_output()
+    test_user_local_command_stdout_is_output()
+    test_stderr_body()
+
+
+def test_compact_boundary_parsed():
+    test_compact_boundary()
+    test_compact_boundary_defaults()
+
+
+def test_prompt_mentioning_tags_stays_prompt():
+    test_ordinary_prompt_with_tag_mention_keeps_marker()
+
+
+def test_other_system_lines_ignored():
+    test_other_system_lines_yield_nothing()
+
+
+def test_command_output_redacted():
+    test_sidechain_flag_and_redaction()
+
+
+async def test_tailer_delivers_command_events(tmp_path):
+    path = tmp_path / "s.jsonl"
+    path.write_text(FIXTURE.read_text())
+    got = []
+
+    async def sink(events):
+        got.extend(events)
+
+    await TranscriptTailer(path, sink, poll_interval=60).flush()
+    assert [type(e).__name__ for e in got] == [
+        "CommandInvoked",
+        "CommandOutput",
+        "CommandOutput",
+        "CompactBoundary",
+        "UserPrompt",
+    ]
