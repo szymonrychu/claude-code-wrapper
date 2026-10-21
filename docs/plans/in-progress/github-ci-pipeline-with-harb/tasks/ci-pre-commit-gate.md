@@ -12,8 +12,8 @@ model: ""
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/github-ci-pipeline-with-harb--ci-pre-commit-gate
+branch: github-ci-pipeline-with-harb--ci-pre-commit-gate
 verified_head: ""
 run: ""
 provides: []

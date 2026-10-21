@@ -12,8 +12,8 @@ model: ""
 estimate: 75
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/github-ci-pipeline-with-harb--ci-integration-tests
+branch: github-ci-pipeline-with-harb--ci-integration-tests
 verified_head: ""
 run: ""
 provides: []

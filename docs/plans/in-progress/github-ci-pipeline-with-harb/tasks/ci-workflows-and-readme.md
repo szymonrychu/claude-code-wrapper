@@ -12,8 +12,8 @@ model: ""
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/github-ci-pipeline-with-harb--ci-workflows-and-readme
+branch: github-ci-pipeline-with-harb--ci-workflows-and-readme
 verified_head: ""
 run: ""
 provides: []
