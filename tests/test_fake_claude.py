@@ -24,6 +24,7 @@ def run_cli(args, env, cwd):
         [sys.executable, "-I", str(FAKE), *args],
         env=env,
         cwd=cwd,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=20,
@@ -651,3 +652,288 @@ def test_subagent_path_matches_real_layout(spawn, env, work, scenario_file):
     main = Path(env["CLAUDE_CONFIG_DIR"]) / "projects" / proj / f"{sid}.jsonl"
     sub = main.parent / sid / "subagents" / "agent-z9.jsonl"
     assert main.is_file() and sub.is_file()
+
+
+# ---------------------------------------------------------------- hook scenarios
+
+
+def record_all(config_dir, out, events):
+    hook_settings(
+        config_dir,
+        {
+            ev: [
+                {
+                    "matcher": "",
+                    "hooks": [{"type": "command", "command": f"cat >> {out}; echo >> {out}"}],
+                }
+            ]
+            for ev in events
+        },
+    )
+
+
+def payloads(out):
+    return [json.loads(x) for x in out.read_text().splitlines()] if out.exists() else []
+
+
+def wait_payloads(p, out, n, timeout=8):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        p.pump(0.1)
+        if len(payloads(out)) >= n:
+            break
+    return payloads(out)
+
+
+def scenario_boot(scenario_file, turns):
+    return scenario_file({"boot": {"bypass_dialog": False}, "turns": turns})
+
+
+def test_stop_payload_defaults_empty_task_lists(spawn, env, tmp_path):
+    out = tmp_path / "stop.out"
+    record_all(env["CLAUDE_CONFIG_DIR"], out, ["Stop"])
+    p = spawn()
+    p.boot()
+    p.submit("hi")
+    [stop] = payloads(out)
+    assert stop["background_tasks"] == [] and stop["session_crons"] == []
+
+
+def test_stop_payload_carries_turn_task_lists_first_stop_only(spawn, env, tmp_path, scenario_file):
+    out = tmp_path / "stop.out"
+    record_all(env["CLAUDE_CONFIG_DIR"], out, ["Stop"])
+    task = {"id": "t1", "type": "bash", "status": "running", "description": "sleep"}
+    cron = {"id": "c1", "type": "cron", "status": "scheduled", "description": "tick"}
+    sc = scenario_boot(
+        scenario_file,
+        [
+            {
+                "match": ".*",
+                "stop": {"background_tasks": [task], "session_crons": [cron]},
+                "steps": [
+                    {"text": "first"},
+                    {"background": {"after": 0.2, "text": "later", "background_tasks": []}},
+                ],
+            }
+        ],
+    )
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.submit("x")
+    first, later = wait_payloads(p, out, 2)
+    assert first["background_tasks"] == [task] and first["session_crons"] == [cron]
+    assert later["background_tasks"] == [] and later["session_crons"] == []
+
+
+def test_background_step_tasks_ride_the_later_stop(spawn, env, tmp_path, scenario_file):
+    out = tmp_path / "stop.out"
+    record_all(env["CLAUDE_CONFIG_DIR"], out, ["Stop"])
+    task = {"id": "t2", "type": "agent", "status": "running", "description": "d"}
+    sc = scenario_boot(
+        scenario_file,
+        [
+            {
+                "match": ".*",
+                "steps": [
+                    {"text": "first"},
+                    {"background": {"after": 0.2, "text": "later", "background_tasks": [task]}},
+                ],
+            }
+        ],
+    )
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.submit("x")
+    first, later = wait_payloads(p, out, 2)
+    assert first["background_tasks"] == [] and later["background_tasks"] == [task]
+
+
+def block_hook(env, tmp_path, script):
+    out = tmp_path / "stop.out"
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {
+            "Stop": [
+                {
+                    "matcher": "",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": f"cat >> {out}; echo >> {out}; {script}",
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    return out
+
+
+def test_stop_block_json_continues_turn(spawn, env, tmp_path, work):
+    out = tmp_path / "stop.out"
+    script = (
+        "if grep -q 'stop_hook_active.: true' "
+        + str(out)
+        + '; then exit 0; fi; echo \'{"decision": "block", "reason": "keep going"}\''
+    )
+    block_hook(env, tmp_path, script)
+    sid = "44444444-4444-4444-8444-444444444444"
+    p = spawn(["--session-id", sid])
+    p.boot()
+    p.submit("hi")
+    stops = wait_payloads(p, out, 2)
+    assert [s["stop_hook_active"] for s in stops] == [False, True]
+    assert stops[1]["last_assistant_message"] == "continued: keep going"
+    rows = transcript_lines(env["CLAUDE_CONFIG_DIR"], work, sid)
+    users = [r["message"]["content"] for r in rows if r["type"] == "user"]
+    assert [u for u in users if isinstance(u, str)] == ["hi", "keep going"]
+
+
+def test_stop_block_exit_2_uses_stderr_and_on_block_steps(
+    spawn, env, tmp_path, scenario_file, work
+):
+    out = tmp_path / "stop.out"
+    script = (
+        "if grep -q 'stop_hook_active.: true' "
+        + str(out)
+        + "; then exit 0; fi; echo 'no yet' >&2; exit 2"
+    )
+    block_hook(env, tmp_path, script)
+    sc = scenario_boot(
+        scenario_file,
+        [
+            {
+                "match": ".*",
+                "steps": [{"text": "first"}],
+                "on_block": [{"text": "second wind"}],
+            }
+        ],
+    )
+    sid = "55555555-5555-4555-8555-555555555555"
+    p = spawn(["--session-id", sid], FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.submit("hi")
+    stops = wait_payloads(p, out, 2)
+    assert stops[1]["last_assistant_message"] == "second wind"
+    rows = transcript_lines(env["CLAUDE_CONFIG_DIR"], work, sid)
+    assert [r["message"]["content"] for r in rows if r["type"] == "user"] == ["hi", "no yet"]
+
+
+def test_stop_block_cap_default_and_env(spawn, env, tmp_path):
+    out = block_hook(env, tmp_path, 'echo \'{"decision": "block", "reason": "again"}\'')
+    p = spawn(CLAUDE_CODE_STOP_HOOK_BLOCK_CAP="2")
+    p.boot()
+    p.submit("hi")
+    time.sleep(0.3)
+    p.pump(0.3)
+    # first Stop + 2 blocked re-entries, then the turn ends as if allowed
+    assert len(payloads(out)) == 3
+
+    out.unlink()
+    p2 = spawn()
+    p2.boot()
+    p2.submit("hi")
+    time.sleep(0.5)
+    p2.pump(0.3)
+    assert len(payloads(out)) == 9  # first Stop + 8 blocked re-entries
+
+
+def test_agent_attribution_on_tool_events_and_sidechain(spawn, env, tmp_path, scenario_file, work):
+    out = tmp_path / "tool.out"
+    record_all(env["CLAUDE_CONFIG_DIR"], out, ["PreToolUse", "PostToolUse", "PostToolUseFailure"])
+    agent = {"id": "ag1", "type": "Explore"}
+    sc = scenario_boot(
+        scenario_file,
+        [
+            {
+                "match": ".*",
+                "steps": [
+                    {"tool": "Read", "input": {}, "result": "ok", "agent": agent},
+                    {"tool": "Bash", "input": {}, "result": "bad", "fail": True, "agent": agent},
+                    {"tool": "Edit", "input": {}, "result": "main"},
+                ],
+            }
+        ],
+    )
+    sid = "66666666-6666-4666-8666-666666666666"
+    p = spawn(["--session-id", sid], FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.submit("go")
+    pls = payloads(out)
+    assert [x["hook_event_name"] for x in pls] == [
+        "PreToolUse",
+        "PostToolUse",
+        "PreToolUse",
+        "PostToolUseFailure",
+        "PreToolUse",
+        "PostToolUse",
+    ]
+    for x in pls[:4]:
+        assert x["agent_id"] == "ag1" and x["agent_type"] == "Explore"
+    for x in pls[4:]:
+        assert "agent_id" not in x and "agent_type" not in x
+    proj = re.sub(r"[^A-Za-z0-9]", "-", work)
+    base = Path(env["CLAUDE_CONFIG_DIR"]) / "projects" / proj
+    side = [
+        json.loads(x)
+        for x in (base / sid / "subagents" / "agent-ag1.jsonl").read_text().splitlines()
+    ]
+    assert len(side) == 4 and all(r["isSidechain"] is True for r in side)
+    main = [json.loads(x) for x in (base / f"{sid}.jsonl").read_text().splitlines()]
+    kinds = [json.dumps(r.get("message", {}).get("content")) for r in main]
+    assert not any("Read" in k or "bad" in k for k in kinds)
+    assert any("Edit" in k for k in kinds) and any("main" in k for k in kinds)
+
+
+def test_exit_once_crashes_only_first_time(spawn, env, tmp_path, scenario_file):
+    sc = scenario_boot(
+        scenario_file,
+        [{"match": ".*", "steps": [{"text": "a"}, {"exit_once": 7}, {"text": "after"}]}],
+    )
+    sid = "77777777-7777-4777-8777-777777777777"
+    p = spawn(["--session-id", sid], FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.send(b"\x1b[200~x\x1b[201~")
+    time.sleep(0.1)
+    p.send(b"\r")
+    assert p.wait_exit() == 7
+    p2 = spawn(["--resume", sid], FAKE_CLAUDE_SCENARIO=str(sc))
+    p2.wait_for("? for shortcuts")
+    p2.submit("x", wait="after")
+
+
+def test_print_mode_argument_stdin_and_json(env, work, scenario_file):
+    sc = scenario_file(
+        {
+            "turns": [
+                {"match": "^nomatch$", "steps": [{"text": "wrong"}]},
+                {
+                    "match": "ping",
+                    "steps": [{"text": "pong "}, {"tool": "T"}, {"text": "done"}],
+                },
+            ]
+        }
+    )
+    e = {**env, "FAKE_CLAUDE_SCENARIO": str(sc)}
+    r = run_cli(["-p", "ping now"], e, work)
+    assert r.returncode == 0 and r.stdout == "pong done\n"
+    r = run_cli(
+        ["--print", "--model", "m", "--setting-sources", "", "--strict-mcp-config"], e, work
+    )
+    assert r.returncode == 0 and r.stdout == "echo: \n"
+    r = subprocess.run(
+        [sys.executable, "-I", str(FAKE), "-p", "--output-format", "json"],
+        env=e,
+        cwd=work,
+        input="ping from stdin",
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert json.loads(r.stdout) == {"result": "pong done"}
+    r = run_cli(["-p", "plain"], {**env, "FAKE_CLAUDE_SCENARIO": str(scenario_file({}))}, work)
+    assert r.stdout.strip() == "echo: plain"
+    log = [json.loads(x) for x in Path(env["FAKE_CLAUDE_LOG"]).read_text().splitlines()]
+    assert ["-p", "ping now"] in [entry["argv"] for entry in log]
+    assert any("--strict-mcp-config" in entry["argv"] for entry in log)
