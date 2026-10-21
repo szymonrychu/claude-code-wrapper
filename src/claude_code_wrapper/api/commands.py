@@ -51,7 +51,7 @@ async def queue_command(session_id: str, body: CommandRequest, request: Request)
         record = live.request_command(body.name, body.args, origin="client")
     except CommandRejected as exc:
         if exc.code == "invalid_state":
-            code = "booting" if "creating" in exc.message else "dead"
+            code = "booting" if exc.message.endswith("booting") else "dead"
             raise ApiError(409, code, exc.message) from exc
         status, code = _REJECT.get(exc.code, (422, "invalid_command"))
         raise ApiError(status, code, exc.message) from exc
