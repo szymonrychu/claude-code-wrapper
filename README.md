@@ -576,7 +576,7 @@ retries idempotent: a repeated delivery id returns the first result without re-r
 handlers.
 
 Path parameter: `event`, a Claude hook event: `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`PostToolUseFailure`, `Stop`, `SubagentStart`, `SubagentStop`. Request body: the raw JSON object
+`PostToolUseFailure`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`. Request body: the raw JSON object
 Claude passes the hook on stdin.
 
 Response `200`:
@@ -929,7 +929,7 @@ Emitted when the command failed (including `vetoed` by an `onCommand` hook) or w
 
 ### `compacted`
 
-Emitted for every compaction, including Claude Code's own (auto or manual).
+Emitted once for every compaction, manual and auto alike, including Claude Code's own automatic ones.
 
 `data`: `trigger` (`manual`, `auto` or `unknown`), `pre_tokens`, `post_tokens`, `duration_ms`.
 

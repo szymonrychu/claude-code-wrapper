@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .command_signals import SignalBus
 from .commands import CommandQueue
 from .config import CommandsConfig, Config
 from .events import Event as LogEvent
@@ -38,6 +39,9 @@ from .transcript import (
     MAX_RESULT_CHARS,
     TRUNCATED_SUFFIX,
     AssistantText,
+    CommandInvoked,
+    CommandOutput,
+    CompactBoundary,
     Interrupted,
     ProbeMarker,
     SubagentWatcher,
@@ -166,6 +170,7 @@ class SessionRouter(SessionListener):
         self._metrics = metrics
         self.commands_cfg = commands if commands is not None else cfg.sessions.commands
         self.commands = CommandQueue(self.commands_cfg)
+        self.signals = SignalBus()
         self._session = session
         self._event_log = event_log
         self._dispatcher = dispatcher
@@ -364,6 +369,8 @@ class SessionRouter(SessionListener):
                 "Stop": self._on_stop,
                 "SubagentStart": self._on_subagent,
                 "SubagentStop": self._on_subagent,
+                "PreCompact": self._on_compact_hook,
+                "PostCompact": self._on_compact_hook,
             }.get(event_name)
             if handler is None:
                 return _allow()
@@ -385,6 +392,26 @@ class SessionRouter(SessionListener):
             except Exception:  # noqa: BLE001
                 log.exception("reporting hook relay failure failed")
             return response
+
+    async def _on_compact_hook(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
+        """Compaction hooks only feed the signal bus; `compacted` comes from the boundary."""
+        if event_name == "PreCompact":
+            self.signals.publish(
+                "pre_compact",
+                {
+                    "trigger": payload.get("trigger"),
+                    "custom_instructions": payload.get("custom_instructions"),
+                },
+            )
+        else:
+            self.signals.publish(
+                "post_compact",
+                {
+                    "trigger": payload.get("trigger"),
+                    "compact_summary": payload.get("compact_summary"),
+                },
+            )
+        return _allow()
 
     def _fail_closed(
         self, exc: Exception, tool_name: str, payload: Mapping[str, Any]
@@ -686,6 +713,26 @@ class SessionRouter(SessionListener):
             elif isinstance(ev, Interrupted):
                 if not ev.sidechain:
                     self.session.on_interrupted()
+            elif isinstance(ev, CompactBoundary):
+                if not ev.sidechain:
+                    data = {
+                        "trigger": ev.trigger,
+                        "pre_tokens": ev.pre_tokens,
+                        "post_tokens": ev.post_tokens,
+                        "duration_ms": ev.duration_ms,
+                    }
+                    self._emit("compacted", data)
+                    if self._metrics is not None:
+                        self._metrics.compaction(ev.trigger)
+                    self.signals.publish("compact_boundary", data)
+            elif isinstance(ev, CommandInvoked):
+                if not ev.sidechain:
+                    self.signals.publish("command_invoked", {"name": ev.name, "args": ev.args})
+            elif isinstance(ev, CommandOutput):
+                if not ev.sidechain:
+                    self.signals.publish(
+                        "command_output", {"stdout": ev.stdout, "stderr": ev.stderr}
+                    )
             elif isinstance(ev, UserPrompt):
                 if ev.turn_marker:
                     self._last_marker = ev.turn_marker
