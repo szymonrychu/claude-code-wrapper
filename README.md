@@ -593,6 +593,32 @@ Response `200`:
 | 403 | non-loopback caller, missing or wrong token, or unknown or stopped session |
 | 404 | `event` is not a Claude hook event |
 
+### `POST /internal/mcp`
+
+The ccw MCP server (streamable HTTP, stateless, JSON responses only). It exposes one tool,
+`command`, that lets the agent queue an allowlisted slash command (such as `compact` or
+`reload-plugins`) which runs when it ends its turn, after which it is resumed automatically.
+
+Auth: same as the hook route (loopback source address, `X-CCW-Session`, `X-CCW-Hook-Token`
+compared in constant time); otherwise `403`. The body is one JSON-RPC 2.0 message: a JSON array
+answers error `-32600`, invalid JSON `-32700`. A message without an `id` (a notification) answers
+`202` with an empty body. `GET` and `DELETE /internal/mcp` answer `405`.
+
+Methods: `initialize` (echoes the client's `protocolVersion` when it is `2025-11-25`,
+`2025-06-18` or `2025-03-26`, else `2025-06-18`; returns `instructions`), `ping` (`{}`),
+`tools/list`, `tools/call`. Every other method, including `server/discover`, answers `-32601`.
+
+Tool `command`: `inputSchema` is `{name: enum of the session's agent allowlist, params?}` with
+`additionalProperties: false` (the allowlist is `sessions.commands.agent`, per-session override
+included). An empty allowlist lists no tools.
+
+Success (`isError: false`) text: `Queued <id>. It runs when you end this turn; end your turn now
+with a one-line status. You will be resumed automatically.`
+
+Errors: a rejected command (unknown params, not allowed, queue full, force not allowed, invalid
+state) returns `isError: true` with the reason; an empty allowlist returns `isError: true` "ccw
+commands are disabled for this session"; any other tool name answers JSON-RPC error `-32602`.
+
 ### `GET /internal/healthz`
 
 Loopback app liveness. Response `200`: `{"status": "ok"}`.
