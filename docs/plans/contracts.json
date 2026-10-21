@@ -1,0 +1,10 @@
+[
+  {
+    "name": "hook-result-protocol",
+    "kind": "interface",
+    "owner": "hook-capabilities-for-tatara",
+    "file": "src/claude_code_wrapper/hooks.py",
+    "consumers": [],
+    "note": "hook action result fields: decision allow|deny|block|defer per EVENT_DECISIONS, reason, additional_context, annotations, output"
+  }
+]
