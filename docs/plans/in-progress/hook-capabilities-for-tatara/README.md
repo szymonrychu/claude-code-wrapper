@@ -1,7 +1,7 @@
 ---
 title: Hook capabilities for tatara and magic-trainer parity
 blockers: []
-stage: review
+stage: build
 owner: Szymon Richert
 repos: [.]
 created: 2026-10-21
