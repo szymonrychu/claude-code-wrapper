@@ -1,6 +1,6 @@
 ---
 title: Command runner failures
-status: escalated
+status: done
 repo: .
 value: "A crash, destroy, shutdown or interrupt during a command never leaves a session stuck busy or typing"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/manager.py, tests/test_command_runner_failures.py]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-runner-failures
 branch: agent-callable-slash-command--command-runner-failures
-verified_head: ""
+verified_head: 7aae9ad6e89a1b359e93fce2ef7f1f80fa87746f
 run: agent-callable-slash-command
 provides: []
 acs_for_audit: []
@@ -34,12 +34,12 @@ Failure handling of the command runner on an idle session (design D4 step 6 for 
 
 ## Acceptance conditions
 
-- AC1: claude dying during an idle command fails it as claude_exited, cancels the queued ones and the relaunched session accepts turns [evidence: test:tests/test_command_runner_failures.py::test_crash_during_command_fails_claude_exited]
-- AC2: destroying the session during a command fails it as session_stopped and emits session_closed once [evidence: test:tests/test_command_runner_failures.py::test_destroy_abandons_running_command]
-- AC3: service shutdown during a command ends the runner within the close drain [evidence: test:tests/test_command_runner_failures.py::test_shutdown_abandons_running_command]
-- AC4: a client turn submitted during an idle command gets 409 and nothing is pasted [evidence: test:tests/test_command_runner_failures.py::test_turn_during_idle_command_is_busy]
-- AC5: a command requested while the session is booting or dead is rejected as invalid_state [evidence: test:tests/test_command_runner_failures.py::test_command_rejected_when_not_running]
-- AC6: an interrupt during an idle command fails it as interrupted and the session returns to ready [evidence: test:tests/test_command_runner_failures.py::test_interrupt_during_idle_command]
+- AC1: claude dying during an idle command fails it as claude_exited, cancels the queued ones and the relaunched session accepts turns [evidence: test:tests/test_command_runner_failures.py::test_crash_fails_running_and_cancels_queued]
+- AC2: destroying the session during a command fails it as session_stopped and emits session_closed once [evidence: test:tests/test_command_runner_failures.py::test_destroy_fails_running_and_closes_once]
+- AC3: service shutdown during a command ends the runner within the close drain [evidence: test:tests/test_command_runner_failures.py::test_close_drain_ends_runner_and_types_nothing_more]
+- AC4: a client turn submitted during an idle command gets 409 and nothing is pasted [evidence: test:tests/test_command_runner_failures.py::test_turn_during_idle_command_is_busy_and_drained_runner_accepts]
+- AC5: a command requested while the session is booting or dead is rejected as invalid_state [evidence: test:tests/test_command_runner_failures.py::test_command_while_not_ready_is_invalid_state]
+- AC6: an interrupt during an idle command fails it as interrupted and the session returns to ready [evidence: test:tests/test_command_runner_failures.py::test_interrupt_idle_command_fails_it_and_returns_ready]
 - AC7: existing session, continuity and destroy tests stay green [evidence: command:uv run pytest tests/test_command_runner.py tests/test_turn_continuity.py tests/test_destroy_io.py tests/test_manager.py -q]
 
 ## Files
@@ -69,3 +69,5 @@ Every way a command can be cut short on an idle session (crash, destroy, shutdow
 The fake's `hang` outcomes keep a command running so the test can crash, destroy or interrupt mid-command; `{"exit": code}` is not reachable from a slash command, so crash the fake by killing its pid (`session.pty`), as tests/test_turn_continuity.py does.
 
 - 2026-10-21 run agent-callable-slash-command: dependency-failed on command-runner
+
+- 2026-10-21 hand-verified on 7aae9ad after verify-agent-died: verify-task.py --base 1591dcd --tdd-revert passed (verify cmd green, tdd failedOnBase/passedOnHead, clean, no debt). AC1-AC6 refs renamed to the tests the implementer wrote (companions: AC1 test_crash_then_ready_accepts_turns, AC3 test_shutdown_fails_running_command).
