@@ -44,6 +44,16 @@ def hooks_of(*events: str) -> dict[str, Any]:
 # ---------------------------------------------------------------- config
 
 
+def test_magic_config_loads_and_ships():
+    cfg = Config.model_validate({k: v for k, v in example().items() if k in SECTIONS})
+    assert cfg.sessions.defer_stop_on_background_tasks is True
+    assert EXAMPLE.is_file() and SCRIPT.is_file()
+    assert EXAMPLE.is_relative_to(ROOT / "src/claude_code_wrapper/data")
+    assert SCRIPT.is_relative_to(ROOT / "src/claude_code_wrapper/data")
+    link = ROOT / "examples/magic-trainer.config.yaml"
+    assert link.is_symlink() and link.resolve() == EXAMPLE.resolve()
+
+
 def test_example_config_options():
     cfg = Config.model_validate({k: v for k, v in example().items() if k in SECTIONS})
     s = cfg.sessions
@@ -138,7 +148,7 @@ def gate(tmp_path: Path, lines: list[dict] | None, path: str | None = None) -> d
     return json.loads(run.stdout)
 
 
-def test_pending_tasks_defers_for_unfinished_background_work(tmp_path):
+def test_pending_tasks_fallback_defers_from_transcript(tmp_path):
     out = gate(
         tmp_path,
         [
@@ -210,7 +220,7 @@ def test_pending_tasks_without_transcript_allows(tmp_path):
         assert gate(tmp_path, None, path)["decision"] == "allow"
 
 
-async def test_seat_pair_turn_stays_open_until_background_work_finishes(world: World):
+async def test_pair_turn_completes_after_background_tasks(world: World):
     done = (
         "<task-notification><task-id>ag-1</task-id><status>completed</status></task-notification>"
     )
@@ -251,7 +261,7 @@ async def test_seat_pair_turn_stays_open_until_background_work_finishes(world: W
 # ---------------------------------------------------------------- review
 
 
-async def test_review_runs_claude_print_over_hook_input(world: World, monkeypatch):
+async def test_review_output_in_delete_response(world: World, monkeypatch):
     scenario = {"turns": [{"match": "audit the diff", "steps": [{"text": "verdict: ship it"}]}]}
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", str(world.scenario_file(scenario)))
     monkeypatch.setenv("CLAUDE_BIN", str(world.bin))
@@ -265,7 +275,7 @@ async def test_review_runs_claude_print_over_hook_input(world: World, monkeypatc
     assert entry["output"] == {"text": "verdict: ship it\n"}
 
 
-async def test_review_without_input_is_null(world: World):
+async def test_review_skipped_without_input(world: World):
     m = world.manager(world.cfg(hooks=hooks_of("onDestroy")))
     sid = (await m.create(CreateSessionRequest()))["session_id"]
     out = await m.destroy(sid)
@@ -306,7 +316,7 @@ def test_review_command_line(tmp_path):
 # ---------------------------------------------------------------- narrate
 
 
-def test_narrate_lines(tmp_path):
+def test_narration_lines_written(tmp_path):
     log = tmp_path / "n.log"
     cases = [
         (
