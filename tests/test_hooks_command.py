@@ -136,7 +136,8 @@ async def test_stdout_json_decision(tmp_path):
 async def test_deny_ignored_for_non_veto_events(tmp_path):
     d, _ = make(tmp_path, {"onTurnComplete": [cmd("exit 2", blocking=True)]})
     o = await d.fire("onTurnComplete", payload("onTurnComplete"))
-    assert o.decision == "allow" and o.results[0].decision == "deny"
+    assert o.decision == "allow" and o.results[0].decision == "allow"
+    assert o.results[0].invalid_decision == "deny"
 
 
 async def test_error_exit_on_error_policy(tmp_path):

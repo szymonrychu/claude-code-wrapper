@@ -790,7 +790,8 @@ Emitted for every user hook action that ran (command or webhook), blocking or no
 
 `data`: `event` (hook event name), `index` (action index in the event's list), `type` (`command` or
 `webhook`), `ok` (false when the action errored), `decision` (`allow` or `deny`), `duration_ms`,
-`error` (null or the redacted failure).
+`error` (null or the redacted failure), `output` (only when the action returned one), and
+`invalid_decision` (only when the action returned a decision its event does not honour).
 
 ```
 event: hook_result
@@ -980,8 +981,26 @@ Stdout on exit 0 may be a JSON object; other output is ignored:
 {"decision": "deny", "reason": "writes are blocked", "additional_context": "Use the staging branch."}
 ```
 
-`decision` is `allow` or `deny`, `reason` is shown to Claude on a deny, `additional_context` is
-appended to what Claude sees (for `onAgentToolCall` and `onToolResult`).
+`decision` is `allow`, `deny`, `block` or `defer`, `reason` is shown to Claude on a deny,
+`additional_context` is appended to what Claude sees (for `onAgentToolCall` and `onToolResult`).
+Two more optional fields, honoured on blocking actions only (a non-blocking action's are ignored):
+
+- `annotations`: a JSON object. The blocking actions' annotations are shallow-merged in action
+  index order (later keys win). Above 16 KiB serialised they are dropped and the action result
+  records an error.
+- `output`: any JSON value, redacted of secrets and then carried on the `hook_result` event and in
+  the outcome's per-action `outputs` list. Above 256 KiB serialised it is replaced by
+  `{"truncated": true, "bytes": <n>}`.
+
+Decisions each event honours:
+
+| Event | Honoured decisions |
+|---|---|
+| `onCreate`, `onResume`, `onTurn`, `onAgentToolCall` | `allow`, `deny` |
+| every other event | `allow` |
+
+A decision the event does not honour is treated as `allow`; the `hook_result` event records the
+original as `invalid_decision` and it never vetoes. Without the new fields behaviour is unchanged.
 
 ```sh
 #!/bin/sh
@@ -1001,7 +1020,9 @@ The payload envelope is POSTed as JSON. Headers: `Content-Type: application/json
 `X-CCW-Signature: sha256=<hex HMAC-SHA256(secret, raw request body)>`. A 2xx is success; a
 connection error or non-2xx is retried `retries` times (default 3) with 0.5 s doubling backoff,
 then counts as a failed action (`on_error` for blocking ones). A blocking webhook's 2xx JSON body
-uses the same decision shape as command stdout.
+uses the same shape as command stdout: `decision`, `reason`, `additional_context`, `annotations`
+and `output`, with the same per-event decision table and the same 16 KiB / 256 KiB caps (see
+[Command actions](#command-actions)).
 
 Verify the signature over the raw bytes, with a constant-time compare.
 

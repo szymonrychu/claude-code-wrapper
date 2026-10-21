@@ -607,6 +607,20 @@ async def test_hook_results_emitted(tmp_path):
     await h.router.close()
 
 
+async def test_hook_result_event_carries_output_and_invalid_decision(tmp_path):
+    from claude_code_wrapper.hooks import ActionResult
+
+    h = Harness(tmp_path, hooks={})
+    h.router.on_hook_result(
+        ActionResult("onTurn", 0, "command", ok=True, output={"a": 1}, invalid_decision="block")
+    )
+    h.router.on_hook_result(ActionResult("onTurn", 1, "command", ok=True))
+    first, second = h.events("hook_result")
+    assert first.data["output"] == {"a": 1} and first.data["invalid_decision"] == "block"
+    assert "output" not in second.data and "invalid_decision" not in second.data
+    await h.router.close()
+
+
 async def test_close_emits_session_closed_once(h):
     await h.router.handle_claude_hook("UserPromptSubmit", {})
     await h.router.close()

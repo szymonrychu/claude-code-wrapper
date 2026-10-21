@@ -549,18 +549,20 @@ class SessionRouter(SessionListener):
     def on_hook_result(self, result: ActionResult) -> None:
         if self._metrics is not None:
             self._metrics.hook_action(result.event, result.type, result.ok)
-        self._emit(
-            "hook_result",
-            {
-                "event": result.event,
-                "index": result.index,
-                "type": result.type,
-                "ok": result.ok,
-                "decision": result.decision,
-                "duration_ms": result.duration_ms,
-                "error": result.error,
-            },
-        )
+        data: dict[str, Any] = {
+            "event": result.event,
+            "index": result.index,
+            "type": result.type,
+            "ok": result.ok,
+            "decision": result.decision,
+            "duration_ms": result.duration_ms,
+            "error": result.error,
+        }
+        if result.invalid_decision is not None:
+            data["invalid_decision"] = result.invalid_decision
+        if result.output is not None:
+            data["output"] = result.output
+        self._emit("hook_result", data)
 
     # ------------------------------------------------------------------ lifecycle
 

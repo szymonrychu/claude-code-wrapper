@@ -20,7 +20,13 @@ from typing import Any
 
 import httpx
 
-from claude_code_wrapper.config import VETO_EVENTS, CommandAction, HooksConfig, WebhookAction
+from claude_code_wrapper.config import (
+    HOOK_EVENTS,
+    VETO_EVENTS,
+    CommandAction,
+    HooksConfig,
+    WebhookAction,
+)
 from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.timeutil import now_iso
 
@@ -29,6 +35,14 @@ log = logging.getLogger(__name__)
 STDERR_CAP = 2000
 RETRY_BASE_SECONDS = 0.5
 _KILL_GRACE_SECONDS = 2.0
+OUTPUT_CAP_BYTES = 256 * 1024
+ANNOTATIONS_CAP_BYTES = 16 * 1024
+PARSED_DECISIONS = ("allow", "deny", "block", "defer")
+# Decisions each event honours; anything else is treated as allow. The one place
+# that knows deny only counts on VETO_EVENTS.
+EVENT_DECISIONS: dict[str, tuple[str, ...]] = {
+    event: ("allow", "deny") if event in VETO_EVENTS else ("allow",) for event in HOOK_EVENTS
+}
 
 
 def build_payload(
@@ -62,6 +76,9 @@ class ActionResult:
     error: str | None = None
     reason: str | None = field(default=None, repr=False)
     additional_context: str | None = field(default=None, repr=False)
+    annotations: dict[str, Any] | None = field(default=None, repr=False)
+    output: Any | None = field(default=None, repr=False)
+    invalid_decision: str | None = None
 
 
 @dataclass
@@ -69,6 +86,8 @@ class HookOutcome:
     decision: str = "allow"
     reason: str | None = None
     additional_context: str = ""
+    annotations: dict[str, Any] = field(default_factory=dict)
+    outputs: list[dict[str, Any]] = field(default_factory=list)
     results: list[ActionResult] = field(default_factory=list)
 
 
@@ -85,12 +104,20 @@ def _parse_decision(text: str) -> dict[str, Any]:
     if not isinstance(obj, dict):
         return {}
     out: dict[str, Any] = {}
-    if obj.get("decision") in ("allow", "deny"):
+    if obj.get("decision") in PARSED_DECISIONS:
         out["decision"] = obj["decision"]
     for key in ("reason", "additional_context"):
         if isinstance(obj.get(key), str) and obj[key]:
             out[key] = obj[key]
+    if isinstance(obj.get("annotations"), dict):
+        out["annotations"] = obj["annotations"]
+    if obj.get("output") is not None:
+        out["output"] = obj["output"]
     return out
+
+
+def _json_size(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False).encode())
 
 
 async def _deliver(
@@ -215,9 +242,14 @@ class HookDispatcher:
             outcome.results.append(res)
             if res.additional_context:
                 contexts.append(res.additional_context)
-            if res.decision == "deny" and outcome.decision == "allow" and event in VETO_EVENTS:
+            if res.decision == "deny" and outcome.decision == "allow":
                 outcome.decision = "deny"
                 outcome.reason = res.reason
+            if res.annotations:
+                outcome.annotations.update(res.annotations)
+            outcome.outputs.append(
+                {"index": res.index, "ok": res.ok, "output": res.output, "error": res.error}
+            )
         outcome.additional_context = "\n\n".join(contexts)
         return outcome
 
@@ -271,6 +303,8 @@ class HookDispatcher:
             res.decision = fields.get("decision", "allow")
             res.reason = fields.get("reason")
             res.additional_context = fields.get("additional_context")
+            if action.blocking:
+                self._take_payload_fields(res, fields)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 - nothing raises to the caller
@@ -281,6 +315,10 @@ class HookDispatcher:
                 res.reason = f"hook {event}[{index}] failed: {res.error}"
             if not action.blocking:
                 log.warning("hook %s[%d] failed: %s", event, index, res.error)
+        if res.decision not in EVENT_DECISIONS.get(event, ("allow",)):
+            res.invalid_decision = res.decision
+            res.decision = "allow"
+            res.reason = None
         res.duration_ms = int((time.monotonic() - started) * 1000)
         if self._on_result is not None:
             try:
@@ -288,6 +326,20 @@ class HookDispatcher:
             except Exception:  # noqa: BLE001
                 log.exception("on_result callback failed")
         return res
+
+    def _take_payload_fields(self, res: ActionResult, fields: dict[str, Any]) -> None:
+        """Redact then cap `output` and `annotations` from a blocking action's result."""
+        if "annotations" in fields:
+            annotations = self._redactor.redact_obj(fields["annotations"])
+            size = _json_size(annotations)
+            if size > ANNOTATIONS_CAP_BYTES:
+                res.error = f"annotations dropped: {size} bytes exceeds {ANNOTATIONS_CAP_BYTES}"
+            else:
+                res.annotations = annotations
+        if "output" in fields:
+            output = self._redactor.redact_obj(fields["output"])
+            size = _json_size(output)
+            res.output = {"truncated": True, "bytes": size} if size > OUTPUT_CAP_BYTES else output
 
     async def _command(
         self, action: CommandAction, event: str, payload: dict[str, Any], cwd: str
