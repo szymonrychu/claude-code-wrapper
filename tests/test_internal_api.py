@@ -148,7 +148,7 @@ async def test_no_openapi_routes(caplog: pytest.LogCaptureFixture) -> None:
     app = create_internal_app(FakeManager())  # type: ignore[arg-type]
     assert app.docs_url is None and app.redoc_url is None and app.openapi_url is None
     paths = {getattr(r, "path", "") for r in app.routes}
-    assert paths == {"/internal/hooks/{event}", "/internal/healthz"}
+    assert paths == {"/internal/hooks/{event}", "/internal/healthz", "/internal/mcp"}
     async with client(FakeManager()) as c:
         await c.post("/internal/hooks/Stop", json={}, headers={**H, "X-CCW-Hook-Token": "x"})
         await c.post("/internal/hooks/Stop", json={}, headers=H)
