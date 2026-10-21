@@ -97,6 +97,7 @@ class TurnRecord(BaseModel):
     last_activity_at: str | None = None
     stall_suspected_since: str | None = None
     tool_calls: int = 0
+    annotations: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def terminal(self) -> bool:
@@ -105,6 +106,18 @@ class TurnRecord(BaseModel):
     def summary(self) -> dict[str, Any]:
         """The list-view fields (`SUMMARY_FIELDS`)."""
         return {name: getattr(self, name) for name in SUMMARY_FIELDS}
+
+
+#: A turn's annotations may not exceed this many bytes serialised.
+ANNOTATIONS_MAX_BYTES = 16 * 1024
+
+
+def merged_annotations(current: dict[str, Any], new: dict[str, Any]) -> dict[str, Any] | None:
+    """`current` shallow-merged with `new` (later keys win); None if the result is over 16 KiB."""
+    merged = {**current, **new}
+    if len(json.dumps(merged, ensure_ascii=False).encode()) > ANNOTATIONS_MAX_BYTES:
+        return None
+    return merged
 
 
 class Probe(BaseModel):

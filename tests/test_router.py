@@ -74,7 +74,9 @@ class StubSession:
         if self.reject:
             raise TurnRejected(self.reject)
 
-    async def submit(self, text, *, origin="client", callback_url=None, turn_id=None):
+    async def submit(
+        self, text, *, origin="client", callback_url=None, turn_id=None, annotations=None
+    ):
         if self.reject:
             raise TurnRejected(self.reject)
         self.calls.append(("submit", text, origin, callback_url))

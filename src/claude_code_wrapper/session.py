@@ -42,7 +42,16 @@ from .config import BootConfig, BootDialog, LimitsConfig, SessionsConfig
 from .pty_proc import PtyClosed, PtyProcess
 from .redact import Redactor
 from .ring import Ring, _squash, strip_ansi
-from .turns import Origin, Probe, TurnRecord, TurnState, new_probe_id, new_turn_id, now_iso
+from .turns import (
+    Origin,
+    Probe,
+    TurnRecord,
+    TurnState,
+    merged_annotations,
+    new_probe_id,
+    new_turn_id,
+    now_iso,
+)
 
 log = logging.getLogger(__name__)
 
@@ -616,6 +625,7 @@ class Session:
         origin: Origin = "client",
         callback_url: str | None = None,
         turn_id: str | None = None,
+        annotations: dict[str, Any] | None = None,
     ) -> TurnRecord:
         """Start a turn: reserve the slot, persist the record, then paste and CR.
 
@@ -634,6 +644,7 @@ class Session:
             callback_url=callback_url,
             started_at=now,
             last_activity_at=now,
+            annotations=dict(annotations or {}),
         )
         # Reserve before the first byte: a second submit racing this one sees busy.
         self._turn = record
@@ -654,6 +665,18 @@ class Session:
                 record, "failed", error="claude_exited", next_state="ready" if pty.alive else None
             )
         return record
+
+    def annotate(self, record: TurnRecord, annotations: dict[str, Any]) -> bool:
+        """Shallow-merge hook annotations into `record` and persist it.
+
+        False (nothing changed) when the merge would exceed the 16 KiB cap.
+        """
+        merged = merged_annotations(record.annotations, annotations)
+        if merged is None:
+            return False
+        record.annotations = merged
+        self._persist(record)
+        return True
 
     def _arm_watch(self, record: TurnRecord) -> None:
         if self.spec.sessions.turn_stall_seconds > 0 or self.spec.limits.turn_max_seconds > 0:

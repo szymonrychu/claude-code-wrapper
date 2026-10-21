@@ -370,7 +370,8 @@ Response `200`:
   "completed_at": "2026-10-20T09:01:09.455+00:00",
   "last_activity_at": "2026-10-20T09:01:09.401+00:00",
   "stall_suspected_since": null,
-  "tool_calls": 2
+  "tool_calls": 2,
+  "annotations": {"pending_tasks": 1}
 }
 ```
 
@@ -379,7 +380,8 @@ Claude's last assistant message (set on completed turns); `error` names why a tu
 (`claude_exited`, `session_stopped`, or the fatal pattern matched on screen); `usage` sums token
 counts across models, `model_tokens` breaks them down per model; `stall_suspected_since` is set
 while no activity has been seen for `sessions.turn_stall_seconds` (reported, never fatal);
-`tool_calls` counts tool results seen.
+`tool_calls` counts tool results seen; `annotations` is the object hooks tagged the turn with
+(`{}` when none did, see "Turn annotations" under Hooks).
 
 Errors: `401 unauthorized`, `404 not_found` (unknown session or turn).
 
@@ -634,7 +636,7 @@ Emitted when the Stop hook ended a turn normally. Also POSTed to the turn's (els
 
 ```
 event: turn_completed
-data: {"seq":12,"ts":"2026-10-20T09:01:09.455Z","session_id":"ses_3f9a1c0b7d42","type":"turn_completed","data":{"record":{"turn_id":"turn-1k9x2m0q4zw8","session_id":"ses_3f9a1c0b7d42","origin":"client","state":"completed","text":"hi","final_text":"Hello!","stop_reason":"end_turn","usage":{"input_tokens":120,"output_tokens":48},"model_tokens":null,"error":null,"callbackUrl":null,"started_at":"2026-10-20T09:01:00.010+00:00","completed_at":"2026-10-20T09:01:09.455+00:00","last_activity_at":null,"stall_suspected_since":null,"tool_calls":0}}}
+data: {"seq":12,"ts":"2026-10-20T09:01:09.455Z","session_id":"ses_3f9a1c0b7d42","type":"turn_completed","data":{"record":{"turn_id":"turn-1k9x2m0q4zw8","session_id":"ses_3f9a1c0b7d42","origin":"client","state":"completed","text":"hi","final_text":"Hello!","stop_reason":"end_turn","usage":{"input_tokens":120,"output_tokens":48},"model_tokens":null,"error":null,"callbackUrl":null,"started_at":"2026-10-20T09:01:00.010+00:00","completed_at":"2026-10-20T09:01:09.455+00:00","last_activity_at":null,"stall_suspected_since":null,"tool_calls":0,"annotations":{}}}}
 ```
 
 ### `turn_failed`
@@ -930,6 +932,18 @@ Payload envelope (command stdin, webhook body):
 
 `turn_id` is the turn the event belongs to, else the running turn, else null. `data` per event is
 below.
+
+### Turn annotations
+
+A blocking action may return `annotations` (an object). They are shallow-merged (later keys win)
+into the running turn's record, which clients read as `annotations` in `GET .../turns/{turn_id}`
+and in `turn_completed` / `turn_failed` events and callbacks. Only turn-scoped events annotate:
+`onTurn` (applied when the turn starts), `onAgentToolCall`, `onToolResult`, `onStop` (every
+leg, whether it allows, blocks or defers, so the values are in the `turn_completed` event and
+callback) and `onTurnComplete` (merged into the terminal record and persisted again: visible in
+`GET` turn, but the callback already sent is not re-sent). Annotations from any other event are
+ignored. A merge that would take a turn's annotations above 16 KiB serialised is dropped and an
+`error` event of kind `annotations_too_large` is emitted.
 
 ### `onCreate`
 

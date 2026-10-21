@@ -47,7 +47,14 @@ from .transcript import (
     UserPrompt,
 )
 from .transcript import Event as TranscriptEvent
-from .turns import TERMINAL_STATES, Origin, TurnRecord, TurnStore, new_turn_id
+from .turns import (
+    TERMINAL_STATES,
+    Origin,
+    TurnRecord,
+    TurnStore,
+    merged_annotations,
+    new_turn_id,
+)
 from .workdir import safe_write_files
 
 log = logging.getLogger(__name__)
@@ -243,6 +250,20 @@ class SessionRouter(SessionListener):
         self._emit("error", data)
         return data
 
+    def _annotate(self, record: TurnRecord | None, outcome: HookOutcome) -> None:
+        """Merge a hook outcome's annotations into `record`; over 16 KiB is dropped and reported."""
+        if record is None or not outcome.annotations:
+            return
+        if not self.session.annotate(record, outcome.annotations):
+            self._report_annotations_too_large(record.turn_id)
+
+    def _report_annotations_too_large(self, turn_id: str) -> None:
+        self._report_error(
+            "annotations_too_large",
+            f"annotations for turn {turn_id} dropped: the merge would exceed 16 KiB",
+            turn_id=turn_id,
+        )
+
     def _callback_url(self, record: TurnRecord | None) -> str | None:
         if record is not None and record.callback_url:
             return record.callback_url
@@ -377,6 +398,7 @@ class SessionRouter(SessionListener):
         data = {"tool_use_id": tool_use_id, "tool_name": tool_name, "tool_input": tool_input}
         self._emit("tool_call", data)
         outcome = await self._fire("onAgentToolCall", data, tool_name=tool_name)
+        self._annotate(self.session.current_turn, outcome)
         if self._metrics is not None:
             self._metrics.tool_call(tool_name, "deny" if outcome.decision == "deny" else "allow")
         if outcome.decision == "deny":
@@ -405,6 +427,7 @@ class SessionRouter(SessionListener):
         self._emit("tool_result", data)
         self.session.record_tool_call()
         outcome = await self._fire("onToolResult", data, tool_name=tool_name)
+        self._annotate(self.session.current_turn, outcome)
         if outcome.additional_context:
             return {
                 "stdout": _additional_context(event_name, outcome.additional_context),
@@ -469,6 +492,7 @@ class SessionRouter(SessionListener):
         # The built-in defer is decided first; a hook allow cannot lift it, a hook block wins.
         builtin_defer = sessions.defer_stop_on_background_tasks and bool(tasks)
         outcome = await self._fire("onStop", data, turn_id=record.turn_id)
+        self._annotate(record, outcome)  # every leg: allow, block and defer
         if record.terminal:
             return _allow()  # the turn ended (interrupt, timeout, exit) while the gate ran
         if outcome.decision == "block":
@@ -502,9 +526,10 @@ class SessionRouter(SessionListener):
 
     async def _after_turn(self, record: TurnRecord, event: LogEvent) -> None:
         """onTurnComplete (any terminal state) and the callback delivery."""
-        await self._fire(
+        outcome = await self._fire(
             "onTurnComplete", record.model_dump(mode="json", by_alias=True), turn_id=record.turn_id
         )
+        self._annotate(record, outcome)  # persisted again; the callback below is not re-sent
         self._deliver(self._callback_url(record), event)
 
     async def submit_turn(
@@ -535,8 +560,16 @@ class SessionRouter(SessionListener):
                 max_bytes=self._cfg.limits.max_file_bytes,
                 max_files=self._cfg.limits.max_files_per_turn,
             )
+        annotations = outcome.annotations
+        if annotations and merged_annotations({}, annotations) is None:
+            self._report_annotations_too_large(turn_id)
+            annotations = {}
         record = await self.session.submit(
-            text, origin=origin, callback_url=callback_url, turn_id=turn_id
+            text,
+            origin=origin,
+            callback_url=callback_url,
+            turn_id=turn_id,
+            annotations=annotations,
         )
         self._usage.reset()
         self._emit(
