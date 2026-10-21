@@ -1305,6 +1305,30 @@ name comes from `TATARA_TASK`, the callback from `DEFAULT_CALLBACK_URL` signed w
 | B5 | Nothing posted while an outcome re-prompt is pending | `finalize` checks the gate's state |
 | B6 | Account rate limits | `claude.settings.statusLine`, `statusline` writes `rate_limits.json`, read by `finalize` |
 
+#### tatara lifecycle
+
+The same config and script also carry tatara's lifecycle and pod policy (parity rows C1-C11, D1,
+D4-D6, E1, A9). Tests: [`tests/test_example_tatara_lifecycle.py`](tests/test_example_tatara_lifecycle.py).
+
+| Subcommand | Hook | Behaviour |
+|---|---|---|
+| `ttl-gate` | `onTurn`, blocking | The first turn records t0 in `$CCW_STATE_DIR/ttl.json`. Once `AGENT_POD_TTL_SECONDS` have passed, ordinary turns are denied with reason `pod ttl exceeded`, and exactly one turn whose `data.metadata.handoff` is `true` is admitted (submit it with `"metadata": {"handoff": true}`). Unset or `0` disables the gate. |
+| `safety-push` | `onTick`, `interval_seconds: ${BRANCH_PUSH_INTERVAL_SECONDS:-120}`, `when: busy`, non-blocking | `git push origin $TASK_BRANCH` (else `HEAD`) in every repo under the workdir. Push only, never commit; a failing repo is reported on stderr and does not stop the others. |
+| `metrics-push` | `onTick`, `interval_seconds: 30`, `when: always`, non-blocking | GETs `$CCW_API_URL/metrics` and POSTs the text to `OPERATOR_PUSH_URL` with the `RUN_ID` and `POD_NAME` headers. A no-op when `OPERATOR_PUSH_URL` is unset. |
+| `bootstrap` | `init.setup_commands` | A skeleton of tatara's Go bootstrap covering clone, task branch, directives and MCP config. Clones `TATARA_REPOS` (JSON list of `{url, branch}`) or `REPO_URL`/`REPO_BRANCH` into `<workdir>/<owner>/<repo>` (depth 1 unless `TATARA_WORKSPACE_FULL_CLONE` is `true`), checks out `TASK_BRANCH` (created from the base branch when the remote lacks it), writes the headless and auto-push directive blocks into `$CLAUDE_CONFIG_DIR/CLAUDE.md`, and writes `<workdir>/.mcp.json` from `TATARA_EXTRA_MCP_SERVERS` (JSON object). `GIT_TOKEN` authenticates https clones through `GIT_CONFIG_*` env, never argv. |
+
+Setup commands run with the allow-listed tool env, so every name the bootstrap reads is listed in
+`claude.passthrough_env` as explicit globs (`TATARA_*`, `CLI_OIDC_*`, `OIDC_ISSUER`, `RUN_ID`,
+`GIT_TOKEN`, `MISE_ALWAYS_KEEP_DOWNLOAD`, ...), never `*`. `claude.passthrough_env_exclude`
+(`CALLBACK_HMAC_SECRET`, `OPERATOR_PUSH_*`) keeps hook-only secrets out of claude and the tools;
+hooks still see them because hook commands inherit the service env.
+
+Pod policy in the same config: `sessions.exit_when_dead: true` (the service exits when claude is
+dead for good, so the pod restarts), `sessions.probe_alive_token: TATARA-ALIVE`,
+`sessions.restart_continue_prompt` (sent after a claude restart), `sessions.ask_user_question: deny`,
+model, effort and permission mode from `${MODEL:-}`, `${EFFORT:-}` and
+`${PERMISSION_MODE:-bypassPermissions}`, and tatara's deny list in `claude.permissions.deny`.
+
 ## Errors
 
 Every public API error has the envelope:
