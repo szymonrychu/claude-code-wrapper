@@ -37,3 +37,7 @@ run = "docker compose down"
 [tasks."docker:build"]
 description = "Build the container image"
 run = "docker build -t claude-code-wrapper:local ."
+
+[tasks.precommit]
+description = "Run the pre-commit hooks over the whole tree (same as CI)"
+run = "uvx pre-commit run --all-files --show-diff-on-failure"
