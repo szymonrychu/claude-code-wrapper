@@ -41,3 +41,7 @@ run = "docker build -t claude-code-wrapper:local ."
 [tasks.precommit]
 description = "Run the pre-commit hooks over the whole tree (same as CI)"
 run = "uvx pre-commit run --all-files --show-diff-on-failure"
+
+[tasks."test:integration"]
+description = "Build the image, run it under compose with the fake claude, and run tests/integration against it (CCW_PORT, default 8080)"
+run = "scripts/integration.sh"

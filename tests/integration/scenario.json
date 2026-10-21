@@ -1,0 +1,13 @@
+{
+  "boot": {"bypass_dialog": true, "min_seconds": 0.1},
+  "turns": [
+    {
+      "match": "run the ci lifecycle",
+      "steps": [
+        {"text": "Starting the CI work."},
+        {"tool": "Bash", "input": {"command": "echo hi"}, "result": "hi", "fail": false},
+        {"text": "CI work done."}
+      ]
+    }
+  ]
+}

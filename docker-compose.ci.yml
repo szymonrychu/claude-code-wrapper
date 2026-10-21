@@ -1,0 +1,14 @@
+# CI override: the real image driven by the scripted fake claude, no real credentials.
+# Used by scripts/integration.sh: docker compose -f docker-compose.yml -f docker-compose.ci.yml
+services:
+  ccw:
+    environment:
+      CCW_AUTH_TOKEN: ci-token
+      CLAUDE_CODE_OAUTH_TOKEN: ""
+      ANTHROPIC_API_KEY: ""
+    volumes:
+      - ./tests/fake_claude:/opt/fake-claude:ro
+      - ./tests/integration/claude-shim.sh:/opt/ci/claude:ro
+      - ./tests/integration/scenario.json:/opt/ci/scenario.json:ro
+      - ./tests/integration/config.ci.yaml:/etc/ccw/config.yaml:ro
+    restart: "no"
