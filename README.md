@@ -2333,6 +2333,57 @@ tree at `/workdir/workbench`, `~/.ssh` read-only, and the example config; it for
   `GIT_USER_EMAIL`; `GH_TOKEN`, `GITLAB_TOKEN`, `SSH_AUTH_SOCK` and `WORKBENCH_SCM_HOSTS` reach
   Claude through `claude.passthrough_env`, and the mounted `~/.ssh` serves git over SSH.
 
+## CI
+
+[![main](https://github.com/szymonrychu/claude-code-wrapper/actions/workflows/build.yaml/badge.svg)](https://github.com/szymonrychu/claude-code-wrapper/actions/workflows/build.yaml)
+
+`.github/workflows/build.yaml` runs a strict chain of jobs, each `needs` the previous one:
+`pre-commit` -> `unit` (lint + tests) -> `integration` (compose-based, real image, fake claude) ->
+`build-push`. Pull requests run the whole chain and build the image, but never log in or push.
+Only a push to `main` logs in to Harbor and pushes the image. The only registry used is Harbor
+(no Docker Hub, no PyPI, no GHCR).
+
+Image: `harbor.szymonrichert.pl/containers/claude-code-wrapper`
+
+- `:<shortsha>` (7 chars) for every commit on `main`.
+- `:X.Y.Z` and `:latest` on release.
+
+Harbor tags are immutable, so a tag is pushed once and never overwritten.
+
+### Release
+
+```bash
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+The tagged commit must already have been built on `main`: `release.yaml` pulls `:<shortsha>`,
+retags it `:X.Y.Z` and `:latest`, and pushes both. It fails with a clear message when the
+`:<shortsha>` image does not exist.
+
+### Secrets
+
+- `HARBOR_USERNAME`: `robot$gitlab`
+- `HARBOR_PASSWORD`: the robot account secret
+
+### Run the stages locally
+
+```bash
+mise run precommit
+mise run lint
+mise run test
+mise run test:integration
+```
+
+### Bootstrap (operator steps)
+
+1. Create the public repo `szymonrychu/claude-code-wrapper`.
+2. Set the secrets (single quotes: the `$` is literal):
+   - `gh secret set HARBOR_USERNAME --body 'robot$gitlab' -R szymonrychu/claude-code-wrapper`
+   - `gh secret set HARBOR_PASSWORD -R szymonrychu/claude-code-wrapper`
+3. Run a secret scan over the full git history before the first public push.
+4. Push `main`.
+5. Watch the first pipeline go green, including the Harbor push.
+
 ## Development
 
 ```bash
