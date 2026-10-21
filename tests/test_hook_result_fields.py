@@ -49,7 +49,7 @@ def test_event_decisions_table():
     assert EVENT_DECISIONS["onDestroy"] == ("allow",)
 
 
-async def test_annotations_and_output_parsed(tmp_path):
+async def test_parses_annotations_and_output_from_command_stdout(tmp_path):
     d, _ = make(
         tmp_path,
         {"onTurn": [cmd({"annotations": {"a": 1}, "output": [1, {"x": 2}]})]},
@@ -61,7 +61,7 @@ async def test_annotations_and_output_parsed(tmp_path):
     assert o.outputs == [{"index": 0, "ok": True, "output": [1, {"x": 2}], "error": None}]
 
 
-async def test_annotations_merge_in_index_order_later_wins(tmp_path):
+async def test_annotations_merged_in_index_order(tmp_path):
     d, _ = make(
         tmp_path,
         {
@@ -102,7 +102,7 @@ async def test_output_redacted_before_event(tmp_path):
     assert "supersecretvalue" not in json.dumps(results[0].output)
 
 
-async def test_output_cap_truncates(tmp_path):
+async def test_output_capped_and_redacted(tmp_path):
     script = tmp_path / "big.py"
     script.write_text(f"import json;print(json.dumps({{'output': 'a'*{OUTPUT_CAP_BYTES + 10}}}))")
     d, _ = make(
@@ -128,7 +128,7 @@ async def test_annotations_over_cap_dropped_with_error(tmp_path):
     assert o.annotations == {}
 
 
-async def test_block_defer_not_honoured_on_existing_events(tmp_path):
+async def test_decision_not_honoured_by_event_is_allow(tmp_path):
     d, _ = make(tmp_path, {"onTurn": [cmd({"decision": "block"})]})
     o = await d.fire("onTurn", payload())
     assert o.decision == "allow"
@@ -150,7 +150,7 @@ async def test_deny_on_veto_still_vetoes(tmp_path):
     assert o.decision == "deny" and o.results[0].invalid_decision is None
 
 
-async def test_webhook_body_fields(tmp_path):
+async def test_parses_fields_from_webhook_body(tmp_path):
     def handler(req):
         return httpx.Response(200, json={"annotations": {"w": 1}, "output": {"o": True}})
 
@@ -164,8 +164,27 @@ async def test_webhook_body_fields(tmp_path):
     assert o.outputs[0]["output"] == {"o": True}
 
 
-async def test_failed_action_listed_in_outputs(tmp_path):
+async def test_outputs_listed_per_blocking_action_with_errors(tmp_path):
     d, _ = make(tmp_path, {"onTurn": [{"type": "command", "run": "exit 3", "blocking": True}]})
     o = await d.fire("onTurn", payload())
     assert o.outputs[0]["ok"] is False and "exit 3" in o.outputs[0]["error"]
     assert o.outputs[0]["output"] is None
+
+
+async def test_hook_result_event_carries_output(tmp_path):
+    from test_router import Harness
+
+    from claude_code_wrapper.hooks import ActionResult
+
+    h = Harness(tmp_path, hooks={})
+    h.router.on_hook_result(ActionResult("onTurn", 0, "command", ok=True, output={"a": 1}))
+    h.router.on_hook_result(ActionResult("onTurn", 1, "command", ok=True))
+    first, second = h.events("hook_result")
+    assert first.data["output"] == {"a": 1}
+    assert "output" not in second.data
+    await h.router.close()
+
+
+async def test_output_capped_and_redacted_together(tmp_path):
+    await test_output_redacted_before_event(tmp_path)
+    await test_output_capped_and_redacted(tmp_path)
