@@ -12,8 +12,8 @@ model: sonnet
 estimate: 75
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--destroy-hook-input-output
+branch: hook-capabilities-for-tatara--destroy-hook-input-output
 verified_head: ""
 run: ""
 provides: []

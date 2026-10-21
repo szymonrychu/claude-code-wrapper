@@ -12,8 +12,8 @@ model: sonnet
 estimate: 90
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--magic-trainer-example
+branch: hook-capabilities-for-tatara--magic-trainer-example
 verified_head: ""
 run: ""
 provides: []

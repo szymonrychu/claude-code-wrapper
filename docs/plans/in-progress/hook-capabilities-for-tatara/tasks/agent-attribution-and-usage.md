@@ -12,8 +12,8 @@ model: sonnet
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--agent-attribution-and-usage
+branch: hook-capabilities-for-tatara--agent-attribution-and-usage
 verified_head: ""
 run: ""
 provides: []

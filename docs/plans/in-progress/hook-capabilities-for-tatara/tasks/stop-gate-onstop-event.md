@@ -12,8 +12,8 @@ model: opus
 estimate: 90
 actual: ""
 review: full
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--stop-gate-onstop-event
+branch: hook-capabilities-for-tatara--stop-gate-onstop-event
 verified_head: ""
 run: ""
 provides: []

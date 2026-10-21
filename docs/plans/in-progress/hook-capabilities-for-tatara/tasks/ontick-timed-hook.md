@@ -12,8 +12,8 @@ model: sonnet
 estimate: 75
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--ontick-timed-hook
+branch: hook-capabilities-for-tatara--ontick-timed-hook
 verified_head: ""
 run: ""
 provides: []

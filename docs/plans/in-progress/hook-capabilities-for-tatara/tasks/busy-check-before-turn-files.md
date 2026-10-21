@@ -12,8 +12,8 @@ model: sonnet
 estimate: 45
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--busy-check-before-turn-files
+branch: hook-capabilities-for-tatara--busy-check-before-turn-files
 verified_head: ""
 run: ""
 provides: []

@@ -12,8 +12,8 @@ model: sonnet
 estimate: 60
 actual: ""
 review: full
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--pretooluse-gate-fails-closed
+branch: hook-capabilities-for-tatara--pretooluse-gate-fails-closed
 verified_head: ""
 run: ""
 provides: []

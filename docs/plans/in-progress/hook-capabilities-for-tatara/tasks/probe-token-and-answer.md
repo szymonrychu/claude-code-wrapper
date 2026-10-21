@@ -12,8 +12,8 @@ model: sonnet
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--probe-token-and-answer
+branch: hook-capabilities-for-tatara--probe-token-and-answer
 verified_head: ""
 run: ""
 provides: []

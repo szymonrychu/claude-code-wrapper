@@ -12,8 +12,8 @@ model: sonnet
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--turn-metadata-on-submit
+branch: hook-capabilities-for-tatara--turn-metadata-on-submit
 verified_head: ""
 run: ""
 provides: []

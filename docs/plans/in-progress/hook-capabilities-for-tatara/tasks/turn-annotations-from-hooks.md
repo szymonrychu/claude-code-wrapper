@@ -12,8 +12,8 @@ model: sonnet
 estimate: 45
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--turn-annotations-from-hooks
+branch: hook-capabilities-for-tatara--turn-annotations-from-hooks
 verified_head: ""
 run: ""
 provides: []

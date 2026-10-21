@@ -12,8 +12,8 @@ model: sonnet
 estimate: 75
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--fake-claude-hook-scenarios
+branch: hook-capabilities-for-tatara--fake-claude-hook-scenarios
 verified_head: ""
 run: ""
 provides: []

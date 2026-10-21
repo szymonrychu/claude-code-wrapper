@@ -12,8 +12,8 @@ model: opus
 estimate: 90
 actual: ""
 review: full
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--turn-continuity-across-crash
+branch: hook-capabilities-for-tatara--turn-continuity-across-crash
 verified_head: ""
 run: ""
 provides: []

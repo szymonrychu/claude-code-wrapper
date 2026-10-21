@@ -12,8 +12,8 @@ model: sonnet
 estimate: 90
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--tatara-example-lifecycle
+branch: hook-capabilities-for-tatara--tatara-example-lifecycle
 verified_head: ""
 run: ""
 provides: []

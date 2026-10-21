@@ -12,8 +12,8 @@ model: sonnet
 estimate: 75
 actual: ""
 review: full
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--service-exit-policy
+branch: hook-capabilities-for-tatara--service-exit-policy
 verified_head: ""
 run: ""
 provides: []

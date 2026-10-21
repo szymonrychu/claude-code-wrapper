@@ -12,8 +12,8 @@ model: sonnet
 estimate: 45
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--outstanding-subagent-count
+branch: hook-capabilities-for-tatara--outstanding-subagent-count
 verified_head: ""
 run: ""
 provides: []
