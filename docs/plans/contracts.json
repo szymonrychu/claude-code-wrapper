@@ -38,5 +38,13 @@
     "file": "src/claude_code_wrapper/router.py",
     "consumers": [],
     "note": "SessionRouter.request_command(name, params=None, *, origin agent|client|idle) -> CommandRecord; raises commands.CommandRejected(code, message)"
+  },
+  {
+    "name": "ccw-mcp-tool",
+    "kind": "interface",
+    "owner": "agent-callable-slash-command",
+    "file": "src/claude_code_wrapper/mcp_server.py",
+    "consumers": [],
+    "note": "POST /internal/mcp JSON-RPC; one tool command {name: enum of agent allowlist, params?}; claude.json mcpServers.ccw with ${CCW_*} env refs; allow rule mcp__ccw__command"
   }
 ]
