@@ -1,0 +1,62 @@
+# Expresses magic-trainer's harness behaviour as ccw hooks. No magic-trainer code lives in ccw.
+# The hook script is magic-trainer/mtg_hooks.py (python stdlib only); install it at $MTG_HOOKS.
+# Environment: AGENT_TEAMS (set to 1 for agent teams), MTG_PYTHON, MTG_HOOKS, CLAUDE_BIN and
+# REVIEW_TIMEOUT_SECONDS (review), NARRATION_LOG (narration target, default the container stdout),
+# MTG_GIT_TOKEN_FILE (git credential helper token file), MTG_AGENTS_RENDER (the consumer's agent
+# renderer command), MCP_TIMEOUT_MS, MCP_TOOL_TIMEOUT_MS and MAX_MCP_OUTPUT_TOKENS (MCP limits).
+# Deliver a review with DELETE /v1/sessions/{id} and body {"hook_input": {prompt, model, effort}};
+# the answer comes back in the response's hook_outputs.
+
+init:
+  git:
+    user_name: ${GIT_USER_NAME:-magic-trainer}
+    user_email: ${GIT_USER_EMAIL:-magic-trainer@localhost}
+  setup_commands:
+    - git config --global credential.helper '!${MTG_PYTHON:-python3} ${MTG_HOOKS:-/opt/mtg/mtg_hooks.py} git-credential ${MTG_GIT_TOKEN_FILE:-/etc/mtg/git-token}'
+    - git config --global --add safe.directory /guides
+    - ${MTG_AGENTS_RENDER:-true}
+
+claude:
+  env:
+    claude_code_oauth_token: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    disable_autoupdater: true
+    # Agent teams: empty (unset) unless AGENT_TEAMS=1.
+    claude_code_experimental_agent_teams: ${AGENT_TEAMS:-}
+    # MCP limits.
+    mcp_timeout: ${MCP_TIMEOUT_MS:-60000}
+    mcp_tool_timeout: ${MCP_TOOL_TIMEOUT_MS:-600000}
+    max_mcp_output_tokens: ${MAX_MCP_OUTPUT_TOKENS:-50000}
+  permission_mode: ${PERMISSION_MODE:-bypassPermissions}
+  settings:
+    teammateMode: in-process
+
+sessions:
+  # Seat pair completion: a Stop with background work running keeps the turn open.
+  defer_stop_on_background_tasks: true
+  # One session per pod: the service exits once it is destroyed, and a dead claude stays dead.
+  exit_when_last_destroyed: true
+  max_restarts: 0
+  ask_user_question: deny
+
+hooks:
+  onStop:
+    # R1 fallback: teammates missing from background_tasks are found in the transcript.
+    - type: command
+      run: ${MTG_PYTHON:-python3} ${MTG_HOOKS:-/opt/mtg/mtg_hooks.py} pending-tasks
+      blocking: true
+      on_error: allow
+  onDestroy:
+    # Review after claude stopped and before the purge. blocking: true is required, the DELETE
+    # response's hook_outputs collects only blocking onDestroy actions.
+    - type: command
+      run: ${MTG_PYTHON:-python3} ${MTG_HOOKS:-/opt/mtg/mtg_hooks.py} review
+      blocking: true
+      timeout_seconds: ${REVIEW_TIMEOUT_SECONDS:-4800}
+  onAgentToolCall:
+    - type: command
+      run: ${MTG_PYTHON:-python3} ${MTG_HOOKS:-/opt/mtg/mtg_hooks.py} narrate
+      blocking: false
+  onAgentResponse:
+    - type: command
+      run: ${MTG_PYTHON:-python3} ${MTG_HOOKS:-/opt/mtg/mtg_hooks.py} narrate
+      blocking: false

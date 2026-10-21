@@ -1329,6 +1329,27 @@ dead for good, so the pod restarts), `sessions.probe_alive_token: TATARA-ALIVE`,
 model, effort and permission mode from `${MODEL:-}`, `${EFFORT:-}` and
 `${PERMISSION_MODE:-bypassPermissions}`, and tatara's deny list in `claude.permissions.deny`.
 
+### magic-trainer
+
+[`magic-trainer.config.yaml`](examples/magic-trainer.config.yaml) and its script
+[`mtg_hooks.py`](src/claude_code_wrapper/data/examples/magic-trainer/mtg_hooks.py) (python stdlib
+only, subcommands) express magic-trainer's harness behaviour. Actions run
+`${MTG_PYTHON:-python3} ${MTG_HOOKS:-/opt/mtg/mtg_hooks.py} <subcommand>`; values come from the env
+as `${VAR:-default}` and no secret lives in a file. Tests:
+[`tests/test_example_magic_trainer.py`](tests/test_example_magic_trainer.py).
+
+| Parity row | Behaviour | Hook or option |
+|---|---|---|
+| #5 | Seat pair completion: the turn stays open while the pair's background work runs | `sessions.defer_stop_on_background_tasks: true`; agent teams via `claude.env` (`${AGENT_TEAMS:-}`) and `claude.settings.teammateMode: in-process` |
+| #9 | Teammates missing from the Stop payload's `background_tasks` (the R1 fallback) | `onStop`, blocking, `pending-tasks`: reads `data.transcript_path`, collects background Agent/Task and Bash tool uses and spawned teammates since the turn's last marker, minus their completion notification or `TaskStop`. Prints `{"decision": "defer", "annotations": {"pending_tasks": [...]}}` when any, else `allow` with `[]` |
+| #13-#15 | Review of the finished work by a fresh claude | `onDestroy`, `blocking: true` (required: `hook_outputs` in the `DELETE` response collects only blocking `onDestroy` actions), `timeout_seconds: ${REVIEW_TIMEOUT_SECONDS:-4800}`, `review`: reads `data.input` `{prompt, model, effort}` (from the `DELETE` body `hook_input`), runs `${CLAUDE_BIN:-claude} -p --setting-sources "" --strict-mcp-config --model <model>` with the prompt on stdin in the session workdir and `CLAUDE_CONFIG_DIR=$CCW_CLAUDE_CONFIG_DIR`, prints `{"output": {"text": <stdout>}}`. Without input there is no review (`{"output": null}`). It runs after claude stopped and before any purge |
+| #18, #19 | Narration of steps and replies | `onAgentToolCall` and `onAgentResponse`, non-blocking, `narrate`: appends `step tool=<name> agent=<agent_type or main>` or `say <first 80 chars>` to `${NARRATION_LOG:-/proc/1/fd/1}` |
+| #21 | The pod ends with its only session | `sessions.exit_when_last_destroyed: true` |
+| #22 | A dead claude stays dead | `sessions.max_restarts: 0` |
+| #23 | No interactive questions | `sessions.ask_user_question: deny` |
+| #24 | MCP limits | `claude.env`: `mcp_timeout`, `mcp_tool_timeout` and `max_mcp_output_tokens` from `${MCP_TIMEOUT_MS:-60000}`, `${MCP_TOOL_TIMEOUT_MS:-600000}` and `${MAX_MCP_OUTPUT_TOKENS:-50000}` |
+| #25 | Git and agent setup | `init.setup_commands`: a git credential helper (`git-credential`, token file `${MTG_GIT_TOKEN_FILE:-/etc/mtg/git-token}`), `safe.directory /guides`, and the consumer's agent renderer `${MTG_AGENTS_RENDER:-true}` |
+
 ## Errors
 
 Every public API error has the envelope:
