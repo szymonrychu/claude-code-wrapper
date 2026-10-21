@@ -1,6 +1,6 @@
 ---
 title: Command completion signals
-status: todo
+status: in-progress
 repo: .
 value: "ccw knows reliably when a typed slash command finished, and reports every compaction including Claude Code's own"
 files: [src/claude_code_wrapper/command_signals.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/hook_relay.py, README.md, tests/test_command_signals.py, tests/test_hook_relay.py]

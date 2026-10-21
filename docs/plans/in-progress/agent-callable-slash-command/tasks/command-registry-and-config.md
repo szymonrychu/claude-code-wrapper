@@ -1,6 +1,6 @@
 ---
 title: Command registry and config
-status: todo
+status: in-progress
 repo: .
 value: "Operators decide which slash commands agents and clients may run, per service and per session"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/commands.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/router.py, README.md, tests/test_command_registry.py]

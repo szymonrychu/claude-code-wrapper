@@ -1,6 +1,6 @@
 ---
 title: Transcript command entries
-status: todo
+status: in-progress
 repo: .
 value: "Compact summaries and command echoes stop resurfacing old turn markers, so Stops after a compaction are not dropped as stale"
 files: [src/claude_code_wrapper/transcript.py, tests/test_transcript_commands.py, tests/fixtures/transcripts/commands.jsonl]

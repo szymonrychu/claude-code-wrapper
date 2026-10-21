@@ -1,6 +1,6 @@
 ---
 title: Fake claude slash commands
-status: todo
+status: in-progress
 repo: .
 value: "Every command test runs against a fake that compacts, reloads and fails like real claude, with no API spend"
 files: [tests/fake_claude/fake_claude.py, tests/test_fake_claude_commands.py]

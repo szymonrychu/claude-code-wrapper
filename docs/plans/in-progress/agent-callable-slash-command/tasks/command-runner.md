@@ -1,6 +1,6 @@
 ---
 title: Command runner
-status: todo
+status: in-progress
 repo: .
 value: "Queued slash commands actually run in the session's claude, safely at an idle prompt, with results and hooks"
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/session.py, src/claude_code_wrapper/commands.py, tests/test_command_runner.py]

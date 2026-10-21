@@ -1,6 +1,6 @@
 ---
 title: Command event vocabulary
-status: todo
+status: in-progress
 repo: .
 value: "Clients and hooks can observe and veto commands and see every compaction, with bounded metrics"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/events.py, src/claude_code_wrapper/metrics.py, README.md, tests/test_command_vocabulary.py, tests/test_event_log.py, tests/test_config.py]

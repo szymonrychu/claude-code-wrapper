@@ -1,6 +1,6 @@
 ---
 title: Fake claude MCP step
-status: todo
+status: in-progress
 repo: .
 value: "The agent's mcp__ccw__command call is testable end to end through the fake and the World"
 files: [tests/fake_claude/fake_claude.py, tests/conftest.py, tests/test_fake_claude_mcp.py]

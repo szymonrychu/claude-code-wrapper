@@ -1,6 +1,6 @@
 ---
 title: ccw MCP endpoint
-status: todo
+status: in-progress
 repo: .
 value: Claude can connect to ccw as an MCP server and call the one command tool
 files: [src/claude_code_wrapper/mcp_server.py, src/claude_code_wrapper/internal_api.py, README.md, tests/test_mcp_server.py]
