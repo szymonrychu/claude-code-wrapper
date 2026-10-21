@@ -387,6 +387,10 @@ class Session:
         #: The running turn while claude is relaunched after a crash (continuation, K12).
         self._held: TurnRecord | None = None
         self._last_activity = clock()
+        #: Session clock time of the last PTY output (the runner's quiet-screen wait).
+        self.last_output = clock()
+        #: A slash command run holds the slot with no turn record (`begin_command`).
+        self._command_active = False
         self._turn_started = clock()
         self._activity_persisted = self._last_activity
         self._probes: dict[str, Probe] = {}
@@ -567,6 +571,7 @@ class Session:
         text = self._decoder.decode(data)
         if not text:
             return
+        self.last_output = self.clock()
         self._notify("on_output", text)
         for pattern in self._scanner.feed(text):
             self.last_fatal = pattern
@@ -965,6 +970,58 @@ class Session:
                 self.turn_store.refresh(record)
         except Exception:
             log.exception("session %s: persisting turn %s failed", self.spec.session_id, record)
+
+    # -- slash commands --------------------------------------------------------------------
+
+    @property
+    def command_active(self) -> bool:
+        """A slash command run holds the slot (busy with no turn record)."""
+        return self._command_active
+
+    def begin_command(self) -> bool:
+        """Take the slot for a slash command run on an idle session: ready -> busy, no turn.
+
+        Client turns then get `TurnRejected("busy")` and the idle reaper (ready only) skips
+        the session. False, and nothing changes, unless the session is ready with no turn.
+        """
+        if self.state != "ready" or self._turn is not None or self._command_active:
+            return False
+        self._command_active = True
+        self._set_state("busy")
+        return True
+
+    def end_command(self) -> None:
+        """Release the slot `begin_command` took; busy -> ready when no turn took over."""
+        if not self._command_active:
+            return
+        self._command_active = False
+        if self.state == "busy" and self._turn is None:
+            self._set_state("ready")
+
+    async def wait_quiet(self, seconds: float, timeout: float) -> bool:
+        """Wait until the PTY has been silent for `seconds`; False after `timeout`."""
+        deadline = self.clock() + timeout
+        while True:
+            now = self.clock()
+            quiet = now - self.last_output
+            if quiet >= seconds:
+                return True
+            if now >= deadline:
+                return False
+            await asyncio.sleep(max(min(seconds - quiet, deadline - now), 0.01))
+
+    async def send_command(self, line: str) -> None:
+        """Type a slash command line: paste then CR, no turn marker, under the PTY write lock.
+
+        Raises `TurnRejected(booting|dead)` or `PtyClosed`.
+        """
+        pty = self._writable_pty()
+        log.info("session %s: typing %r", self.spec.session_id, line)
+        await pty.send_prompt(line, self.spec.boot.submit_delay_seconds)
+
+    async def send_escape(self) -> None:
+        """One ESC, for a slash command that did not finish in time."""
+        await self._send_key(ESC)
 
     # -- interrupt -------------------------------------------------------------------------
 

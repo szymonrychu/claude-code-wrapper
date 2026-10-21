@@ -29,6 +29,8 @@ CLAUDE_HOOK_EVENTS = (
     "Stop",
     "SubagentStart",
     "SubagentStop",
+    "PreCompact",
+    "PostCompact",
 )
 RELAY_PATH = "/internal/hooks/{event}"
 HEADER_SESSION = "X-CCW-Session"
