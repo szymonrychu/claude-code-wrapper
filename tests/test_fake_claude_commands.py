@@ -61,7 +61,7 @@ def cmd_content(name, args=""):
     )
 
 
-def test_compact_ok_writes_boundary_summary_and_hooks(boot, env, work, tmp_path):  # noqa: F811
+def test_compact_writes_boundary_and_post_compact(boot, env, work, tmp_path):  # noqa: F811
     out = tmp_path / "h.out"
     record(env["CLAUDE_CONFIG_DIR"], out)
     p = boot()
@@ -97,7 +97,7 @@ def test_compact_without_args_has_null_instructions(boot, env, tmp_path):  # noq
     assert payloads(out)[0]["custom_instructions"] is None
 
 
-def test_command_runs_no_turn_hooks(boot, env, tmp_path):  # noqa: F811
+def test_slash_command_fires_no_stop(boot, env, tmp_path):  # noqa: F811
     out = tmp_path / "h.out"
     record(env["CLAUDE_CONFIG_DIR"], out)
     p = boot()
@@ -105,7 +105,7 @@ def test_command_runs_no_turn_hooks(boot, env, tmp_path):  # noqa: F811
     assert events_of(out) == []
 
 
-def test_pre_compact_block_cancels(boot, env, work, tmp_path):  # noqa: F811
+def test_pre_compact_payload_and_block(boot, env, work, tmp_path):  # noqa: F811
     out = tmp_path / "h.out"
     hook_settings(
         env["CLAUDE_CONFIG_DIR"],
@@ -153,7 +153,7 @@ def test_compact_failure_outcomes(boot, env, work, tmp_path, outcome, msg):  # n
     assert not out.exists()
 
 
-def test_compact_hang_until_esc_then_canceled(boot):
+def test_compact_hang_cancelled_by_esc(boot):
     p = boot({"compact": {"outcome": "hang"}})
     since = len(p.buf)
     p.send(b"\x1b[200~/compact\x1b[201~")
@@ -165,7 +165,7 @@ def test_compact_hang_until_esc_then_canceled(boot):
     p.wait_for("Compaction canceled.", since=since)
 
 
-def test_post_compact_hook_false_skips_hook(boot, env, work, tmp_path):  # noqa: F811
+def test_compact_without_post_compact_hook(boot, env, work, tmp_path):  # noqa: F811
     out = tmp_path / "h.out"
     record(env["CLAUDE_CONFIG_DIR"], out, ["PreCompact", "PostCompact"])
     p = boot({"compact": {"post_compact_hook": False}})
@@ -197,7 +197,7 @@ RELOAD = "Reloaded: 0 plugins, 0 skills, 0 agents, 0 hooks, 0 MCP servers"
         ("/mcp reconnect ccw", "Reconnected to ccw"),
     ],
 )
-def test_stdout_commands_defaults(boot, env, work, line, default):  # noqa: F811
+def test_other_commands_write_local_stdout(boot, env, work, line, default):  # noqa: F811
     p = boot()
     p.submit(line, wait=default)
     lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
@@ -208,7 +208,7 @@ def test_stdout_commands_defaults(boot, env, work, line, default):  # noqa: F811
     assert len(lines) == 2
 
 
-def test_reload_stdout_override_and_as_user(boot, env, work):  # noqa: F811
+def test_reload_plugins_stdout_and_force_hint(boot, env, work):  # noqa: F811
     msg = "Skipped. Run /reload-plugins --force to apply."
     p = boot({"reload-plugins": {"stdout": msg, "as_user": True}})
     p.submit("/reload-plugins", wait="Run /reload-plugins")
@@ -239,7 +239,7 @@ def test_unknown_command(boot, env):  # noqa: F811
     assert not list(projects.glob("*/*.jsonl"))
 
 
-def test_inputs_log_idle_and_busy(boot, env):  # noqa: F811
+def test_input_while_busy_recorded(boot, env):  # noqa: F811
     p = boot(turns=[{"match": "slow", "steps": [{"sleep": 1.0}, {"text": "done"}]}])
     p.submit("/context", wait="Context usage")
     p.send(b"\x1b[200~slow\x1b[201~")
@@ -282,3 +282,16 @@ def test_auto_compact_step(boot, env, work, tmp_path):  # noqa: F811
     assert [x["hook_event_name"] for x in pl] == ["PreCompact", "PostCompact", "Stop"]
     assert pl[0]["trigger"] == "auto" and pl[1]["trigger"] == "auto"
     assert "ccw turn m2 big" in pl[1]["compact_summary"]
+
+
+def test_compact_summary_quotes_prior_prompts(boot, env, work):  # noqa: F811
+    p = boot()
+    p.submit("ccw turn marker-A first", wait="? for shortcuts")
+    p.submit("ccw turn marker-B second", wait="? for shortcuts")
+    p.submit("/compact", wait="Compacted")
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    [summary] = [x for x in lines if x.get("isCompactSummary")]
+    text = summary["message"]["content"]
+    assert "All user messages:" in text
+    assert "ccw turn marker-A first" in text and "ccw turn marker-B second" in text
+    assert text.index("marker-A") < text.index("marker-B")
