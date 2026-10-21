@@ -522,6 +522,28 @@ class CommandsOverride(_Model):
         return None if value is None else _check_command_timeouts(value)
 
 
+#: A compact's focus instructions: one line, no control characters, at most this long.
+MAX_INSTRUCTIONS = 2000
+INSTRUCTIONS_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+class AutoCompactConfig(_Model):
+    """`sessions.auto_compact`: compact a session that stayed idle (design D6)."""
+
+    idle_seconds: float = Field(0, ge=0)
+    instructions: str = ""
+    min_context_tokens: int = Field(0, ge=0)
+
+    @field_validator("instructions")
+    @classmethod
+    def _one_line(cls, value: str) -> str:
+        if INSTRUCTIONS_CONTROL.search(value):
+            raise ValueError("must be one line without control characters")
+        if len(value) > MAX_INSTRUCTIONS:
+            raise ValueError(f"must not exceed {MAX_INSTRUCTIONS} characters")
+        return value
+
+
 class SessionsConfig(_Model):
     max_sessions: int = Field(4, ge=1)
     idle_timeout_seconds: float = Field(0, ge=0)
@@ -539,6 +561,17 @@ class SessionsConfig(_Model):
     #: running turn continues instead of failing with claude_exited. Empty disables it.
     restart_continue_prompt: str = ""
     commands: CommandsConfig = Field(default_factory=CommandsConfig)
+    auto_compact: AutoCompactConfig = Field(default_factory=AutoCompactConfig)
+
+    @model_validator(mode="after")
+    def _auto_compact_before_reaper(self) -> SessionsConfig:
+        idle, reaper = self.auto_compact.idle_seconds, self.idle_timeout_seconds
+        if idle > 0 and reaper > 0 and idle >= reaper:
+            raise _at(
+                "auto_compact.idle_seconds",
+                "must be below idle_timeout_seconds (the reaper would stop the session first)",
+            )
+        return self
 
 
 class LimitsConfig(_Model):

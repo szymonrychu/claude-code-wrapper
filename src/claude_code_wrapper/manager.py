@@ -1255,9 +1255,15 @@ class SessionManager:
         return bound + 1.0
 
     def _last_activity(self, ctx: _Active) -> float:
-        last = ctx.event_log.last(1) if ctx.event_log is not None else []
-        stamp = _epoch(last[0].ts) if last else None
-        return max(stamp or 0.0, ctx.activated)
+        """Newest event that is real activity: an idle-origin (auto-compact) run is not."""
+        stamp = 0.0
+        if ctx.event_log is not None:
+            skip = ctx.router.idle_ranges() if ctx.router is not None else []
+            for ev in reversed(ctx.event_log.last(self.cfg.limits.event_ring_size)):
+                if not any(lo <= ev.seq <= hi for lo, hi in skip):
+                    stamp = _epoch(ev.ts) or 0.0
+                    break
+        return max(stamp, ctx.activated)
 
     def _last_activity_iso(self, ctx: _Active) -> str:
         last = ctx.event_log.last(1) if ctx.event_log is not None else []
