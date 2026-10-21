@@ -550,7 +550,8 @@ async def test_restart_budget_exhausted_dead(make_spec, sessions) -> None:
     await session.pty.send_prompt("crash one", 0.2)
     await wait_until(lambda: rec.restarts, timeout=15)
     await session.pty.send_prompt("crash two", 0.2)
-    await wait_until(lambda: session.state == "dead", timeout=15)
+    # state turns dead the moment claude exits; on_exit fires only after the pty close grace.
+    await wait_until(lambda: session.state == "dead" and rec.exits, timeout=15)
     assert rec.restarts == [(1, True)]
     assert rec.exits == [3]
     assert session.restarts == 1
