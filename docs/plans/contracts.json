@@ -14,5 +14,13 @@
     "file": "src/claude_code_wrapper/config.py",
     "consumers": [],
     "note": "HOOK_EVENTS gains onStop and onTick; onTick action keys interval_seconds and when"
+  },
+  {
+    "name": "event-types",
+    "kind": "schema",
+    "owner": "hook-capabilities-for-tatara",
+    "file": "src/claude_code_wrapper/events.py",
+    "consumers": [],
+    "note": "EVENT_TYPES gains turn_continued, turn_deferred, usage, turn_resumed, destroy_output"
   }
 ]
