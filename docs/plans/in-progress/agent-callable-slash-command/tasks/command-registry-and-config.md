@@ -1,6 +1,6 @@
 ---
 title: Command registry and config
-status: escalated
+status: done
 repo: .
 value: "Operators decide which slash commands agents and clients may run, per service and per session"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/commands.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/router.py, README.md, tests/test_command_registry.py]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--command-registry-and-config
 branch: agent-callable-slash-command--command-registry-and-config
-verified_head: ""
+verified_head: 5aee6a34e596fc6d28dabc608143e4cb8ba90d7a
 run: agent-callable-slash-command
 provides: [commands-override-model, command-validation-render-schema]
 acs_for_audit: []
@@ -82,3 +82,5 @@ Command registry, per-session queue, config and the main-agent guard (design D3,
 ## Notes
 
 Design D-numbers and facts with file:line are in ../design.md.
+
+- 2026-10-21 hand-verified on 5aee6a3 after verify-agent-died: verify-task.py --base 28c5cfc --tdd-revert passed, AC1-AC13 met, tdd failedOnBase/passedOnHead, clean.
