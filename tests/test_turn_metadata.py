@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from conftest import World, wait_turn
 from fastapi.testclient import TestClient
 from test_api_turns import StubManager, client, post, stub  # noqa: F401
 
 from claude_code_wrapper.manager import CreateSessionRequest
+from claude_code_wrapper.router import TurnVetoed
 from claude_code_wrapper.turns import TurnRecord, TurnStore
 
 
@@ -32,12 +34,12 @@ def test_api_passes_metadata(client: TestClient, stub: StubManager):  # noqa: F8
     assert stub.router_obj.calls[-1][-1] == {}
 
 
-def test_api_metadata_not_object_is_422(client: TestClient):  # noqa: F811
+def test_metadata_must_be_object(client: TestClient):  # noqa: F811
     assert post(client, {"text": "hi", "metadata": [1]}).status_code == 422
     assert post(client, {"text": "hi", "metadata": "x"}).status_code == 422
 
 
-def test_api_metadata_over_16kib_is_413(client: TestClient):  # noqa: F811
+def test_metadata_too_large_413(client: TestClient):  # noqa: F811
     r = post(client, {"text": "hi", "metadata": {"k": "x" * 17000}})
     assert r.status_code == 413
     assert r.json()["error"]["code"] == "too_large"
@@ -47,7 +49,7 @@ def test_api_still_forbids_extra_fields(client: TestClient):  # noqa: F811
     assert post(client, {"text": "hi", "bogus": 1}).status_code == 422
 
 
-async def test_metadata_reaches_onturn_record_event_and_callback(world: World):
+async def test_metadata_reaches_on_turn_and_record(world: World):
     scenario: dict[str, Any] = {"turns": [{"match": "go", "steps": [{"text": "ok"}]}]}
     hooks = {
         "onTurn": [
@@ -80,7 +82,7 @@ async def test_metadata_reaches_onturn_record_event_and_callback(world: World):
     assert turn_payloads[0]["data"]["metadata"] == {"handoff": "x"}
 
 
-async def test_default_metadata_empty_in_onturn_and_record(world: World):
+async def test_turn_without_metadata_unchanged(world: World):
     scenario: dict[str, Any] = {"turns": [{"match": "go", "steps": [{"text": "ok"}]}]}
     m = world.manager(world.cfg(scenario))
     sid = (await m.create(CreateSessionRequest()))["session_id"]
@@ -88,3 +90,19 @@ async def test_default_metadata_empty_in_onturn_and_record(world: World):
     assert record.metadata == {}
     await wait_turn(m, sid)
     assert m.open_turns(sid).get(record.turn_id).metadata == {}
+
+
+async def test_on_turn_veto_on_metadata(world: World):
+    scenario: dict[str, Any] = {"turns": [{"match": "go", "steps": [{"text": "ok"}]}]}
+    run = (
+        "if grep -q '\"handoff\"' ; then "
+        'echo \'{"decision":"deny","reason":"handoff blocked"}\'; fi'
+    )
+    hooks = {"onTurn": [{"type": "command", "run": run, "blocking": True}]}
+    m = world.manager(world.cfg(scenario, hooks=hooks))
+    sid = (await m.create(CreateSessionRequest()))["session_id"]
+    router = m.router(sid)
+    with pytest.raises(TurnVetoed, match="handoff blocked"):
+        await router.submit_turn("go", metadata={"handoff": True})
+    record = await router.submit_turn("go", metadata={"other": 1})
+    assert record.metadata == {"other": 1}
