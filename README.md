@@ -260,7 +260,7 @@ rejected with `413 too_large`.
 
 Response `200`: the stopped snapshot; with `purge=true` it also carries `"purged": true`. It also
 carries `hook_outputs`: `[{index, ok, output, error}]`, one entry per blocking `onDestroy` action
-(the `output` the action returned). Non-blocking actions' outputs are not returned. `hook_outputs`
+(the `output` the action returned); `hook_outputs` collects only blocking `onDestroy` actions. Non-blocking actions' outputs are not returned. `hook_outputs`
 is `[]` when there are no blocking actions or the session was not active. The same list is sent as
 the [`destroy_output`](#destroy_output) event.
 

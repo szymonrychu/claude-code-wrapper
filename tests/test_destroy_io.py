@@ -179,3 +179,58 @@ def test_api_delete_body_too_large(api) -> None:
     assert r.status_code == 413
     assert r.json()["error"]["code"] == "too_large"
     assert stub.calls == []
+
+
+async def test_delete_body_reaches_on_destroy_input(world: World) -> None:
+    m = world.manager(world.cfg(hooks={"onDestroy": [ECHO_INPUT]}))
+    sid = (await m.create(CreateSessionRequest(prompt="hi")))["session_id"]
+    await wait_turn(m, sid)
+    out = await m.destroy(sid, hook_input={"review": "go"})
+    assert out["hook_outputs"][0]["output"] == {"seen": {"review": "go"}}
+
+
+async def test_delete_returns_hook_outputs(world: World) -> None:
+    m = world.manager(world.cfg(hooks={"onDestroy": [ECHO_INPUT]}))
+    sid = (await m.create(CreateSessionRequest(prompt="hi")))["session_id"]
+    await wait_turn(m, sid)
+    out = await m.destroy(sid, hook_input={"a": 1})
+    assert [e["index"] for e in out["hook_outputs"]] == [0]
+    assert out["hook_outputs"][0]["ok"] is True
+
+
+async def test_destroy_output_event_before_session_closed(world: World) -> None:
+    m = world.manager(world.cfg(hooks={"onDestroy": [ECHO_INPUT]}))
+    sid = (await m.create(CreateSessionRequest(prompt="hi")))["session_id"]
+    await wait_turn(m, sid)
+    await m.destroy(sid)
+    ev = types(world, sid)
+    assert ev.count("session_closed") == 1
+    assert ev.index("destroy_output") < ev.index("session_closed")
+
+
+async def test_delete_without_body_unchanged(world: World) -> None:
+    m = world.manager(world.cfg())
+    sid = (await m.create(CreateSessionRequest(prompt="hi")))["session_id"]
+    await wait_turn(m, sid)
+    out = await m.destroy(sid)
+    assert out["state"] == "stopped"
+    assert out["hook_outputs"] == []
+
+
+def test_delete_body_too_large_413(api) -> None:
+    test_api_delete_body_too_large(api)
+
+
+async def test_failed_action_output_has_error(world: World) -> None:
+    bad = {"type": "command", "run": "cat > /dev/null; exit 3", "blocking": True}
+    m = world.manager(world.cfg(hooks={"onDestroy": [bad]}))
+    sid = (await m.create(CreateSessionRequest(prompt="hi")))["session_id"]
+    await wait_turn(m, sid)
+    out = await m.destroy(sid)
+    entry = out["hook_outputs"][0]
+    assert entry["ok"] is False
+    assert entry["error"]
+
+
+async def test_shutdown_emits_destroy_output(world: World) -> None:
+    await test_shutdown_runs_on_destroy_with_null_input(world)
