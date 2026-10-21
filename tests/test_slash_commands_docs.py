@@ -27,7 +27,7 @@ def _section(heading: str, level: str = "##") -> str:
     return match.group(1)
 
 
-def test_readme_slash_commands_section_follows_hook_examples():
+def test_readme_slash_commands_subsections():
     assert README.index("\n## Hook examples\n") < README.index("\n## Slash commands\n")
     body = _section("Slash commands", "##")
     heads = re.findall(r"^### (.+)$", body, re.M)
@@ -68,7 +68,7 @@ def test_hook_examples_mention_auto_compact():
     assert "auto_compact" in mtg
 
 
-def test_config_example_documents_commands_and_auto_compact_at_defaults():
+def test_config_example_documents_command_keys():
     text = (ROOT / "config.example.yaml").read_text()
     lines = text.splitlines()
     start = next(i for i, ln in enumerate(lines) if ln.startswith("sessions:"))
@@ -96,7 +96,7 @@ def test_config_example_documents_commands_and_auto_compact_at_defaults():
     }
 
 
-def test_workbench_example_enables_commands_and_auto_compact():
+def test_workbench_example_enables_commands():
     cfg = load_config(EXAMPLES / "workbench.config.yaml").sessions
     assert cfg.commands.agent == ["compact", "reload-plugins"]
     assert sorted(cfg.commands.client) == sorted(ALL_COMMANDS)
@@ -105,7 +105,7 @@ def test_workbench_example_enables_commands_and_auto_compact():
 
 
 @pytest.mark.parametrize("name", ["tatara", "magic-trainer"])
-def test_project_examples_enable_agent_commands_and_auto_compact(name):
+def test_project_examples_auto_compact(name):
     cfg = load_config(EXAMPLES / f"{name}.config.yaml").sessions
     assert cfg.commands.agent == ["compact", "reload-plugins"]
     assert cfg.auto_compact.idle_seconds == 1800
