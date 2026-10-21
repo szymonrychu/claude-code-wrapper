@@ -56,11 +56,6 @@ def _call(router: Any, params: Any) -> dict[str, Any] | None:
     cmd_params = args.get("params")
     if cmd_params is not None and not isinstance(cmd_params, dict):
         return _tool_result("`params` must be an object", is_error=True)
-    if args["name"] not in router.commands_cfg.agent:
-        allowed = ", ".join(router.commands_cfg.agent)
-        return _tool_result(
-            f"command {args['name']!r} is not allowed; allowed: {allowed}", is_error=True
-        )
     try:
         record = router.request_command(args["name"], cmd_params, origin="agent")
     except CommandRejected as exc:

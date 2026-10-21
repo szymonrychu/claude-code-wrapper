@@ -73,22 +73,14 @@ def create_internal_app(manager: SessionManager) -> FastAPI:
     async def hook(event: str, request: Request) -> JSONResponse:
         if event not in CLAUDE_HOOK_EVENTS:
             raise HTTPException(404, "unknown hook event")
-        if not _is_loopback(request.client.host if request.client else None):
-            raise HTTPException(403, "loopback only")
-        session_id = request.headers.get(HEADER_SESSION, "")
-        token = request.headers.get(HEADER_TOKEN)
-        if not session_id or not manager.hook_token_matches(session_id, token):
-            raise HTTPException(403, "forbidden")
+        router = _authorized_router(manager, request)
+        session_id = request.headers[HEADER_SESSION]
         try:
             payload: Any = await request.json()
         except ValueError:
             raise HTTPException(400, "body must be a JSON object") from None
         if not isinstance(payload, dict):
             raise HTTPException(400, "body must be a JSON object")
-        try:
-            router = manager.router(session_id)
-        except ManagerError:
-            raise HTTPException(403, "forbidden") from None
 
         delivery = request.headers.get(HEADER_DELIVERY)
         if not delivery:

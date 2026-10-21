@@ -63,7 +63,7 @@ def mgr() -> FakeManager:
     return FakeManager(["compact", "reload-plugins"])
 
 
-async def test_auth_and_loopback(mgr: FakeManager) -> None:
+async def test_mcp_requires_session_token(mgr: FakeManager) -> None:
     async with client(mgr) as c:
         assert (await c.post("/internal/mcp", json=rpc("ping"))).status_code == 403
         bad = {**H, "X-CCW-Hook-Token": "x"}
@@ -74,13 +74,13 @@ async def test_auth_and_loopback(mgr: FakeManager) -> None:
         assert (await c.post("/internal/mcp", json=rpc("ping"), headers=H)).status_code == 403
 
 
-async def test_get_delete_405(mgr: FakeManager) -> None:
+async def test_get_and_delete_return_405(mgr: FakeManager) -> None:
     async with client(mgr) as c:
         assert (await c.get("/internal/mcp", headers=H)).status_code == 405
         assert (await c.delete("/internal/mcp", headers=H)).status_code == 405
 
 
-async def test_parse_and_batch_errors(mgr: FakeManager) -> None:
+async def test_unknown_methods_and_bad_messages(mgr: FakeManager) -> None:
     async with client(mgr) as c:
         r = await c.post("/internal/mcp", content=b"{nope", headers=H)
         assert r.json()["error"]["code"] == -32700
@@ -88,13 +88,16 @@ async def test_parse_and_batch_errors(mgr: FakeManager) -> None:
         assert r.json()["error"]["code"] == -32600
         r = await c.post("/internal/mcp", json="x", headers=H)
         assert r.json()["error"]["code"] == -32600
+        for m in ("server/discover", "resources/list", "nope"):
+            r = await c.post("/internal/mcp", json=rpc(m), headers=H)
+            assert r.json()["error"]["code"] == -32601
 
 
 @pytest.mark.parametrize(
     ("asked", "echoed"),
     [("2025-11-25", "2025-11-25"), ("2025-03-26", "2025-03-26"), ("1999-01-01", "2025-06-18")],
 )
-async def test_initialize(mgr: FakeManager, asked: str, echoed: str) -> None:
+async def test_initialize_returns_instructions(mgr: FakeManager, asked: str, echoed: str) -> None:
     async with client(mgr) as c:
         r = await c.post(
             "/internal/mcp", json=rpc("initialize", {"protocolVersion": asked}), headers=H
@@ -108,31 +111,21 @@ async def test_initialize(mgr: FakeManager, asked: str, echoed: str) -> None:
     assert r.json()["id"] == 1
 
 
-async def test_notification_202(mgr: FakeManager) -> None:
+async def test_notification_returns_202_and_ping(mgr: FakeManager) -> None:
     async with client(mgr) as c:
         r = await c.post("/internal/mcp", json=rpc("notifications/initialized", id=None), headers=H)
-    assert r.status_code == 202 and r.content == b""
-
-
-async def test_ping(mgr: FakeManager) -> None:
-    async with client(mgr) as c:
+        assert r.status_code == 202 and r.content == b""
         r = await c.post("/internal/mcp", json=rpc("ping"), headers=H)
     assert r.json()["result"] == {}
 
 
-async def test_tools_list(mgr: FakeManager) -> None:
+async def test_tools_list_enum_from_agent_allowlist(mgr: FakeManager) -> None:
     async with client(mgr) as c:
         r = await c.post("/internal/mcp", json=rpc("tools/list"), headers=H)
     tools = r.json()["result"]["tools"]
     assert [t["name"] for t in tools] == ["command"]
     assert tools[0]["description"]
     assert tools[0]["inputSchema"] == params_schema(["compact", "reload-plugins"])
-
-
-async def test_tools_list_empty_allowlist() -> None:
-    async with client(FakeManager([])) as c:
-        r = await c.post("/internal/mcp", json=rpc("tools/list"), headers=H)
-    assert r.json()["result"]["tools"] == []
 
 
 async def call(c: httpx.AsyncClient, name: str, args: Any) -> dict[str, Any]:
@@ -142,7 +135,7 @@ async def call(c: httpx.AsyncClient, name: str, args: Any) -> dict[str, Any]:
     return r.json()
 
 
-async def test_call_success(mgr: FakeManager) -> None:
+async def test_tools_call_queues_command(mgr: FakeManager) -> None:
     async with client(mgr) as c:
         body = await call(c, "command", {"name": "compact", "params": {"instructions": "x"}})
     res = body["result"]
@@ -155,48 +148,35 @@ async def test_call_success(mgr: FakeManager) -> None:
         }
     ]
     assert mgr.r.calls == [("compact", {"instructions": "x"}, "agent")]
-
-
-async def test_call_rejected(mgr: FakeManager) -> None:
-    mgr.r.reject = CommandRejected("queue_full", "queue is full")
-    async with client(mgr) as c:
-        body = await call(c, "command", {"name": "compact"})
-    assert body["result"]["isError"] is True
-    assert body["result"]["content"][0]["text"] == "queue is full"
-
-
-async def test_call_not_in_allowlist_rejected_by_router(mgr: FakeManager) -> None:
-    mgr.r.reject = CommandRejected("not_allowed", "command 'cost' is not allowed")
-    async with client(mgr) as c:
-        body = await call(c, "command", {"name": "cost"})
-    assert body["result"]["isError"] is True
-
-
-async def test_call_bad_arguments(mgr: FakeManager) -> None:
-    async with client(mgr) as c:
-        for args in (None, [], {}, {"name": 3}, {"name": "compact", "params": 5}):
-            body = await call(c, "command", args)
-            assert body["result"]["isError"] is True, args
-    assert mgr.r.calls == []
-
-
-async def test_call_empty_allowlist() -> None:
-    m = FakeManager([])
-    async with client(m) as c:
-        body = await call(c, "command", {"name": "compact"})
-    assert body["result"]["isError"] is True
-    assert body["result"]["content"][0]["text"] == "ccw commands are disabled for this session"
-    assert m.r.calls == []
-
-
-async def test_call_other_tool(mgr: FakeManager) -> None:
     async with client(mgr) as c:
         body = await call(c, "other", {})
     assert body["error"]["code"] == -32602
 
 
-async def test_unknown_methods(mgr: FakeManager) -> None:
+async def test_tools_call_rejections_are_tool_errors(mgr: FakeManager) -> None:
     async with client(mgr) as c:
-        for m in ("server/discover", "resources/list", "nope"):
-            r = await c.post("/internal/mcp", json=rpc(m), headers=H)
-            assert r.json()["error"]["code"] == -32601
+        for args in (None, [], {}, {"name": 3}, {"name": "compact", "params": 5}):
+            body = await call(c, "command", args)
+            assert body["result"]["isError"] is True, args
+        assert mgr.r.calls == []
+        for code, msg, name in (
+            ("unknown_params", "unknown params; allowed: instructions", "compact"),
+            ("not_allowed", "/cost is not allowed for agent; allowed: compact", "cost"),
+            ("queue_full", "queue is full", "compact"),
+        ):
+            mgr.r.reject = CommandRejected(code, msg)
+            body = await call(c, "command", {"name": name})
+            assert body["result"]["isError"] is True
+            assert body["result"]["content"][0]["text"] == msg
+    assert mgr.r.calls == []
+
+
+async def test_disabled_session_has_no_tools() -> None:
+    m = FakeManager([])
+    async with client(m) as c:
+        r = await c.post("/internal/mcp", json=rpc("tools/list"), headers=H)
+        assert r.json()["result"]["tools"] == []
+        body = await call(c, "command", {"name": "compact"})
+    assert body["result"]["isError"] is True
+    assert body["result"]["content"][0]["text"] == "ccw commands are disabled for this session"
+    assert m.r.calls == []
