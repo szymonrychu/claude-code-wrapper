@@ -1,6 +1,6 @@
 ---
 title: Epic review fixes
-status: todo
+status: in-progress
 repo: .
 value: Closes the fail-open and hardening findings of the epic review before the epic closes
 files: [src/claude_code_wrapper/router.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/manager.py, src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py, tests/test_epic_review_fixes.py, README.md]
@@ -12,8 +12,8 @@ model: sonnet
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/hook-capabilities-for-tatara--epic-review-fixes
+branch: hook-capabilities-for-tatara--epic-review-fixes
 verified_head: ""
 run: ""
 provides: []
