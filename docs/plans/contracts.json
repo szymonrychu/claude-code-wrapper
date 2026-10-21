@@ -22,5 +22,13 @@
     "file": "src/claude_code_wrapper/events.py",
     "consumers": [],
     "note": "EVENT_TYPES gains turn_continued, turn_deferred, usage, turn_resumed, destroy_output"
+  },
+  {
+    "name": "hook-context-env-vars",
+    "kind": "interface",
+    "owner": "hook-capabilities-for-tatara",
+    "file": "src/claude_code_wrapper/hooks.py",
+    "consumers": [],
+    "note": "command action env: full service env plus CCW_STATE_DIR and CCW_API_URL"
   }
 ]
