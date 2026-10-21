@@ -1,6 +1,7 @@
 """Seed `<CLAUDE_CONFIG_DIR>/.claude.json` so sessions boot without dialogs."""
 
 import contextlib
+import copy
 import json
 import os
 import tempfile
@@ -55,8 +56,24 @@ def _load(path: Path) -> dict[str, Any]:
     return data
 
 
+#: Env references claude expands itself, so the hook token is never written to a file.
+CCW_MCP_ENTRY: dict[str, Any] = {
+    "type": "http",
+    "url": "${CCW_INTERNAL_URL}/internal/mcp",
+    "headers": {
+        "X-CCW-Session": "${CCW_SESSION_ID}",
+        "X-CCW-Hook-Token": "${CCW_HOOK_TOKEN}",
+    },
+    "alwaysLoad": True,
+}
+
+
 def seed_claude_json(
-    config_dir: str | Path, workdir: str | Path, claude_cfg: ClaudeConfig, env: Any
+    config_dir: str | Path,
+    workdir: str | Path,
+    claude_cfg: ClaudeConfig,
+    env: Any,
+    ccw_mcp: bool = False,
 ) -> Path:
     config_dir = ensure_config_dir(config_dir)
     target = config_dir / ".claude.json"
@@ -101,5 +118,11 @@ def seed_claude_json(
                 }
 
     _deep_merge(data, claude_cfg.claude_json)
+    if ccw_mcp:
+        data.setdefault("mcpServers", {})["ccw"] = copy.deepcopy(CCW_MCP_ENTRY)
+    elif (
+        isinstance(data.get("mcpServers"), dict) and data["mcpServers"].get("ccw") == CCW_MCP_ENTRY
+    ):
+        del data["mcpServers"]["ccw"]
     atomic_write(target, json.dumps(data, indent=2))
     return target

@@ -565,6 +565,14 @@ class Config(_Model):
     sessions: SessionsConfig = Field(default_factory=SessionsConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
 
+    @model_validator(mode="after")
+    def _ccw_name_reserved(self) -> Config:
+        if self.sessions.commands.agent and "ccw" in self.claude.mcp_servers:
+            raise _at(
+                "claude.mcp_servers.ccw", "the name ccw is reserved for the ccw command server"
+            )
+        return self
+
     def redacted(self) -> dict[str, Any]:
         """JSON-able dump with secrets replaced by `***`."""
         out = self.model_dump(mode="json")

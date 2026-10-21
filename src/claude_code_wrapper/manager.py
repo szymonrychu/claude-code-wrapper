@@ -377,6 +377,7 @@ class SessionManager:
             req = CreateSessionRequest.model_validate(req)
         self._check_open()
         initial = self._initial_prompt(req)
+        self._check_reserved_mcp(req)
         override = req.env if req.env is not None else ClaudeEnv()
         claude_env = self._merge_env(override)
         self._check_capacity()
@@ -495,6 +496,7 @@ class SessionManager:
 
     async def _bootstrap(self, ctx: _Active) -> None:
         """Config-dir rendering, plugins and settings: run by create and by resume."""
+        ccw_mcp = bool(self._commands_for(ctx.meta).agent)
         await self._step(ctx, "ensure_config_dir", ensure_config_dir, ctx.config_dir)
         await self._step(
             ctx,
@@ -504,6 +506,7 @@ class SessionManager:
             ctx.workdir,
             self.cfg.claude,
             ctx.claude_env,
+            ccw_mcp,
         )
         await self._step(
             ctx, "write_instructions", write_instructions, ctx.config_dir, self.cfg.prompts
@@ -519,6 +522,7 @@ class SessionManager:
             ctx.config_dir,
             self.cfg,
             self._relay_command,
+            ccw_mcp,
         )
 
     async def _launch(self, ctx: _Active, *, resume: bool) -> None:
@@ -1092,6 +1096,15 @@ class SessionManager:
     def _check_open(self) -> None:
         if self._closing:
             raise InvalidState(None, "shutting_down", "the service is shutting down")
+
+    def _check_reserved_mcp(self, req: CreateSessionRequest) -> None:
+        override = req.commands
+        if override is None or not override.agent or "ccw" not in self.cfg.claude.mcp_servers:
+            return
+        raise InvalidRequest(
+            "commands.agent: claude.mcp_servers.ccw: "
+            "the name ccw is reserved for the ccw command server"
+        )
 
     def _check_capacity(self) -> None:
         live = sum(ctx.phase in ("creating", "running") for ctx in self._active.values())

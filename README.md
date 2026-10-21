@@ -1628,7 +1628,7 @@ claude:
 | `claude.permissions.deny` | list | `["EnterPlanMode", "ExitPlanMode"]` | - | List of deny rules. Plan-mode tools are denied by default. |
 | `claude.settings` | map | `{}` | - | Map deep-merged into `settings.json`; hook lists are appended to the service's own hooks. |
 | `claude.claude_json` | map | `{}` | - | Map deep-merged into `.claude.json` in the session config dir. |
-| `claude.mcp_servers` | map | `{}` | - | Map of server name to definition. Stdio: `{type: stdio, command, args: [], env: {}}`. Remote: `{type: http\|sse, url, headers: {}}`. Header values and secret-looking env values are masked. |
+| `claude.mcp_servers` | map | `{}` | - | Map of server name to definition. Stdio: `{type: stdio, command, args: [], env: {}}`. Remote: `{type: http\|sse, url, headers: {}}`. Header values and secret-looking env values are masked. The name `ccw` is reserved: while `sessions.commands.agent` is non-empty (config or create override) the service injects its own `ccw` server (`${CCW_INTERNAL_URL}/internal/mcp`, with the session id and hook token passed as env references, so the token is never written to a file) and adds `mcp__ccw__command` to `permissions.allow`; a user entry named `ccw` is then a config error (a 422 at create for an override). |
 | `claude.config_files` | list | `[]` | - | List of `{source, target}` files or directories copied into the session `CLAUDE_CONFIG_DIR`; `target` is relative without `..`. |
 | `claude.boot.timeout_seconds` | number | `60` | - | Give up on boot after this many seconds (> 0). |
 | `claude.boot.min_boot_seconds` | number | `4.0` | - | Never report ready sooner than this. |
