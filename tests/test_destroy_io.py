@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import World, wait_turn, wait_until
+from conftest import World, wait_turn
 from fastapi.testclient import TestClient
 
 from claude_code_wrapper.api.app import create_app
