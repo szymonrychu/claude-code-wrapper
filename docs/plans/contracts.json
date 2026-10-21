@@ -30,5 +30,13 @@
     "file": "src/claude_code_wrapper/hooks.py",
     "consumers": [],
     "note": "command action env: full service env plus CCW_STATE_DIR and CCW_API_URL"
+  },
+  {
+    "name": "command-request-api",
+    "kind": "interface",
+    "owner": "agent-callable-slash-command",
+    "file": "src/claude_code_wrapper/router.py",
+    "consumers": [],
+    "note": "SessionRouter.request_command(name, params=None, *, origin agent|client|idle) -> CommandRecord; raises commands.CommandRejected(code, message)"
   }
 ]
