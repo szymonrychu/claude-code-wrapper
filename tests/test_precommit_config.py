@@ -1,4 +1,4 @@
-"""The pre-commit gate: config shape and the mise task that runs it."""
+"""Checks the pre-commit config shape and the mise precommit task."""
 
 import tomllib
 from pathlib import Path
