@@ -30,6 +30,7 @@ def test_event_types_exact():
         "probe",
         "hook_result",
         "error",
+        "destroy_output",
         "session_closed",
     ]
 
