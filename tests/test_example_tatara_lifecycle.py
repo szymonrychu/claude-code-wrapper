@@ -73,7 +73,7 @@ def run_script(sub: str, stdin: dict | None = None, **env: str) -> subprocess.Co
 # ---------------------------------------------------------------- config
 
 
-def test_pod_policy_config(monkeypatch):
+def test_tatara_config_lifecycle_options(monkeypatch):
     for name in ("MODEL", "EFFORT", "PERMISSION_MODE", "BRANCH_PUSH_INTERVAL_SECONDS"):
         monkeypatch.delenv(name, raising=False)
     ex = example({})
@@ -198,7 +198,7 @@ def test_ttl_gate_without_ttl_always_allows(tmp_path):
     assert gate(state) in (None, {"decision": "allow"})
 
 
-async def test_ttl_gate_vetoes_turns_through_ccw(world: World, monkeypatch):
+async def test_ttl_gate_admits_one_handoff(world: World, monkeypatch):
     monkeypatch.setenv("AGENT_POD_TTL_SECONDS", "1")
     ex = example({})
     scenario = {"turns": [{"match": "go", "steps": [{"text": "ok"}]}]}
@@ -222,7 +222,7 @@ async def test_ttl_gate_vetoes_turns_through_ccw(world: World, monkeypatch):
 # ---------------------------------------------------------------- safety push
 
 
-async def test_safety_push_pushes_task_branch_never_commits(world: World, monkeypatch, tmp_path):
+async def test_safety_push_on_tick(world: World, monkeypatch, tmp_path):
     monkeypatch.setenv("TASK_BRANCH", "task/7")
     bare = make_remote(tmp_path, "acme", "app")
     ex = example({"BRANCH_PUSH_INTERVAL_SECONDS": "0.3"})
@@ -338,7 +338,7 @@ def test_metrics_push_unreachable_operator_exits_nonzero(operator):
     assert run.returncode == 1 and run.stderr.strip()
 
 
-async def test_metrics_push_ticks_through_ccw(world: World, operator, monkeypatch):
+async def test_metrics_push_posts_scrape(world: World, operator, monkeypatch):
     ex = example({})
     tick = [dict(t, interval_seconds=0.3) for t in ex["hooks"]["onTick"] if "metrics" in t["run"]]
     monkeypatch.setenv("OPERATOR_PUSH_URL", operator.url + "/push")
@@ -374,7 +374,7 @@ def bootstrap(workdir: Path, cfgdir: Path, **env: str) -> subprocess.CompletedPr
     )
 
 
-def test_bootstrap_single_repo_creates_task_branch_from_base(tmp_path):
+def test_bootstrap_clones_into_owner_repo_layout(tmp_path):
     bare = make_remote(tmp_path, "acme", "app", branches=("dev",))
     wd, cfg = tmp_path / "wd", tmp_path / "cfg"
     run = bootstrap(wd, cfg, REPO_URL=url(bare), REPO_BRANCH="dev", TASK_BRANCH="task/1")
