@@ -333,3 +333,4 @@ none
 ## Irreversible operations in scope
 
 none
+- orchestrator ruling 2026-10-21: dropped discovered task confirm-the-public-command-e: it duplicates commands-public-endpoint, whose requirement already maps CommandRejected invalid_state to 409.
