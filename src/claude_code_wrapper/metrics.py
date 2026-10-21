@@ -60,6 +60,25 @@ class Metrics:
         self._tokens = Counter(
             "ccw_turn_tokens_total", "Tokens used by turns.", ["model", "kind"], registry=reg
         )
+        self._http_requests = Counter(
+            "ccw_http_requests_total",
+            "Public API responses.",
+            ["route", "method", "status_code"],
+            registry=reg,
+        )
+        self._http_panics = Counter(
+            "ccw_http_panics_total", "Unhandled exceptions in handlers.", registry=reg
+        )
+        self._probe_outcomes = Counter(
+            "ccw_probe_outcomes_total", "Probe outcomes.", ["outcome"], registry=reg
+        )
+        self._probe_answer = Histogram(
+            "ccw_probe_answer_seconds", "Probe created to answered.", registry=reg
+        )
+        self._stalls = Counter("ccw_stall_suspected_total", "Stall reports.", registry=reg)
+        self._interrupts = Counter(
+            "ccw_interrupts_total", "Interrupts by result.", ["result"], registry=reg
+        )
         self._tools_seen: set[str] = set()
 
     # ------------------------------------------------------------------ sessions
@@ -102,6 +121,30 @@ class Metrics:
 
     def claude_restart(self) -> None:
         self._restarts.inc()
+
+    # ------------------------------------------------------------------ http, probes, stalls
+
+    def http_request(self, route: str, method: str, status_code: int) -> None:
+        self._http_requests.labels(route, method, str(status_code)).inc()
+
+    def http_panic(self) -> None:
+        self._http_panics.inc()
+
+    def probe_outcome(self, outcome: str, seconds: float | None = None) -> None:
+        """`sent`, `rejected`, `delivered` or `answered` (with the created-to-answered seconds)."""
+        self._probe_outcomes.labels(outcome).inc()
+        if seconds is not None:
+            self._probe_answer.observe(seconds)
+
+    def probe_answered(self, probe: Any) -> None:
+        self.probe_outcome("answered", _seconds_between(probe.created_at, probe.answered_at))
+
+    def stall_suspected(self) -> None:
+        self._stalls.inc()
+
+    def interrupt(self, result: str) -> None:
+        """`interrupted`, `timeout` or `idle` (no running turn)."""
+        self._interrupts.labels(result).inc()
 
     # ------------------------------------------------------------------ exposition
 
