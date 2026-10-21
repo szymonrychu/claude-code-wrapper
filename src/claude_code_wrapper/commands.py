@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
-import re
 import uuid
 from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from claude_code_wrapper.config import BUILTIN_COMMAND_NAMES, CommandsConfig, CommandsOverride
+from claude_code_wrapper.config import (
+    BUILTIN_COMMAND_NAMES,
+    INSTRUCTIONS_CONTROL,
+    MAX_INSTRUCTIONS,
+    CommandsConfig,
+    CommandsOverride,
+)
 from claude_code_wrapper.turns import now_iso
 
 MAX_QUEUED = 4
 MAX_KEPT = 100
-MAX_INSTRUCTIONS = 2000
-_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
 
 #: name -> {param: (json type, description, required)}
 BUILTIN_COMMANDS: dict[str, dict[str, tuple[str, str, bool]]] = {
@@ -76,7 +79,7 @@ def validate_params(name: str, params: Mapping[str, Any] | None, *, allow_force:
     out = dict(params)
     if name == "compact" and "instructions" in out:
         text = out["instructions"]
-        if _CONTROL.search(text):
+        if INSTRUCTIONS_CONTROL.search(text):
             raise CommandRejected(
                 "invalid_params",
                 "/compact: instructions must be one line without control characters",

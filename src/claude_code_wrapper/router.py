@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import sys
 import time
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import asdict, dataclass
@@ -244,6 +245,19 @@ class SessionRouter(SessionListener):
         self._current: CommandRecord | None = None
         #: The running turn whose Stop was answered while its slash commands run (D4).
         self._commands_turn: TurnRecord | None = None
+        #: Idle auto-compact (D6): the pending timer, whether this idle gap may still fire, and
+        #: the context size (input + cache tokens) of the last main-chain Usage.
+        self._ac_handle: asyncio.TimerHandle | None = None
+        self._ac_armed = False
+        self._last_context: int | None = None
+        #: Monotonic time of the last event that is not an idle-origin command's.
+        self._last_real = time.monotonic()
+        #: While idle-origin commands run: the seq of the first event and whether only idle
+        #: commands ran. Their events are no activity (idle clock, reaper).
+        self._idle_start: int | None = None
+        self._idle_only = True
+        #: Inclusive (first, last) event seq ranges of finished idle-only command runs.
+        self._idle_spans: list[tuple[int, int]] = []
         # The dispatcher is built before the router; route its per-action results here.
         if getattr(dispatcher, "_on_result", None) is None:
             dispatcher._on_result = self.on_hook_result
@@ -276,6 +290,8 @@ class SessionRouter(SessionListener):
         return self._watcher
 
     def _emit(self, type: str, data: Mapping[str, Any] | None = None) -> LogEvent:
+        if self._idle_start is None or not self._idle_only:
+            self._last_real = time.monotonic()
         return self._event_log.append(type, self._redactor.redact_obj(dict(data or {})))
 
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
@@ -701,6 +717,7 @@ class SessionRouter(SessionListener):
 
     async def _after_turn(self, record: TurnRecord, event: LogEvent) -> None:
         """onTurnComplete (any terminal state) and the callback delivery."""
+        self._arm_auto_compact()
         outcome = await self._fire(
             "onTurnComplete", record.model_dump(mode="json", by_alias=True), turn_id=record.turn_id
         )
@@ -717,6 +734,7 @@ class SessionRouter(SessionListener):
         metadata: Mapping[str, Any] | None = None,
     ) -> TurnRecord:
         self.session.check_submittable()  # a doomed turn fires no hooks
+        self._cancel_auto_compact()
         turn_id = new_turn_id()
         outcome = await self._fire(
             "onTurn",
@@ -802,6 +820,12 @@ class SessionRouter(SessionListener):
                     {"text": ev.text, "message_id": ev.message_id, "agent_id": ev.agent_id},
                 )
             elif isinstance(ev, Usage):
+                if not ev.sidechain and ev.agent_id is None:
+                    self._last_context = (
+                        ev.input_tokens
+                        + ev.cache_read_input_tokens
+                        + ev.cache_creation_input_tokens
+                    )
                 if self._usage.add(ev):
                     self._emit(
                         "usage",
@@ -886,12 +910,19 @@ class SessionRouter(SessionListener):
         validate_params(name, params, allow_force=self.commands_cfg.allow_force)
         if self.session.state not in ("ready", "busy"):
             raise CommandRejected("invalid_state", f"session is {self.session.state}")
+        if origin != "idle":
+            self._cancel_auto_compact()
+            self._idle_only = False  # from here on the events count as activity
         turn = self.session.current_turn
         record, new = self.commands.request(
             name, params, origin=origin, turn_id=turn.turn_id if turn is not None else None
         )
         if new:
-            self._emit_command("command_queued", record)
+            if record.origin == "idle" and self._idle_start is None:
+                self._idle_only = True
+                self._idle_start = self._emit_command("command_queued", record).seq
+            else:
+                self._emit_command("command_queued", record)
         self._start_idle_runner()
         return record
 
@@ -1003,6 +1034,68 @@ class SessionRouter(SessionListener):
             self._abort = None
             self._current = None
             self.session.end_command()  # no await since the queue was found empty
+            self._close_idle_window()
+
+    def _close_idle_window(self) -> None:
+        """The idle runner is done: its events (up to the ready state) become an idle span."""
+        start, self._idle_start = self._idle_start, None
+        last = self._event_log.last(1)
+        if start is not None and self._idle_only and last:
+            self._idle_spans = [*self._idle_spans[-49:], (start, last[0].seq)]
+
+    def idle_ranges(self) -> list[tuple[int, int]]:
+        """Event seq ranges (inclusive) that are idle-origin command activity, not real activity."""
+        ranges = list(self._idle_spans)
+        if self._idle_start is not None and self._idle_only:
+            ranges.append((self._idle_start, sys.maxsize))
+        return ranges
+
+    # ------------------------------------------------------------------ idle auto-compact
+
+    def _arm_auto_compact(self) -> None:
+        """A turn ended: fire once after `idle_seconds` without activity (D6)."""
+        idle = self._cfg.sessions.auto_compact.idle_seconds
+        self._cancel_auto_compact()
+        if idle <= 0 or self._closed:
+            return
+        self._ac_armed = True
+        self._ac_handle = asyncio.get_running_loop().call_later(idle, self._auto_compact_due)
+
+    def _cancel_auto_compact(self) -> None:
+        self._ac_armed = False
+        if self._ac_handle is not None:
+            self._ac_handle.cancel()
+            self._ac_handle = None
+
+    def _auto_compact_due(self) -> None:
+        self._ac_handle = None
+        cfg = self._cfg.sessions.auto_compact
+        if not self._ac_armed or self._closed:
+            return
+        remaining = cfg.idle_seconds - (time.monotonic() - self._last_real)
+        if remaining > 0.005:  # activity since arming: the gap restarts at the last event
+            self._ac_handle = asyncio.get_running_loop().call_later(
+                remaining, self._auto_compact_due
+            )
+            return
+        self._ac_armed = False  # at most once per idle gap
+        session = self.session
+        if (
+            session.state != "ready"
+            or session.current_turn is not None
+            or self.runner_active
+            or self.commands.next() is not None
+        ):
+            return
+        floor = cfg.min_context_tokens
+        if floor > 0 and (self._last_context is None or self._last_context < floor):
+            log.debug("auto-compact skipped: context %s below %s tokens", self._last_context, floor)
+            return
+        params = {"instructions": cfg.instructions} if cfg.instructions else {}
+        try:
+            self.request_command("compact", params, origin="idle")
+        except CommandRejected as exc:
+            log.warning("auto-compact not queued: %s", exc)
 
     def _abort_runner(self, reason: str) -> asyncio.Task[Any] | None:
         """Cancel the running runner; it fails the in-flight command with `reason` and cancels
@@ -1323,6 +1416,7 @@ class SessionRouter(SessionListener):
         with contextlib.suppress(Exception):
             await self._flush_transcripts()
         self._closed = True
+        self._cancel_auto_compact()
         self._subagents.clear()
         runner = self._abort_runner("session_stopped")
         if runner is not None:

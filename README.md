@@ -2195,6 +2195,11 @@ sessions:
 | `sessions.commands.continue_prompt` | string | `"The slash commands you queued have run. Continue the task you were working on."` | - | Non-empty text that resumes the agent after its queued commands ran, followed by a blank line and the `Command results: ...` line (see [`turn_resumed`](#turn_resumed)). |
 | `sessions.commands.allow_force` | boolean | `false` | - | Allow `force: true` on `reload-plugins` (typed as `--force`). |
 | `sessions.commands.quiet_seconds` | number | `1.5` | - | Seconds of PTY silence to wait for before typing a command, >= 0. |
+| `sessions.auto_compact.idle_seconds` | number | `0` | - | Run `/compact` after the session stayed idle this long following a turn; 0 is off. Must be below `idle_timeout_seconds` when both are set. |
+| `sessions.auto_compact.instructions` | string | `""` | - | One-line focus instructions passed to the automatic `/compact` (max 2000 characters, no control characters); empty sends none. |
+| `sessions.auto_compact.min_context_tokens` | integer | `0` | - | Skip the automatic compact while the last main-chain context (input + cache read + cache creation tokens) is below this many tokens, >= 0; 0 compacts whatever the size. |
+
+Idle auto-compact (`sessions.auto_compact`): a session that ended a turn (any terminal state) and then saw no activity for `idle_seconds` queues one `/compact` with `origin: "idle"`, run on the idle path (the session is `busy` while it runs). It fires at most once per idle gap; the next turn end re-arms it, and a session that never ran a turn is never compacted. A turn or a client or agent command starting cancels the pending timer. With `min_context_tokens` set, a context below it queues nothing (a debug log line, no event). Events of an idle-origin command (its `command_*` events and everything emitted while it runs) do not count as activity, neither for the auto-compact clock nor for `idle_timeout_seconds`, so an automatic compact never keeps a session alive. Exit policies are unaffected, and shutdown during an automatic compact abandons it.
 
 ### `limits`
 
