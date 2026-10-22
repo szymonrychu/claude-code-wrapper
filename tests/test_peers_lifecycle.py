@@ -89,7 +89,7 @@ async def mesh():
     await t.aclose()
 
 
-async def test_enabled_session_has_peer_bootstrap(world: World, mesh: Mesh) -> None:
+async def test_enabled_session_wiring(world: World, mesh: Mesh) -> None:
     a = await spawn(world, mesh, "a", [])
     sid = (await a.create(CreateSessionRequest()))["session_id"]
     env = jsonl(world.log)[-1]["env"]
@@ -102,7 +102,7 @@ async def test_enabled_session_has_peer_bootstrap(world: World, mesh: Mesh) -> N
     assert "mcp__ccw__peers" in (cfgdir / "CLAUDE.md").read_text()
 
 
-async def test_peers_tool_lists_other_manager_not_self(world: World, mesh: Mesh) -> None:
+async def test_peers_tool_lists_other_manager(world: World, mesh: Mesh) -> None:
     sc = {"turns": [PEERS_TOOL]}
     a = await spawn(world, mesh, "a", ["b"], sc)
     b = await spawn(world, mesh, "b", ["a"], sc)
@@ -122,7 +122,7 @@ def listing(m: SessionManager) -> list[dict]:
     return m.peers.table.sessions()
 
 
-async def test_destroy_removes_session_from_other_side(world: World, mesh: Mesh) -> None:
+async def test_destroy_unregisters(world: World, mesh: Mesh) -> None:
     a = await spawn(world, mesh, "a", ["b"])
     b = await spawn(world, mesh, "b", ["a"])
     sb = (await b.create(CreateSessionRequest()))["session_id"]
@@ -131,7 +131,7 @@ async def test_destroy_removes_session_from_other_side(world: World, mesh: Mesh)
     await world.until(lambda: not any(r["session_id"] == sb for r in listing(a)), what="gone")
 
 
-async def test_vetoed_create_is_never_registered(world: World, mesh: Mesh) -> None:
+async def test_vetoed_and_early_creates(world: World, mesh: Mesh) -> None:
     deny = {
         "type": "command",
         "run": 'echo \'{"decision": "deny", "reason": "no"}\'',
@@ -142,9 +142,6 @@ async def test_vetoed_create_is_never_registered(world: World, mesh: Mesh) -> No
         await a.create(CreateSessionRequest())
     assert a.peers is not None
     assert a.peers._sessions == {}
-
-
-async def test_create_while_joining_is_rejected(world: World) -> None:
     m = world.manager(peers_cfg(world, "a", []))
     with pytest.raises(InvalidState, match="peers joining"):
         await m.create(CreateSessionRequest())
@@ -152,9 +149,7 @@ async def test_create_while_joining_is_rejected(world: World) -> None:
         await m.resume("ses_0123456789ab")
 
 
-async def test_peers_disabled_writes_nothing_and_fires_nothing(
-    world: World, mesh: Mesh, tmp_path: Path
-) -> None:
+async def test_disabled_changes_nothing(world: World, mesh: Mesh, tmp_path: Path) -> None:
     rec = tmp_path / "rec.txt"
     hook = {"type": "command", "run": f"cat >> '{rec}'"}
     m = world.manager(
