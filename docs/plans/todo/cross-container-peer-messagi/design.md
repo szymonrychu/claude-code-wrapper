@@ -4,10 +4,11 @@
 
 ccw gets its own peer messaging for the main agents of its sessions, working across containers,
 nodes and clusters. An opt-in `peers:` section (off by default, zero change when off) turns it on.
-Discovery is membership between ccw instances: each instance joins the mesh through signed
-`POST /v1/peers/join` calls to a static seed list (`peers.static`, extendable with
-`ccw serve --peer URL`), learns the other members from the answers, keeps the reachable list up to
-date with signed heartbeats, and leaves with `POST /v1/peers/leave`. Join runs before any session
+Discovery is membership between ccw instances over one signed route, `POST /v1/peers/heartbeat`
+(D16): each instance joins the mesh with a first heartbeat round to a static seed list
+(`peers.static`, extendable with `ccw serve --peer URL`), learns the other members from the
+answers, keeps the reachable list up to date with further heartbeats, and leaves with a final
+`leaving: true` heartbeat. There is no join or leave endpoint. Join runs before any session
 exists; leave runs before any session's onDestroy. New instance-level hooks preJoin, postJoin,
 preLeave and postLeave frame both. The ccw MCP server gains `peers` and `send_message`; a send is
 an HMAC-signed POST to the target instance (the shared peer token is the signing key and never
@@ -22,22 +23,22 @@ must talk to each other. The first plan used Claude Code's native peer messaging
 on a shared mount; the user rejected it because a Unix socket never crosses a node, even on RWX
 CephFS. User decision: "go with custom tooling". The second plan used a shared folder of
 heartbeat files for discovery; the user rejected that too and specified membership over the
-wrapper's HTTP API (D5, verbatim).
+wrapper's HTTP API (D5, verbatim), then judged join and leave endpoints redundant with the static
+list and kept the heartbeat only (D16, verbatim).
 
 ## Goals
 
 - `peers.enabled: false` (the default): argv, env, settings.json, .claude.json, CLAUDE.md, the
   mounted routes, the hook events that fire, the MCP tool list and outbound traffic are exactly as
   today.
-- `peers.enabled: true`: on startup the instance runs preJoin, joins every seed and known member,
-  and runs postJoin, before any session can be created; on shutdown (SIGTERM, container stop, the
-  exit-when-last-destroyed policy) it runs preLeave, leaves every known member and runs postLeave,
-  before any session's onDestroy.
-- One reachable seed is enough: join and heartbeat answers carry the member list, so the mesh
-  converges.
+- `peers.enabled: true`: on startup the instance runs preJoin, heartbeats every seed and known
+  member, and runs postJoin, before any session can be created; on shutdown (SIGTERM, container
+  stop, the exit-when-last-destroyed policy) it runs preLeave, sends a `leaving: true` heartbeat to
+  every known member and runs postLeave, before any session's onDestroy.
+- One reachable seed is enough: heartbeat answers carry the member list, so the mesh converges.
 - Heartbeats keep the reachable list current: a member missing `max_missed_heartbeats`
-  consecutive heartbeats is dropped, a leave drops it at once, and a dropped member that
-  heartbeats again is re-added.
+  consecutive heartbeats is dropped, a leaving heartbeat drops it at once, and a dropped member
+  that heartbeats again is re-added.
 - `mcp__ccw__peers` lists the sessions of reachable members other than the caller;
   `mcp__ccw__send_message` delivers to a peer session or returns a clear error.
 - A delivered message is a new turn on the target session, in arrival order, never typed into a
@@ -200,22 +201,21 @@ Interpretation (all of it my call unless quoted above):
 
 - Membership is per instance (container), keyed by instance name, each member `{instance, url,
   sessions: [{session_id, name, cwd}], last_seen, missed}`.
-- Routes (signed, D6): `POST /v1/peers/join` body `{instance, url, sessions, members}` answers 200
-  with the target's view `{instance, url, sessions, members: [{instance, url}]}`; `POST
-  /v1/peers/heartbeat` same body and answer; `POST /v1/peers/leave` body `{instance, url}` answers
-  204. A join or heartbeat from a member adds or refreshes it as reachable with the sessions it
-  reported; a leave removes it at once. A known name with a new url takes the new url (a restarted
-  container).
-- Sessions are only taken from a member's own report (its join, heartbeat, or its answer to ours);
+- Route (signed, D6; heartbeat only, D16): `POST /v1/peers/heartbeat` body `{instance, url,
+  sessions, members, leaving}` answers 200 with the target's view `{instance, url, sessions,
+  members: [{instance, url}]}`. A heartbeat from a member adds or refreshes it as reachable with the
+  sessions it reported; a heartbeat with `leaving: true` removes it at once. A known name with a
+  new url takes the new url (a restarted container). There is no join or leave route.
+- Sessions are only taken from a member's own report (its heartbeat, or its answer to ours);
   `members` lists are gossip of `{instance, url}` used only to learn whom to contact. A member is
   reachable only after a direct successful exchange. One reachable seed is therefore enough and
   the mesh converges within a few heartbeats.
 - Startup: after the ports are bound and before the manager accepts creates, ccw fires preJoin
   (VETO: a deny means this instance stays standalone, logged, counted and noted in the postJoin
-  input), POSTs join to every seed and known url concurrently, each bounded by
-  `join_timeout_seconds`, then fires postJoin with `{instance, url, members, failures}`. Failed
-  seeds stay in the contact list and are retried by every heartbeat. Startup never waits longer
-  than the hook timeouts plus `join_timeout_seconds`.
+  input), runs the first heartbeat round (the join) to every seed and known url concurrently, each
+  bounded by `join_timeout_seconds`, then fires postJoin with `{instance, url, members,
+  failures}`. Failed seeds stay in the contact list and are retried by every heartbeat. Startup
+  never waits longer than the hook timeouts plus `join_timeout_seconds`.
 - Heartbeat: every `heartbeat_seconds` the instance POSTs its view and sessions to every known
   url concurrently (timeout `heartbeat_seconds`), merges the answers, counts a miss per failure; a
   member with `max_missed_heartbeats` consecutive misses leaves the reachable list (its url stays a
@@ -223,12 +223,14 @@ Interpretation (all of it my call unless quoted above):
   (debounced to at most one in flight) so peers learn it promptly. A standalone (preJoin-denied)
   instance does not heartbeat but still answers others.
 - Shutdown: before any session's onDestroy (SIGTERM, container stop, `exit_when_last_destroyed`,
-  `exit_when_dead`), ccw fires preLeave (observe-only: its decision is ignored, annotations kept),
-  POSTs leave to every known member concurrently bounded by `join_timeout_seconds`, fires postLeave
-  with `{instance, url, members, failures}`, and stops heartbeating, then the sessions shut down.
+  `exit_when_dead`), ccw stops the heartbeat loop, fires preLeave (observe-only: its decision is
+  ignored, annotations kept), POSTs a final `leaving: true` heartbeat (no sessions) to every known
+  member concurrently bounded by `join_timeout_seconds`, and fires postLeave with `{instance, url,
+  members, failures}`, then the sessions shut down.
   For `exit_when_last_destroyed` the leave runs before the last session's onDestroy when that
   destroy will empty the service (my call: the destroy path checks the policy first).
-- The member table is bounded (1024 members, my call; joins beyond it are 429 `rate_limited`).
+- The member table is bounded (1024 members, my call; a new member beyond it gets 429
+  `rate_limited`).
 - All membership I/O runs as background tasks or with bounded timeouts; the session lifecycle
   and the event loop never wait on a peer beyond the join and leave bounds above.
 
@@ -237,9 +239,9 @@ Serves E.
 ### D6: Peer HTTP API and request signing
 
 Mounted on the public app only when enabled, outside the `/v1` bearer dependency, all under
-`/v1/peers/`: `join`, `heartbeat`, `leave` (D5), `messages` (body `{from, to_session, message,
-msg_id, notify_when_idle}`, 202 `{msg_id, queued}`) and `notices` (body `{from, to_session,
-msg_id, status, state, reason}`, 202). Signing (D13) is the only auth; a bearer header never
+`/v1/peers/`: `heartbeat` (D5, D16), `messages` (body `{from, to_session, message, msg_id,
+notify_when_idle}`, 202 `{msg_id, queued}`) and `notices` (body `{from, to_session, msg_id,
+status, state, reason}`, 202). Signing (D13) is the only auth; a bearer header never
 authenticates. The body is capped before parsing at `max_message_bytes + 4096` bytes (413
 `message_too_large`) and the signature is verified over the capped raw bytes before JSON parsing.
 Errors: 401 `unauthorized`, 404 `not_found` (unknown or not-running session), 413
@@ -285,8 +287,8 @@ reason `join`, `heartbeat`, `leave` or `missed_heartbeats`), emitted on every li
 when the reachable list changes (my call: instance-level changes are visible on each session's
 stream). Counters: `ccw_peer_messages_received_total{kind,result}`,
 `ccw_peer_messages_sent_total{kind,result}`, `ccw_peer_messages_delivered_total{kind,result}`,
-`ccw_peer_membership_total{op,result}` (op `join`, `heartbeat`, `leave`, `inbound_join`,
-`inbound_heartbeat`, `inbound_leave`), and the gauge `ccw_peer_members`. Serves G and E.
+`ccw_peer_membership_total{op,result}` (op `join`, `heartbeat`, `leave` for the outbound rounds,
+all heartbeat calls, and `inbound_heartbeat`), and the gauge `ccw_peer_members`. Serves G and E.
 
 ### D10: Compose example
 
@@ -299,9 +301,9 @@ shared volume. Serves J.
 ### D11: README
 
 A `## Peer messaging` section: what it replaces and why; setup (enable, token, names, advertise
-urls, `peers.static` and `--peer`); membership (join, heartbeat, leave, gossip, reachability,
-the startup and shutdown order and their bounds); addressing `<instance>/<session id>`; unique
-names; request signing; delivery and frames; notices; delivery guarantees (at most once, a restart
+urls, `peers.static` and `--peer`); membership (heartbeat only: the first round joins, a
+leaving heartbeat leaves; gossip, reachability, the startup and shutdown order and their bounds);
+addressing `<instance>/<session id>`; unique names; request signing; delivery and frames; notices; delivery guarantees (at most once, a restart
 loses the in-memory inbox, the dedupe window of 256 `(from, msg_id, kind)` per session, one client
 retry); limits; cross-node and cross-cluster use (every instance's `advertise_url` reachable from
 every other, clocks within `max_clock_skew_seconds`); TLS (ccw signs but does not encrypt and does
@@ -310,7 +312,7 @@ trust domain, any holder can push prompts into bypass-mode agents, claim any `fr
 mesh, any agent running as the agent uid can read the token from the ccw process env, main-agent
 only is not enforced against a subagent calling `/internal/mcp` from Bash). Plus a pointer from
 `## Trust model`, the compose example, a Kubernetes note (per-pod advertise urls, a headless
-Service for seeds), config rows, the five routes, the error codes, events, metrics, the four
+Service for seeds), config rows, the three routes, the error codes, events, metrics, the four
 hooks, the `peer` origin and the two tools. Serves I and L.
 
 ### D12: Tests and conventions
@@ -332,15 +334,14 @@ The peer token is a signing key only. Headers `X-CCW-Peer-Timestamp` (unix ms), 
 `<METHOD>\n<path>\n<timestamp>\n<nonce>\n<sha256 hex of body>`). The receiver rejects a timestamp
 outside `max_clock_skew_seconds`, a nonce already seen (cache kept for twice the window, capped at
 65536; when full, 429 `rate_limited` rather than evicting a live nonce, my call), and a bad
-signature, with `hmac.compare_digest`. Every peer route, including join, heartbeat and leave, is
-signed. Serves N.
+signature, with `hmac.compare_digest`. Every peer route, including heartbeat, is signed. Serves N.
 
 ### D14: Delivery guarantees and retries
 
 Delivery is at most once; a restart loses queued items. The client retries once, with the same
 `msg_id` and a fresh nonce and timestamp, on connection-level failures only; the receiver's dedupe
-of the last 256 `(from, msg_id, kind)` per session makes that safe. Join, heartbeat and leave are
-not retried within a call (the next heartbeat is the retry). Serves N.
+of the last 256 `(from, msg_id, kind)` per session makes that safe. Heartbeats are not retried
+within a call (the next heartbeat is the retry). Serves N.
 
 ### D15: Instance-level membership hooks
 
@@ -353,6 +354,21 @@ and, for postJoin, `standalone: bool`). Existing `blocking`, `timeout_seconds` a
 semantics apply; results are logged and counted in `ccw_hook_actions_total`. They never fire with
 peers disabled. Serves E.
 
+### D16: Heartbeat only, no join or leave endpoint
+
+User decision, verbatim: "Leave/join might be redundant with the static list, no? If yes keep
+heartbeat only and drop the other 2 endpoints". They are redundant: the static seed list already
+says whom to contact, a heartbeat already makes the sender reachable with its sessions, and missed
+heartbeats already drop a silent member. So `POST /v1/peers/join` and `POST /v1/peers/leave` do
+not exist; `POST /v1/peers/heartbeat` is the only membership route. The join is the first
+heartbeat round (same preJoin, postJoin, ordering and `join_timeout_seconds` bound); the leave is
+one final heartbeat with `leaving: true` and no sessions (same preLeave, postLeave, ordering and
+bound), which the receiver turns into an immediate removal with reason `leave` (my call: a stopped
+container leaves the listing at once instead of after `max_missed_heartbeats` intervals). The wire
+view gains `leaving: bool = false`; `LeaveBody`, `accept_join`, `accept_leave`, `inbound_join` and
+`inbound_leave` are gone. The four hooks, approval E's ordering and the outbound `join`, `heartbeat`
+and `leave` metric ops stay. Serves O.
+
 ## Research
 
 | Lens | Ran or skipped | Adopted | Rejected |
@@ -360,7 +376,7 @@ peers disabled. Serves E.
 | Claude Code bundle reverse engineering | ran (scratch brief) | `CLAUDE_CODE_HARBOR_KITE=0` and settings deny (F8); idle-notice shape (F7) | native socket transport and registry (F1, F5, F9) |
 | ccw codebase | ran (mcp_server.py, internal_api.py, router.py, manager.py, service.py, api/, bootstrap/, hooks.py, config.py, events.py, metrics.py, fake claude, conftest) | ccw MCP server, `mcp__ccw__*` subagent deny, `submit_turn` with a new origin, `on_state` ready trigger, `build_env` managed vars, `render_settings`, `HookDispatcher` at instance level, `VETO_EVENTS` | typing into a busy PTY; awaiting network I/O in `_on_stop` |
 | Plan review panel and builder check | ran (coordinator verdict) | HMAC signing (D13), notices off the Stop path (D8), at-most-once and retry (D14), inbox re-check (D7), rate limit (D7), README serialization | Bearer token on the wire |
-| User review of discovery | ran (user verbatim, D5) | join/leave endpoints, static seeds, pre/post join and leave hooks, heartbeats | shared-folder discovery |
+| User review of discovery | ran (user verbatim, D5) | static seeds, pre/post join and leave hooks, heartbeats; then heartbeat only (D16) | shared-folder discovery; join and leave endpoints (D16) |
 | External prior art | skipped: gossip-style membership is standard; the open questions are ccw-internal | - | - |
 
 ## Research inputs
@@ -372,7 +388,7 @@ peers disabled. Serves E.
 | brief section 7 (F9) | AF_UNIX is kernel-local | rejected: native transport dropped (D1) |
 | brief section 1 (F1, F5) | native registry collides across containers | rejected: membership keyed by instance name (D5) |
 | brief section 8 fix 5 | ccw-side relay over HTTP through an MCP tool | peers-mcp-tools, peer-messages-endpoint, peer-http-client |
-| user review, verbatim | join/leave endpoints, static seeds, ordering, four hooks, heartbeat | peer-member-table, peer-membership-service, peer-membership-hooks, peers-join-leave-order |
+| user review, verbatim | static seeds, ordering, four hooks, heartbeat; join and leave endpoints dropped as redundant (D16) | peer-member-table, peer-membership-service, peer-membership-hooks, peers-join-leave-order, peer-messages-endpoint, peer-http-client |
 | router.py `_on_stop` awaits `_after_turn` | network I/O there delays the Stop answer | peer-inbox-outcomes |
 | hooks.py `HookDispatcher`, config.py `VETO_EVENTS` | reusable at instance level | peer-membership-hooks |
 | plan review items 1, 7 to 9 | signing, inbox re-check, rate limit, retry | peer-auth-signing, peer-inbox-delivery, peer-http-client |
@@ -396,6 +412,7 @@ peers disabled. Serves E.
 | D13 HMAC signing | peer-auth-signing, peer-http-client, peer-messages-endpoint |
 | D14 Delivery guarantees and retries | peer-http-client, peer-inbox-delivery, peers-readme-guide |
 | D15 Membership hooks | peer-membership-hooks, peer-membership-service, peers-join-leave-order |
+| D16 Heartbeat only | peer-http-client, peer-messages-endpoint, peer-member-table, peer-membership-service, peer-service-core, peer-events-and-metrics, peer-membership-hooks, peers-join-leave-order, peers-two-instance-e2e, peers-two-container-test, peers-readme-guide |
 
 ## Contracts
 
@@ -432,7 +449,7 @@ earlier `peer-directory-entry` contract is retired (shared-folder discovery drop
   onDestroy on every shutdown path, including exit_when_last_destroyed; both bounded.
 - Membership convergence and bounds: sessions only from a member's own report, reachability only
   from direct exchanges, miss counting, re-add, table cap, debounced immediate heartbeats.
-- Signing on all five routes, verification over raw bytes before parse, nonce cache bounds, the
+- Signing on all three routes, verification over raw bytes before parse, nonce cache bounds, the
   token absent from every request.
 - Delivery concurrency (peer-inbox-delivery) and notices off the Stop path (peer-inbox-outcomes).
 - `handle_message` going async must not change the `command` tool.

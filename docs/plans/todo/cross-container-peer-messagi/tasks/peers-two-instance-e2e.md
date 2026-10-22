@@ -32,8 +32,8 @@ End-to-end proof in one process with three ccw services on real HTTP ports (desi
   - `send ping to c/<C id>` on A: C gets a peer turn framed from `a/<A id>` with `ping`; A gets a peer turn with `pong` from `c/<C id>`; A gets the `<peer-idle-notice from="c/<C id>" ... state="completed"/>` turn. Each side sent exactly one message (no loop), checked after a 2 s quiet period.
   - The reverse direction: `send ping to a/<A id>` on C works the same way.
   - A's events show `peer_member_joined` for b and c; sent, received and delivered events and the counters appear on the right services.
-  - Stopping C: A's listing drops C promptly (within one heartbeat interval, through the leave) and A gets `peer_member_left` with reason `leave`.
-  - A send to `b/ses_000000000000` gives a tool result starting `unknown peer`; `POST /v1/peers/join` to B with a bearer token and no signature is 401.
+  - Stopping C: A's listing drops C promptly (within one heartbeat interval, through its `leaving: true` heartbeat) and A gets `peer_member_left` with reason `leave`.
+  - A send to `b/ses_000000000000` gives a tool result starting `unknown peer`; `POST /v1/peers/heartbeat` to B with a bearer token and no signature is 401, and `POST /v1/peers/join` and `POST /v1/peers/leave` are 404.
 - Every wait is bounded (at most 30 s each) and names what it waited for.
 
 Interfaces: none new; consumes every part of the epic through the public and internal APIs.
@@ -45,8 +45,8 @@ Interfaces: none new; consumes every part of the epic through the public and int
 - AC3: the reverse direction from C to A works the same way [evidence: test:tests/test_peers_e2e.py::test_reverse_direction]
 - AC4: notify_when_idle delivers an idle notice turn to the sender after the handling turn completes [evidence: test:tests/test_peers_e2e.py::test_notify_when_idle_round_trip]
 - AC5: membership and message events and counters appear on the right services [evidence: test:tests/test_peers_e2e.py::test_events_and_metrics]
-- AC6: stopping C drops it from A's listing through the leave with a peer_member_left event [evidence: test:tests/test_peers_e2e.py::test_stopped_service_leaves]
-- AC7: an unknown address gives an unknown peer tool result and an unsigned join is 401 [evidence: test:tests/test_peers_e2e.py::test_unknown_peer_and_unsigned_join]
+- AC6: stopping C drops it from A's listing through its leaving heartbeat with a peer_member_left event [evidence: test:tests/test_peers_e2e.py::test_stopped_service_leaves]
+- AC7: an unknown address gives an unknown peer tool result and an unsigned heartbeat is 401 [evidence: test:tests/test_peers_e2e.py::test_unknown_peer_and_unsigned_heartbeat]
 
 ## Files
 

@@ -117,5 +117,12 @@
     "decisions": ["D13", "D14", "D7", "D8", "D2"],
     "tasks": ["peer-auth-signing", "peer-http-client", "peer-messages-endpoint", "peer-inbox-delivery", "peer-inbox-outcomes", "peer-membership-service", "peer-service-core", "peers-config-section", "peers-readme-guide"],
     "status": "approved"
+  },
+  {
+    "id": "O",
+    "text": "Leave/join might be redundant with the static list, no? If yes keep heartbeat only and drop the other 2 endpoints",
+    "decisions": ["D16"],
+    "tasks": ["peer-http-client", "peer-messages-endpoint", "peer-member-table", "peer-membership-service", "peer-service-core", "peer-events-and-metrics", "peer-membership-hooks", "peers-join-leave-order", "peers-two-instance-e2e", "peers-two-container-test", "peers-readme-guide"],
+    "status": "approved"
   }
 ]
