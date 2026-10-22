@@ -29,11 +29,8 @@ def _env(**kw):
     return build_env(**base)
 
 
-def test_env_peers_forces_harbor_kite_off_over_user_value():
+def test_env_harbor_kite_off():
     assert _env(peers=True)["CLAUDE_CODE_HARBOR_KITE"] == "0"
-
-
-def test_env_without_peers_is_unchanged():
     assert _env() == _env(peers=False)
     assert _env()["CLAUDE_CODE_HARBOR_KITE"] != "0"
 
@@ -42,12 +39,13 @@ def _settings(tmp_path, cfg=None, **kw):
     return render_settings(tmp_path, cfg or Config(), relay_command=RELAY, **kw)
 
 
-def test_settings_peers_deny_and_allow(tmp_path):
+def test_settings_deny_and_allow(tmp_path):
     doc = _settings(tmp_path, peers=True)
     perms = doc["permissions"]
     assert {"SendMessage", "ListAgents"} <= set(perms["deny"])
     assert set(PEERS_ALLOW) == {"mcp__ccw__peers", "mcp__ccw__send_message"}
     assert set(PEERS_ALLOW) <= set(perms["allow"])
+    assert perms["deny"].count("SendMessage") == 1
 
 
 def test_settings_peers_no_duplicates(tmp_path):
@@ -75,7 +73,7 @@ def test_settings_rerender_without_peers_removes_ccw_allow(tmp_path):
     assert "SendMessage" not in perms["deny"]
 
 
-def test_settings_disabled_is_byte_identical(tmp_path):
+def test_settings_disabled_unchanged(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
@@ -89,7 +87,7 @@ def _prompts(**kw):
     return PromptsConfig.model_validate(kw)
 
 
-def test_instructions_peers_alone_writes_claude_md(tmp_path):
+def test_instructions_paragraph(tmp_path):
     target = write_instructions(tmp_path, _prompts(), peers=True)
     text = target.read_text()
     assert text.startswith(MARKER)

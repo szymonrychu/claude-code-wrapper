@@ -1,6 +1,7 @@
 """PreToolUse gate for Claude's native peer messaging when peers are enabled."""
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 from test_router import Harness, webhook
@@ -24,7 +25,7 @@ async def _pre(h, tool, **extra):
 
 
 @pytest.mark.parametrize("tool", ["SendMessage", "ListAgents"])
-async def test_native_peer_tools_denied_when_enabled(tmp_path, tool):
+async def test_native_tools_denied_when_enabled(tmp_path, tool):
     h = Harness(tmp_path, hooks={"onAgentToolCall": [webhook()]})
     _enable(h)
     out = json.loads((await _pre(h, tool))["stdout"])["hookSpecificOutput"]
@@ -33,6 +34,16 @@ async def test_native_peer_tools_denied_when_enabled(tmp_path, tool):
     (ev,) = h.events("tool_denied")
     assert ev.data["tool_name"] == tool and ev.data["reason"] == GATE_REASON
     assert h.hook_posts == [] and not h.events("tool_call")
+    await h.router.close()
+
+
+@pytest.mark.parametrize("tool", ["SendMessage", "ListAgents"])
+async def test_native_tool_denial_counts_deny_metric(tmp_path, tool):
+    h = Harness(tmp_path)
+    _enable(h)
+    h.router._metrics = MagicMock()
+    await _pre(h, tool)
+    h.router._metrics.tool_call.assert_called_once_with(tool, "deny")
     await h.router.close()
 
 
@@ -46,7 +57,7 @@ async def test_native_peer_tool_denial_carries_attribution(tmp_path):
 
 
 @pytest.mark.parametrize("tool", ["SendMessage", "ListAgents"])
-async def test_native_peer_tools_allowed_when_disabled(tmp_path, tool):
+async def test_native_tools_untouched_when_disabled(tmp_path, tool):
     h = Harness(tmp_path, hooks={"onAgentToolCall": [webhook()]})
     r = await _pre(h, tool)
     assert r["stdout"] == ""
@@ -56,7 +67,7 @@ async def test_native_peer_tools_allowed_when_disabled(tmp_path, tool):
 
 
 @pytest.mark.parametrize("tool", ["mcp__ccw__send_message", "mcp__ccw__peers"])
-async def test_subagent_ccw_peer_tool_denied_with_reworded_reason(tmp_path, tool):
+async def test_subagent_cannot_send(tmp_path, tool):
     h = Harness(tmp_path)
     _enable(h)
     r = await _pre(h, tool, agent_id="ag1", agent_type="Explore")
