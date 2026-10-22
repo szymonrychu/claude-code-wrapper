@@ -1,6 +1,6 @@
 ---
 title: Peer membership service
-status: todo
+status: in-progress
 repo: .
 value: "An instance joins the mesh through its seeds, stays current by heartbeat and leaves cleanly, with hooks in order"
 files: [src/claude_code_wrapper/peer_membership.py, tests/test_peer_membership_service.py]

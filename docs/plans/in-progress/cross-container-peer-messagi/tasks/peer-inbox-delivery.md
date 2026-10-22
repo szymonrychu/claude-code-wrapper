@@ -1,6 +1,6 @@
 ---
 title: Peer inbox delivery
-status: todo
+status: in-progress
 repo: .
 value: "Peer messages reach an agent as orderly new turns, never disturb a running turn and are never stranded"
 files: [src/claude_code_wrapper/peer_inbox.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/turns.py, tests/test_peer_inbox.py]

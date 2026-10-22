@@ -1,6 +1,6 @@
 ---
 title: Fake claude peer harness
-status: todo
+status: in-progress
 repo: .
 value: Tests can script peer replies and run several real ccw services in one process
 files: [tests/fake_claude/fake_claude.py, tests/conftest.py, tests/test_fake_claude_peers.py]

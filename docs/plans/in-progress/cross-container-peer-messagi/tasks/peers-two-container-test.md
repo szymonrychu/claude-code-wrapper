@@ -1,6 +1,6 @@
 ---
 title: Peers two container test
-status: todo
+status: in-progress
 repo: .
 value: "CI proves join, messaging and leave across a real container boundary"
 files: [docker-compose.peers-ci.yml, scripts/integration-peers.sh, mise.toml, tests/integration_peers/__init__.py, tests/integration_peers/conftest.py, tests/integration_peers/test_peers_containers.py, tests/integration_peers/config.ci.yaml, tests/integration_peers/scenario.json]

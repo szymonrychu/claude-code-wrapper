@@ -1,6 +1,6 @@
 ---
 title: Peers MCP tools
-status: todo
+status: in-progress
 repo: .
 value: The main agent can list peers and send them messages through two ccw tools
 files: [src/claude_code_wrapper/mcp_server.py, src/claude_code_wrapper/internal_api.py, tests/test_mcp_peers.py]

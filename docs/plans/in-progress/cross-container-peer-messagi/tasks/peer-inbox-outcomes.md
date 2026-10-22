@@ -1,6 +1,6 @@
 ---
 title: Peer inbox outcomes
-status: todo
+status: in-progress
 repo: .
 value: "A sender always hears when its message was rejected or dropped, and notices never hold up a turn's end"
 files: [src/claude_code_wrapper/peer_inbox.py, tests/test_peer_inbox_outcomes.py]

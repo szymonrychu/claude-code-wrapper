@@ -1,6 +1,6 @@
 ---
 title: Peer service core
-status: todo
+status: in-progress
 repo: .
 value: "One object per ccw instance runs membership, signed sending, receiving and notices for every session"
 files: [src/claude_code_wrapper/peer_service.py, tests/test_peer_service.py]

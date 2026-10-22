@@ -1,6 +1,6 @@
 ---
 title: Manager peers lifecycle
-status: todo
+status: in-progress
 repo: .
 value: Every ccw session is registered with the peer mesh while it runs
 files: [src/claude_code_wrapper/manager.py, tests/test_peers_lifecycle.py]

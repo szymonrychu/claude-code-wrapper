@@ -1,6 +1,6 @@
 ---
 title: Peer http client
-status: todo
+status: in-progress
 repo: .
 value: "One ccw can sign and send messages, notices and heartbeats to another with clear errors"
 files: [src/claude_code_wrapper/peer_client.py, tests/test_peer_client.py]

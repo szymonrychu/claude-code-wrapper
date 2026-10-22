@@ -1,6 +1,6 @@
 ---
 title: Peer auth signing
-status: todo
+status: in-progress
 repo: .
 value: The peer token authenticates every peer request without ever leaving the process
 files: [src/claude_code_wrapper/peer_auth.py, tests/test_peer_auth.py]

@@ -1,6 +1,6 @@
 ---
 title: Peers join leave order
-status: todo
+status: in-progress
 repo: .
 value: "No session starts before the join and no onDestroy runs before the leave, and seeds can come from the command line"
 files: [src/claude_code_wrapper/manager.py, src/claude_code_wrapper/service.py, src/claude_code_wrapper/cli.py, tests/test_peers_startup.py]

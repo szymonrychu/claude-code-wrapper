@@ -1,6 +1,6 @@
 ---
 title: Peers two instance e2e
-status: todo
+status: in-progress
 repo: .
 value: "Proves seed join, gossip, messages both ways, notices and leave between three real ccw services"
 files: [tests/test_peers_e2e.py]

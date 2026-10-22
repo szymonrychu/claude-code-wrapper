@@ -1,6 +1,6 @@
 ---
 title: Peers compose example
-status: todo
+status: in-progress
 repo: .
 value: Operators can run two peered containers seeded with each other from one example and one image build
 files: [examples/docker-compose.peers.yml, examples/peers.config.yaml, src/claude_code_wrapper/data/examples/peers.config.yaml, tests/test_examples.py, tests/test_peers_compose.py]

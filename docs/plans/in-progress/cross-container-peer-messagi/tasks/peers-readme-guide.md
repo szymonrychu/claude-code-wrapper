@@ -1,6 +1,6 @@
 ---
 title: Peers readme guide
-status: todo
+status: in-progress
 repo: .
 value: "Operators can set up, secure and reason about peer messaging and membership from the README alone"
 files: [README.md, tests/test_peers_readme.py]

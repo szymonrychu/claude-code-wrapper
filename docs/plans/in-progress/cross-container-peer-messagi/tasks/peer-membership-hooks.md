@@ -1,6 +1,6 @@
 ---
 title: Peer membership hooks
-status: todo
+status: in-progress
 repo: .
 value: "Operators can run their own logic before and after an instance joins or leaves the mesh, and can veto a join"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/data/config.example.yaml, README.md, tests/test_peer_hooks.py]

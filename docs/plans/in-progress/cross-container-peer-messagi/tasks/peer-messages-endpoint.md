@@ -1,6 +1,6 @@
 ---
 title: Peer messages endpoint
-status: todo
+status: in-progress
 repo: .
 value: "Other ccw instances can heartbeat and push messages and notices, only with a valid fresh signature"
 files: [src/claude_code_wrapper/api/peers.py, src/claude_code_wrapper/api/app.py, tests/test_api_peers.py, README.md]

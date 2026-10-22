@@ -1,6 +1,6 @@
 ---
 title: Peer events and metrics
-status: todo
+status: in-progress
 repo: .
 value: Operators can watch peer traffic and membership on the SSE stream and in Prometheus
 files: [src/claude_code_wrapper/events.py, src/claude_code_wrapper/metrics.py, tests/test_event_log.py, tests/test_peer_metrics.py, README.md]

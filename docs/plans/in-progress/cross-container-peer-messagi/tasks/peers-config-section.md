@@ -1,6 +1,6 @@
 ---
 title: Peers config section
-status: todo
+status: in-progress
 repo: .
 value: Operators turn peer messaging on with one validated config section and nothing changes when it is off
 files: [src/claude_code_wrapper/config.py, tests/test_peers_config.py, README.md, src/claude_code_wrapper/data/config.example.yaml]

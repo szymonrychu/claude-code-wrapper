@@ -1,6 +1,6 @@
 ---
 title: Peer session bootstrap
-status: todo
+status: in-progress
 repo: .
 value: "Peered agents cannot reach for Claude's native socket messaging and are told how to use the ccw tools"
 files: [src/claude_code_wrapper/session.py, src/claude_code_wrapper/bootstrap/settings.py, src/claude_code_wrapper/bootstrap/instructions.py, src/claude_code_wrapper/router.py, tests/test_router.py, tests/test_peers_bootstrap.py, tests/test_peers_gate.py]

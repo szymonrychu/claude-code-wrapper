@@ -1,6 +1,6 @@
 ---
 title: Peer member table
-status: todo
+status: in-progress
 repo: .
 value: Each instance knows which peer instances are reachable and which sessions they run
 files: [src/claude_code_wrapper/peers.py, tests/test_peers_membership.py]
