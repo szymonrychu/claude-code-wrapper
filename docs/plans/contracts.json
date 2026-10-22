@@ -75,7 +75,7 @@
     "owner": "cross-container-peer-messagi",
     "file": "src/claude_code_wrapper/config.py",
     "consumers": [],
-    "note": "Config.peers: enabled (false), dir (/peers, absolute, socket path <= 103 bytes), name (instance, empty = hostname), probe_timeout_ms (250)"
+    "note": "Config.peers: enabled (false), name (empty = hostname, [A-Za-z0-9._-]{1,64}), advertise_url (empty = http://<hostname>:<public port>, {port} placeholder), token (required when enabled, >=16 chars, != server.auth_token, redacted), directory (/peers), heartbeat_seconds (10), stale_seconds (30), max_message_bytes (65536), inbox_max (32)"
   },
   {
     "name": "peer-directory-entry",
