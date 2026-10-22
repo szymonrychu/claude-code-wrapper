@@ -84,7 +84,7 @@
     "owner": "cross-container-peer-messagi",
     "file": "src/claude_code_wrapper/peers.py",
     "consumers": [],
-    "note": "<peers.directory>/<instance>/<session id>.json {instance, session_id, name, cwd, url, started_at, heartbeat_at}, atomic writes, live when now - heartbeat_at <= stale_seconds; address <instance>/<session id>; read by every ccw instance sharing the directory"
+    "note": "<peers.directory>/<instance>/<session id>.json {instance, session_id, name, cwd, url, started_at, heartbeat_at (ISO ms), sig = HMAC-SHA256(token, canonical JSON of the other fields)}; atomic writes; live when signed and now - heartbeat_at <= stale_seconds; startup deletes the own name dir; anyone deletes entries older than 10 x stale_seconds; address <instance>/<session id>"
   },
   {
     "name": "ccw-mcp-peers-tool",
