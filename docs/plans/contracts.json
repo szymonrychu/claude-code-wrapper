@@ -76,5 +76,13 @@
     "file": "src/claude_code_wrapper/config.py",
     "consumers": [],
     "note": "Config.peers: enabled (false), dir (/peers, absolute, socket path <= 103 bytes), name (instance, empty = hostname), probe_timeout_ms (250)"
+  },
+  {
+    "name": "peer-directory-entry",
+    "kind": "schema",
+    "owner": "cross-container-peer-messagi",
+    "file": "src/claude_code_wrapper/peers.py",
+    "consumers": [],
+    "note": "<peers.dir>/directory/<session id>.json {session_id, name, instance, address uds:<peers.dir>/socks/<session id>.sock, cwd, started_at}; sockets at <peers.dir>/socks/<session id>.sock; read by every ccw container sharing the dir"
   }
 ]
