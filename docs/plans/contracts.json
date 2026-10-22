@@ -100,7 +100,7 @@
     "owner": "cross-container-peer-messagi",
     "file": "src/claude_code_wrapper/api/peers.py",
     "consumers": [],
-    "note": "POST /v1/peers/messages {from, to_session, message, msg_id, notify_when_idle} and POST /v1/peers/notices {from, to_session, msg_id, status delivered|rejected|dropped, state, reason}; headers X-CCW-Peer-Timestamp (unix ms), X-CCW-Peer-Nonce, X-CCW-Peer-Signature = HMAC-SHA256(token, METHOD\\npath\\ntimestamp\\nnonce\\nsha256(body)); skew max_clock_skew_seconds, nonce replay rejected; 202 {msg_id, queued}, 401 unauthorized, 404 not_found, 413 message_too_large, 422, 429 inbox_full|rate_limited; body capped at max_message_bytes + 4096 before parse; mounted only when peers.enabled"
+    "note": "Signed routes under /v1/peers: messages {from, to_session, message, msg_id, notify_when_idle} 202; notices {from, to_session, msg_id, status delivered|rejected|dropped, state, reason} 202; join and heartbeat {instance, url, sessions, members} 200 with the receiver view; leave {instance, url} 204. Headers X-CCW-Peer-Timestamp (unix ms), X-CCW-Peer-Nonce, X-CCW-Peer-Signature = HMAC-SHA256(token, METHOD\\npath\\ntimestamp\\nnonce\\nsha256(body)); skew max_clock_skew_seconds, replayed nonce rejected; 401 unauthorized, 404 not_found, 413 message_too_large, 422, 429 inbox_full|rate_limited; body capped at max_message_bytes + 4096 before parse; mounted only when peers.enabled"
   },
   {
     "name": "peer-member-table",
