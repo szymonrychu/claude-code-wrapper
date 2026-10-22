@@ -117,6 +117,21 @@ def test_notice_status_state_combinations():
     assert _notice(status="rejected", state=None, reason="x" * 200)
 
 
+def test_wire_models_validate():
+    assert _msg().model_dump(by_alias=True)["from"] == ADDR
+    with pytest.raises(ValidationError):
+        _msg(**{"from": "nope"})
+    with pytest.raises(ValidationError):
+        _msg(to_session="ses_XYZ")
+    with pytest.raises(ValidationError):
+        _msg(msg_id="msg_123")
+    with pytest.raises(ValidationError):
+        _notice(status="delivered", state=None)
+    with pytest.raises(ValidationError):
+        _notice(status="rejected", state="completed")
+    assert _notice().model_dump(by_alias=True)["from"] == ADDR
+
+
 def test_notice_alias():
     assert _notice().model_dump(by_alias=True)["from"] == ADDR
 
@@ -156,7 +171,7 @@ def test_member_view_caps():
         _view(sessions=sessions)
 
 
-def test_new_msg_id_format():
+def test_new_msg_id():
     a, b = new_msg_id(), new_msg_id()
     assert re.fullmatch(r"msg_[0-9a-f]{16}", a) and a != b
 
@@ -180,7 +195,7 @@ def _verify(request: httpx.Request, cache=None):
     )
 
 
-async def test_send_message_signed_and_by_alias():
+async def test_requests_are_signed():
     cap = []
     client = _client(_ok(), cap)
     out = await client.send_message(URL, _msg())
@@ -191,6 +206,11 @@ async def test_send_message_signed_and_by_alias():
     assert "authorization" not in req.headers
     data = json.loads(req.content)
     assert data["from"] == ADDR and "from_" not in data and data["msg_id"] == MID
+    cap.clear()
+    await client.send_notice(URL, _notice())
+    (nreq,) = cap
+    assert str(nreq.url) == f"{URL}/v1/peers/notices" and "authorization" not in nreq.headers
+    _verify(nreq)
     await client.aclose()
 
 
@@ -213,7 +233,7 @@ async def test_base_url_trailing_slash():
 
 
 @pytest.mark.parametrize("leaving", [False, True])
-async def test_heartbeat_parses_answer(leaving):
+async def test_membership_calls(leaving):
     cap = []
     view = _view(leaving=True, sessions=[]) if leaving else _view()
     answer = view
@@ -263,7 +283,7 @@ def test_no_join_or_leave_call():
         (503, "boom", "peer unreachable", "unreachable"),
     ],
 )
-async def test_answer_mapping(status, code, prefix, expected):
+async def test_status_mapping(status, code, prefix, expected):
     cap = []
     client = _client(_err(status, code), cap)
     with pytest.raises(PeerError) as ei:
@@ -280,7 +300,7 @@ async def test_non_json_error_body():
     assert ei.value.code == "rate_limited"
 
 
-async def test_retry_once_then_success():
+async def test_retry_once_on_connection_failure():
     cap = []
     calls = {"n": 0}
 
@@ -312,7 +332,7 @@ async def test_retry_once_then_success():
         httpx.WriteError("x"),
     ],
 )
-async def test_two_failures_unreachable(exc):
+async def test_unreachable_after_retry(exc):
     cap = []
 
     def boom(request):
@@ -326,7 +346,7 @@ async def test_two_failures_unreachable(exc):
     assert len(cap) == 2
 
 
-async def test_token_never_leaks():
+async def test_token_never_on_the_wire():
     cap = []
     client = _client(_err(500), cap)
     with pytest.raises(PeerError) as ei:
