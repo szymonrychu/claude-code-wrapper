@@ -112,7 +112,7 @@ def create_internal_app(manager: SessionManager) -> FastAPI:
             return JSONResponse(error_response(None, PARSE_ERROR, "invalid JSON"))
         if isinstance(message, list):
             return JSONResponse(error_response(None, INVALID_REQUEST, "batches are not supported"))
-        reply = handle_message(router, message)
+        reply = await handle_message(router, message, peers=getattr(manager, "peers", None))
         if reply is None:
             return Response(status_code=202)
         return JSONResponse(reply)
