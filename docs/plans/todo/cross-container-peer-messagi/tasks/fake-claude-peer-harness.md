@@ -49,19 +49,17 @@ Notes: `run_service` renders the global mise config; `service_cfg` must keep eve
 
 ## Interfaces
 
-See the Requirement's Interfaces paragraph; keep every name and signature stated there.
+Signatures, schemas and contracts this task builds or must keep, with file:symbol.
 
 ## Expected outcome
 
-A scenario can reply to whatever peer address arrives, and a test can run two real ccw services side by side with separate state.
+What is true and observable when the task is done.
 
 ## Steps
 
-- Write the tests named in the acceptance conditions in `tests/test_fake_claude_peers.py` first; run `uv run pytest tests/test_fake_claude_peers.py -q` and see them fail for the missing behaviour (not an import typo).
-- Implement the smallest change that makes them pass; run `uv run pytest tests/test_fake_claude_peers.py -q` and expect all passed.
-- Run the task verify: `uv run pytest tests/test_fake_claude_peers.py tests/test_fake_claude.py tests/test_fake_claude_mcp.py -q && mise run lint`; expect all passed and ruff clean.
-- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
+Test first. One step per bullet, with the exact command and the output to expect.
+A retirement test asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-See the Requirement's Notes paragraph. This is the only task in the epic that edits tests/conftest.py.
+Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
