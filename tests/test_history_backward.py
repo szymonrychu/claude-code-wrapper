@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from test_api_events import SID, make
 
-from claude_code_wrapper.events import EVENT_TYPES, EventLog
+from claude_code_wrapper.events import EVENT_TYPES, Event, EventLog
 
 
 def seqs(body: dict) -> list[int]:
@@ -94,3 +94,51 @@ async def test_prev_seq_null_and_types_validated_against_event_types(
     assert body["has_more_before"] is False and body["prev_seq"] is None
     r = await c.get(url, params={"types": f"{etype},bogus"})
     assert r.status_code == 400 and r.json()["error"]["code"] == "invalid_request"
+
+
+async def test_file_scan_runs_off_event_loop(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+    import threading
+
+    _, log, c = make(tmp_path, n=5)
+    ticked = threading.Event()
+    seen: list[bool] = []
+
+    def slow_page_before(self, before_seq, limit=100, types=None):
+        seen.append(ticked.wait(3))
+        return [], False
+
+    monkeypatch.setattr(EventLog, "page_before", slow_page_before)
+
+    async def tick() -> None:
+        await asyncio.sleep(0.05)
+        ticked.set()
+
+    task = asyncio.create_task(tick())
+    r = await c.get(f"/v1/sessions/{SID}/history", params={"before_seq": 4})
+    await task
+    assert r.status_code == 200
+    assert seen == [True]
+
+
+def test_page_before_bounded_scan(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "events.jsonl"
+    log = EventLog(path, SID, ring_size=2)
+    for i in range(2000):
+        log.append("assistant_text", {"i": i, "pad": "x" * 50})
+    expected = [e.seq for e in log.page_before(1500, 5)[0]]
+    assert expected == [1495, 1496, 1497, 1498, 1499]
+    parsed = 0
+    real = Event.from_json
+
+    def counting(line):
+        nonlocal parsed
+        parsed += 1
+        return real(line)
+
+    monkeypatch.setattr(Event, "from_json", counting)
+    events, more = log.page_before(1500, 5)
+    assert [e.seq for e in events] == expected and more is True
+    assert parsed < 700
+    events, more = log.page_before(3, 5)
+    assert [e.seq for e in events] == [1, 2] and more is False

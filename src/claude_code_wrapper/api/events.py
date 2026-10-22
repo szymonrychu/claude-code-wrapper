@@ -52,16 +52,16 @@ async def history(
     log = request.app.state.manager.open_event_log(session_id)
     size = min(limit, MAX_PAGE_LIMIT)
     if before_seq is not None:
-        older, more_before = log.page_before(before_seq, size, wanted)
+        older, more_before = await asyncio.to_thread(log.page_before, before_seq, size, wanted)
         next_seq = older[-1].seq if older else before_seq
         return {
             "events": [_envelope(request, e) for e in older],
             "next_seq": next_seq,
-            "has_more": bool(log.page(next_seq, 1, wanted)[0]),
+            "has_more": bool((await asyncio.to_thread(log.page, next_seq, 1, wanted))[0]),
             "prev_seq": older[0].seq if older and more_before else None,
             "has_more_before": more_before,
         }
-    events, more = log.page(after_seq, size, wanted)
+    events, more = await asyncio.to_thread(log.page, after_seq, size, wanted)
     next_seq = events[-1].seq if events else after_seq
     return {
         "events": [_envelope(request, e) for e in events],

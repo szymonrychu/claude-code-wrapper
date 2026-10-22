@@ -191,6 +191,34 @@ class EventLog:
                 except (ValueError, KeyError, TypeError):
                     continue
 
+    def _read_file_reversed(self, chunk_size: int = 65536) -> Iterator[Event]:
+        """Events newest-first, reading the file backwards in chunks (lazy)."""
+        try:
+            fh = self.path.open("rb")
+        except OSError:
+            return
+        with fh:
+            pos = fh.seek(0, os.SEEK_END)
+            carry = b""
+            while pos > 0:
+                step = min(chunk_size, pos)
+                pos -= step
+                fh.seek(pos)
+                parts = (fh.read(step) + carry).split(b"\n")
+                carry = parts[0] if pos > 0 else b""
+                lines = parts[1:] if pos > 0 else parts
+                for raw in reversed(lines):
+                    ev = self._parse_line(raw)
+                    if ev is not None:
+                        yield ev
+
+    @staticmethod
+    def _parse_line(raw: bytes) -> Event | None:
+        try:
+            return Event.from_json(raw.decode("utf-8", errors="replace"))
+        except (ValueError, KeyError, TypeError):
+            return None
+
     def append(self, type: str, data: dict[str, Any] | None = None) -> Event:
         if self.readonly:
             raise RuntimeError("event log is read-only")
@@ -240,7 +268,7 @@ class EventLog:
     ) -> tuple[list[Event], bool]:
         limit = max(1, min(limit, MAX_PAGE_LIMIT))
         if self._ring and self._ring[0].seq <= after_seq + 1 and not self.readonly:
-            source: Iterator[Event] = iter(self._ring)
+            source: Iterator[Event] = iter(list(self._ring))
         elif not self._ring and after_seq >= self._seq:
             return [], False
         else:
@@ -261,19 +289,24 @@ class EventLog:
         limit = max(1, min(limit, MAX_PAGE_LIMIT))
 
         def newest(source: Iterator[Event]) -> list[Event]:
-            tail: deque[Event] = deque(maxlen=limit + 1)
+            # source is newest-first; stop once limit + 1 matches are collected
+            tail: list[Event] = []
             for ev in source:
                 if ev.seq < before_seq and (types is None or ev.type in types):
                     tail.append(ev)
-            return list(tail)
+                    if len(tail) > limit:
+                        break
+            tail.reverse()
+            return tail
 
         found: list[Event] = []
-        if self._ring and not self.readonly:
-            found = newest(iter(self._ring))
+        ring = list(self._ring)
+        if ring and not self.readonly:
+            found = newest(reversed(ring))
         # The ring only holds the newest events: use it when it spans back to seq 1 or
         # already holds a full page plus one; otherwise the file is the source of truth.
-        if not self._ring or (len(found) <= limit and self._ring[0].seq > 1) or self.readonly:
-            found = newest(self._read_file())
+        if not ring or (len(found) <= limit and ring[0].seq > 1) or self.readonly:
+            found = newest(self._read_file_reversed())
         more = len(found) > limit
         return found[-limit:], more
 
