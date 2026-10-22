@@ -53,6 +53,11 @@ def _call(router: Any, params: Any) -> dict[str, Any] | None:
     args = params.get("arguments")
     if not isinstance(args, dict) or not isinstance(args.get("name"), str):
         return _tool_result("arguments must be an object with a string `name`", is_error=True)
+    extra = sorted(set(args) - {"name", "params"})
+    if extra:
+        return _tool_result(
+            f"unknown arguments {', '.join(extra)}; allowed: name, params", is_error=True
+        )
     cmd_params = args.get("params")
     if cmd_params is not None and not isinstance(cmd_params, dict):
         return _tool_result("`params` must be an object", is_error=True)

@@ -130,7 +130,7 @@ def test_render_command_lines():
 def test_params_schema_lists_allowed_commands():
     s = params_schema(["compact", "mcp"])
     assert s["properties"]["name"]["enum"] == ["compact", "mcp"]
-    assert len(s["oneOf"]) == 2
+    assert "oneOf" not in s
     json.dumps(s)
     assert set(BUILTIN_COMMANDS) == set(ALL)
 
