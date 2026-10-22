@@ -48,7 +48,9 @@
     "kind": "interface",
     "owner": "agent-callable-slash-command",
     "file": "src/claude_code_wrapper/mcp_server.py",
-    "consumers": [],
+    "consumers": [
+      "cross-container-peer-messagi"
+    ],
     "note": "POST /internal/mcp JSON-RPC; one tool command {name: enum of agent allowlist, params?}; claude.json mcpServers.ccw with ${CCW_*} env refs; allow rule mcp__ccw__command"
   },
   {
