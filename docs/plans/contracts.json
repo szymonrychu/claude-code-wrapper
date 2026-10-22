@@ -23,7 +23,8 @@
     "owner": "hook-capabilities-for-tatara",
     "file": "src/claude_code_wrapper/events.py",
     "consumers": [
-      "agent-callable-slash-command"
+      "agent-callable-slash-command",
+      "cross-container-peer-messagi"
     ],
     "note": "EVENT_TYPES gains turn_continued, turn_deferred, usage, turn_resumed, destroy_output"
   },
