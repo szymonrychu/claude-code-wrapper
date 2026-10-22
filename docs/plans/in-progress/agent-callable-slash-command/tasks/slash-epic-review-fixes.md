@@ -1,6 +1,6 @@
 ---
 title: Slash epic review fixes
-status: escalated
+status: done
 repo: .
 value: Closes a high-severity command-smuggling hole and a tool schema the Anthropic API may reject before the epic closes
 files: [src/claude_code_wrapper/commands.py, src/claude_code_wrapper/mcp_server.py, src/claude_code_wrapper/data/config.example.yaml, README.md, tests/test_slash_review_fixes.py, tests/test_command_registry.py, tests/test_mcp_server.py]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--slash-epic-review-fixes
 branch: agent-callable-slash-command--slash-epic-review-fixes
-verified_head: unknown
+verified_head: b4d087bf23a4635be036dc760450ea714f3ae1bb
 run: agent-callable-slash-command
 provides: []
 acs_for_audit: []
@@ -70,3 +70,5 @@ No param can inject a newline or second command into the PTY; the tool schema is
 ## Notes
 
 Findings: security review (commands.py:36,71-90,108 server param unvalidated; router.py:528 subagent bypass -> document), whole-diff review (README :1015-1033 command_id; mcp_server.py:475-482 extra keys dropped; commands.py:154 top-level oneOf), scope audit (config.example.yaml:166 '/sessions/'). Name tests exactly as the AC refs. examples/*.config.yaml are symlinks; never write at those paths. Do not edit tests/conftest.py or tests/fake_claude.
+
+- 2026-10-22 hand-verified on b4d087b: the run's verifier got --prev-head pending (plugin bug) and never ran. First hand run on 0139b01 found the fixer had renamed the README route path {command_id} to {cid} to satisfy the AC5 grep, breaking test_every_public_route_documented; the orchestrator restored the path (b4d087b, doc-only) and pointed AC5 at the existing test test_readme_command_events_use_id. verify-task.py --base 64dd594 --tdd-revert passed: all ACs met, full suite 1102 passed, tdd failedOnBase/passedOnHead, clean.
