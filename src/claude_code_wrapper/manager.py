@@ -794,6 +794,8 @@ class SessionManager:
             if ctx.phase == "closing":
                 await ctx.closed.wait()
             else:
+                if self._destroy_empties_service(ctx):
+                    await asyncio.shield(self.leave_peers())
                 # Shielded: a caller that goes away never leaves a session half destroyed.
                 await asyncio.shield(
                     self._start_destroy(
@@ -815,6 +817,14 @@ class SessionManager:
     def _request_exit(self, code: int) -> None:
         if self._on_exit_request is not None and not self._closing:
             self._on_exit_request(code)
+
+    def _destroy_empties_service(self, ctx: _Active) -> bool:
+        """True when destroying `ctx` leaves no active session under `exit_when_last_destroyed`."""
+        return (
+            self.cfg.sessions.exit_when_last_destroyed
+            and self._created_any
+            and list(self._active.values()) == [ctx]
+        )
 
     def _maybe_exit_when_empty(self) -> None:
         """`sessions.exit_when_last_destroyed`: nothing active after a session was created."""
@@ -1034,6 +1044,8 @@ class SessionManager:
         await self._teardown(ctx, 0)
         ctx.meta.update(state="dead")
         self._finish(ctx)
+        if self.cfg.sessions.exit_when_dead and not self._closing:
+            await self.leave_peers()  # membership ends before the shutdown's onDestroy runs
         self._exit_for_dead(ctx, last_fatal)
 
     # ------------------------------------------------------------------ service lifecycle
@@ -1100,9 +1112,13 @@ class SessionManager:
         hurried to the same grace, and creates are cancelled. Whatever is still running
         then is cancelled and killed outright, and the dispatchers drain in the rest."""
         self._closing = True
-        budget = self.cfg.limits.shutdown_timeout_seconds
+        total = self.cfg.limits.shutdown_timeout_seconds
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + budget
+        deadline = loop.time() + total
+        # The leave comes first and its time comes out of the shutdown budget.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self.leave_peers(), total)
+        budget = max(deadline - loop.time(), 0.0)
         grace = budget * SHUTDOWN_GRACE_SHARE
         if self._reaper is not None:
             self._reaper.cancel()  # a reap in progress carries on in its destroy task
@@ -1147,6 +1163,7 @@ class SessionManager:
         await asyncio.gather(
             *(self._abandon(ctx, close_timeout) for ctx in leftovers), return_exceptions=True
         )
+        await self.stop_peers(max(deadline - loop.time(), 0.0))
         remaining = max(deadline - loop.time(), 0.0)
         await asyncio.gather(
             *(d.drain(remaining) for d in self._dispatchers), return_exceptions=True
