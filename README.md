@@ -1477,6 +1477,12 @@ failure. Cannot veto. `data`: `kind` (`fatal`, `exited`, `restart`, `hook_relay`
 `resume_failed`), `message`, plus `tail` (fatal), `code` (exited), `count` (restart) or `step`
 (create and resume failures).
 
+### `onStart`
+
+Trigger: once per ccw process start, in the service, after the global mise install and before the instance binds its public port, joins the peer mesh, resumes persisted sessions (`sessions.resume_on_start`) or can create a session. The service does not listen until it has finished, so a pod needs a `startupProbe` sized to the longest `timeout_seconds` of its blocking actions. Order: global mise install -> `onStart` -> `preJoin` -> resume -> listening. Fires even when `peers.enabled` is false. Use it for per-pod setup that must precede claude spawning stdio MCP servers (for example installing a tool binary and writing its config); `init.setup_commands` run per created session and `onCreate` runs after claude is up, so neither fits.
+
+Blocking actions are awaited, each bounded by its `timeout_seconds`. A blocking `deny`, or a failure or timeout of a blocking action with `on_error: deny`, makes ccw log `onStart denied: <reason>` and exit with code 1 before it binds the public port; the pod restarts and the failure shows up. A failing action with `on_error: allow` is logged and startup continues. Non-blocking actions run in the background and never delay startup. `data`: `{}`. The envelope has an empty `session_id` and `workdir`, and null `claude_session_id` and `turn_id`; actions run in the sessions root with the full service environment (`CCW_API_URL` is empty unless `server.port` is fixed). `matcher`, `interval_seconds` and `when` are rejected on it.
+
 ### `preJoin`
 
 Trigger: before this instance joins the peer mesh, ahead of the first heartbeat round. Order: `preJoin` -> first heartbeat round -> `postJoin`, all before any session can be created. Awaited when `blocking`; a `deny` means this instance runs standalone (no heartbeats, no peer tools). Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment). The envelope has an empty `session_id` and `workdir`, and null `claude_session_id` and `turn_id`; actions run in the sessions root.
@@ -1531,7 +1537,8 @@ Decisions each event honours:
 
 | Event | Honoured decisions |
 |---|---|
-| `onCreate`, `onResume`, `onTurn`, `onAgentToolCall` | `allow`, `deny` |
+| `onCreate`, `onResume`, `onTurn`, `onAgentToolCall`, `onCommand`, `preJoin` | `allow`, `deny` |
+| `onStart` | `allow`, `deny` (a deny exits ccw with code 1 before it listens) |
 | `onStop` | `allow`, `block`, `defer` |
 | `onTick` | `allow` (decisions are ignored) |
 | every other event | `allow` |
@@ -2687,6 +2694,7 @@ hooks:
 | `hooks.onCommandComplete` | list | `[]` | - | List of hook actions run after a queued slash command completed, failed or was cancelled. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onInterrupt` | list | `[]` | - | List of hook actions run after a turn was interrupted. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onError` | list | `[]` | - | List of hook actions run on fatal pattern, crash, boot timeout, step failure or relay error. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.onStart` | list | `[]` | - | List of hook actions run once per process start, before peers, resume and listening; a blocking deny or an `on_error: deny` failure exits ccw with code 1. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error}`. See [Hooks](#hooks). |
 | `hooks.preJoin` | list | `[]` | - | List of hook actions run before this instance joins the peer mesh; blocking actions can deny, which runs the instance standalone. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.postJoin` | list | `[]` | - | List of hook actions run after the first heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.preLeave` | list | `[]` | - | List of hook actions run before the leaving heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |

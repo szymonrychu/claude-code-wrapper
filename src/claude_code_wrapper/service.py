@@ -20,6 +20,7 @@ import uvicorn
 from claude_code_wrapper import tooling
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.config import Config
+from claude_code_wrapper.hooks import fire_instance, instance_dispatcher
 from claude_code_wrapper.internal_api import create_internal_app
 from claude_code_wrapper.manager import SessionManager
 from claude_code_wrapper.metrics import Metrics
@@ -184,6 +185,25 @@ async def run_service(
         await _run(cfg, redactor, ready, stop, handle)
 
 
+async def _fire_on_start(cfg: Config, redactor: Redactor, handle: ServiceHandle) -> bool:
+    """Fire the onStart instance hook before anything listens; False when it denied (exit 1)."""
+    if not cfg.hooks.for_event("onStart"):
+        return True
+    port = cfg.server.port
+    dispatcher = instance_dispatcher(
+        cfg,
+        redactor,
+        service_env=dict(os.environ),
+        api_url=f"http://127.0.0.1:{port}" if port else "",
+    )
+    outcome = await fire_instance(dispatcher, "onStart", {})
+    if outcome.decision == "deny":
+        log.error("onStart denied: %s", outcome.reason)
+        handle.request_exit(1)
+        return False
+    return True
+
+
 async def _run(
     cfg: Config,
     redactor: Redactor,
@@ -193,6 +213,8 @@ async def _run(
 ) -> None:
     tooling.render_global_mise(cfg.mise)
     await tooling.install_global(cfg.mise, tooling.mise_env(cfg.mise))
+    if not await _fire_on_start(cfg, redactor, handle):
+        return
 
     socks = [
         _bind(cfg.server.host, cfg.server.port),

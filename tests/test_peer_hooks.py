@@ -40,8 +40,8 @@ def cmd(run, **kw):
 
 
 def test_instance_events_constant():
-    assert INSTANCE_EVENTS == ("preJoin", "postJoin", "preLeave", "postLeave")
-    assert HOOK_EVENTS[-4:] == INSTANCE_EVENTS
+    assert INSTANCE_EVENTS[:4] == ("preJoin", "postJoin", "preLeave", "postLeave")
+    assert HOOK_EVENTS[-5:] == INSTANCE_EVENTS
     assert "preJoin" in VETO_EVENTS
 
 
