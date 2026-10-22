@@ -43,6 +43,7 @@ def test_defaults():
         "inbox_max": 32,
         "max_clock_skew_seconds": 60,
         "max_messages_per_minute": 30,
+        "max_messages_per_minute_total": 120,
     }
 
 

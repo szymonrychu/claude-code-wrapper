@@ -623,6 +623,7 @@ class PeersConfig(_Model):
     inbox_max: int = Field(32, ge=1)
     max_clock_skew_seconds: float = Field(60, gt=0)
     max_messages_per_minute: int = Field(30, ge=1)
+    max_messages_per_minute_total: int = Field(120, ge=1)
 
     @field_validator("name")
     @classmethod

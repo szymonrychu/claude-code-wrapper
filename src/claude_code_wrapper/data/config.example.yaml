@@ -206,3 +206,4 @@ peers:
   inbox_max: 32              # queued messages per session inbox
   max_clock_skew_seconds: 60 # accepted clock difference on signed requests
   max_messages_per_minute: 30  # per-sender rate limit
+  max_messages_per_minute_total: 120  # per-session rate limit, all senders together

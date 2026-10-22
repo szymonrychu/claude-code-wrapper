@@ -128,7 +128,9 @@ class PeerStub(StubSession):
 
 
 class PeerHarness(Harness):
-    def __init__(self, tmp_path, *, max_items=32, max_per_minute=30, hooks=None, clock=None):
+    def __init__(
+        self, tmp_path, *, max_items=32, max_per_minute=30, total=120, hooks=None, clock=None
+    ):
         super().__init__(tmp_path, hooks=hooks)
         self.session = PeerStub(self.workdir, self.transcript)
         self.router.bind(self.session)  # type: ignore[arg-type]
@@ -138,6 +140,7 @@ class PeerHarness(Harness):
             self.router,
             max_items=max_items,
             max_per_minute=max_per_minute,
+            max_total_per_minute=total,
             metrics=self.metrics,
             **kw,
         )
@@ -407,7 +410,7 @@ async def test_bounds_rate_limit_and_duplicates(tmp_path):
 
 
 async def test_dedupe_window_is_256(tmp_path):
-    h = PeerHarness(tmp_path, max_items=1000, max_per_minute=1000)
+    h = PeerHarness(tmp_path, max_items=1000, max_per_minute=1000, total=1000)
     h.session.state = "busy"
     try:
         for i in range(257):

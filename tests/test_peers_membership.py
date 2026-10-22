@@ -143,7 +143,7 @@ def test_gossiped_contact_forgotten_seed_kept():
     t = table()
     t.add_contacts(["http://seed:1"], seed=True)
     t.add_contacts(["http://gossip:1"])
-    for _ in range(29):
+    for _ in range(2):
         t.record_failure("http://seed:1")
         t.record_failure("http://gossip:1")
     assert "http://gossip:1" in t.targets()

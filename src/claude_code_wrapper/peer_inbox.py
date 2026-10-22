@@ -47,6 +47,8 @@ log = logging.getLogger(__name__)
 DEDUPE_WINDOW = 256
 #: The sliding window of the per-sender rate limit, in seconds.
 RATE_WINDOW_SECONDS = 60.0
+#: Distinct sender keys the per-sender rate map may hold; the oldest is evicted.
+MAX_RATE_SENDERS = 1024
 #: Seconds between re-checks while an idle-runner command is queued but not yet started.
 _QUEUED_COMMAND_POLL = 0.05
 
@@ -126,6 +128,7 @@ class PeerInbox:
         *,
         max_items: int,
         max_per_minute: int,
+        max_total_per_minute: int = 120,
         metrics: Metrics | None = None,
         clock: Callable[[], float] = time.monotonic,
         on_outcome: OnOutcome | None = None,
@@ -138,6 +141,8 @@ class PeerInbox:
         self._outcomes: set[asyncio.Task[None]] = set()
         self._max_items = max_items
         self._max_per_minute = max_per_minute
+        self._max_total_per_minute = max_total_per_minute
+        self._total: deque[float] = deque()
         self._metrics = metrics
         self._clock = clock
         self._items: deque[InboxItem] = deque()
@@ -168,18 +173,29 @@ class PeerInbox:
             self._count_received(item, "duplicate")
             self.kick()
             return PutResult(depth=len(self._items), duplicate=True)
-        if item.kind == "message" and not self._within_rate(item.from_address):
-            self._count_received(item, "rate_limited")
-            raise PeerError(
-                "rate_limited",
-                f"more than {self._max_per_minute} messages a minute from {item.from_address}",
-            )
+        if item.kind == "message":
+            if not self._within_total_rate():
+                self._count_received(item, "rate_limited")
+                raise PeerError(
+                    "rate_limited",
+                    f"more than {self._max_total_per_minute} messages a minute in total",
+                )
+            if not self._within_rate(item.from_address):
+                self._count_received(item, "rate_limited")
+                raise PeerError(
+                    "rate_limited",
+                    f"more than {self._max_per_minute} messages a minute from {item.from_address}",
+                )
         if len(self._items) >= self._max_items:
             self._count_received(item, "inbox_full")
             raise PeerError("inbox_full", f"the inbox holds {self._max_items} items")
         self._remember(key)
         if item.kind == "message":
-            self._rate.setdefault(item.from_address, deque()).append(self._clock())
+            now = self._clock()
+            self._total.append(now)
+            if item.from_address not in self._rate and len(self._rate) >= MAX_RATE_SENDERS:
+                del self._rate[next(iter(self._rate))]  # oldest sender key goes
+            self._rate.setdefault(item.from_address, deque()).append(now)
         self._items.append(item)
         depth = len(self._items)
         self._router.emit_event(
@@ -196,6 +212,12 @@ class PeerInbox:
         self._count_received(item, "accepted")
         self.kick()
         return PutResult(depth=depth, duplicate=False)
+
+    def _within_total_rate(self) -> bool:
+        horizon = self._clock() - RATE_WINDOW_SECONDS
+        while self._total and self._total[0] <= horizon:
+            self._total.popleft()
+        return len(self._total) < self._max_total_per_minute
 
     def _within_rate(self, sender: str) -> bool:
         stamps = self._rate.get(sender)

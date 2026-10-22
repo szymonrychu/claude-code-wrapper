@@ -1910,6 +1910,7 @@ safe. A successful `send_message` means the peer queued the message, not that it
 | `peers.max_message_bytes` | 65536 | largest message; larger is `message too large` / `413` |
 | `peers.inbox_max` | 32 | queue depth per session; full is `inbox full` / `429` |
 | `peers.max_messages_per_minute` | 30 | per-sender rate; above it `rate limited` / `429 rate_limited` |
+| `peers.max_messages_per_minute_total` | 120 | per-session rate, all senders together; above it `rate limited` / `429 rate_limited` |
 | body cap | `max_message_bytes` + 4096 | request bodies above it are `413`, checked before reading |
 | `peers.max_clock_skew_seconds` | 60 | accepted signature clock difference |
 
@@ -2753,6 +2754,7 @@ Opt-in peer messaging between ccw instances; with `enabled: false` (the default)
 | `peers.inbox_max` | integer | `32` | - | Messages queued per session inbox (>= 1). |
 | `peers.max_clock_skew_seconds` | number | `60` | - | Accepted clock difference on signed peer requests, in seconds (> 0). |
 | `peers.max_messages_per_minute` | integer | `30` | - | Per-sender message rate limit; above it the answer is 429 `rate_limited` (>= 1). |
+| `peers.max_messages_per_minute_total` | integer | `120` | - | Per-session message rate limit across all senders together; above it the answer is 429 `rate_limited` (>= 1). |
 
 ## Claude Code environment
 
