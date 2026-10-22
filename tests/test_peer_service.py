@@ -221,7 +221,7 @@ async def test_membership_listing(net):
     assert addresses(await a.svc.list_peers(A1, "b")) == [f"b/{B1}"]
     assert addresses(await a.svc.list_peers(A1, "a")) == [f"a/{A2}"]
     assert await a.svc.list_peers(A1, "nope") == []
-    # Unregistering leaves the local listing at once and B's after the next round.
+    # Unregistering leaves the local listing at once; B drops it on its following heartbeat.
     a.svc.unregister(A2)
     assert addresses(await a.svc.list_peers(A1, None)) == [f"b/{B1}"]
     deadline = time.monotonic() + 5
