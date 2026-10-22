@@ -776,13 +776,15 @@ Auth: same as the hook route (loopback source address, `X-CCW-Session`, `X-CCW-H
 `ccw statusline` reads the statusLine JSON on stdin, posts it to this route (best effort, 2 second
 timeout, a failure never fails the statusline), then runs the chained command with the same stdin
 and prints its stdout; with no chained command it prints nothing. At session bootstrap the rendered
-`settings.json` gets `statusLine: {type: command, command: "ccw statusline"}` as the last step,
+`settings.json` gets `statusLine: {type: command, command: "<absolute path to ccw> statusline"}` as the last step,
+the absolute path being the same resolver the hook relay uses (so ccw need not be on `PATH`),
 after the relay hooks, permissions and the `claude.settings` overlay merge. The chained command is
 the `statusLine.command` the document holds after that merge (typically `claude.settings.statusLine`);
 it is written to `ccw-statusline-chain.json` beside `settings.json`, and its `padding` and
 `refreshInterval` are kept on the replacement. Re-rendering is idempotent: a `statusLine` that already
-is `ccw statusline` leaves the chain file as is and is never chained to itself. `ccw` must be on the
-`PATH` of the claude process.
+is a ccw relay (recognised by the basename of its executable, so a moved venv still matches) leaves
+the chain file as is and is never chained to itself. The chained command runs with the inherited
+environment minus `CCW_HOOK_TOKEN`, so the user command never receives the hook token.
 
 ### `POST /internal/mcp`
 
