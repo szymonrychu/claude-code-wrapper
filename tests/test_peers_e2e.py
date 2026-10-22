@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import socket
 from typing import Any
 
@@ -197,65 +198,156 @@ async def boot(world, ccw_service) -> dict[str, Node]:
     return nodes
 
 
-async def test_three_services_exchange_messages_and_leave(world, ccw_service) -> None:
+def metric(text: str, name: str, **labels: str) -> float:
+    """The value of one labelled sample; 0.0 when the sample is absent."""
+    want = ",".join(f'{k}="{v}"' for k, v in sorted(labels.items()))
+    for m in re.finditer(rf"^{name}\{{([^}}]*)\}} (\S+)$", text, re.M):
+        if ",".join(sorted(m.group(1).split(","))) == want:
+            return float(m.group(2))
+    return 0.0
+
+
+async def peer_turns(node: Node) -> list[str]:
+    """The prompt text of every peer-origin turn on a node, oldest first."""
+    out = []
+    async with httpx.AsyncClient() as c:
+        for t in await node.turns():
+            if t["origin"] != "peer":
+                continue
+            r = await c.get(
+                f"{node.svc.url}/v1/sessions/{node.sid}/turns/{t['turn_id']}",
+                headers=node.headers,
+            )
+            out.append(r.json()["text"])
+    return out
+
+
+async def exchange(src: Node, dst: Node) -> None:
+    """src sends ping to dst; dst replies pong; src gets the idle notice; then 2 s quiet."""
+    await src.submit(f"send ping to {dst.address}")
+    await until(lambda: any(e["data"]["message"] == "ping" for e in dst.received()), "ping")
+    await until(lambda: any(e["data"]["message"] == "pong" for e in src.received()), "pong")
+    await until(lambda: any(e["data"]["kind"] == "notice" for e in src.received()), "idle notice")
+    await until(lambda: len(src.events("peer_message_delivered")) >= 2, "src deliveries")
+    await until(lambda: len(dst.events("peer_message_delivered")) >= 1, "dst delivery")
+    await asyncio.sleep(2)
+
+
+async def test_gossip_listing_across_services(world, ccw_service) -> None:
     nodes = await boot(world, ccw_service)
     a, b, c = nodes["a"], nodes["b"], nodes["c"]
-
-    # seed join and gossip: C only knows B, yet A lists both
+    # C only knows B, yet A lists both through gossip, and never itself
     await eventually_listing(a, [b.address, c.address], "A to list the B and C sessions")
     assert a.address not in await list_peers(a)
+    joined = {e["data"]["instance"] for e in a.events("peer_member_joined")}
+    assert {"b", "c"} <= joined
 
-    # A -> C: message, reply, idle notice, no loop
-    await a.submit(f"send ping to {c.address}")
-    await until(lambda: any(e["data"]["message"] == "ping" for e in c.received()), "C ping")
-    await until(lambda: any(e["data"]["kind"] == "notice" for e in a.received()), "A idle notice")
-    await until(lambda: any(e["data"]["message"] == "pong" for e in a.received()), "A pong")
-    await until(lambda: len(a.events("peer_message_delivered")) >= 2, "A deliveries")
-    await asyncio.sleep(2)
+
+async def test_send_and_reply_round_trip(world, ccw_service) -> None:
+    nodes = await boot(world, ccw_service)
+    a, b, c = nodes["a"], nodes["b"], nodes["c"]
+    await eventually_listing(a, [b.address, c.address], "A to list B and C")
+    await exchange(a, c)
     ping = [e for e in c.received() if e["data"]["kind"] == "message"]
     assert [(e["data"]["from"], e["data"]["message"]) for e in ping] == [(a.address, "ping")]
     pong = [e for e in a.received() if e["data"]["kind"] == "message"]
     assert [(e["data"]["from"], e["data"]["message"]) for e in pong] == [(c.address, "pong")]
-    notices = [e for e in a.received() if e["data"]["kind"] == "notice"]
-    assert [e["data"]["from"] for e in notices] == [c.address]
-    assert 'state="completed"' in notices[0]["data"]["message"] or notices[0]["data"]
     assert [x["arguments"]["message"] for x in a.sent(c.address)] == ["ping"]
     assert [x["arguments"]["message"] for x in c.sent(a.address)] == ["pong"]
     assert a.sent(c.address)[0]["text"].startswith("Sent msg_")
-    assert not [t for t in await b.turns()]  # B took no part
-
-    # the reverse direction: C -> A
-    await c.submit(f"send ping to {a.address}")
-    await until(
-        lambda: sum(1 for e in a.received() if e["data"]["message"] == "ping") >= 1, "A ping"
+    c_peer = await peer_turns(c)
+    assert len(c_peer) == 1
+    assert c_peer[0].startswith(f'<agent-message from="{a.address}" msg_id="msg_')
+    assert "\nping\n</agent-message>" in c_peer[0]
+    assert any(
+        t.startswith(f'<agent-message from="{c.address}"') and "\npong\n" in t
+        for t in await peer_turns(a)
     )
-    await until(
-        lambda: sum(1 for e in c.received() if e["data"]["message"] == "pong") >= 1, "C pong"
-    )
-    await until(
-        lambda: sum(1 for e in c.received() if e["data"]["kind"] == "notice") >= 1, "C notice"
-    )
-    await asyncio.sleep(2)
-    # each side sent exactly one ping and one pong in total: no loop
-    assert sorted(x["arguments"]["message"] for x in c.sent(a.address)) == ["ping", "pong"]
-    assert sorted(x["arguments"]["message"] for x in a.sent(c.address)) == ["ping", "pong"]
-    assert len(c.tool_calls()) == 2 and len(a.tool_calls()) == len(a.list_results()) + 2
+    assert not await peer_turns(b)  # B took no part
 
-    # events and counters
-    joined = {e["data"]["instance"] for e in a.events("peer_member_joined")}
-    assert {"b", "c"} <= joined
-    assert a.events("peer_message_sent") and a.events("peer_message_delivered")
-    metrics_a, metrics_c = await a.metrics(), await c.metrics()
-    for text in (metrics_a, metrics_c):
-        assert "ccw_peer_messages_received_total" in text
-    assert 'ccw_peer_messages_sent_total{kind="message",result="ok"}' in metrics_a
-    assert 'ccw_peer_messages_delivered_total{kind="message",result="delivered"}' in metrics_a
 
-    # unknown peer and the membership routes
-    before = len(a.tool_calls())
+async def test_reverse_direction(world, ccw_service) -> None:
+    nodes = await boot(world, ccw_service)
+    a, b, c = nodes["a"], nodes["b"], nodes["c"]
+    await eventually_listing(c, [a.address, b.address], "C to list A and B")
+    await exchange(c, a)
+    ping = [e for e in a.received() if e["data"]["kind"] == "message"]
+    assert [(e["data"]["from"], e["data"]["message"]) for e in ping] == [(c.address, "ping")]
+    pong = [e for e in c.received() if e["data"]["kind"] == "message"]
+    assert [(e["data"]["from"], e["data"]["message"]) for e in pong] == [(a.address, "pong")]
+    assert [x["arguments"]["message"] for x in c.sent(a.address)] == ["ping"]
+    assert [x["arguments"]["message"] for x in a.sent(c.address)] == ["pong"]
+    a_peer = await peer_turns(a)
+    assert a_peer and a_peer[0].startswith(f'<agent-message from="{c.address}" msg_id="msg_')
+    assert "\nping\n</agent-message>" in a_peer[0]
+
+
+async def test_notify_when_idle_round_trip(world, ccw_service) -> None:
+    nodes = await boot(world, ccw_service)
+    a, b, c = nodes["a"], nodes["b"], nodes["c"]
+    await eventually_listing(a, [b.address, c.address], "A to list B and C")
+    await exchange(a, c)
+    notices = [e for e in a.received() if e["data"]["kind"] == "notice"]
+    assert [e["data"]["from"] for e in notices] == [c.address]
+    frames = [t for t in await peer_turns(a) if t.startswith("<peer-idle-notice")]
+    assert len(frames) == 1
+    assert frames[0].startswith(f'<peer-idle-notice from="{c.address}" msg_id="msg_')
+    assert 'state="completed"/>' in frames[0].splitlines()[0]
+    assert not [t for t in await peer_turns(a) if t.startswith("<peer-delivery-failed")]
+    delivered = [e for e in a.events("peer_message_delivered") if e["data"]["kind"] == "notice"]
+    assert [e["data"]["result"] for e in delivered] == ["delivered"]
+
+
+async def test_events_and_metrics(world, ccw_service) -> None:
+    nodes = await boot(world, ccw_service)
+    a, b, c = nodes["a"], nodes["b"], nodes["c"]
+    await eventually_listing(a, [b.address, c.address], "A to list B and C")
+    await exchange(a, c)
+    assert [e["data"]["kind"] for e in a.events("peer_message_sent")] == ["message"]
+    assert sorted(e["data"]["kind"] for e in c.events("peer_message_sent")) == [
+        "message",
+        "notice",
+    ]
+    assert [
+        (e["data"]["kind"], e["data"]["result"]) for e in c.events("peer_message_delivered")
+    ] == [("message", "delivered")]
+    assert sorted(
+        (e["data"]["kind"], e["data"]["result"]) for e in a.events("peer_message_delivered")
+    ) == [("message", "delivered"), ("notice", "delivered")]
+    assert sorted(e["data"]["kind"] for e in a.received()) == ["message", "notice"]
+    assert [e["data"]["kind"] for e in c.received()] == ["message"]
+    assert not b.received() and not b.events("peer_message_sent")
+    ma, mb, mc = await a.metrics(), await b.metrics(), await c.metrics()
+    n = "ccw_peer_messages"
+    assert metric(ma, f"{n}_sent_total", kind="message", result="ok") == 1
+    assert metric(mc, f"{n}_sent_total", kind="message", result="ok") == 1
+    assert metric(mc, f"{n}_sent_total", kind="notice", result="ok") == 1
+    assert metric(ma, f"{n}_received_total", kind="message", result="accepted") == 1
+    assert metric(ma, f"{n}_received_total", kind="notice", result="accepted") == 1
+    assert metric(mc, f"{n}_received_total", kind="message", result="accepted") == 1
+    assert metric(ma, f"{n}_delivered_total", kind="message", result="delivered") == 1
+    assert metric(ma, f"{n}_delivered_total", kind="notice", result="delivered") == 1
+    assert metric(mc, f"{n}_delivered_total", kind="message", result="delivered") == 1
+    assert metric(mb, f"{n}_received_total", kind="message", result="accepted") == 0
+
+
+async def test_stopped_service_leaves(world, ccw_service) -> None:
+    nodes = await boot(world, ccw_service)
+    a, b, c = nodes["a"], nodes["b"], nodes["c"]
+    await eventually_listing(a, [b.address, c.address], "A to list B and C")
+    # A drops C within about a heartbeat, via the leaving heartbeat
+    await c.svc.stop()
+    await eventually_listing(a, [b.address], "A to drop C after it stopped", timeout=5)
+    left = [e for e in a.events("peer_member_left") if e["data"]["instance"] == "c"]
+    assert left and left[-1]["data"]["reason"] == "leave"
+
+
+async def test_unknown_peer_and_unsigned_heartbeat(world, ccw_service) -> None:
+    nodes = await boot(world, ccw_service)
+    a, b = nodes["a"], nodes["b"]
     await a.submit("send ping to b/ses_000000000000")
-    await until(lambda: len(a.tool_calls()) > before, "A unknown-peer result")
-    assert a.tool_calls()[-1]["text"].startswith("unknown peer")
+    await until(lambda: a.sent("b/ses_000000000000"), "A unknown-peer result")
+    assert a.sent("b/ses_000000000000")[-1]["text"].startswith("unknown peer")
     async with httpx.AsyncClient() as client:
         r = await client.post(
             f"{b.svc.url}/v1/peers/heartbeat",
@@ -266,9 +358,3 @@ async def test_three_services_exchange_messages_and_leave(world, ccw_service) ->
         for route in ("join", "leave"):
             r = await client.post(f"{b.svc.url}/v1/peers/{route}", json={}, headers=b.headers)
             assert r.status_code == 404
-
-    # stopping C: A drops it within about a heartbeat, via the leave heartbeat
-    await c.svc.stop()
-    await eventually_listing(a, [b.address], "A to drop C after it stopped", timeout=5)
-    left = [e for e in a.events("peer_member_left") if e["data"]["instance"] == "c"]
-    assert left and left[-1]["data"]["reason"] == "leave"
