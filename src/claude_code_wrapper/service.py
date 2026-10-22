@@ -218,6 +218,7 @@ async def _run(
             metrics=metrics,
             on_exit_request=on_exit_request,
         )
+        await manager.start_peers(handle.public_port)
         await manager.load_persisted()
         level = cfg.server.log_level
         servers = [

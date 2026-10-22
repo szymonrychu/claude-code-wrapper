@@ -148,6 +148,14 @@ hooks:
     # - {type: command, run: "echo command done"}
   onError: []                # fatal pattern, crash, boot timeout, step failure, relay error
     # - {type: webhook, url: "https://alerts.example.com/ccw"}
+  preJoin: []                # before this instance joins the peer mesh (blocking, can deny: run standalone)
+    # - {type: command, run: "./check-join.sh", blocking: true}
+  postJoin: []               # after the first heartbeat round, before any session can be created
+    # - {type: command, run: "echo joined"}
+  preLeave: []               # before the leaving heartbeat round (observe only)
+    # - {type: command, run: "echo leaving"}
+  postLeave: []              # after the leaving round, before any session is destroyed
+    # - {type: command, run: "echo left"}
 
 sessions:
   max_sessions: 4            # concurrent sessions (>= 1)
@@ -184,3 +192,17 @@ limits:
   sse_replay: 100            # events replayed to a new SSE subscriber
   sse_heartbeat_seconds: 15
   shutdown_timeout_seconds: 10
+
+peers:
+  enabled: false             # opt-in peer messaging between ccw instances (README "Peer messaging")
+  name: ""                   # this instance's name; empty = hostname
+  advertise_url: ""          # URL peers reach this instance at; empty = http://<hostname>:<server port>, {port} allowed
+  token: ${CCW_PEER_TOKEN:-} # shared signing key, required when enabled (at least 16 characters, differs from server.auth_token)
+  static: []                 # seed peer URLs to join through (also ccw serve --peer URL)
+  heartbeat_seconds: 10      # seconds between heartbeat rounds
+  max_missed_heartbeats: 3   # missed rounds before a peer is dropped
+  join_timeout_seconds: 10   # seconds the first join round may take
+  max_message_bytes: 65536   # largest accepted peer message body (at most 1048576)
+  inbox_max: 32              # queued messages per session inbox
+  max_clock_skew_seconds: 60 # accepted clock difference on signed requests
+  max_messages_per_minute: 30  # per-sender rate limit

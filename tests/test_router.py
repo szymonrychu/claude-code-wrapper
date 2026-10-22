@@ -731,8 +731,8 @@ async def test_ccw_tool_denied_for_subagent_before_user_hook(tmp_path):
     out = json.loads(r["stdout"])["hookSpecificOutput"]
     assert out["permissionDecision"] == "deny"
     assert out["permissionDecisionReason"] == (
-        "ccw commands are available to the main agent only; "
-        "subagents and teammates cannot call mcp__ccw__command."
+        "ccw tools are available to the main agent only; "
+        "subagents and teammates cannot call mcp__ccw__* tools."
     )
     (ev,) = h.events("tool_denied")
     assert ev.data["agent_id"] == "ag1" and ev.data["agent_type"] == "Explore"

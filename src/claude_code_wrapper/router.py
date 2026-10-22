@@ -25,7 +25,7 @@ import time
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .command_signals import Signal, SignalBus
 from .commands import CommandQueue, CommandRecord, CommandRejected, render, validate_params
@@ -66,13 +66,18 @@ from .turns import (
 )
 from .workdir import safe_write_files
 
+if TYPE_CHECKING:
+    from .peer_inbox import PeerInbox
+
 log = logging.getLogger(__name__)
 
 CCW_TOOL_PREFIX = "mcp__ccw__"
 CCW_SUBAGENT_DENY_REASON = (
-    "ccw commands are available to the main agent only; "
-    "subagents and teammates cannot call mcp__ccw__command."
+    "ccw tools are available to the main agent only; "
+    "subagents and teammates cannot call mcp__ccw__* tools."
 )
+NATIVE_PEER_TOOLS = ("SendMessage", "ListAgents")
+NATIVE_PEER_DENY_REASON = "use mcp__ccw__send_message / mcp__ccw__peers"
 QUESTION_DENY_REASON = (
     "Question forwarded to the API client. Ask the user in plain text, "
     "end your turn now and wait for their reply in the next message."
@@ -258,6 +263,8 @@ class SessionRouter(SessionListener):
         self._idle_only = True
         #: Inclusive (first, last) event seq ranges of finished idle-only command runs.
         self._idle_spans: list[tuple[int, int]] = []
+        #: The session's peer inbox (D7), set by the manager when peers are enabled.
+        self.peer_inbox: PeerInbox | None = None
         # The dispatcher is built before the router; route its per-action results here.
         if getattr(dispatcher, "_on_result", None) is None:
             dispatcher._on_result = self.on_hook_result
@@ -288,6 +295,10 @@ class SessionRouter(SessionListener):
     @property
     def subagents(self) -> SubagentWatcher | None:
         return self._watcher
+
+    def emit_event(self, type: str, data: Mapping[str, Any] | None = None) -> LogEvent:
+        """Append a redacted event to this session's log (for collaborators such as the inbox)."""
+        return self._emit(type, data)
 
     def _emit(self, type: str, data: Mapping[str, Any] | None = None) -> LogEvent:
         if self._idle_start is None or not self._idle_only:
@@ -525,19 +536,24 @@ class SessionRouter(SessionListener):
             self._deliver(self._callback_url(self.session.current_turn), event)
             return {"stdout": deny_output(QUESTION_DENY_REASON), "stderr": "", "exit_code": 0}
         who = _attribution(payload)
-        if tool_name.startswith(CCW_TOOL_PREFIX) and payload.get("agent_id"):
+        gate_reason = None
+        if self._cfg.peers.enabled and tool_name in NATIVE_PEER_TOOLS:
+            gate_reason = NATIVE_PEER_DENY_REASON
+        elif tool_name.startswith(CCW_TOOL_PREFIX) and payload.get("agent_id"):
+            gate_reason = CCW_SUBAGENT_DENY_REASON
+        if gate_reason is not None:
             self._emit(
                 "tool_denied",
                 {
                     "tool_use_id": tool_use_id,
                     "tool_name": tool_name,
-                    "reason": CCW_SUBAGENT_DENY_REASON,
+                    "reason": gate_reason,
                     **who,
                 },
             )
             if self._metrics is not None:
                 self._metrics.tool_call(tool_name, "deny")
-            return {"stdout": deny_output(CCW_SUBAGENT_DENY_REASON), "stderr": "", "exit_code": 0}
+            return {"stdout": deny_output(gate_reason), "stderr": "", "exit_code": 0}
         data = {
             "tool_use_id": tool_use_id,
             "tool_name": tool_name,
@@ -717,6 +733,8 @@ class SessionRouter(SessionListener):
 
     async def _after_turn(self, record: TurnRecord, event: LogEvent) -> None:
         """onTurnComplete (any terminal state) and the callback delivery."""
+        if self.peer_inbox is not None:
+            self.peer_inbox.turn_finished(record)  # synchronous: never delays the Stop answer
         self._arm_auto_compact()
         outcome = await self._fire(
             "onTurnComplete", record.model_dump(mode="json", by_alias=True), turn_id=record.turn_id
@@ -1350,6 +1368,10 @@ class SessionRouter(SessionListener):
             # pass, never from inside this state callback, so listeners see ready before busy.
             with contextlib.suppress(RuntimeError):
                 asyncio.get_running_loop().call_soon(self._start_idle_runner)
+        if state == "ready" and self.peer_inbox is not None:
+            # After the idle runner's own scheduling, so a queued command takes the slot first.
+            with contextlib.suppress(RuntimeError):
+                asyncio.get_running_loop().call_soon(self.peer_inbox.kick)
 
     def on_fatal(self, text: str, tail: str) -> None:
         data = self._report_error("fatal", text, tail=self._redactor.redact(tail))
@@ -1433,6 +1455,8 @@ class SessionRouter(SessionListener):
             await self._flush_transcripts()
         self._closed = True
         self._cancel_auto_compact()
+        if self.peer_inbox is not None:
+            self.peer_inbox.close()  # nothing more is delivered; dropped before session_closed
         self._subagents.clear()
         runner = self._abort_runner("session_stopped")
         if runner is not None:

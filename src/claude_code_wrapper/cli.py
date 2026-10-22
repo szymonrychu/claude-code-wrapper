@@ -13,6 +13,7 @@ from importlib import resources
 
 from claude_code_wrapper import __version__
 from claude_code_wrapper.config import ConfigError, load_config
+from claude_code_wrapper.peer_client import PeerError
 from claude_code_wrapper.service import ServiceHandle, run_service
 from claude_code_wrapper.tooling import ToolingError
 
@@ -28,6 +29,9 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--config", default=None, help="config path (default $CCW_CONFIG)")
     serve.add_argument("--host", default=None)
     serve.add_argument("--port", type=int, default=None)
+    serve.add_argument(
+        "--peer", action="append", default=[], metavar="URL", help="seed peer URL (repeatable)"
+    )
     check = sub.add_parser("check-config", help="validate a config and print it redacted")
     check.add_argument("--config", required=True)
     sub.add_parser("version", help="print the version")
@@ -58,6 +62,12 @@ def _serve(args: argparse.Namespace) -> int:
     except (ConfigError, ValueError) as exc:
         print(f"ccw: invalid config: {exc}", file=sys.stderr)
         return EX_CONFIG
+    if args.peer:
+        try:
+            cfg = cfg.model_copy(update={"peers": cfg.peers.with_static(args.peer)})
+        except (ConfigError, ValueError) as exc:
+            print(f"ccw: invalid --peer: {exc}", file=sys.stderr)
+            return 2
     missing = missing_prerequisites(cfg.claude.binary)
     if missing:
         print(
@@ -72,6 +82,9 @@ def _serve(args: argparse.Namespace) -> int:
         asyncio.run(run_service(cfg, handle=handle))
     except KeyboardInterrupt:
         return 0
+    except PeerError as exc:
+        print(f"ccw: peers: {exc}", file=sys.stderr)
+        return 1
     except (ToolingError, OSError) as exc:
         print(f"ccw: {exc}", file=sys.stderr)
         return 1

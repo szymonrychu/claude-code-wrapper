@@ -596,6 +596,53 @@ Auth: bearer. Response `200`:
                 "variables": {"pr": {"required": true, "default": null}}}]}
 ```
 
+### `POST /v1/peers/messages`
+
+Push a message from another ccw instance into a session here. Only mounted when `peers.enabled`;
+never authenticated by `Authorization: Bearer` (neither `server.auth_token` nor the peer token
+is accepted). Requests are signed with HMAC-SHA256 keyed by `peers.token`; the token itself is
+never sent.
+
+Signature headers: `X-CCW-Peer-Timestamp` (Unix milliseconds), `X-CCW-Peer-Nonce` (32 hex
+characters, single use) and `X-CCW-Peer-Signature` (64 hex characters). The signature is
+`hex(HMAC-SHA256(peers.token, canonical))` where `canonical` is
+`METHOD\nPATH\nTIMESTAMP\nNONCE\nhex(SHA256(raw body))` (for example
+`POST\n/v1/peers/messages\n1700000000000\n<nonce>\n<body sha256>`). The timestamp must be
+within `peers.max_clock_skew_seconds` of the receiver's clock, and a nonce is remembered for twice
+that window: a repeat is rejected. Any authentication failure is `401 unauthorized` with a
+generic message, with the receiver never called. A full nonce cache is `429 rate_limited`.
+
+The raw body is capped at `peers.max_message_bytes` + 4096 bytes, checked on `Content-Length`
+first and while streaming otherwise (`413 message_too_large`); a `message` over
+`peers.max_message_bytes` UTF-8 bytes is also `413 message_too_large`.
+
+Body: `{"from": "<instance>/<session id>", "to_session": "ses_...", "message": "...",
+"msg_id": "msg_...", "notify_when_idle": false}`. Response `202`:
+`{"msg_id": "msg_...", "queued": true}`, plus `"duplicate": true` for a repeated `msg_id`.
+Errors: `401 unauthorized`, `404 not_found` (unknown session), `413 message_too_large`,
+`422 invalid_request`, `429 inbox_full`, `429 rate_limited`. Delivery is at-most-once.
+
+### `POST /v1/peers/notices`
+
+Report the outcome of a message you sent earlier. Same mounting, signature, skew, nonce and
+body-cap rules as [`POST /v1/peers/messages`](#post-v1peersmessages).
+
+Body: `{"from": "<instance>/<session id>", "to_session": "ses_...", "msg_id": "msg_...",
+"status": "delivered|rejected|dropped", "state": "completed", "reason": "..."}`. Response `202`:
+`{"msg_id": "msg_...", "queued": true}`, plus `"duplicate": true` for a repeat. Errors: `401
+unauthorized`, `404 not_found`, `413 message_too_large`, `422 invalid_request`, `429 rate_limited`.
+
+### `POST /v1/peers/heartbeat`
+
+Membership. The first heartbeat from an instance is its join; a heartbeat with `"leaving": true`
+removes it. There are no separate join or leave routes. Same mounting, signature, skew, nonce
+and body-cap rules as [`POST /v1/peers/messages`](#post-v1peersmessages).
+
+Body: the sender's view `{"instance": "name", "url": "http://host:8080", "sessions":
+[{"session_id": "ses_...", "name": "...", "cwd": "..."}], "members": [{"instance": "name",
+"url": "..."}], "leaving": false}`. Response `200`: the receiver's own view in the same shape.
+Errors: `401 unauthorized`, `413 message_too_large`, `422 invalid_request`, `429 rate_limited`.
+
 ### `GET /healthz`
 
 Liveness. No auth. Response `200`: `{"status": "ok"}`.
@@ -618,7 +665,15 @@ Prometheus text exposition (`ccw_sessions_active`, `ccw_sessions_created_total`,
 `ccw_commands_total{command,origin,result}` (`command` is a built-in command name, anything else
 counts as `other`; `result` is the final state: `completed`, `failed`, `cancelled`),
 `ccw_command_duration_seconds{command}` (histogram),
-`ccw_compactions_total{trigger}` (`manual`, `auto`, `unknown`)). No auth.
+`ccw_compactions_total{trigger}` (`manual`, `auto`, `unknown`),
+`ccw_peer_messages_received_total{kind,result}` (`kind` is `message` or `notice`; `result` is
+`accepted`, `duplicate`, `inbox_full`, `rate_limited`, `too_large`, `not_found`, `unauthorized`),
+`ccw_peer_messages_sent_total{kind,result}` (`result` is `ok` or the peer error code),
+`ccw_peer_messages_delivered_total{kind,result}` (`delivered`, `rejected`, `dropped`),
+`ccw_peer_membership_total{op,result}` (`op` is `join`, `heartbeat`, `leave` for the outbound
+rounds, or `inbound_heartbeat`; `result` is `ok`, `failed`, `vetoed`) and the gauge
+`ccw_peer_members` (peers in the reachable list)). The peer families exist only with values once
+`peers:` is enabled. No auth.
 Response `200`, `Content-Type: text/plain; version=0.0.4`.
 
 ### Internal API
@@ -1068,6 +1123,61 @@ event: destroy_output
 data: {"seq":22,"ts":"2026-10-20T09:09:59.000Z","session_id":"ses_3f9a1c0b7d42","type":"destroy_output","data":{"outputs":[{"index":0,"ok":true,"output":{"verdict":"pass"},"error":null}]}}
 ```
 
+### `peer_message_received`
+
+Emitted when an inbound peer message or notice is accepted for this session.
+
+`data`: `msg_id`, `from` (sender address), `kind` (`message` or `notice`), `bytes`, `message` (the text), `queued` (true when it waits behind a busy turn).
+
+```
+event: peer_message_received
+data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"peer_message_received","data":{"msg_id":"m1","from":"b/ses_aa","kind":"message","bytes":5,"message":"hello","queued":false}}
+```
+
+### `peer_message_sent`
+
+Emitted when this session's agent sends a peer message or notice.
+
+`data`: `msg_id`, `to` (recipient address), `kind`, `bytes`, `notify_when_idle`, `result` (`ok` or the peer error code).
+
+```
+event: peer_message_sent
+data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"peer_message_sent","data":{"msg_id":"m2","to":"b/ses_aa","kind":"message","bytes":5,"notify_when_idle":false,"result":"ok"}}
+```
+
+### `peer_message_delivered`
+
+Emitted when the inbox delivers a received message as a turn, or drops or rejects it.
+
+`data`: `msg_id`, `from`, `kind`, `turn_id` (the delivering turn), `result` (`delivered`, `rejected`, `dropped`).
+
+```
+event: peer_message_delivered
+data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"peer_message_delivered","data":{"msg_id":"m1","from":"b/ses_aa","kind":"message","turn_id":"turn_1","result":"delivered"}}
+```
+
+### `peer_member_joined`
+
+Emitted on every live session's stream when an instance enters the reachable list.
+
+`data`: `instance`, `url`, `reason` (`join`, `heartbeat`, `leave` or `missed_heartbeats`).
+
+```
+event: peer_member_joined
+data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"peer_member_joined","data":{"instance":"b","url":"http://ccw-b:8080","reason":"join"}}
+```
+
+### `peer_member_left`
+
+Emitted on every live session's stream when an instance leaves the reachable list.
+
+`data`: `instance`, `url`, `reason` (`join`, `heartbeat`, `leave` or `missed_heartbeats`).
+
+```
+event: peer_member_left
+data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"peer_member_left","data":{"instance":"b","url":"http://ccw-b:8080","reason":"missed_heartbeats"}}
+```
+
 ### `session_closed`
 
 The last event of a session's stream: sent when the session is destroyed or the service stops.
@@ -1325,6 +1435,22 @@ Trigger: fatal screen pattern, claude exit or restart, create or resume step fai
 failure. Cannot veto. `data`: `kind` (`fatal`, `exited`, `restart`, `hook_relay`, `create_failed`,
 `resume_failed`), `message`, plus `tail` (fatal), `code` (exited), `count` (restart) or `step`
 (create and resume failures).
+
+### `preJoin`
+
+Trigger: before this instance joins the peer mesh, ahead of the first heartbeat round. Order: `preJoin` -> first heartbeat round -> `postJoin`, all before any session can be created. Awaited when `blocking`; a `deny` means this instance runs standalone (no heartbeats, no peer tools). Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment). The envelope has an empty `session_id` and `workdir`, and null `claude_session_id` and `turn_id`; actions run in the sessions root.
+
+### `postJoin`
+
+Trigger: after the first heartbeat round, before any session can be created. Cannot veto (a `deny` is treated as allow). Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment), `failures` (`[{url, error}]`, the seeds that did not answer) and `standalone` (true when `preJoin` denied the join).
+
+### `preLeave`
+
+Trigger: on shutdown, before the leaving heartbeat round. Observe only: annotations are collected but the decision is ignored. Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment).
+
+### `postLeave`
+
+Trigger: after the leaving heartbeat round, before any `onDestroy` fires. Cannot veto. Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment), `failures` (`[{url, error}]`, the peers the leaving heartbeat did not reach).
 
 ### Command actions
 
@@ -1678,6 +1804,9 @@ FastAPI's `{"detail": ...}` body instead.
 | `missing_variable` | 422 | a required template variable has no value or default |
 | `invalid_request` | 422 | the body, query or path failed validation, or the merged `env` is invalid; the message lists `field: problem` entries |
 | `too_large` | 413 | prompt over `limits.max_prompt_bytes`, or turn `files` over `limits.max_file_bytes` or `limits.max_files_per_turn` |
+| `message_too_large` | 413 | a peer request body over `peers.max_message_bytes` + 4096 bytes, or a peer `message` over `peers.max_message_bytes` |
+| `inbox_full` | 429 | the target session's peer inbox is at `peers.inbox_max` |
+| `rate_limited` | 429 | a peer sender over `peers.max_messages_per_minute`, or the peer nonce cache is full |
 | `invalid_command` | 422 | unknown command, invalid `args`, or `force` not allowed |
 | `command_queue_full` | 429 | the session already has the maximum of queued commands |
 | `too_many_sessions` | 429 | `sessions.max_sessions` reached |
@@ -2365,6 +2494,10 @@ hooks:
 | `hooks.onCommandComplete` | list | `[]` | - | List of hook actions run after a queued slash command completed, failed or was cancelled. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onInterrupt` | list | `[]` | - | List of hook actions run after a turn was interrupted. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onError` | list | `[]` | - | List of hook actions run on fatal pattern, crash, boot timeout, step failure or relay error. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.preJoin` | list | `[]` | - | List of hook actions run before this instance joins the peer mesh; blocking actions can deny, which runs the instance standalone. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.postJoin` | list | `[]` | - | List of hook actions run after the first heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.preLeave` | list | `[]` | - | List of hook actions run before the leaving heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.postLeave` | list | `[]` | - | List of hook actions run after the leaving heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 
 ### `sessions`
 
@@ -2423,6 +2556,33 @@ limits:
 | `limits.sse_replay` | integer | `100` | - | Events replayed to a new SSE subscriber without `Last-Event-ID`. |
 | `limits.sse_heartbeat_seconds` | number | `15` | - | Interval of SSE heartbeat comments (> 0). |
 | `limits.shutdown_timeout_seconds` | number | `10` | - | Bounded graceful shutdown: seconds allowed to stop sessions on SIGTERM. |
+
+### `peers`
+
+```yaml
+peers:
+  enabled: true
+  token: ${CCW_PEER_TOKEN}
+  static:
+    - http://ccw-b:8080
+```
+
+Opt-in peer messaging between ccw instances; with `enabled: false` (the default) nothing is required and nothing changes. With it on, a user `claude.mcp_servers.ccw` is an error.
+
+| Key | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `peers.enabled` | boolean | `false` | - | Turn peer messaging on. Off, nothing changes: no routes, no tools, no hooks. |
+| `peers.name` | string | `""` | - | This instance's name in the peer table; empty means the hostname. `[A-Za-z0-9._-]{1,64}`, not `.`, `..` or starting with `.`. |
+| `peers.advertise_url` | string | `""` | - | URL other instances reach this one at; empty means `http://<hostname>:<server port>`. Absolute http(s), no trailing slash; the literal `{port}` is replaced by the server port. |
+| `peers.token` | string | `""` | - | Shared peer token. Required when `peers.enabled`, normally `${CCW_PEER_TOKEN}`; at least 16 characters and different from `server.auth_token`. A signing key only (HMAC-SHA256 keys, never sent on the wire), never logged and masked as `***` in `GET /v1/config`. |
+| `peers.static` | array | `[]` | - | Seed peer URLs (strings or `{url: ...}`), each absolute http(s) with no trailing slash; duplicates are dropped. `ccw serve --peer URL` (repeatable) extends the list. |
+| `peers.heartbeat_seconds` | number | `10` | - | Seconds between heartbeat rounds (> 0). |
+| `peers.max_missed_heartbeats` | integer | `3` | - | Missed heartbeat rounds before a peer is dropped (>= 1). |
+| `peers.join_timeout_seconds` | number | `10` | - | Seconds the first join round may take (> 0). |
+| `peers.max_message_bytes` | integer | `65536` | - | Largest accepted peer message in bytes (1 to 1048576). |
+| `peers.inbox_max` | integer | `32` | - | Messages queued per session inbox (>= 1). |
+| `peers.max_clock_skew_seconds` | number | `60` | - | Accepted clock difference on signed peer requests, in seconds (> 0). |
+| `peers.max_messages_per_minute` | integer | `30` | - | Per-sender message rate limit; above it the answer is 429 `rate_limited` (>= 1). |
 
 ## Claude Code environment
 

@@ -33,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from .bootstrap import (
@@ -47,8 +48,16 @@ from .claude_env import SECRET_KEY_RE, ClaudeEnv
 from .commands import effective_commands
 from .config import CommandsConfig, CommandsOverride, Config, InitialPromptTemplate
 from .events import EventLog
-from .hooks import RETRY_BASE_SECONDS, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
+from .hooks import (
+    RETRY_BASE_SECONDS,
+    HookDispatcher,
+    HookOutcome,
+    build_payload,
+    gate_fail_mode,
+    instance_dispatcher,
+)
 from .metrics import Metrics
+from .peer_service import PeerService
 from .plugins import install_plugins
 from .prompts import render_template, resolve_prompt
 from .redact import Redactor
@@ -289,6 +298,51 @@ class SessionManager:
         self._tasks: set[asyncio.Task[Any]] = set()
         self._reaper: asyncio.Task[None] | None = None
         self._closing = False
+        #: Built by `start_peers` when `peers.enabled`; None means no peer traffic at all.
+        self.peers: PeerService | None = None
+        self._peers_joined = not cfg.peers.enabled
+        self._peers_left = False
+
+    # ------------------------------------------------------------------ peers
+
+    async def start_peers(
+        self, public_port: int, *, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        """Build the peer service and join the mesh; no-op when peers are disabled.
+
+        `create` and `resume` are refused (`peers joining`) until the join returned.
+        """
+        if not self.cfg.peers.enabled or self.peers is not None:
+            return
+        dispatcher = instance_dispatcher(
+            self.cfg, self.redactor, service_env=self.service_env, api_url=self.api_url
+        )
+        self._dispatchers.add(dispatcher)
+        self.peers = PeerService(
+            self.cfg.peers,
+            public_port=public_port,
+            redactor=self.redactor,
+            dispatcher=dispatcher,
+            metrics=self.metrics,
+            transport=transport,
+        )
+        await self.peers.join()
+        self._peers_joined = True
+
+    async def leave_peers(self) -> None:
+        """Announce departure once; later calls are no-ops."""
+        if self.peers is None or self._peers_left:
+            return
+        self._peers_left = True
+        await self.peers.leave()
+
+    async def stop_peers(self, drain_timeout: float) -> None:
+        if self.peers is not None:
+            await self.peers.stop(drain_timeout)
+
+    @property
+    def _peers_on(self) -> bool:
+        return self.cfg.peers.enabled
 
     # ------------------------------------------------------------------ lookup
 
@@ -376,6 +430,7 @@ class SessionManager:
         if not isinstance(req, CreateSessionRequest):
             req = CreateSessionRequest.model_validate(req)
         self._check_open()
+        self._check_peers_joined()
         initial = self._initial_prompt(req)
         self._check_reserved_mcp(req)
         override = req.env if req.env is not None else ClaudeEnv()
@@ -496,7 +551,8 @@ class SessionManager:
 
     async def _bootstrap(self, ctx: _Active) -> None:
         """Config-dir rendering, plugins and settings: run by create and by resume."""
-        ccw_mcp = bool(self._commands_for(ctx.meta).agent)
+        peers = self._peers_on
+        ccw_mcp = bool(self._commands_for(ctx.meta).agent) or peers
         await self._step(ctx, "ensure_config_dir", ensure_config_dir, ctx.config_dir)
         await self._step(
             ctx,
@@ -509,7 +565,12 @@ class SessionManager:
             ccw_mcp,
         )
         await self._step(
-            ctx, "write_instructions", write_instructions, ctx.config_dir, self.cfg.prompts
+            ctx,
+            "write_instructions",
+            write_instructions,
+            ctx.config_dir,
+            self.cfg.prompts,
+            peers,
         )
         await self._step(
             ctx, "copy_config_files", copy_config_files, ctx.config_dir, self.cfg.claude
@@ -523,6 +584,7 @@ class SessionManager:
             self.cfg,
             self._relay_command,
             ccw_mcp,
+            peers,
         )
 
     async def _launch(self, ctx: _Active, *, resume: bool) -> None:
@@ -550,11 +612,18 @@ class SessionManager:
             if not resume:
                 self._count_created("vetoed")
             raise (ResumeVetoed if resume else CreateVetoed)(reason)
+        await self._step(ctx, "publish_peer", self._publish_peer, ctx)
         ctx.phase = "running"
         ctx.activated = time.time()
         ctx.meta.update(state=self._live_state(ctx), error=None)
         self._save(ctx)
         self._ensure_reaper()
+
+    def _publish_peer(self, ctx: _Active) -> None:
+        if self.peers is None or ctx.router is None:
+            return
+        name = ctx.meta.get("name") or ctx.session_id
+        self.peers.register(ctx.session_id, ctx.router, name=str(name), cwd=str(ctx.workdir))
 
     def _open_session_dir(self, ctx: _Active) -> None:
         ctx.session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -627,6 +696,7 @@ class SessionManager:
             mise_env=mise_env(self.cfg.mise),
             passthrough=self.cfg.claude.passthrough_env,
             passthrough_exclude=self.cfg.claude.passthrough_env_exclude,
+            peers=self._peers_on,
         )
 
     def _wire(self, ctx: _Active, env: dict[str, str], resume: bool) -> None:
@@ -724,6 +794,8 @@ class SessionManager:
             if ctx.phase == "closing":
                 await ctx.closed.wait()
             else:
+                if self._destroy_empties_service(ctx):
+                    await asyncio.shield(self.leave_peers())
                 # Shielded: a caller that goes away never leaves a session half destroyed.
                 await asyncio.shield(
                     self._start_destroy(
@@ -745,6 +817,14 @@ class SessionManager:
     def _request_exit(self, code: int) -> None:
         if self._on_exit_request is not None and not self._closing:
             self._on_exit_request(code)
+
+    def _destroy_empties_service(self, ctx: _Active) -> bool:
+        """True when destroying `ctx` leaves no active session under `exit_when_last_destroyed`."""
+        return (
+            self.cfg.sessions.exit_when_last_destroyed
+            and self._created_any
+            and list(self._active.values()) == [ctx]
+        )
 
     def _maybe_exit_when_empty(self) -> None:
         """`sessions.exit_when_last_destroyed`: nothing active after a session was created."""
@@ -840,6 +920,8 @@ class SessionManager:
             except Exception:
                 log.exception("session %s: stopping claude failed", ctx.session_id)
             ctx.meta["transcript_path"] = ctx.session.transcript_path
+        if self.peers is not None:
+            self.peers.unregister(ctx.session_id)
         if ctx.router is not None:
             try:
                 if close_timeout is None:
@@ -899,6 +981,7 @@ class SessionManager:
         secret overrides are never persisted and must be resent here (D24).
         """
         self._check_open()
+        self._check_peers_joined()
         ctx = self._active.get(session_id)
         if ctx is not None:
             if ctx.phase == "running" and ctx.session is not None and ctx.session.state == "dead":
@@ -1027,9 +1110,13 @@ class SessionManager:
         hurried to the same grace, and creates are cancelled. Whatever is still running
         then is cancelled and killed outright, and the dispatchers drain in the rest."""
         self._closing = True
-        budget = self.cfg.limits.shutdown_timeout_seconds
+        total = self.cfg.limits.shutdown_timeout_seconds
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + budget
+        deadline = loop.time() + total
+        # The leave comes first and its time comes out of the shutdown budget.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self.leave_peers(), total)
+        budget = max(deadline - loop.time(), 0.0)
         grace = budget * SHUTDOWN_GRACE_SHARE
         if self._reaper is not None:
             self._reaper.cancel()  # a reap in progress carries on in its destroy task
@@ -1074,6 +1161,7 @@ class SessionManager:
         await asyncio.gather(
             *(self._abandon(ctx, close_timeout) for ctx in leftovers), return_exceptions=True
         )
+        await self.stop_peers(max(deadline - loop.time(), 0.0))
         remaining = max(deadline - loop.time(), 0.0)
         await asyncio.gather(
             *(d.drain(remaining) for d in self._dispatchers), return_exceptions=True
@@ -1096,6 +1184,10 @@ class SessionManager:
     def _check_open(self) -> None:
         if self._closing:
             raise InvalidState(None, "shutting_down", "the service is shutting down")
+
+    def _check_peers_joined(self) -> None:
+        if not self._peers_joined:
+            raise InvalidState(None, "peers_joining", "peers joining")
 
     def _check_reserved_mcp(self, req: CreateSessionRequest) -> None:
         override = req.commands
