@@ -229,6 +229,7 @@ def build_env(
     mise_env: Mapping[str, str] | None,
     passthrough: Iterable[str],
     passthrough_exclude: Iterable[str] = (),
+    peers: bool = False,
 ) -> dict[str, str]:
     """The complete claude child env, built from an allow-list rather than filtered.
 
@@ -250,6 +251,8 @@ def build_env(
         "CCW_TOOL_GATE_FAIL": gate_fail,
         "CCW_GATE_TIMEOUT": f"{gate_timeout:g}",
     }
+    if peers:
+        managed["CLAUDE_CODE_HARBOR_KITE"] = "0"
     env = {name: service_env[name] for name in BASE_ENV if name in service_env}
     for name in passthrough_names(service_env, passthrough, passthrough_exclude):
         env[name] = service_env[name]

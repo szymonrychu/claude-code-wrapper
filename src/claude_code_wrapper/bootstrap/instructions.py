@@ -10,8 +10,21 @@ from .errors import BootstrapError
 
 MARKER = "<!-- written by claude-code-wrapper -->"
 
+PEERS_INSTRUCTIONS = """\
+## Messaging other agents
 
-def write_instructions(config_dir: str | Path, prompts_cfg: PromptsConfig) -> Path | None:
+You can message the main agents of other ccw sessions, possibly in other containers.
+List them with `mcp__ccw__peers`. Send with `mcp__ccw__send_message` to an address of the form
+`<instance>/<session id>`. A message from a peer arrives as a new turn framed in
+`<agent-message from="..." msg_id="...">`. Reply with `mcp__ccw__send_message` to its `from`
+only when a reply is needed; do not send acknowledgements. Pass `notify_when_idle: true` to get
+a `<peer-idle-notice>` when the peer has finished; a `<peer-delivery-failed>` notice means the
+message was rejected or dropped. Never use SendMessage or ListAgents."""
+
+
+def write_instructions(
+    config_dir: str | Path, prompts_cfg: PromptsConfig, peers: bool = False
+) -> Path | None:
     target = Path(config_dir) / "CLAUDE.md"
     parts: list[str] = []
     if prompts_cfg.global_claude_md:
@@ -23,6 +36,8 @@ def write_instructions(config_dir: str | Path, prompts_cfg: PromptsConfig) -> Pa
     if prompts_cfg.system_append:
         parts.append(prompts_cfg.system_append)
     parts = [p for p in parts if p]
+    if peers:
+        parts.append(PEERS_INSTRUCTIONS)
     if not parts:
         if target.is_file() and target.read_text(encoding="utf-8").startswith(MARKER):
             target.unlink()
