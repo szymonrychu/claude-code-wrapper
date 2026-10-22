@@ -379,6 +379,8 @@ class Session:
         self.last_fatal: str | None = None
         self.started_at: str | None = None
         self.ready_at: str | None = None
+        self.state_since: str | None = None  # when the public state last changed
+        self.idle_since: str | None = None  # state_since while public state is ready, else None
         self.boot_error: BootError | None = None
         self._redactor = _redactor_for(spec.env)
         self._scanner = FatalScanner(spec.boot.fatal_patterns)
@@ -416,6 +418,8 @@ class Session:
             self._command_active = False  # a command run cannot outlive the live claude
         if public != self._public:
             self._public = public
+            self.state_since = now_iso()
+            self.idle_since = self.state_since if public == "ready" else None
             self._notify("on_state", public)
 
     def snapshot(self) -> dict[str, Any]:
@@ -427,6 +431,8 @@ class Session:
             "last_fatal": self.last_fatal,
             "started_at": self.started_at,
             "ready_at": self.ready_at,
+            "idle_since": self.idle_since,
+            "state_since": self.state_since,
         }
 
     def tail(self, n: int = TAIL_CHARS) -> str:

@@ -1440,6 +1440,7 @@ class SessionManager:
             "created_at": meta.get("created_at"),
             "updated_at": meta.get("updated_at"),
             "last_activity_at": last_activity_at,
+            "idle_since": live.get("idle_since") if state == "ready" else None,
             "turns_completed": turns_completed,
             "outstanding_subagents": outstanding_subagents,
             "current_turn_id": current.turn_id if current is not None else None,

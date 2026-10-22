@@ -48,6 +48,7 @@ class StubSession:
         self.interrupt_result: str | None = None
         self.reject: str | None = None
         self.state = "ready"
+        self.state_since: str | None = None
         self.submitted_turn_ids: list[str | None] = []
         self.command_active = False
 
@@ -615,13 +616,14 @@ async def test_listener_callbacks(tmp_path):
     r.on_restart(2, True)
     r.on_exit(137)
     await r.drain()
-    assert h.events("session_state")[0].data == {"state": "busy"}
+    busy = h.events("session_state")[0].data
+    assert busy["state"] == "busy" and busy["since"]
     assert h.events("stall_suspected")[0].data["turn_id"] == "turn-1"
     kinds = [e.data["kind"] for e in h.events("error")]
     assert kinds == ["fatal", "exited"]
     assert SECRET not in json.dumps([e.data for e in h.events("error")])
     restart = h.events("session_state")[1].data
-    assert restart["restart"] == {"count": 2, "resumed": True}
+    assert restart["restart"] == {"count": 2, "resumed": True} and restart["since"]
     assert sorted(p["data"]["kind"] for p in h.hook_posts) == ["exited", "fatal", "restart"]
     await r.close()
 

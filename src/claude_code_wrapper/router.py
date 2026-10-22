@@ -39,6 +39,7 @@ from .metrics import Metrics
 from .pty_proc import PtyClosed
 from .redact import Redactor
 from .session import Session, SessionListener, TurnRejected
+from .timeutil import now_iso
 from .transcript import (
     MAX_RESULT_CHARS,
     TRUNCATED_SUFFIX,
@@ -1353,7 +1354,10 @@ class SessionRouter(SessionListener):
     # ------------------------------------------------------------------ SessionListener
 
     def on_state(self, state: str) -> None:
-        self._emit("session_state", {"state": state})
+        self._emit(
+            "session_state",
+            {"state": state, "since": self.session.state_since or now_iso()},
+        )
         internal = self.session.state
         if internal in ("booting", "dead"):
             self._abort_runner("claude_exited")
@@ -1383,6 +1387,7 @@ class SessionRouter(SessionListener):
             "session_state",
             {
                 "state": self.session.snapshot()["state"],
+                "since": self.session.state_since or now_iso(),
                 "restart": {"count": count, "resumed": resumed},
             },
         )

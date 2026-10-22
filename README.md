@@ -205,6 +205,7 @@ Response `201`:
   "created_at": "2026-10-20T09:00:00.120+00:00",
   "updated_at": "2026-10-20T09:00:14.882+00:00",
   "last_activity_at": "2026-10-20T09:00:14.882+00:00",
+  "idle_since": "2026-10-20T09:00:14.800+00:00",
   "turns_completed": 0,
   "outstanding_subagents": 0,
   "current_turn_id": null,
@@ -221,7 +222,10 @@ Snapshot fields: `state` is one of `creating`, `ready`, `busy`, `stopped`, `fail
 `step` is the create/resume step last entered (on `failed`, the one that failed, with `error:
 {"step", "message"}`); `outstanding_subagents` is the number of subagents started and not yet stopped (0 for stopped and persisted sessions); `current_turn_id` is the running turn; `last_fatal` is the last fatal
 screen text; `pid` is the claude pid while alive; `env` shows set values with secrets masked as
-`***`.
+`***`. `idle_since` is the ISO timestamp of the latest transition into `ready` (boot, a turn or command
+completing, a relaunch of claude) and `null` in every other state, including stopped sessions
+loaded from disk; the orchestrator uses it to route to the agent idle the longest. It differs from
+`ready_at` (the boot time of claude), which turns never move.
 
 Status codes:
 
@@ -826,11 +830,12 @@ curl -N -H "Authorization: Bearer $TOKEN" \
 Emitted on every state change of the session (`creating`, `ready`, `busy`, `stopped`, `failed`,
 `dead`) and when claude is restarted.
 
-`data`: `state` (string); `restart` (object `{count, resumed}`, only on a restart event).
+`data`: `state` (string); `since` (ISO timestamp of that transition; on a restart event, of the
+transition it follows); `restart` (object `{count, resumed}`, only on a restart event).
 
 ```
 event: session_state
-data: {"seq":3,"ts":"2026-10-20T09:00:14.800Z","session_id":"ses_3f9a1c0b7d42","type":"session_state","data":{"state":"ready"}}
+data: {"seq":3,"ts":"2026-10-20T09:00:14.800Z","session_id":"ses_3f9a1c0b7d42","type":"session_state","data":{"state":"ready","since":"2026-10-20T09:00:14.800+00:00"}}
 ```
 
 ### `turn_started`
