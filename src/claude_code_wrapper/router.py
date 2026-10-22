@@ -39,6 +39,7 @@ from .metrics import Metrics
 from .pty_proc import PtyClosed
 from .redact import Redactor
 from .session import Session, SessionListener, TurnRejected
+from .timeutil import now_iso
 from .transcript import (
     MAX_RESULT_CHARS,
     TRUNCATED_SUFFIX,
@@ -255,6 +256,11 @@ class SessionRouter(SessionListener):
         self._ac_handle: asyncio.TimerHandle | None = None
         self._ac_armed = False
         self._last_context: int | None = None
+        #: Latest statusLine values relayed by `ccw statusline` (see `on_statusline`).
+        self.statusline: dict[str, Any] | None = None
+        #: Context-window usage derived from the statusLine values (None until the first
+        #: assistant message and after `compacted`); distinct from `_last_context` above.
+        self.context: dict[str, Any] | None = None
         #: Monotonic time of the last event that is not an idle-origin command's.
         self._last_real = time.monotonic()
         #: While idle-origin commands run: the seq of the first event and whether only idle
@@ -304,6 +310,15 @@ class SessionRouter(SessionListener):
         if self._idle_start is None or not self._idle_only:
             self._last_real = time.monotonic()
         return self._event_log.append(type, self._redactor.redact_obj(dict(data or {})))
+
+    def _emit_user_message(
+        self, turn_id: str | None, origin: str, text: str, files: list[str] | None = None
+    ) -> None:
+        """One event per prompt pasted into the session (client, peer, restart, command...)."""
+        self._emit(
+            "user_message",
+            {"turn_id": turn_id, "origin": origin, "text": text, "files": files or []},
+        )
 
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.ensure_future(coro)
@@ -435,6 +450,62 @@ class SessionRouter(SessionListener):
         if isinstance(path, str) and path and Path(path) != Path(self.session.transcript_path):
             self.session.transcript_path = path
         self.ensure_tailing()
+
+    def on_statusline(self, payload: Mapping[str, Any]) -> None:
+        """Store the latest context-window values and model from the statusLine relay."""
+        self.statusline = dict(payload)
+        self._set_context(self._derive_context(self.statusline))
+
+    @staticmethod
+    def _derive_context(values: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The `context` snapshot value from parsed statusLine values (None when unknown)."""
+        usage = values.get("current_usage")
+        if not isinstance(usage, Mapping):
+            return None
+        used = sum(
+            int(usage.get(key) or 0)
+            for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+        )
+        window = values.get("context_window_size")
+        window = window if isinstance(window, int) and window > 0 else None
+        pct = values.get("used_percentage")
+        if pct is None and window is not None:
+            pct = min(100.0, max(0.0, used / window * 100))
+        model = values.get("model")
+        if isinstance(model, Mapping):
+            model = model.get("id")
+        return {
+            "used_tokens": used,
+            "window_tokens": window,
+            "used_percentage": pct,
+            "model": model if isinstance(model, str) else None,
+            "source": "statusline",
+            "updated_at": now_iso(),
+        }
+
+    def _set_context(self, new: dict[str, Any] | None) -> None:
+        """Store the context and emit one `context` event when the gauge values changed."""
+        keys = ("used_tokens", "window_tokens", "used_percentage")
+        old = self.context
+        if new is None and old is None:
+            return
+        if new is not None and old is not None and all(new[k] == old[k] for k in keys):
+            self.context = {**old, "model": new["model"]}
+            return
+        self.context = new
+        self._emit(
+            "context",
+            new
+            or {
+                **dict.fromkeys((*keys, "model")),
+                "source": "statusline",
+                "updated_at": now_iso(),
+            },
+        )
+
+    def reset_context(self) -> None:
+        """Compaction emptied the window: context is unknown until the next statusLine."""
+        self._set_context(None)
 
     # ------------------------------------------------------------------ claude hooks
 
@@ -806,6 +877,7 @@ class SessionRouter(SessionListener):
             metadata=dict(metadata or {}),
         )
         self._usage.reset()
+        self._emit_user_message(record.turn_id, record.origin, text, list((files or {}).keys()))
         self._emit(
             "turn_started", {"turn_id": record.turn_id, "origin": record.origin, "text": text}
         )
@@ -885,6 +957,7 @@ class SessionRouter(SessionListener):
                         "duration_ms": ev.duration_ms,
                     }
                     self._emit("compacted", data)
+                    self.reset_context()
                     if self._metrics is not None:
                         self._metrics.compaction(ev.trigger)
                     self.signals.publish("compact_boundary", data)
@@ -1037,7 +1110,8 @@ class SessionRouter(SessionListener):
         text = f"{self.commands_cfg.continue_prompt}\n\n{_results_line(done)}"
         self._last_marker = record.turn_id  # the continuation's Stop completes this record
         self._emit("turn_resumed", {"turn_id": record.turn_id, "cause": "command", "commands": ids})
-        await session.continue_turn(record, text)
+        if await session.continue_turn(record, text):
+            self._emit_user_message(record.turn_id, record.origin, text)
 
     def _end_turn_commands(self, record: TurnRecord) -> None:
         """A turn ended without completing: its commands never resume it (D4.5-D4.7).
@@ -1215,7 +1289,9 @@ class SessionRouter(SessionListener):
             started = time.monotonic()
             self._emit_command("command_started", record)
             mark = self.signals.mark()
-            await session.send_command(render(record.name, record.args))
+            line = render(record.name, record.args)
+            await session.send_command(line)
+            self._emit_user_message(None, "command", line)
             state, result, error, output = await self._await_completion(record, mark, timeout)
             if error == "timeout":
                 await session.send_escape()
@@ -1353,7 +1429,10 @@ class SessionRouter(SessionListener):
     # ------------------------------------------------------------------ SessionListener
 
     def on_state(self, state: str) -> None:
-        self._emit("session_state", {"state": state})
+        self._emit(
+            "session_state",
+            {"state": state, "since": self.session.state_since or now_iso()},
+        )
         internal = self.session.state
         if internal in ("booting", "dead"):
             self._abort_runner("claude_exited")
@@ -1383,6 +1462,7 @@ class SessionRouter(SessionListener):
             "session_state",
             {
                 "state": self.session.snapshot()["state"],
+                "since": self.session.state_since or now_iso(),
                 "restart": {"count": count, "resumed": resumed},
             },
         )
@@ -1408,6 +1488,9 @@ class SessionRouter(SessionListener):
             self._commands_turn = None  # the crash aborted its commands
         self._emit(
             "turn_resumed", {"turn_id": record.turn_id, "restart": restart, "cause": "restart"}
+        )
+        self._emit_user_message(
+            record.turn_id, "restart", self._cfg.sessions.restart_continue_prompt
         )
 
     def on_turn_end(self, record: Any) -> None:

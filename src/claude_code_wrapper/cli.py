@@ -35,6 +35,9 @@ def _parser() -> argparse.ArgumentParser:
     check = sub.add_parser("check-config", help="validate a config and print it redacted")
     check.add_argument("--config", required=True)
     sub.add_parser("version", help="print the version")
+    sub.add_parser(
+        "statusline", help="relay Claude Code's statusLine JSON from stdin (installed by ccw)"
+    )
     config = sub.add_parser("config", help="bundled configuration helpers")
     config_sub = config.add_subparsers(dest="config_command", required=True)
     config_sub.add_parser("example", help="print the bundled example config.yaml")
@@ -96,6 +99,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "version":
         print(__version__)
         return 0
+    if args.command == "statusline":
+        from claude_code_wrapper.statusline import main as statusline_main
+
+        return statusline_main()
     if args.command == "config":
         text = resources.files("claude_code_wrapper.data").joinpath("config.example.yaml")
         sys.stdout.write(text.read_text(encoding="utf-8"))

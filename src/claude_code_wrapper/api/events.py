@@ -12,7 +12,7 @@ from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import StreamingResponse
 
 from claude_code_wrapper.api.errors import ApiError
-from claude_code_wrapper.events import MAX_PAGE_LIMIT, Event, EventLog
+from claude_code_wrapper.events import EVENT_TYPES, MAX_PAGE_LIMIT, Event, EventLog
 from claude_code_wrapper.turns import now_iso
 
 router = APIRouter()
@@ -37,9 +37,31 @@ async def history(
     request: Request,
     after_seq: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1)] = 100,
+    before_seq: Annotated[int | None, Query(ge=0)] = None,
+    types: str | None = None,
 ) -> Any:
+    wanted: frozenset[str] | None = None
+    if types is not None:
+        names = [t.strip() for t in types.split(",") if t.strip()]
+        unknown = sorted(set(names) - set(EVENT_TYPES))
+        if unknown or not names:
+            raise ApiError(400, "invalid_request", f"unknown event types: {', '.join(unknown)}")
+        wanted = frozenset(names)
+    if before_seq is not None and "after_seq" in request.query_params:
+        raise ApiError(400, "invalid_request", "before_seq and after_seq are mutually exclusive")
     log = request.app.state.manager.open_event_log(session_id)
-    events, more = log.page(after_seq, min(limit, MAX_PAGE_LIMIT))
+    size = min(limit, MAX_PAGE_LIMIT)
+    if before_seq is not None:
+        older, more_before = await asyncio.to_thread(log.page_before, before_seq, size, wanted)
+        next_seq = older[-1].seq if older else before_seq
+        return {
+            "events": [_envelope(request, e) for e in older],
+            "next_seq": next_seq,
+            "has_more": bool((await asyncio.to_thread(log.page, next_seq, 1, wanted))[0]),
+            "prev_seq": older[0].seq if older and more_before else None,
+            "has_more_before": more_before,
+        }
+    events, more = await asyncio.to_thread(log.page, after_seq, size, wanted)
     next_seq = events[-1].seq if events else after_seq
     return {
         "events": [_envelope(request, e) for e in events],
@@ -48,13 +70,13 @@ async def history(
     }
 
 
-def _replay(log: EventLog, start: int | None, count: int) -> list[Event]:
+async def _replay(log: EventLog, start: int | None, count: int) -> list[Event]:
     if start is None:
         return log.last(count)
     out: list[Event] = []
     cursor = start
     while True:
-        page, more = log.page(cursor, MAX_PAGE_LIMIT)
+        page, more = await asyncio.to_thread(log.page, cursor, MAX_PAGE_LIMIT)
         out.extend(page)
         if not more or not page:
             return out
@@ -84,7 +106,7 @@ async def events(
     log = manager.open_event_log(session_id)
     start = _start_seq(last_event_id, after_seq)
     sub = log.subscribe()  # before the replay read, so nothing falls in the gap
-    replay = _replay(log, start, limits.sse_replay)
+    replay = await _replay(log, start, limits.sse_replay)
 
     async def stream() -> AsyncIterator[bytes]:
         sent = start if start is not None else 0

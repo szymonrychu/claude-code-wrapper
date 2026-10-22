@@ -10,6 +10,7 @@ def test_event_types_exact():
     assert EVENT_TYPES == [
         "session_state",
         "turn_started",
+        "user_message",
         "turn_rejected",
         "turn_completed",
         "turn_failed",
@@ -34,6 +35,7 @@ def test_event_types_exact():
         "command_completed",
         "command_failed",
         "compacted",
+        "context",
         "error",
         "destroy_output",
         "peer_message_received",

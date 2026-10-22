@@ -104,6 +104,9 @@ never put it behind a public ingress.
 - With `peers.enabled`, the shared peer token is one trust domain: any holder can push prompts into
   the agents of every instance and claim any sender. See the trust model in
   [Peer messaging](#peer-messaging).
+- `user_message` events carry the prompt text and the names of attached files into the event log,
+  the SSE stream and the history. Only the configured redactor scrubs them; anything it does not
+  match is stored and streamed verbatim to every holder of the bearer token.
 - There is no callback host policy: `callbackUrl` may point at any `http` or `https` host the
   service can reach.
 - The service must not be exposed to untrusted callers. If `server.auth_token` is empty the service
@@ -205,6 +208,7 @@ Response `201`:
   "created_at": "2026-10-20T09:00:00.120+00:00",
   "updated_at": "2026-10-20T09:00:14.882+00:00",
   "last_activity_at": "2026-10-20T09:00:14.882+00:00",
+  "idle_since": "2026-10-20T09:00:14.800+00:00",
   "turns_completed": 0,
   "outstanding_subagents": 0,
   "current_turn_id": null,
@@ -212,6 +216,7 @@ Response `201`:
   "last_fatal": null,
   "restarts": 0,
   "pid": 4121,
+  "context": {"used_tokens": 41200, "window_tokens": 200000, "used_percentage": 20.6, "model": "claude-sonnet-4-5", "source": "statusline", "updated_at": "2026-10-20T09:00:20.100Z"},
   "env": {"claude_code_oauth_token": "***", "extra": {"GH_TOKEN": "***"}},
   "callbackUrl": "http://orchestrator.internal/ccw"
 }
@@ -221,7 +226,19 @@ Snapshot fields: `state` is one of `creating`, `ready`, `busy`, `stopped`, `fail
 `step` is the create/resume step last entered (on `failed`, the one that failed, with `error:
 {"step", "message"}`); `outstanding_subagents` is the number of subagents started and not yet stopped (0 for stopped and persisted sessions); `current_turn_id` is the running turn; `last_fatal` is the last fatal
 screen text; `pid` is the claude pid while alive; `env` shows set values with secrets masked as
-`***`.
+`***`. `idle_since` is the ISO timestamp of the latest transition into `ready` (boot, a turn or command
+completing, a relaunch of claude) and `null` in every other state, including stopped sessions
+loaded from disk; the orchestrator uses it to route to the agent idle the longest. It differs from
+`ready_at` (the boot time of claude), which turns never move.
+
+`context` is the context-window usage the statusLine relay delivers (`null` until the first
+assistant message, after a `compacted`, and for stopped sessions loaded from disk): `used_tokens`
+is `input + cache_creation + cache_read` tokens of the latest call (output excluded), `window_tokens`
+the full model window the statusline reports (the wrapper holds no model table), `used_percentage`
+the statusline value (computed as `used_tokens / window_tokens * 100`, clamped to 0-100, when the
+statusline sends null but both are known; otherwise `null`), `model` the statusline `model.id`,
+`source` always `"statusline"`. The orchestrator draws its 0-100 context gauge from it. Changes ride
+the [`context`](#context) event.
 
 Status codes:
 
@@ -554,6 +571,8 @@ Auth: bearer. Path parameter: `id`. Query parameters:
 |---|---|---|---|
 | `after_seq` | integer >= 0 | `0` | return events with `seq` greater than this |
 | `limit` | integer >= 1 | `100` | page size, capped at 1000 |
+| `before_seq` | integer >= 0 | unset | page backwards: the newest `limit` events with `seq` below this, returned in ascending `seq` order; cannot be combined with `after_seq` |
+| `types` | comma list | unset | only events of these types (any of the event types listed under Events); filters before paging, in both directions; an unknown type is `400 invalid_request` |
 
 Response `200`:
 
@@ -567,7 +586,12 @@ Response `200`:
 }
 ```
 
-Pass `next_seq` as `after_seq` to fetch the next page while `has_more` is true. Errors:
+Pass `next_seq` as `after_seq` to fetch the next page while `has_more` is true.
+
+With `before_seq` the response adds `prev_seq` (the value to pass as `before_seq` for the next
+older page; `null` when `has_more_before` is false) and `has_more_before` (older matching events
+exist). Load the newest page with a large `before_seq`, then scroll back via `prev_seq`. Errors:
+`400 invalid_request` (`before_seq` together with `after_seq`, or an unknown `types` entry),
 `401 unauthorized`, `404 not_found`, `422 invalid_request` (bad query values).
 
 ### `GET /v1/sessions/{id}/events`
@@ -599,6 +623,25 @@ Auth: bearer. Response `200`:
 {"templates": [{"name": "review", "description": "Review a pull request",
                 "variables": {"pr": {"required": true, "default": null}}}]}
 ```
+
+### `GET /v1/peers`
+
+The peer mesh as this instance sees it. Always mounted (unlike the signed `POST /v1/peers/*`
+routes below) and authenticated by `Authorization: Bearer <server.auth_token>`, so a client needs
+no `peers.token`; the token is never returned. Response `200`: `{"enabled": false}` when
+`peers.enabled` is false, otherwise
+
+```json
+{"enabled": true,
+ "self": {"instance": "a", "url": "http://a:8080"},
+ "members": [{"instance": "b", "url": "http://b:8080",
+              "sessions": [{"session_id": "ses_...", "name": "...", "cwd": "..."}],
+              "last_seen_at": "2026-01-01T00:00:00Z", "missed": 0}]}
+```
+
+`members` lists every peer in the table (not this instance); `last_seen_at` is the UTC time of the
+peer's last answered heartbeat, `null` if it never answered; `missed` is the consecutive missed
+heartbeats. Errors: `401 unauthorized`.
 
 ### `POST /v1/peers/messages`
 
@@ -715,6 +758,37 @@ Response `200`:
 | 403 | non-loopback caller, missing or wrong token, or unknown or stopped session |
 | 404 | `event` is not a Claude hook event |
 
+### `POST /internal/statusline`
+
+Internal, loopback-only, not for clients. The statusLine relay: `ccw statusline` posts the JSON
+Claude Code pipes to its `statusLine.command` here, so the wrapper learns the real context-window
+usage. The body must be a JSON object; `context_window.used_percentage` (number),
+`context_window.context_window_size` (integer), `context_window.current_usage` (object) and `model`
+(object or string) are validated, each may be `null` (Claude Code sends null before the first
+assistant message and after `/compact`), and the router callback `on_statusline` stores the latest
+values. Answers `204`.
+
+Auth: same as the hook route (loopback source address, `X-CCW-Session`, `X-CCW-Hook-Token`).
+
+| Status | When |
+|---|---|
+| 204 | stored |
+| 400 | body is not a JSON object, or a context field has the wrong type |
+| 403 | non-loopback caller, missing or wrong token, or unknown or stopped session |
+
+`ccw statusline` reads the statusLine JSON on stdin, posts it to this route (best effort, 2 second
+timeout, a failure never fails the statusline), then runs the chained command with the same stdin
+and prints its stdout; with no chained command it prints nothing. At session bootstrap the rendered
+`settings.json` gets `statusLine: {type: command, command: "<absolute path to ccw> statusline"}` as the last step,
+the absolute path being the same resolver the hook relay uses (so ccw need not be on `PATH`),
+after the relay hooks, permissions and the `claude.settings` overlay merge. The chained command is
+the `statusLine.command` the document holds after that merge (typically `claude.settings.statusLine`);
+it is written to `ccw-statusline-chain.json` beside `settings.json`, and its `padding` and
+`refreshInterval` are kept on the replacement. Re-rendering is idempotent: a `statusLine` that already
+is a ccw relay (recognised by the basename of its executable, so a moved venv still matches) leaves
+the chain file as is and is never chained to itself. The chained command runs with the inherited
+environment minus `CCW_HOOK_TOKEN`, so the user command never receives the hook token.
+
 ### `POST /internal/mcp`
 
 The ccw MCP server (streamable HTTP, stateless, JSON responses only). It exposes the tool
@@ -807,11 +881,34 @@ curl -N -H "Authorization: Bearer $TOKEN" \
 Emitted on every state change of the session (`creating`, `ready`, `busy`, `stopped`, `failed`,
 `dead`) and when claude is restarted.
 
-`data`: `state` (string); `restart` (object `{count, resumed}`, only on a restart event).
+`data`: `state` (string); `since` (ISO timestamp of that transition; on a restart event, of the
+transition it follows); `restart` (object `{count, resumed}`, only on a restart event).
 
 ```
 event: session_state
-data: {"seq":3,"ts":"2026-10-20T09:00:14.800Z","session_id":"ses_3f9a1c0b7d42","type":"session_state","data":{"state":"ready"}}
+data: {"seq":3,"ts":"2026-10-20T09:00:14.800Z","session_id":"ses_3f9a1c0b7d42","type":"session_state","data":{"state":"ready","since":"2026-10-20T09:00:14.800+00:00"}}
+```
+
+### `user_message`
+
+Emitted every time a prompt is pasted into the session, so a chat view can show every line the
+agent was given. It lands after `session_state` `busy` and before `turn_started` (fresh turn),
+before the `turn_completed` of the same turn, and carries the ring and rotation of every other
+event. Additive: `turn_started.data.text` is unchanged.
+
+`data`: `turn_id` (null for `command`), `origin`, `text` (what was pasted), `files` (names of the
+files written for the turn; empty otherwise).
+
+`origin` values: `client`, `initial`, `agent`, `peer` (a fresh turn; for `peer`, `text` is the
+framed peer message), `restart` (the `sessions.restart_continue_prompt` pasted after a claude
+restart), `command` (a slash command line such as `/compact`). The continuation pasted after
+queued commands ran (`turn_resumed` with `cause: "command"`) uses the turn's own origin and the
+continue prompt as `text`. The Stop-hook continuation (`turn_continued`) pastes nothing and emits
+no `user_message`.
+
+```
+event: user_message
+data: {"seq":6,"ts":"2026-10-20T09:01:00.010Z","session_id":"ses_3f9a1c0b7d42","type":"user_message","data":{"turn_id":"turn-1k9x2m0q4zw8","origin":"client","text":"hi","files":[]}}
 ```
 
 ### `turn_started`
@@ -1118,6 +1215,16 @@ Emitted when the command failed (including `vetoed` by an `onCommand` hook) or w
 Emitted once for every compaction, manual and auto alike, including Claude Code's own automatic ones.
 
 `data`: `trigger` (`manual`, `auto` or `unknown`), `pre_tokens`, `post_tokens`, `duration_ms`.
+
+### `context`
+
+Emitted when the context usage (see the snapshot field `context`) changes: only when `used_tokens`,
+`window_tokens` or `used_percentage` differ from the previous value, so identical statusline
+updates are silent. After a `compacted` (or when the statusline reports no usage) the context
+becomes `null` and one event with every value `null` is emitted, if it was non-null.
+
+`data`: `used_tokens`, `window_tokens`, `used_percentage`, `model`, `source` (`"statusline"`),
+`updated_at`.
 
 ### `error`
 
@@ -1458,6 +1565,12 @@ failure. Cannot veto. `data`: `kind` (`fatal`, `exited`, `restart`, `hook_relay`
 `resume_failed`), `message`, plus `tail` (fatal), `code` (exited), `count` (restart) or `step`
 (create and resume failures).
 
+### `onStart`
+
+Trigger: once per ccw process start, in the service, after the global mise install and before the instance binds its public port, joins the peer mesh, resumes persisted sessions (`sessions.resume_on_start`) or can create a session. The service does not listen until it has finished, so a pod needs a `startupProbe` sized to the longest `timeout_seconds` of its blocking actions. Order: global mise install -> `onStart` -> `preJoin` -> resume -> listening. Fires even when `peers.enabled` is false. Use it for per-pod setup that must precede claude spawning stdio MCP servers (for example installing a tool binary and writing its config); `init.setup_commands` run per created session and `onCreate` runs after claude is up, so neither fits.
+
+Blocking actions are awaited, each bounded by its `timeout_seconds`. A blocking `deny`, or a failure or timeout of a blocking action with `on_error: deny`, makes ccw log `onStart denied: <reason>` and exit with code 1 before it binds the public port; the pod restarts and the failure shows up. A failing action with `on_error: allow` is logged and startup continues. Non-blocking actions run in the background and never delay startup. `data`: `{}`. The envelope has an empty `session_id` and `workdir`, and null `claude_session_id` and `turn_id`; actions run in the sessions root with the full service environment (`CCW_API_URL` is empty unless `server.port` is fixed). `matcher`, `interval_seconds` and `when` are rejected on it.
+
 ### `preJoin`
 
 Trigger: before this instance joins the peer mesh, ahead of the first heartbeat round. Order: `preJoin` -> first heartbeat round -> `postJoin`, all before any session can be created. Awaited when `blocking`; a `deny` means this instance runs standalone (no heartbeats, no peer tools). Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment). The envelope has an empty `session_id` and `workdir`, and null `claude_session_id` and `turn_id`; actions run in the sessions root.
@@ -1512,7 +1625,8 @@ Decisions each event honours:
 
 | Event | Honoured decisions |
 |---|---|
-| `onCreate`, `onResume`, `onTurn`, `onAgentToolCall` | `allow`, `deny` |
+| `onCreate`, `onResume`, `onTurn`, `onAgentToolCall`, `onCommand`, `preJoin` | `allow`, `deny` |
+| `onStart` | `allow`, `deny` (a deny exits ccw with code 1 before it listens) |
 | `onStop` | `allow`, `block`, `defer` |
 | `onTick` | `allow` (decisions are ignored) |
 | every other event | `allow` |
@@ -2668,6 +2782,7 @@ hooks:
 | `hooks.onCommandComplete` | list | `[]` | - | List of hook actions run after a queued slash command completed, failed or was cancelled. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onInterrupt` | list | `[]` | - | List of hook actions run after a turn was interrupted. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onError` | list | `[]` | - | List of hook actions run on fatal pattern, crash, boot timeout, step failure or relay error. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.onStart` | list | `[]` | - | List of hook actions run once per process start, before peers, resume and listening; a blocking deny or an `on_error: deny` failure exits ccw with code 1. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error}`. See [Hooks](#hooks). |
 | `hooks.preJoin` | list | `[]` | - | List of hook actions run before this instance joins the peer mesh; blocking actions can deny, which runs the instance standalone. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.postJoin` | list | `[]` | - | List of hook actions run after the first heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.preLeave` | list | `[]` | - | List of hook actions run before the leaving heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
@@ -3368,6 +3483,9 @@ mise run lint       # ruff check + ruff format --check
 mise run fmt        # ruff format + autofix
 mise run run        # serve with config.example.yaml
 ```
+
+- **Before a PR.** Rebase the branch onto `origin/main` first: another session develops this repo
+  concurrently.
 
 - **Fake claude.** `tests/fake_claude` is a scripted PTY program that stands in for `claude` (boot
   dialogs, bracketed-paste input, Stop hook, transcript writing), so the suite never needs a real

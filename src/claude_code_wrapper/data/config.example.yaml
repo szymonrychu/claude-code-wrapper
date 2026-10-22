@@ -156,6 +156,8 @@ hooks:
     # - {type: command, run: "echo leaving"}
   postLeave: []              # after the leaving round, before any session is destroyed
     # - {type: command, run: "echo left"}
+  onStart: []                # once per process start, before peers, resume or listening (deny exits 1)
+    # - {type: command, run: "install-tools.sh", blocking: true, on_error: deny}
 
 sessions:
   max_sessions: 4            # concurrent sessions (>= 1)

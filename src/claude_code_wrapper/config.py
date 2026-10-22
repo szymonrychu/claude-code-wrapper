@@ -47,6 +47,7 @@ HOOK_EVENTS: tuple[str, ...] = (
     "postJoin",
     "preLeave",
     "postLeave",
+    "onStart",
 )
 VETO_EVENTS: tuple[str, ...] = (
     "onCreate",
@@ -55,6 +56,7 @@ VETO_EVENTS: tuple[str, ...] = (
     "onAgentToolCall",
     "onCommand",
     "preJoin",
+    "onStart",
 )
 TOOL_EVENTS: tuple[str, ...] = ("onAgentToolCall", "onToolResult")
 WELL_KNOWN_MARKETPLACES = frozenset({"claude-plugins-official"})
@@ -437,6 +439,7 @@ class HooksConfig(_Model):
     postJoin: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     preLeave: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     postLeave: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
+    onStart: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
 
     @model_validator(mode="after")
     def _matcher_events(self) -> HooksConfig:

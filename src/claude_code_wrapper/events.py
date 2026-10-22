@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 EVENT_TYPES: list[str] = [
     "session_state",
     "turn_started",
+    "user_message",
     "turn_rejected",
     "turn_completed",
     "turn_failed",
@@ -44,6 +45,7 @@ EVENT_TYPES: list[str] = [
     "command_completed",
     "command_failed",
     "compacted",
+    "context",
     "error",
     "destroy_output",
     "peer_message_received",
@@ -189,6 +191,34 @@ class EventLog:
                 except (ValueError, KeyError, TypeError):
                     continue
 
+    def _read_file_reversed(self, chunk_size: int = 65536) -> Iterator[Event]:
+        """Events newest-first, reading the file backwards in chunks (lazy)."""
+        try:
+            fh = self.path.open("rb")
+        except OSError:
+            return
+        with fh:
+            pos = fh.seek(0, os.SEEK_END)
+            carry = b""
+            while pos > 0:
+                step = min(chunk_size, pos)
+                pos -= step
+                fh.seek(pos)
+                parts = (fh.read(step) + carry).split(b"\n")
+                carry = parts[0] if pos > 0 else b""
+                lines = parts[1:] if pos > 0 else parts
+                for raw in reversed(lines):
+                    ev = self._parse_line(raw)
+                    if ev is not None:
+                        yield ev
+
+    @staticmethod
+    def _parse_line(raw: bytes) -> Event | None:
+        try:
+            return Event.from_json(raw.decode("utf-8", errors="replace"))
+        except (ValueError, KeyError, TypeError):
+            return None
+
     def append(self, type: str, data: dict[str, Any] | None = None) -> Event:
         if self.readonly:
             raise RuntimeError("event log is read-only")
@@ -233,22 +263,52 @@ class EventLog:
             return
         self._loop.call_soon_threadsafe(self.append, type, data)
 
-    def page(self, after_seq: int = 0, limit: int = 100) -> tuple[list[Event], bool]:
+    def page(
+        self, after_seq: int = 0, limit: int = 100, types: frozenset[str] | None = None
+    ) -> tuple[list[Event], bool]:
         limit = max(1, min(limit, MAX_PAGE_LIMIT))
         if self._ring and self._ring[0].seq <= after_seq + 1 and not self.readonly:
-            source: Iterator[Event] = iter(self._ring)
+            source: Iterator[Event] = iter(list(self._ring))
         elif not self._ring and after_seq >= self._seq:
             return [], False
         else:
             source = self._read_file()
         out: list[Event] = []
         for ev in source:
-            if ev.seq <= after_seq:
+            if ev.seq <= after_seq or (types is not None and ev.type not in types):
                 continue
             if len(out) == limit:
                 return out, True
             out.append(ev)
         return out, False
+
+    def page_before(
+        self, before_seq: int, limit: int = 100, types: frozenset[str] | None = None
+    ) -> tuple[list[Event], bool]:
+        """Newest `limit` events with seq < before_seq, ascending, and whether older ones exist."""
+        limit = max(1, min(limit, MAX_PAGE_LIMIT))
+
+        def newest(source: Iterator[Event]) -> list[Event]:
+            # source is newest-first; stop once limit + 1 matches are collected
+            tail: list[Event] = []
+            for ev in source:
+                if ev.seq < before_seq and (types is None or ev.type in types):
+                    tail.append(ev)
+                    if len(tail) > limit:
+                        break
+            tail.reverse()
+            return tail
+
+        found: list[Event] = []
+        ring = list(self._ring)
+        if ring and not self.readonly:
+            found = newest(reversed(ring))
+        # The ring only holds the newest events: use it when it spans back to seq 1 or
+        # already holds a full page plus one; otherwise the file is the source of truth.
+        if not ring or (len(found) <= limit and ring[0].seq > 1) or self.readonly:
+            found = newest(self._read_file_reversed())
+        more = len(found) > limit
+        return found[-limit:], more
 
     def last(self, n: int) -> list[Event]:
         if n <= 0:

@@ -47,7 +47,7 @@ EVENT_DECISIONS: dict[str, tuple[str, ...]] = {
 EVENT_DECISIONS["onTick"] = ("allow",)
 EVENT_DECISIONS["onStop"] = ("allow", "block", "defer")
 #: Instance-level membership events: no session, so the envelope's session fields are empty.
-INSTANCE_EVENTS: tuple[str, ...] = ("preJoin", "postJoin", "preLeave", "postLeave")
+INSTANCE_EVENTS: tuple[str, ...] = ("preJoin", "postJoin", "preLeave", "postLeave", "onStart")
 #: Across blocking actions the strictest honoured decision wins.
 DECISION_RANK = {"allow": 0, "defer": 1, "block": 2, "deny": 2}
 
@@ -443,7 +443,7 @@ def instance_dispatcher(
 async def fire_instance(
     dispatcher: HookDispatcher, event: str, data: Mapping[str, Any]
 ) -> HookOutcome:
-    """Fire an instance event; never raises. A failure allows, except a preJoin gate set to deny."""
+    """Fire an instance event; never raises; a failure allows unless deny-gated."""
     payload = build_payload(
         event, session_id="", claude_session_id=None, turn_id=None, workdir="", data=data
     )
@@ -452,6 +452,7 @@ async def fire_instance(
     except Exception:  # noqa: BLE001 - membership hooks never break the lifecycle
         log.exception("instance hook %s failed", event)
         actions = dispatcher._cfg.for_event(event) if hasattr(dispatcher, "_cfg") else []  # noqa: SLF001
-        if event == "preJoin" and any(a.blocking and a.on_error == "deny" for a in actions):
+        gated = any(a.blocking and a.on_error == "deny" for a in actions)
+        if event in ("preJoin", "onStart") and gated:
             return HookOutcome(decision="deny", reason=f"hook {event} failed")
         return HookOutcome()

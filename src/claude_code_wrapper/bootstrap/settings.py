@@ -10,6 +10,12 @@ from typing import Any, NamedTuple
 
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.hook_relay import CLAUDE_HOOK_EVENTS
+from claude_code_wrapper.statusline import (
+    STATUSLINE_ARGS,
+    STATUSLINE_MODULE,
+    STATUSLINE_SCRIPT,
+    chain_path,
+)
 
 from .claude_json import _deep_merge, _load, atomic_write
 
@@ -45,18 +51,44 @@ def relay_timeouts(cfg: Config) -> RelayTimeouts:
     return RelayTimeouts(hook_timeout, (hook_timeout - 2) / 2)
 
 
-def default_relay_command() -> str:
-    """Absolute path of the installed `ccw-hook`, never repo-relative.
+def _installed_script(script: str, module: str) -> str:
+    """Absolute path of an installed console script, never repo-relative.
 
     Prefers the script beside the running interpreter (the venv the service was installed in),
-    then PATH, then `python -m claude_code_wrapper.hook_relay` with this interpreter."""
-    sibling = Path(sys.executable).parent / "ccw-hook"
+    then PATH, then `python -m <module>` with this interpreter."""
+    sibling = Path(sys.executable).parent / script
     if sibling.exists():
         return str(sibling)
-    found = shutil.which("ccw-hook")
+    found = shutil.which(script)
     if found:
         return str(Path(found).absolute())
-    return f"{shlex.quote(sys.executable)} -m claude_code_wrapper.hook_relay"
+    return f"{shlex.quote(sys.executable)} -m {module}"
+
+
+def default_relay_command() -> str:
+    """Absolute path of the installed `ccw-hook`."""
+    return _installed_script("ccw-hook", "claude_code_wrapper.hook_relay")
+
+
+def default_statusline_command() -> str:
+    """The statusLine command: the running `ccw` by absolute path, so it works off PATH."""
+    resolved = _installed_script(STATUSLINE_SCRIPT, STATUSLINE_MODULE)
+    if resolved.endswith(" -m " + STATUSLINE_MODULE):
+        return resolved
+    return f"{shlex.quote(resolved)} {STATUSLINE_ARGS}"
+
+
+def _is_statusline_relay(command: Any) -> bool:
+    """True when `command` is `<anything>/ccw statusline`, matched by basename."""
+    if not isinstance(command, str):
+        return False
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+    if len(parts) == 2 and parts[1] == STATUSLINE_ARGS:
+        return Path(parts[0]).name == STATUSLINE_SCRIPT
+    return len(parts) == 3 and parts[1:] == ["-m", STATUSLINE_MODULE]
 
 
 def _is_relay(hook: Any, relay: str) -> bool:
@@ -82,6 +114,29 @@ def _without_relay(groups: Any, relay: str) -> list[Any]:
         if hooks or "hooks" not in group:
             kept.append({**group, "hooks": hooks} if "hooks" in group else group)
     return kept
+
+
+def _install_statusline(doc: dict[str, Any], config_dir: str | Path) -> None:
+    """Replace `doc["statusLine"]` with the relay; chain the command it held (after the overlay).
+
+    A statusLine that already is the relay leaves the chain file alone, so a re-render never
+    chains the relay to itself."""
+    current = doc.get("statusLine")
+    replacement: dict[str, Any] = {"type": "command", "command": default_statusline_command()}
+    if isinstance(current, dict) and not _is_statusline_relay(current.get("command")):
+        command = current.get("command")
+        if isinstance(command, str) and command.strip():
+            for key in ("padding", "refreshInterval"):
+                if key in current:
+                    replacement[key] = current[key]
+            atomic_write(
+                chain_path(config_dir), json.dumps({"command": command}, sort_keys=True) + "\n"
+            )
+    elif isinstance(current, dict):
+        replacement.update(
+            {k: v for k, v in current.items() if k in ("padding", "refreshInterval")}
+        )
+    doc["statusLine"] = replacement
 
 
 def render_settings(
@@ -141,6 +196,8 @@ def render_settings(
                 if group not in existing:
                     existing.append(group)
             doc["hooks"][event] = existing
+
+    _install_statusline(doc, config_dir)
 
     atomic_write(path, json.dumps(doc, indent=2, sort_keys=True) + "\n")
     return doc

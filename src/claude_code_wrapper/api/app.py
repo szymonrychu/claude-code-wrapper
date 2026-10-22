@@ -75,6 +75,7 @@ def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> Fas
     v1.include_router(turns.router)
     v1.include_router(commands.router)
     v1.include_router(events.router)
+    v1.include_router(peers.view_router)
     app.state.v1 = v1
     app.include_router(v1)
 
