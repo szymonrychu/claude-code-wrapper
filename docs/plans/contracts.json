@@ -91,6 +91,6 @@
     "owner": "cross-container-peer-messagi",
     "file": "src/claude_code_wrapper/mcp_server.py",
     "consumers": [],
-    "note": "ccw MCP tool peers {instance?}: live peers excluding the caller, each {session_id, name, instance, address, cwd, started_at, hint}; listed only when peers.enabled; allow rule mcp__ccw__peers"
+    "note": "ccw MCP tools peers {instance?} -> [{address, instance, session_id, name, cwd}] and send_message {to, message, notify_when_idle?} -> msg_id or error (unknown peer, peer unreachable, message too large, inbox full, peer rejected the token, invalid arguments); listed only when peers.enabled; allow rules mcp__ccw__peers, mcp__ccw__send_message; handle_message(router, message, peers=None) is async"
   }
 ]
