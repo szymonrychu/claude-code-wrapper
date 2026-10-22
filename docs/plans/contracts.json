@@ -68,5 +68,13 @@
     "file": "src/claude_code_wrapper/hook_relay.py",
     "consumers": [],
     "note": "CLAUDE_HOOK_EVENTS gains PreCompact and PostCompact"
+  },
+  {
+    "name": "peers-config",
+    "kind": "schema",
+    "owner": "cross-container-peer-messagi",
+    "file": "src/claude_code_wrapper/config.py",
+    "consumers": [],
+    "note": "Config.peers: enabled (false), dir (/peers, absolute, socket path <= 103 bytes), name (instance, empty = hostname), probe_timeout_ms (250)"
   }
 ]
