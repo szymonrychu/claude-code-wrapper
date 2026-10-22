@@ -147,9 +147,7 @@ async def member(world: World, stub: Stub) -> AsyncIterator[Stub]:
     await asyncio.wait_for(task, 20)
 
 
-async def test_join_precedes_first_session_and_leave_precedes_destroy(
-    world: World, member: Stub
-) -> None:
+async def test_join_precedes_oncreate(world: World, member: Stub) -> None:
     stub = member
     out = stub.out
     task, stop, _handle, pub = await boot(make_cfg(world, [stub.url], all_hooks(out)))
@@ -170,7 +168,17 @@ async def test_join_precedes_first_session_and_leave_precedes_destroy(
     ]
 
 
-async def test_unreachable_seed_still_becomes_ready(world: World, tmp_path: Path) -> None:
+async def test_leave_precedes_ondestroy(world: World, member: Stub) -> None:
+    out = member.out
+    task, stop, _handle, pub = await boot(make_cfg(world, [member.url], all_hooks(out)))
+    async with httpx.AsyncClient(timeout=20) as c:
+        assert (await c.post(f"{pub}/v1/sessions", json={}, headers=AUTH)).status_code == 201
+    stop.set()
+    await asyncio.wait_for(task, 20)
+    assert lines(out)[3:] == ["preLeave", "leaving-heartbeat", "postLeave", "onDestroy"]
+
+
+async def test_unreachable_seed_bounded(world: World, tmp_path: Path) -> None:
     out = tmp_path / "marks"
     start = time.monotonic()
     task, stop, _h, _pub = await boot(make_cfg(world, ["http://127.0.0.1:1"], all_hooks(out)))
@@ -180,9 +188,7 @@ async def test_unreachable_seed_still_becomes_ready(world: World, tmp_path: Path
     assert "postJoin" in lines(out)
 
 
-async def test_exit_when_last_destroyed_leaves_before_on_destroy(
-    world: World, member: Stub
-) -> None:
+async def test_exit_when_last_destroyed_leaves_first(world: World, member: Stub) -> None:
     stub = member
     out = stub.out
     cfg = make_cfg(world, [stub.url], all_hooks(out), sessions={"exit_when_last_destroyed": True})
@@ -214,7 +220,7 @@ async def test_destroy_with_other_session_keeps_membership(world: World, stub: S
     await asyncio.wait_for(task, 20)
 
 
-async def test_peers_disabled_no_endpoint_no_hooks(world: World, tmp_path: Path) -> None:
+async def test_disabled_no_membership(world: World, tmp_path: Path) -> None:
     out = tmp_path / "marks"
     task, stop, _h, pub = await boot(make_cfg(world, [], all_hooks(out), enabled=False))
     async with httpx.AsyncClient(timeout=20) as c:
@@ -238,7 +244,7 @@ def peers_yaml(tmp_path: Path) -> Path:
     return p
 
 
-def test_cli_peer_flag_extends_static(
+def test_cli_peer_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude_bin: Path
 ) -> None:
     monkeypatch.setenv("PATH", f"{fake_claude_bin.parent}{os.pathsep}{os.environ['PATH']}")
@@ -251,6 +257,7 @@ def test_cli_peer_flag_extends_static(
     args = ["serve", "--config", str(peers_yaml(tmp_path))]
     assert cli.main([*args, "--peer", "http://b:2", "--peer", "http://c:3"]) == 0
     assert list(seen[0].peers.static) == ["http://a:1", "http://b:2", "http://c:3"]
+    assert cli.main([*args, "--peer", "nope"]) == 2
 
 
 def test_cli_bad_peer_exits_2(

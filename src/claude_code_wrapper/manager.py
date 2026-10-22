@@ -1044,8 +1044,6 @@ class SessionManager:
         await self._teardown(ctx, 0)
         ctx.meta.update(state="dead")
         self._finish(ctx)
-        if self.cfg.sessions.exit_when_dead and not self._closing:
-            await self.leave_peers()  # membership ends before the shutdown's onDestroy runs
         self._exit_for_dead(ctx, last_fatal)
 
     # ------------------------------------------------------------------ service lifecycle
