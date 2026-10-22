@@ -258,6 +258,9 @@ class SessionRouter(SessionListener):
         self._last_context: int | None = None
         #: Latest statusLine values relayed by `ccw statusline` (see `on_statusline`).
         self.statusline: dict[str, Any] | None = None
+        #: Context-window usage derived from the statusLine values (None until the first
+        #: assistant message and after `compacted`); distinct from `_last_context` above.
+        self.context: dict[str, Any] | None = None
         #: Monotonic time of the last event that is not an idle-origin command's.
         self._last_real = time.monotonic()
         #: While idle-origin commands run: the seq of the first event and whether only idle
@@ -451,6 +454,58 @@ class SessionRouter(SessionListener):
     def on_statusline(self, payload: Mapping[str, Any]) -> None:
         """Store the latest context-window values and model from the statusLine relay."""
         self.statusline = dict(payload)
+        self._set_context(self._derive_context(self.statusline))
+
+    @staticmethod
+    def _derive_context(values: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The `context` snapshot value from parsed statusLine values (None when unknown)."""
+        usage = values.get("current_usage")
+        if not isinstance(usage, Mapping):
+            return None
+        used = sum(
+            int(usage.get(key) or 0)
+            for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+        )
+        window = values.get("context_window_size")
+        window = window if isinstance(window, int) and window > 0 else None
+        pct = values.get("used_percentage")
+        if pct is None and window is not None:
+            pct = min(100.0, max(0.0, used / window * 100))
+        model = values.get("model")
+        if isinstance(model, Mapping):
+            model = model.get("id")
+        return {
+            "used_tokens": used,
+            "window_tokens": window,
+            "used_percentage": pct,
+            "model": model if isinstance(model, str) else None,
+            "source": "statusline",
+            "updated_at": now_iso(),
+        }
+
+    def _set_context(self, new: dict[str, Any] | None) -> None:
+        """Store the context and emit one `context` event when the gauge values changed."""
+        keys = ("used_tokens", "window_tokens", "used_percentage")
+        old = self.context
+        if new is None and old is None:
+            return
+        if new is not None and old is not None and all(new[k] == old[k] for k in keys):
+            self.context = {**old, "model": new["model"]}
+            return
+        self.context = new
+        self._emit(
+            "context",
+            new
+            or {
+                **dict.fromkeys((*keys, "model")),
+                "source": "statusline",
+                "updated_at": now_iso(),
+            },
+        )
+
+    def reset_context(self) -> None:
+        """Compaction emptied the window: context is unknown until the next statusLine."""
+        self._set_context(None)
 
     # ------------------------------------------------------------------ claude hooks
 
@@ -902,6 +957,7 @@ class SessionRouter(SessionListener):
                         "duration_ms": ev.duration_ms,
                     }
                     self._emit("compacted", data)
+                    self.reset_context()
                     if self._metrics is not None:
                         self._metrics.compaction(ev.trigger)
                     self.signals.publish("compact_boundary", data)

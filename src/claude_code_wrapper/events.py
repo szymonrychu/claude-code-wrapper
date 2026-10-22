@@ -45,6 +45,7 @@ EVENT_TYPES: list[str] = [
     "command_completed",
     "command_failed",
     "compacted",
+    "context",
     "error",
     "destroy_output",
     "peer_message_received",

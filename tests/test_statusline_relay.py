@@ -174,6 +174,7 @@ async def test_internal_route_validates_and_dispatches() -> None:
 
 def test_router_on_statusline_stores_latest() -> None:
     router = SessionRouter.__new__(SessionRouter)
+    router.context = None
     router.on_statusline({"used_percentage": 3.0})
     router.on_statusline({"used_percentage": 4.0})
     assert router.statusline == {"used_percentage": 4.0}

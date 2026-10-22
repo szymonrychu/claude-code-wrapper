@@ -213,6 +213,7 @@ Response `201`:
   "last_fatal": null,
   "restarts": 0,
   "pid": 4121,
+  "context": {"used_tokens": 41200, "window_tokens": 200000, "used_percentage": 20.6, "model": "claude-sonnet-4-5", "source": "statusline", "updated_at": "2026-10-20T09:00:20.100Z"},
   "env": {"claude_code_oauth_token": "***", "extra": {"GH_TOKEN": "***"}},
   "callbackUrl": "http://orchestrator.internal/ccw"
 }
@@ -226,6 +227,15 @@ screen text; `pid` is the claude pid while alive; `env` shows set values with se
 completing, a relaunch of claude) and `null` in every other state, including stopped sessions
 loaded from disk; the orchestrator uses it to route to the agent idle the longest. It differs from
 `ready_at` (the boot time of claude), which turns never move.
+
+`context` is the context-window usage the statusLine relay delivers (`null` until the first
+assistant message, after a `compacted`, and for stopped sessions loaded from disk): `used_tokens`
+is `input + cache_creation + cache_read` tokens of the latest call (output excluded), `window_tokens`
+the full model window the statusline reports (the wrapper holds no model table), `used_percentage`
+the statusline value (computed as `used_tokens / window_tokens * 100`, clamped to 0-100, when the
+statusline sends null but both are known; otherwise `null`), `model` the statusline `model.id`,
+`source` always `"statusline"`. The orchestrator draws its 0-100 context gauge from it. Changes ride
+the [`context`](#context) event.
 
 Status codes:
 
@@ -1200,6 +1210,16 @@ Emitted when the command failed (including `vetoed` by an `onCommand` hook) or w
 Emitted once for every compaction, manual and auto alike, including Claude Code's own automatic ones.
 
 `data`: `trigger` (`manual`, `auto` or `unknown`), `pre_tokens`, `post_tokens`, `duration_ms`.
+
+### `context`
+
+Emitted when the context usage (see the snapshot field `context`) changes: only when `used_tokens`,
+`window_tokens` or `used_percentage` differ from the previous value, so identical statusline
+updates are silent. After a `compacted` (or when the statusline reports no usage) the context
+becomes `null` and one event with every value `null` is emitted, if it was non-null.
+
+`data`: `used_tokens`, `window_tokens`, `used_percentage`, `model`, `source` (`"statusline"`),
+`updated_at`.
 
 ### `error`
 
