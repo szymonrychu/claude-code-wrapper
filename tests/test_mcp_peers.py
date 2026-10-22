@@ -105,7 +105,7 @@ async def test_instructions_mention_peers_only_when_enabled() -> None:
     assert b.startswith(a) and b != a and "send_message" in b
 
 
-async def test_peers_call() -> None:
+async def test_peers_tool_lists() -> None:
     peers = FakePeers()
     reply = await handle_message(FakeRouter(), _call("peers", {"instance": "b"}), peers)
     res = reply["result"]
@@ -123,7 +123,7 @@ async def test_peers_invalid_arguments(args: Any) -> None:
     assert reply["result"]["content"][0]["text"].startswith("invalid arguments")
 
 
-async def test_send_success() -> None:
+async def test_send_message_success() -> None:
     peers = FakePeers()
     reply = await handle_message(
         FakeRouter(), _call("send_message", {"to": "b/s2", "message": "hi"}), peers
@@ -147,7 +147,7 @@ async def test_send_success() -> None:
 
 
 @pytest.mark.parametrize("prefix", PREFIXES)
-async def test_send_peer_error(prefix: str) -> None:
+async def test_send_message_errors(prefix: str) -> None:
     peers = FakePeers()
     peers.error = PeerError("code", f"{prefix}: detail")
     reply = await handle_message(
@@ -170,7 +170,7 @@ async def test_send_peer_error(prefix: str) -> None:
         None,
     ],
 )
-async def test_send_invalid_arguments(args: Any) -> None:
+async def test_send_message_argument_validation(args: Any) -> None:
     peers = FakePeers()
     reply = await handle_message(FakeRouter(), _call("send_message", args), peers)
     assert reply["result"]["isError"] is True
@@ -184,7 +184,7 @@ async def test_unknown_tool_without_peers(name: str) -> None:
     assert reply["error"]["message"] == "unknown tool"
 
 
-async def test_command_tool_unchanged_with_peers() -> None:
+async def test_command_tool_unchanged() -> None:
     for peers in (None, FakePeers()):
         router = FakeRouter(["compact"])
         reply = await handle_message(router, _call("command", {"name": "compact"}), peers)
