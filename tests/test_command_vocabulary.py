@@ -10,7 +10,8 @@ from claude_code_wrapper.metrics import Metrics
 
 
 def test_hook_events_and_decisions():
-    assert HOOK_EVENTS[-3:] == ("onCommand", "onCommandComplete", "onError")
+    start = HOOK_EVENTS.index("onCommand")
+    assert HOOK_EVENTS[start : start + 3] == ("onCommand", "onCommandComplete", "onError")
     assert "onCommand" in VETO_EVENTS and "onCommandComplete" not in VETO_EVENTS
     assert EVENT_DECISIONS["onCommand"] == ("allow", "deny")
     assert EVENT_DECISIONS["onCommandComplete"] == ("allow",)
@@ -51,8 +52,9 @@ def test_on_command_is_a_veto_event():
 
 
 def test_hook_events_include_command_hooks():
-    assert len(HOOK_EVENTS) == 16
-    assert HOOK_EVENTS[-3:] == ("onCommand", "onCommandComplete", "onError")
+    assert len(HOOK_EVENTS) == 20
+    start = HOOK_EVENTS.index("onCommand")
+    assert HOOK_EVENTS[start : start + 3] == ("onCommand", "onCommandComplete", "onError")
     assert "onCommand" in VETO_EVENTS
 
 
