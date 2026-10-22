@@ -84,15 +84,38 @@ class MemberTable:
         self._members: dict[str, Member] = {}
         self._contacts: dict[str, None] = {}  # ordered set of urls
         self._seeds: set[str] = set()
+        self._answered: set[str] = set()  # urls that ever answered a heartbeat
         self._fails: dict[str, int] = {}
 
     def add_contacts(self, urls: Iterable[str], seed: bool = False) -> None:
         for url in urls:
             if not url or url == self.self_url:
                 continue
-            self._contacts.setdefault(url, None)
             if seed:
                 self._seeds.add(url)
+            self._add_contact(url, force=seed)
+
+    def _add_contact(self, url: str, *, force: bool = False) -> None:
+        """Remember `url`; `force` (seeds, answering peers) may evict unconfirmed gossip."""
+        if url in self._contacts:
+            return
+        if len(self._contacts) >= self.capacity:
+            if not force:
+                return
+            victim = next(
+                (u for u in self._contacts if u not in self._answered and u not in self._seeds),
+                None,
+            )
+            if victim is not None:
+                self._forget_contact(victim)
+            elif url not in self._seeds:
+                return
+        self._contacts[url] = None
+
+    def _forget_contact(self, url: str) -> None:
+        self._contacts.pop(url, None)
+        self._answered.discard(url)
+        self._fails.pop(url, None)
 
     def targets(self) -> list[str]:
         urls = dict.fromkeys(self._contacts)
@@ -122,14 +145,15 @@ class MemberTable:
             member.url = url
             self._fails.pop(old, None)
             if old not in self._seeds:
-                self._contacts.pop(old, None)
+                self._forget_contact(old)
         joined = not member.reachable
         member.sessions = tuple(sessions)
         member.reachable = True
         member.missed = 0
         member.last_seen = self._clock()
         self._fails.pop(url, None)
-        self._contacts.setdefault(url, None)
+        self._answered.add(url)
+        self._add_contact(url, force=True)
         self.add_contacts(m["url"] for m in members or () if m.get("url"))
         return "joined" if joined else None
 
@@ -148,9 +172,10 @@ class MemberTable:
             if member.reachable and member.missed >= self.max_missed:
                 member.reachable = False
                 event = "missed_heartbeats"
-        if fails >= FORGET_FACTOR * self.max_missed and url not in self._seeds:
-            self._contacts.pop(url, None)
-            self._fails.pop(url, None)
+        gossip_only = url not in self._answered and member is None
+        limit = self.max_missed if gossip_only else FORGET_FACTOR * self.max_missed
+        if fails >= limit and url not in self._seeds:
+            self._forget_contact(url)
             if member is not None:
                 del self._members[member.instance]
         return event
@@ -161,7 +186,7 @@ class MemberTable:
             return False
         member.reachable = False
         member.sessions = ()
-        self._contacts.setdefault(member.url, None)
+        self._add_contact(member.url, force=True)
         return True
 
     def view(self, own_sessions: Iterable[PeerSession]) -> dict:

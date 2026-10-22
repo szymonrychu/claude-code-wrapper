@@ -126,6 +126,7 @@ class PeerService:
             router,
             max_items=self.cfg.inbox_max,
             max_per_minute=self.cfg.max_messages_per_minute,
+            max_total_per_minute=self.cfg.max_messages_per_minute_total,
             metrics=self._metrics,
             on_outcome=functools.partial(self._notify, session_id=session_id, router=router),
             redactor=self._redactor,

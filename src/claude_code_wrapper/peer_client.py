@@ -6,6 +6,7 @@ wire, in a URL, or in an error message.
 
 from __future__ import annotations
 
+import re
 import secrets
 from typing import Annotated, Any, Literal
 
@@ -107,10 +108,21 @@ class NoticeBody(_Wire):
         return self
 
 
+MAX_NAME_LENGTH = 200
+MAX_CWD_LENGTH = 1024
+#: Hard cap on any peer answer body read by the client.
+MAX_RESPONSE_BYTES = 1048576
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _strip_control(value: str) -> str:
+    return _CONTROL_CHARS.sub("", value)
+
+
 class ViewSession(_Wire):
     session_id: SessionId
-    name: str
-    cwd: str
+    name: Annotated[str, Field(max_length=MAX_NAME_LENGTH), AfterValidator(_strip_control)]
+    cwd: Annotated[str, Field(max_length=MAX_CWD_LENGTH), AfterValidator(_strip_control)]
 
 
 class ViewMember(_Wire):
@@ -137,6 +149,10 @@ def _envelope_code(response: httpx.Response) -> str:
     except (ValueError, KeyError, TypeError):
         return ""
     return code if isinstance(code, str) else ""
+
+
+class _TooBig(Exception):
+    pass
 
 
 class PeerClient:
@@ -169,6 +185,31 @@ class PeerClient:
             return self._err("invalid")
         return self._err("unreachable", f"{url} answered {status}")
 
+    async def _read_capped(self, target: str, body: bytes, headers: dict[str, str]):
+        """POST and read the answer streamed; over MAX_RESPONSE_BYTES is an error."""
+        request = self._http.build_request("POST", target, content=body, headers=headers)
+        response = await self._http.send(request, stream=True)
+        try:
+            declared = response.headers.get("content-length", "")
+            if declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
+                raise _TooBig
+            received = bytearray()
+            async for chunk in response.aiter_bytes():
+                received += chunk
+                if len(received) > MAX_RESPONSE_BYTES:
+                    raise _TooBig
+        finally:
+            await response.aclose()
+        return httpx.Response(
+            response.status_code,
+            headers=[
+                (k, v)
+                for k, v in response.headers.multi_items()
+                if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")
+            ],
+            content=bytes(received),
+        )
+
     async def _post(self, url: str, path: str, model: BaseModel, *, retry: bool) -> Any:
         target = url.rstrip("/") + path
         body = model.model_dump_json(by_alias=True).encode()
@@ -178,13 +219,15 @@ class PeerClient:
             headers = peer_auth.sign_request(self._token, "POST", path, body)
             headers["Content-Type"] = "application/json"
             try:
-                response = await self._http.post(target, content=body, headers=headers)
+                response = await self._read_capped(target, body, headers)
                 break
             except _RETRYABLE as e:
                 if attempt + 1 < attempts:
                     continue
                 reason = f"{type(e).__name__}: {e}".rstrip(": ")
                 raise self._err("unreachable", f"{url} ({reason})") from None
+            except _TooBig:
+                raise self._err("unreachable", f"{url} sent an oversized answer") from None
             except httpx.HTTPError as e:
                 raise self._err("unreachable", f"{url} ({type(e).__name__})") from None
         assert response is not None

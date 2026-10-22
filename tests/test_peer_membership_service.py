@@ -409,7 +409,7 @@ async def test_accept_heartbeat_records_and_caps(env):
     assert answer.leaving is False
     assert names(svc) == {"x"}
     assert env.changes["a"] == [("joined", "x", "heartbeat")]
-    assert "http://y:1" in svc.table.targets()  # gossip is a contact, not a member
+    assert "http://y:1" not in svc.table.targets()  # contact set is capped at the table capacity
 
     with pytest.raises(PeerError) as exc:
         await svc.accept_heartbeat(MemberView(instance="z", url="http://z:1"))

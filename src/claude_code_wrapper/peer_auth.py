@@ -16,6 +16,7 @@ HEADER_TIMESTAMP = "X-CCW-Peer-Timestamp"
 HEADER_NONCE = "X-CCW-Peer-Nonce"
 HEADER_SIGNATURE = "X-CCW-Peer-Signature"
 
+MAX_TIMESTAMP_DIGITS = 16
 _HEX = frozenset("0123456789abcdef")
 
 
@@ -134,7 +135,7 @@ def verify_request(
     if ts_raw is None or nonce is None or sig is None:
         raise PeerAuthError("missing")
     if (
-        not (ts_raw.isascii() and ts_raw.isdigit())
+        not (ts_raw.isascii() and ts_raw.isdigit() and len(ts_raw) <= MAX_TIMESTAMP_DIGITS)
         or not _is_hex(nonce, 32)
         or not _is_hex(sig, 64)
     ):
