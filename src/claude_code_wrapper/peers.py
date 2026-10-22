@@ -199,6 +199,14 @@ class MemberTable:
             "members": [{"instance": m.instance, "url": m.url} for m in self.reachable()],
         }
 
+    def snapshot(self) -> list[tuple[Member, float | None]]:
+        """Every known member (reachable or not) with `last_seen` as wall-clock epoch seconds."""
+        offset = time.time() - self._clock()
+        return [
+            (replace(m), None if m.last_seen is None else m.last_seen + offset)
+            for m in self._members.values()
+        ]
+
     def reachable(self) -> list[Member]:
         return [replace(m) for m in self._members.values() if m.reachable]
 

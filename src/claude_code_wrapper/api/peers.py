@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from fastapi import APIRouter, Request
@@ -28,6 +29,8 @@ log = logging.getLogger(__name__)
 
 BODY_SLACK = 4096
 router = APIRouter(prefix="/peers")
+#: Bearer-protected read view, included on the `/v1` router whether or not peers are enabled.
+view_router = APIRouter(prefix="/peers")
 
 
 class PeerReceiver(Protocol):
@@ -160,3 +163,30 @@ async def post_heartbeat(request: Request) -> Any:
         raise
     _membership(request, "ok")
     return answer.model_dump(by_alias=True)
+
+
+@view_router.get("")
+async def peers_view(request: Request) -> dict[str, Any]:
+    """The peer mesh as this instance sees it. Never carries `peers.token`."""
+    service = request.app.state.manager.peers
+    if service is None:
+        return {"enabled": False}
+    members = [
+        {
+            "instance": m.instance,
+            "url": m.url,
+            "sessions": [
+                {"session_id": s.session_id, "name": s.name, "cwd": s.cwd} for s in m.sessions
+            ],
+            "last_seen_at": None
+            if seen is None
+            else datetime.fromtimestamp(seen, UTC).isoformat().replace("+00:00", "Z"),
+            "missed": m.missed,
+        }
+        for m, seen in service.table.snapshot()
+    ]
+    return {
+        "enabled": True,
+        "self": {"instance": service.instance, "url": service.url},
+        "members": members,
+    }

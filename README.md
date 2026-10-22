@@ -600,6 +600,25 @@ Auth: bearer. Response `200`:
                 "variables": {"pr": {"required": true, "default": null}}}]}
 ```
 
+### `GET /v1/peers`
+
+The peer mesh as this instance sees it. Always mounted (unlike the signed `POST /v1/peers/*`
+routes below) and authenticated by `Authorization: Bearer <server.auth_token>`, so a client needs
+no `peers.token`; the token is never returned. Response `200`: `{"enabled": false}` when
+`peers.enabled` is false, otherwise
+
+```json
+{"enabled": true,
+ "self": {"instance": "a", "url": "http://a:8080"},
+ "members": [{"instance": "b", "url": "http://b:8080",
+              "sessions": [{"session_id": "ses_...", "name": "...", "cwd": "..."}],
+              "last_seen_at": "2026-01-01T00:00:00Z", "missed": 0}]}
+```
+
+`members` lists every peer in the table (not this instance); `last_seen_at` is the UTC time of the
+peer's last answered heartbeat, `null` if it never answered; `missed` is the consecutive missed
+heartbeats. Errors: `401 unauthorized`.
+
 ### `POST /v1/peers/messages`
 
 Push a message from another ccw instance into a session here. Only mounted when `peers.enabled`;
