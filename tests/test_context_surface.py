@@ -132,3 +132,47 @@ def test_used_percentage_computed_when_null(tmp_path: Path) -> None:
     router.on_statusline(payload(pct=None, size=None, usage=usage))
     assert router.context["used_percentage"] is None
     assert router.context["window_tokens"] is None
+
+
+async def test_compact_boundary_resets_context_and_emits_null_event(tmp_path: Path) -> None:
+    from test_router import Harness
+
+    from claude_code_wrapper.transcript import CompactBoundary
+
+    h = Harness(tmp_path)
+    try:
+        h.router.on_statusline(payload())
+        assert h.router.context is not None
+        ev = CompactBoundary(trigger="auto", pre_tokens=100, post_tokens=10, duration_ms=5)
+        await h.router._on_transcript_events([ev])
+        assert h.router.context is None
+        events = h.events("context")
+        assert len(events) == 2
+        assert events[1].data["used_tokens"] is None
+        assert events[1].data["window_tokens"] is None
+    finally:
+        await h.router.close()
+
+
+def test_manager_snapshot_carries_router_context(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    router = make_router(tmp_path)
+    router._subagents = {}
+    router.on_statusline(payload())
+    manager = SessionManager.__new__(SessionManager)
+    ctx = SimpleNamespace(
+        session=None,
+        phase="ready",
+        meta={"session_id": "s", "state": "ready"},
+        claude_env=SimpleNamespace(redacted=lambda: {}),
+        turns=None,
+        event_log=None,
+        router=router,
+    )
+    snap = manager._snapshot(ctx, state="ready")
+    assert snap["context"] == router.context
+    assert snap["context"]["used_tokens"] == 1110
+    assert snap["context"] is not router.context  # copied, not aliased
+    ctx.router = None
+    assert manager._snapshot(ctx, state="ready")["context"] is None
