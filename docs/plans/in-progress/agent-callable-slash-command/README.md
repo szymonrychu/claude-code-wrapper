@@ -42,3 +42,14 @@ Estimate: 1110 min | Actual: 27 min | Remaining estimate: 75 min
 ## Review
 
 Filled when the epic reaches stage `review`: the verdict, the findings acted on, the findings dropped.
+
+Verdict: pass (2026-10-22)
+
+Epic review, agent-callable-slash-command, 2026-10-22.
+- 16 tasks done, verified and merged into main (last merge d173664). Hand-verified after verifier failures (verify-agent-died, a hung verifier, --prev-head pending): command-registry-and-config, command-runner-failures, deflake-never-typed-while-bu, idle-auto-compact, commands-public-endpoint, slash-epic-review-fixes; command-runner accepted over a false parking finding; rulings in each task file. Dropped discovered task confirm-the-public-command-e (duplicate).
+- Whole-diff review (sonnet): no critical/high; findings fixed in slash-epic-review-fixes: README command_* record fields, extra top-level tool arguments silently dropped, top-level oneOf in the tool input_schema (Anthropic API rejects it) replaced by a flat schema.
+- Security review (sonnet): HIGH /mcp reconnect server param smuggling fixed (all string params validated, strict server pattern); MEDIUM subagent direct /internal/mcp call documented as accepted under the trust model.
+- Scope audit (auditOnly run wf_7c49cee7-0a4): one gap (config.example.yaml comment broke test_packaging), fixed in slash-epic-review-fixes.
+- Suites: full suite 1102 passed, 7 deselected on b4d087b (= main code); integration 7 passed; lint clean; pre-commit 9 hooks passed.
+- Merge-time fixes on main by the orchestrator: 1591dcd README rows for hooks.onCommand/onCommandComplete, f874f1e StubSession command_active, b4d087b restored README {command_id} route path.
+- Not verifiable here: live Anthropic API acceptance of the flat tool schema and live ${CCW_*} header expansion beyond the planner's claude mcp list probe; covered on the next real-claude run.
