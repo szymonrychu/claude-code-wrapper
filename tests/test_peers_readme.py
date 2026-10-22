@@ -20,7 +20,7 @@ def h3(title: str) -> str:
     raise AssertionError(title)
 
 
-def test_peer_messaging_section_terms():
+def test_peer_section():
     body = h2("Peer messaging")
     for term in (
         "<instance>/<session id>",
@@ -42,29 +42,36 @@ def test_peer_messaging_section_terms():
         assert term in body, term
 
 
-def test_trust_model_phrases():
+def test_trust_model():
     body = h2("Peer messaging")
     for term in ("trust domain", "/internal/mcp", "process env"):
         assert term in body, term
     assert "Peer messaging" in h2("Trust model")
 
 
-def test_mcp_tools_documented():
+def _mcp_tools_documented():
     body = h3("`POST /internal/mcp`")
     for term in ("send_message", "peers", "peer unreachable", "unknown peer"):
         assert term in body, term
 
 
-def test_command_tool_reason_reworded():
+def _command_tool_reason_reworded():
     assert "peers.enabled" in h3("The ccw command tool")
 
 
-def test_peer_origin_listed():
+def _peer_origin_listed():
     assert "`peer`" in h2("Overview")
     assert "`peer`" in h3("`turn_started`")
     assert "`peer`" in h3("`onTurn`")
 
 
-def test_compose_and_kubernetes():
+def _compose_and_kubernetes():
     assert "docker-compose.peers.yml" in h2("Docker and compose")
     assert "headless" in h2("Running in Kubernetes")
+
+
+def test_tools_origin_compose_k8s():
+    _mcp_tools_documented()
+    _command_tool_reason_reworded()
+    _peer_origin_listed()
+    _compose_and_kubernetes()
