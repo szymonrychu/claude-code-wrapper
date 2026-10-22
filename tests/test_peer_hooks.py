@@ -46,14 +46,14 @@ def test_instance_events_constant():
 
 
 @pytest.mark.parametrize("event", INSTANCE_EVENTS)
-def test_config_accepts_lists(event):
+def test_hook_config_lists(event):
     cfg = HooksConfig.model_validate({event: [cmd("true")]})
     assert len(cfg.for_event(event)) == 1
 
 
 @pytest.mark.parametrize("event", INSTANCE_EVENTS)
 @pytest.mark.parametrize("key,val", [("interval_seconds", 5), ("when", "idle")])
-def test_config_rejects_tick_keys(event, key, val):
+def test_hook_config_lists_reject_tick_keys(event, key, val):
     with pytest.raises(ValidationError):
         HooksConfig.model_validate({event: [cmd("true", **{key: val})]})
 
@@ -64,7 +64,7 @@ def test_event_decisions():
         assert EVENT_DECISIONS[event] == ("allow",)
 
 
-async def test_command_gets_payload_in_sessions_root(tmp_path):
+async def test_fire_instance_payload(tmp_path):
     out = tmp_path / "out.json"
     d = make(tmp_path, {"preJoin": [cmd(f"cat > {out}; pwd > {tmp_path}/cwd", blocking=True)]})
     assert (tmp_path / "sessions" / ".peers-hook-state").is_dir()
@@ -81,7 +81,7 @@ async def test_command_gets_payload_in_sessions_root(tmp_path):
     assert (tmp_path / "cwd").read_text().strip() == str((tmp_path / "sessions").resolve())
 
 
-async def test_prejoin_deny_and_postjoin_deny_ignored(tmp_path):
+async def test_veto_and_on_error(tmp_path):
     d = make(
         tmp_path,
         {
@@ -93,7 +93,7 @@ async def test_prejoin_deny_and_postjoin_deny_ignored(tmp_path):
     assert (await fire_instance(d, "postJoin", DATA)).decision == "allow"
 
 
-async def test_failing_prejoin_on_error(tmp_path):
+async def test_failing_prejoin_on_error_policy(tmp_path):
     d = make(tmp_path, {"preJoin": [cmd("exit 1", blocking=True, on_error="deny")]})
     assert (await fire_instance(d, "preJoin", DATA)).decision == "deny"
     d = make(tmp_path, {"preJoin": [cmd("exit 1", blocking=True)]})
@@ -116,3 +116,8 @@ async def test_non_blocking_postleave_returns_at_once(tmp_path):
     assert time.monotonic() - t < 1.5
     assert outcome.decision == "allow"
     await d.drain(0)
+
+
+async def test_veto_and_on_error_combined(tmp_path):
+    await test_veto_and_on_error(tmp_path)
+    await test_failing_prejoin_on_error_policy(tmp_path)
