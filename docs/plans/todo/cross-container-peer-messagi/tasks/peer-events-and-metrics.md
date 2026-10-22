@@ -5,7 +5,7 @@ repo: .
 value: Operators can watch peer traffic on the SSE stream and in Prometheus
 files: [src/claude_code_wrapper/events.py, src/claude_code_wrapper/metrics.py, tests/test_event_log.py, tests/test_peer_metrics.py, README.md]
 verify: "uv run pytest tests/test_event_log.py tests/test_peer_metrics.py tests/test_metrics.py tests/test_readme_api.py -q && mise run lint"
-depends_on: []
+depends_on: [peers-config-section]
 owns: [peer-events, peer-metrics]
 uses: []
 model: sonnet
@@ -28,7 +28,7 @@ Event types and metric families for peer messaging (design D9). Emission is done
 - src/claude_code_wrapper/events.py: `EVENT_TYPES` gains `peer_message_received`, `peer_message_sent`, `peer_message_delivered`, inserted after `destroy_output` and before `session_closed`, so `session_closed` stays last.
 - tests/test_event_log.py: the exact-list pin is updated to the new list (not loosened to a subset check).
 - src/claude_code_wrapper/metrics.py: counters `ccw_peer_messages_received_total{kind,result}`, `ccw_peer_messages_sent_total{kind,result}`, `ccw_peer_messages_delivered_total{kind,result}` with recorder methods `Metrics.peer_received(kind, result)`, `Metrics.peer_sent(kind, result)`, `Metrics.peer_delivered(kind, result)`. `kind` is `message` or `notice`; any other kind raises `ValueError` (my call: a typo must not mint a label).
-- README.md: under `## Events (SSE)` one `### \`<type>\`` heading per new type with its `data` keys exactly as design D9 lists them (`peer_message_received`: msg_id, from, kind, bytes, message, queued; `peer_message_sent`: msg_id, to, kind, bytes, notify_when_idle, result; `peer_message_delivered`: msg_id, from, kind, turn_id, result with delivered, rejected or dropped); under `### \`GET /metrics\`` the three families with their labels and result values.
+- README.md: under `## Events (SSE)` one `### \`<type>\`` heading per new type with its `data` keys exactly as design D9 lists them (`peer_message_received`: msg_id, from, kind, bytes, message, queued; `peer_message_sent`: msg_id, to, kind, bytes, notify_when_idle, result; `peer_message_delivered`: msg_id, from, kind, turn_id, result with delivered, rejected or dropped); under `### \`GET /metrics\`` the three families with their labels and result values (received: accepted, duplicate, inbox_full, rate_limited, too_large, not_found, unauthorized; delivered: delivered, rejected, dropped; sent: ok or the PeerError code).
 - tests/test_peer_metrics.py: each recorder increments its family with the given labels (read through `Metrics.render()` or the registry), and a bad kind raises.
 
 Interfaces: the three EVENT_TYPES names (the `peer-events` part; cross-epic `event-types` contract owned by hook-capabilities-for-tatara) and the three `Metrics` recorder methods (the `peer-metrics` part).
@@ -50,19 +50,17 @@ Interfaces: the three EVENT_TYPES names (the `peer-events` part; cross-epic `eve
 
 ## Interfaces
 
-See the Requirement's Interfaces paragraph; keep every name and signature stated there.
+Signatures, schemas and contracts this task builds or must keep, with file:symbol.
 
 ## Expected outcome
 
-The three peer event types and counters exist, are pinned and documented, ready for the inbox and service to emit.
+What is true and observable when the task is done.
 
 ## Steps
 
-- Write the tests named in the acceptance conditions in `tests/test_peer_metrics.py` first; run `uv run pytest tests/test_peer_metrics.py -q` and see them fail for the missing behaviour (not an import typo).
-- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peer_metrics.py -q` and expect all passed.
-- Run the task verify: `uv run pytest tests/test_event_log.py tests/test_peer_metrics.py tests/test_metrics.py tests/test_readme_api.py -q && mise run lint`; expect all passed and ruff clean.
-- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
+Test first. One step per bullet, with the exact command and the output to expect.
+A retirement test asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-test_readme_api.py fails the suite for an undocumented event type, so the README headings land in the same commit as the EVENT_TYPES change.
+Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
