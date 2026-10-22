@@ -36,6 +36,11 @@ def test_event_types_exact():
         "compacted",
         "error",
         "destroy_output",
+        "peer_message_received",
+        "peer_message_sent",
+        "peer_message_delivered",
+        "peer_member_joined",
+        "peer_member_left",
         "session_closed",
     ]
 

@@ -24,6 +24,7 @@ from claude_code_wrapper.config import (
     HOOK_EVENTS,
     VETO_EVENTS,
     CommandAction,
+    Config,
     HooksConfig,
     WebhookAction,
 )
@@ -45,6 +46,8 @@ EVENT_DECISIONS: dict[str, tuple[str, ...]] = {
 }
 EVENT_DECISIONS["onTick"] = ("allow",)
 EVENT_DECISIONS["onStop"] = ("allow", "block", "defer")
+#: Instance-level membership events: no session, so the envelope's session fields are empty.
+INSTANCE_EVENTS: tuple[str, ...] = ("preJoin", "postJoin", "preLeave", "postLeave")
 #: Across blocking actions the strictest honoured decision wins.
 DECISION_RANK = {"allow": 0, "defer": 1, "block": 2, "deny": 2}
 
@@ -416,3 +419,39 @@ class HookDispatcher:
         ) as client:
             resp = await _deliver(client, action.url, raw, headers, action.retries)
         return _parse_decision(resp.text)
+
+
+def instance_dispatcher(
+    cfg: Config, redactor: Redactor, *, service_env: Mapping[str, str], api_url: str
+) -> HookDispatcher:
+    """A dispatcher for the instance-level events, running in the sessions root."""
+    root = Path(cfg.paths.sessions_root)
+    root.mkdir(parents=True, exist_ok=True)
+    state_dir = root / ".peers-hook-state"
+    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    state_dir.chmod(0o700)
+    return HookDispatcher(
+        cfg.hooks,
+        redactor,
+        base_env=service_env,
+        default_cwd=root,
+        state_dir=state_dir,
+        api_url=api_url,
+    )
+
+
+async def fire_instance(
+    dispatcher: HookDispatcher, event: str, data: Mapping[str, Any]
+) -> HookOutcome:
+    """Fire an instance event; never raises. A failure allows, except a preJoin gate set to deny."""
+    payload = build_payload(
+        event, session_id="", claude_session_id=None, turn_id=None, workdir="", data=data
+    )
+    try:
+        return await dispatcher.fire(event, payload)
+    except Exception:  # noqa: BLE001 - membership hooks never break the lifecycle
+        log.exception("instance hook %s failed", event)
+        actions = dispatcher._cfg.for_event(event) if hasattr(dispatcher, "_cfg") else []  # noqa: SLF001
+        if event == "preJoin" and any(a.blocking and a.on_error == "deny" for a in actions):
+            return HookOutcome(decision="deny", reason=f"hook {event} failed")
+        return HookOutcome()

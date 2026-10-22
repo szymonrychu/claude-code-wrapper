@@ -14,6 +14,8 @@ from .turns import TurnRecord
 
 MAX_TOOL_LABELS = 50
 OTHER_TOOL = "other"
+PEER_KINDS = ("message", "notice")
+PEER_OPS = ("join", "heartbeat", "leave", "inbound_heartbeat")
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
 _TOKEN_KINDS = {
@@ -92,6 +94,33 @@ class Metrics:
         self._compactions = Counter(
             "ccw_compactions_total", "Compactions by trigger.", ["trigger"], registry=reg
         )
+        self._peer_received = Counter(
+            "ccw_peer_messages_received_total",
+            "Inbound peer messages and notices by result.",
+            ["kind", "result"],
+            registry=reg,
+        )
+        self._peer_sent = Counter(
+            "ccw_peer_messages_sent_total",
+            "Outbound peer messages and notices by result.",
+            ["kind", "result"],
+            registry=reg,
+        )
+        self._peer_delivered = Counter(
+            "ccw_peer_messages_delivered_total",
+            "Peer messages and notices by inbox delivery result.",
+            ["kind", "result"],
+            registry=reg,
+        )
+        self._peer_membership = Counter(
+            "ccw_peer_membership_total",
+            "Peer membership rounds by op and result.",
+            ["op", "result"],
+            registry=reg,
+        )
+        self._peer_members = Gauge(
+            "ccw_peer_members", "Peers currently in the reachable list.", registry=reg
+        )
         self._tools_seen: set[str] = set()
 
     # ------------------------------------------------------------------ sessions
@@ -168,6 +197,35 @@ class Metrics:
     def compaction(self, trigger: str) -> None:
         """`manual`, `auto` or `unknown` (anything else counts as unknown)."""
         self._compactions.labels(trigger if trigger in ("manual", "auto") else "unknown").inc()
+
+    # ------------------------------------------------------------------ peers
+
+    @staticmethod
+    def _peer_kind(kind: str) -> str:
+        if kind not in PEER_KINDS:
+            raise ValueError(f"unknown peer kind {kind!r}")
+        return kind
+
+    def peer_received(self, kind: str, result: str) -> None:
+        """`kind` is `message` or `notice`; `result` is the endpoint outcome."""
+        self._peer_received.labels(self._peer_kind(kind), result).inc()
+
+    def peer_sent(self, kind: str, result: str) -> None:
+        """`result` is `ok` or the PeerError code."""
+        self._peer_sent.labels(self._peer_kind(kind), result).inc()
+
+    def peer_delivered(self, kind: str, result: str) -> None:
+        """`result` is `delivered`, `rejected` or `dropped`."""
+        self._peer_delivered.labels(self._peer_kind(kind), result).inc()
+
+    def peer_membership(self, op: str, result: str) -> None:
+        """`op`: `join`, `heartbeat`, `leave`, `inbound_heartbeat`; `result`: ok, failed, vetoed."""
+        if op not in PEER_OPS:
+            raise ValueError(f"unknown peer membership op {op!r}")
+        self._peer_membership.labels(op, result).inc()
+
+    def peer_members(self, count: int) -> None:
+        self._peer_members.set(count)
 
     # ------------------------------------------------------------------ exposition
 

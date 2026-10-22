@@ -43,8 +43,19 @@ HOOK_EVENTS: tuple[str, ...] = (
     "onCommand",
     "onCommandComplete",
     "onError",
+    "preJoin",
+    "postJoin",
+    "preLeave",
+    "postLeave",
 )
-VETO_EVENTS: tuple[str, ...] = ("onCreate", "onResume", "onTurn", "onAgentToolCall", "onCommand")
+VETO_EVENTS: tuple[str, ...] = (
+    "onCreate",
+    "onResume",
+    "onTurn",
+    "onAgentToolCall",
+    "onCommand",
+    "preJoin",
+)
 TOOL_EVENTS: tuple[str, ...] = ("onAgentToolCall", "onToolResult")
 WELL_KNOWN_MARKETPLACES = frozenset({"claude-plugins-official"})
 _PLUGIN_ID = re.compile(r"^[^@\s]+@[^@\s]+$")
@@ -422,6 +433,10 @@ class HooksConfig(_Model):
     onCommand: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onCommandComplete: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
     onError: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
+    preJoin: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
+    postJoin: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
+    preLeave: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
+    postLeave: list[HookAction] = Field(default_factory=list)  # type: ignore[valid-type]  # noqa: N815
 
     @model_validator(mode="after")
     def _matcher_events(self) -> HooksConfig:
