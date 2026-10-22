@@ -58,17 +58,19 @@ Notes: stdlib only (the fake runs with `python -I`). Keep the existing scenario 
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+As in the Requirement's Interfaces paragraph: CLI flag `--messaging-socket-path`, inbox `$CLAUDE_CONFIG_DIR/fake-peer-inbox.jsonl`, fixture `peers_dir`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+The fake binds, serves and cleans up a real AF_UNIX socket when given the flag, records what it receives, and behaves exactly as before without it; tests have a short private peers dir.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_fake_claude_peers.py` first; run `uv run pytest tests/test_fake_claude_peers.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_fake_claude_peers.py -q` and expect all passed.
+- Run the task verify: `uv run pytest tests/test_fake_claude_peers.py tests/test_fake_claude.py tests/test_fake_claude_mcp.py -q && mise run lint`; expect pytest all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+See the Requirement's Notes paragraph. Only this task edits tests/conftest.py (repo CLAUDE.md).

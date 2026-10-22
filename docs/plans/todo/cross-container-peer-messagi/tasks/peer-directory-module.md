@@ -64,17 +64,19 @@ Notes: the session id is unique per ccw (manager.py `_new_session_id`), so file 
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+As in the Requirement's Interfaces paragraph: `peers.PeerDirectory`, `PeersError`, `instance_name`, `peer_session_name`; on-disk entry schema (contract `peer-directory-entry`).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A vetted, private peers dir with socks/ and directory/; entries are published and removed atomically; live_peers lists only peers whose socket accepts, concurrently and bounded.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_peers_directory.py` first; run `uv run pytest tests/test_peers_directory.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peers_directory.py -q` and expect all passed.
+- Run the task verify: `uv run pytest tests/test_peers_directory.py -q && mise run lint`; expect pytest all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+See the Requirement's Notes paragraph.

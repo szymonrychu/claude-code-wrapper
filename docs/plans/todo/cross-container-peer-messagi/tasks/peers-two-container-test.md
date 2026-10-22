@@ -64,17 +64,19 @@ Notes: the fake binds the socket because ccw passes `--messaging-socket-path` (f
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+As in the Requirement's Interfaces paragraph: `mise run test:integration:peers`, compose project `ccw-peers-it`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`mise run test:integration:peers` builds the image, starts two containers on one peers volume, and passes: A lists B through the peers tool and a line sent from container A arrives in B's fake inbox.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/integration_peers/test_peers_containers.py` first; run `mise run test:integration:peers` (after adding the mise task and script) and see it fail on the missing compose override, CI config or scenario, not on a typo.
+- Implement the smallest change that makes them pass; run `mise run test:integration:peers` and expect all passed and the stack torn down.
+- Run the task verify: `mise run test:integration:peers && mise run lint`; expect pytest all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+See the Requirement's Notes paragraph. Integration tests are deselected by the default unit run, so the red step for this task is `scripts/integration-peers.sh` failing before the compose override, CI config and scenario exist.

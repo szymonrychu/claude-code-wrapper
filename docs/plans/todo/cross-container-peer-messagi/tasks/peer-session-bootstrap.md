@@ -55,17 +55,19 @@ Notes: `crossSessionInbound: accept` in user settings is what stops a bypass-mod
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+As in the Requirement's Interfaces paragraph: `SessionSpec.messaging_socket_path`, `build_env(peer_env=)`, `render_settings(peers=)`, `CCW_PEERS_ALLOW`, `write_instructions(peers=)`, `PEERS_INSTRUCTIONS`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+With peers on, argv, env, settings.json and CLAUDE.md carry the peer wiring; with the new parameters at their defaults every output is byte-identical to today.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_peers_bootstrap.py` first; run `uv run pytest tests/test_peers_bootstrap.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peers_bootstrap.py -q` and expect all passed.
+- Run the task verify: `uv run pytest tests/test_peers_bootstrap.py tests/test_session_boot.py tests/test_bootstrap_settings.py tests/test_bootstrap_home.py -q && mise run lint`; expect pytest all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+See the Requirement's Notes paragraph.

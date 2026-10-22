@@ -65,17 +65,19 @@ Notes: config errors are formatted by `_format_errors` (config.py:631) with `_at
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+As in the Requirement's Interfaces paragraph: `config.PeersConfig`, `Config.peers`, `PEER_SOCKET_MAX_BYTES`, `SESSION_ID_LEN` (contract `peers-config`).
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+`ccw check-config` accepts a valid peers section, rejects an over-long dir, a bad name or a conflicting extra arg with a line naming the key, and every existing config loads unchanged; README and the example config document every key.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_config_peers.py` first; run `uv run pytest tests/test_config_peers.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_config_peers.py -q` and expect all passed.
+- Run the task verify: `uv run pytest tests/test_config_peers.py tests/test_readme_config.py tests/test_config.py tests/test_examples.py -q && mise run lint`; expect pytest all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+See the Requirement's Notes paragraph.

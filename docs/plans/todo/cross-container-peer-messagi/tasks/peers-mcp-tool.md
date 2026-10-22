@@ -61,17 +61,19 @@ Notes: reuse `_tool_result` and `error_response`; `live_peers` is async (concurr
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+As in the Requirement's Interfaces paragraph: async `mcp_server.handle_message(router, message, peers=None)`, tool `peers` (contract `ccw-mcp-peers-tool`), `SessionManager.peers`; the `command` tool (contract `ccw-mcp-tool`) is unchanged.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A peers-enabled session's ccw MCP server lists a `peers` tool that returns live peers with uds addresses and SendMessage hints; with peers off the server answers exactly as before.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_mcp_peers.py` first; run `uv run pytest tests/test_mcp_peers.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_mcp_peers.py -q` and expect all passed.
+- Run the task verify: `uv run pytest tests/test_mcp_peers.py tests/test_mcp_server.py tests/test_internal_api.py tests/test_readme_api.py -q && mise run lint`; expect pytest all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+See the Requirement's Notes paragraph.

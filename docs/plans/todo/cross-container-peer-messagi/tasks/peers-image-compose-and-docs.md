@@ -58,17 +58,19 @@ Notes: tests/test_examples.py already loads every examples/*.yaml, so the compos
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+As in the Requirement's Interfaces paragraph: image path `/peers` (agent:agent 0700), compose services `ccw-a`/`ccw-b`, volume `peers`, env `CCW_PEERS_NAME`, `CCW_A_PORT`, `CCW_B_PORT`.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+The image ships a private /peers, examples/docker-compose.peers.yml brings up two peered services, and README explains setup, addressing, the same-host limit and the trust model.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_peers_container.py` first; run `uv run pytest tests/test_peers_container.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peers_container.py -q` and expect all passed.
+- Run the task verify: `uv run pytest tests/test_peers_container.py tests/test_container.py tests/test_examples.py -q && mise run lint`; expect pytest all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+See the Requirement's Notes paragraph.

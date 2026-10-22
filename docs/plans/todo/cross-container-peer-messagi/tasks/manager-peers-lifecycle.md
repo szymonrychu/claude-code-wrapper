@@ -64,17 +64,19 @@ Notes: World.cfg passes a `peers={...}` section through unchanged (tests/conftes
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+No new public names; consumes the parts listed in the Requirement's Interfaces paragraph.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Two managers sharing a peers dir see each other's sessions through the ccw peers tool; entries appear on create and resume and vanish on every stop path; an insecure dir stops the service with a clear message; peers off changes nothing.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_peers_e2e.py tests/test_peers_startup.py` first; run `uv run pytest tests/test_peers_e2e.py tests/test_peers_startup.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peers_e2e.py tests/test_peers_startup.py -q` and expect all passed.
+- Run the task verify: `uv run pytest tests/test_peers_e2e.py tests/test_peers_startup.py tests/test_manager.py tests/test_mcp_injection.py tests/test_cli.py -q && mise run lint`; expect pytest all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+See the Requirement's Notes paragraph.

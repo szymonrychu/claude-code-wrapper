@@ -39,7 +39,7 @@ Research (2.1.304/2.1.307 bundles plus Docker experiments): scratchpad peer-mess
 
 ## Time
 
-Derived by `ticket.py tasks` and `apply-run` from the task `estimate` and `actual` fields; never edit by hand. Report only, never a budget.
+Estimate: 540 min | Actual: 0 min | Remaining estimate: 540 min
 
 ## Review
 
