@@ -1,6 +1,6 @@
 ---
 title: Peers security hardening
-status: todo
+status: in-progress
 repo: .
 value: "Closes the epic security review findings: bounded gossip contacts, capped response reads, no 500 on malformed timestamps, per-session total rate limit, bounded remote text"
 files: [src/claude_code_wrapper/peers.py, src/claude_code_wrapper/peer_membership.py, src/claude_code_wrapper/peer_client.py, src/claude_code_wrapper/peer_auth.py, src/claude_code_wrapper/peer_inbox.py, src/claude_code_wrapper/config.py, README.md, tests/test_peers_hardening.py]
@@ -12,8 +12,8 @@ model: sonnet
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peers-security-hardening
+branch: cross-container-peer-messagi--peers-security-hardening
 verified_head: ""
 run: ""
 provides: []
