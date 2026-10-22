@@ -1,6 +1,6 @@
 ---
 title: Peers readme guide
-status: todo
+status: done
 repo: .
 value: "Operators can set up, secure and reason about peer messaging and membership from the README alone"
 files: [README.md, tests/test_peers_readme.py]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peers-readme-guide
 branch: cross-container-peer-messagi--peers-readme-guide
-verified_head: ""
+verified_head: 293d2e96112169d83b58022a6577d821e75dfef9
 run: cross-container-peer-messagi
 provides: []
 acs_for_audit: []

@@ -1,6 +1,6 @@
 ---
 title: Peers two container test
-status: todo
+status: done
 repo: .
 value: "CI proves join, messaging and leave across a real container boundary"
 files: [docker-compose.peers-ci.yml, scripts/integration-peers.sh, mise.toml, tests/integration_peers/__init__.py, tests/integration_peers/conftest.py, tests/integration_peers/test_peers_containers.py, tests/integration_peers/config.ci.yaml, tests/integration_peers/scenario.json]
@@ -14,7 +14,7 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peers-two-container-test
 branch: cross-container-peer-messagi--peers-two-container-test
-verified_head: ""
+verified_head: caba18bad0f9be9ceae13383dd6c220af40357ee
 run: cross-container-peer-messagi
 provides: []
 acs_for_audit: []

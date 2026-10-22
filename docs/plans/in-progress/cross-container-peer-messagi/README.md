@@ -47,7 +47,7 @@ The research brief on native messaging is background only; its findings and the 
 
 ## Time
 
-Estimate: 1335 min | Actual: 0 min | Remaining estimate: 180 min
+Estimate: 1335 min | Actual: 0 min | Remaining estimate: 0 min
 
 ## Review
 
