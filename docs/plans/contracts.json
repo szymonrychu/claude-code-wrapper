@@ -13,7 +13,8 @@
     "owner": "hook-capabilities-for-tatara",
     "file": "src/claude_code_wrapper/config.py",
     "consumers": [
-      "agent-callable-slash-command"
+      "agent-callable-slash-command",
+      "cross-container-peer-messagi"
     ],
     "note": "HOOK_EVENTS gains onStop and onTick; onTick action keys interval_seconds and when"
   },
