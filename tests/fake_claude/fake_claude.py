@@ -36,7 +36,9 @@ Scenario schema
     {"boot": {"bypass_dialog": true, "min_seconds": 0.3},
      "turns": [{"match": "<regex>", "steps": [...]}]}
   First turn whose regex matches (re.search) the prompt runs; otherwise the default
-  steps [{"text": "echo: <prompt>"}]. Steps:
+  steps [{"text": "echo: <prompt>"}]. Named groups of the match are substituted: every
+  `{{name}}` in a `text` step and, recursively through dicts and lists, in `mcp.arguments`
+  becomes the named group `name` (a `{{name}}` without such a group stays as is). Steps:
     {"text": s}  {"thinking": s}
     {"tool": name, "input": {...}, "result": s, "fail": false,
      "agent": {"id": A, "type": T}}   with "agent", PreToolUse and PostToolUse(Failure)
@@ -147,6 +149,7 @@ import urllib.error
 import urllib.request
 import uuid
 import zlib
+from typing import Any
 
 PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
@@ -158,6 +161,29 @@ DEFAULT_BLOCK_CAP = 8
 MCP_PROTOCOL = "2025-11-25"
 ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 COMMAND_RE = re.compile(r"^/([^\s/]+)(?:\s+(.*))?$", re.DOTALL)
+
+
+def substitute(value: Any, groups: dict[str, str]) -> Any:
+    """Replace `{{name}}` with groups[name] in every string, recursing dicts and lists."""
+    if isinstance(value, str):
+        return re.sub(r"\{\{(\w+)\}\}", lambda m: groups.get(m.group(1), m.group(0)), value)
+    if isinstance(value, dict):
+        return {k: substitute(v, groups) for k, v in value.items()}
+    if isinstance(value, list):
+        return [substitute(v, groups) for v in value]
+    return value
+
+
+def substitute_step(step: dict, groups: dict[str, str]) -> dict:
+    """Named-group substitution for `text` steps and `mcp.arguments`; other steps unchanged."""
+    if "text" in step:
+        return {**step, "text": substitute(step["text"], groups)}
+    if "mcp" in step:
+        spec = step["mcp"]
+        return {**step, "mcp": {**spec, "arguments": substitute(spec.get("arguments", {}), groups)}}
+    return step
+
+
 COMMANDS = ("compact", "reload-plugins", "reload-skills", "mcp", "context")
 COMMAND_STDOUT = {
     "reload-plugins": "Reloaded: 0 plugins, 0 skills, 0 agents, 0 hooks, 0 MCP servers",
@@ -556,8 +582,12 @@ class Fake:
     @staticmethod
     def matching_turn_of(scenario: dict, prompt: str) -> dict:
         for t in scenario.get("turns", []):
-            if re.search(t.get("match", ".*"), prompt):
-                return t
+            m = re.search(t.get("match", ".*"), prompt)
+            if m:
+                groups = {k: v for k, v in m.groupdict().items() if v is not None}
+                if not groups:
+                    return t
+                return {**t, "steps": [substitute_step(st, groups) for st in t.get("steps", [])]}
         return {"steps": [{"text": f"echo: {prompt}"}]}
 
     def matching_turn(self, prompt: str) -> dict:

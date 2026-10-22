@@ -24,6 +24,7 @@ from claude_code_wrapper.config import Config
 from claude_code_wrapper.internal_api import create_internal_app
 from claude_code_wrapper.manager import InvalidState, SessionManager, SessionNotFound
 from claude_code_wrapper.redact import Redactor
+from claude_code_wrapper.service import ServiceHandle, run_service
 
 FAKE_CLAUDE = Path(__file__).parent / "fake_claude" / "fake_claude.py"
 
@@ -184,6 +185,28 @@ class World:
             data[key] = {**data.get(key, {}), **value}
         return Config.model_validate(data)
 
+    def service_cfg(self, name: str, scenario: dict | None = None, **sections: Any) -> Config:
+        """A `World.cfg` for one service: loopback, port 0, own roots under <tmp>/name."""
+        root = self.tmp / name
+        base = {
+            "server": {
+                "host": "127.0.0.1",
+                "port": 0,
+                "internal_port": 0,
+                "auth_token": f"tok-{name}-0123456789",
+            },
+            "paths": {
+                "workdir_root": str(root / "workdir"),
+                "sessions_root": str(root / "sessions"),
+            },
+            "mise": {
+                "trusted_paths": [str(root / "workdir")],
+                "global_config_path": str(root / "mise" / "config.toml"),
+            },
+        }
+        merged = {key: {**base[key], **sections.pop(key, {})} for key in base}
+        return self.cfg(scenario, **merged, **sections)
+
     def manager(self, cfg: Config, **kw: Any) -> SessionManager:
         m = SessionManager(
             cfg,
@@ -230,6 +253,47 @@ async def world(tmp_path: Path, fake_claude_bin: Path, scenario_file):
     await w.start_server()
     yield w
     await w.close()
+
+
+class RunningService:
+    """A `run_service` task on real loopback ports."""
+
+    def __init__(self, task: asyncio.Task, stop_event: asyncio.Event, handle: ServiceHandle):
+        self.task = task
+        self._stop = stop_event
+        self.public_port: int = handle.public_port
+        self.internal_port: int = handle.internal_port
+        self.url = f"http://127.0.0.1:{self.public_port}"
+
+    async def stop(self) -> None:
+        self._stop.set()
+        await asyncio.wait_for(self.task, 15)
+
+
+@pytest.fixture
+async def ccw_service():
+    """Factory `await ccw_service(cfg) -> RunningService`; every service is stopped at teardown."""
+    started: list[RunningService] = []
+
+    async def start(cfg: Config) -> RunningService:
+        ready, stop, handle = asyncio.Event(), asyncio.Event(), ServiceHandle()
+        task = asyncio.create_task(run_service(cfg, ready=ready, stop=stop, handle=handle))
+        waiter = asyncio.create_task(ready.wait())
+        await asyncio.wait({task, waiter}, timeout=15, return_when=asyncio.FIRST_COMPLETED)
+        waiter.cancel()
+        if task.done():
+            task.result()
+            raise AssertionError("service exited before it was ready")
+        if not ready.is_set():
+            task.cancel()
+            raise AssertionError("service not ready within 15s")
+        svc = RunningService(task, stop, handle)
+        started.append(svc)
+        return svc
+
+    yield start
+    for svc in started:
+        await svc.stop()
 
 
 @pytest.fixture
