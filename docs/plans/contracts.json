@@ -111,6 +111,6 @@
     "owner": "cross-container-peer-messagi",
     "file": "src/claude_code_wrapper/peers.py",
     "consumers": [],
-    "note": "Membership view exchanged by join and heartbeat: {instance, url, sessions: [{session_id, name, cwd}], members: [{instance, url}]}; sessions trusted only from a member's own report, members gossip contacts only; reachable after a direct exchange, dropped after max_missed_heartbeats misses or a leave; address <instance>/<session id>"
+    "note": "Membership view exchanged by heartbeat only: {instance, url, sessions: [{session_id, name, cwd}], members: [{instance, url}], leaving}; sessions trusted only from a member's own report, members gossip contacts only; reachable after a direct exchange, dropped after max_missed_heartbeats misses or a leaving: true heartbeat; address <instance>/<session id>"
   }
 ]
