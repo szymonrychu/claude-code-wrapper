@@ -22,7 +22,12 @@ _MSG_ID_RE = r"^msg_[0-9a-f]{16}$"
 MAX_ENTRIES = 1024
 
 # Receiving-side error codes -> HTTP status for the endpoint.
-RECEIVER_STATUS: dict[str, int] = {"not_found": 404, "inbox_full": 429, "rate_limited": 429}
+RECEIVER_STATUS: dict[str, int] = {
+    "not_found": 404,
+    "inbox_full": 429,
+    "rate_limited": 429,
+    "left": 409,
+}
 
 _PREFIX = {
     "unknown_peer": "unknown peer",
