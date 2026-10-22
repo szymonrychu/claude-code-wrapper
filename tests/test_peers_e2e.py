@@ -157,7 +157,7 @@ async def eventually_listing(node: Node, expect: list[str], what: str, timeout: 
     raise AssertionError(f"timed out waiting for {what}: last listing {got}, wanted {expect}")
 
 
-def peers_cfg(name: str, port: int, static: list[str]) -> dict[str, Any]:
+def peers_cfg(name: str, port: int, static: list[str], **over: Any) -> dict[str, Any]:
     return {
         "enabled": True,
         "name": name,
@@ -167,10 +167,11 @@ def peers_cfg(name: str, port: int, static: list[str]) -> dict[str, Any]:
         "heartbeat_seconds": 0.3,
         "max_missed_heartbeats": 2,
         "join_timeout_seconds": 2,
+        **over,
     }
 
 
-async def boot(world, ccw_service) -> dict[str, Node]:
+async def boot(world, ccw_service, **peer_over: Any) -> dict[str, Node]:
     ports = {n: free_port() for n in "abc"}
     seeds = {
         "a": [],
@@ -183,7 +184,7 @@ async def boot(world, ccw_service) -> dict[str, Node]:
             n,
             SCENARIO,
             server={"port": ports[n]},
-            peers=peers_cfg(n, ports[n], seeds[n]),
+            peers=peers_cfg(n, ports[n], seeds[n], **peer_over),
         )
         svc = await ccw_service(cfg)
         assert svc.public_port == ports[n]
@@ -332,7 +333,8 @@ async def test_events_and_metrics(world, ccw_service) -> None:
 
 
 async def test_stopped_service_leaves(world, ccw_service) -> None:
-    nodes = await boot(world, ccw_service)
+    # a miss budget far beyond the 5 s wait, so only the leaving heartbeat can drop C
+    nodes = await boot(world, ccw_service, max_missed_heartbeats=100)
     a, b, c = nodes["a"], nodes["b"], nodes["c"]
     await eventually_listing(a, [b.address, c.address], "A to list B and C")
     # A drops C within about a heartbeat, via the leaving heartbeat
