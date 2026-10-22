@@ -1,7 +1,7 @@
 ---
 title: Agent-callable slash commands and idle auto-compact
 blockers: [Hook capabilities for tatara and magic-trainer parity]
-stage: build
+stage: review
 owner: Szymon Richert
 repos: [.]
 created: 2026-10-21
