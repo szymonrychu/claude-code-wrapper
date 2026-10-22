@@ -77,3 +77,4 @@ A peers-enabled session's ccw MCP server lists a `peers` tool that returns live 
 ## Notes
 
 See the Requirement's Notes paragraph.
+- Builder check: the manager.py change in this task is only the `self.peers: PeerDirectory | None = None` attribute (Requirement bullet on SessionManager.__init__).

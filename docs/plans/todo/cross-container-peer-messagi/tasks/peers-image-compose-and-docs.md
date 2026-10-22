@@ -5,7 +5,7 @@ repo: .
 value: Users can run two peered ccw containers from one compose file and know the limits and trust model
 files: [Dockerfile, examples/docker-compose.peers.yml, src/claude_code_wrapper/data/examples/peers.config.yaml, examples/peers.config.yaml, README.md, tests/test_peers_container.py]
 verify: "uv run pytest tests/test_peers_container.py tests/test_container.py tests/test_examples.py -q && mise run lint"
-depends_on: [peers-config-section]
+depends_on: [peers-config-section, peers-mcp-tool]
 owns: [peers-image]
 uses: [peers-config]
 model: sonnet
@@ -74,3 +74,4 @@ The image ships a private /peers, examples/docker-compose.peers.yml brings up tw
 ## Notes
 
 See the Requirement's Notes paragraph.
+- Builder check: depends on peers-mcp-tool only to serialize README.md edits. Build the image once: only one service carries `build:`, both use `image: claude-code-wrapper:local` (the CI job has a 20-minute timeout).

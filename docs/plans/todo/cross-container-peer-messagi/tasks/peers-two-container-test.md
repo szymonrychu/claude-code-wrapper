@@ -80,3 +80,4 @@ As in the Requirement's Interfaces paragraph: `mise run test:integration:peers`,
 ## Notes
 
 See the Requirement's Notes paragraph. Integration tests are deselected by the default unit run, so the red step for this task is `scripts/integration-peers.sh` failing before the compose override, CI config and scenario exist.
+- Builder check: the evidence for judgement ACs is the pytest assertions in tests/integration_peers/test_peers_containers.py, run by AC1's command. If the fake's MCP tool result does not show up in `GET /transcript`, assert on the fake's fake-mcp.jsonl responses through compose_exec instead. The peers script runs in the same CI integration job via `test:integration`; build the image once.
