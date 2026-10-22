@@ -95,7 +95,21 @@ def parse_statusline(payload: dict[str, Any]) -> dict[str, Any]:
     if size is not None and size < 0:
         raise ValueError("context_window.context_window_size must be >= 0")
     _check_usage(values["current_usage"])
+    _check_derivable(values["current_usage"], size)
     return values
+
+
+def _check_derivable(usage: dict[str, Any] | None, size: int | None) -> None:
+    """The router sums the input-side counts and divides by the window; that must not overflow."""
+    total = 0
+    for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+        total += int((usage or {}).get(key) or 0)
+    try:
+        float(total)
+        if size:
+            total / size
+    except OverflowError:
+        raise ValueError("context_window.current_usage token total is out of range") from None
 
 
 _LOOPBACK_NAMES = frozenset({"localhost"})

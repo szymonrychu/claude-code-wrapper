@@ -292,3 +292,20 @@ async def test_statusline_body_cap() -> None:
         r = await c.post("/internal/statusline", json={"model": "x" * 100}, headers=H)
         assert r.status_code == 204
     assert len(mgr.r.statuslines) == 1
+
+
+async def test_statusline_rejects_overflowing_token_sum() -> None:
+    mgr = FakeManager()
+    big = 17 * 10**307
+    usage = {
+        "input_tokens": big,
+        "cache_creation_input_tokens": big,
+        "cache_read_input_tokens": big,
+    }
+    async with client(mgr) as c:
+        r = await c.post(
+            "/internal/statusline",
+            json={"context_window": {"context_window_size": 1, "current_usage": usage}},
+            headers=H,
+        )
+        assert r.status_code == 400
