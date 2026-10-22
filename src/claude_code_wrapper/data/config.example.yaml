@@ -148,6 +148,14 @@ hooks:
     # - {type: command, run: "echo command done"}
   onError: []                # fatal pattern, crash, boot timeout, step failure, relay error
     # - {type: webhook, url: "https://alerts.example.com/ccw"}
+  preJoin: []                # before this instance joins the peer mesh (blocking, can deny: run standalone)
+    # - {type: command, run: "./check-join.sh", blocking: true}
+  postJoin: []               # after the first heartbeat round, before any session can be created
+    # - {type: command, run: "echo joined"}
+  preLeave: []               # before the leaving heartbeat round (observe only)
+    # - {type: command, run: "echo leaving"}
+  postLeave: []              # after the leaving round, before any session is destroyed
+    # - {type: command, run: "echo left"}
 
 sessions:
   max_sessions: 4            # concurrent sessions (>= 1)

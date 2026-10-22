@@ -596,6 +596,53 @@ Auth: bearer. Response `200`:
                 "variables": {"pr": {"required": true, "default": null}}}]}
 ```
 
+### `POST /v1/peers/messages`
+
+Push a message from another ccw instance into a session here. Only mounted when `peers.enabled`;
+never authenticated by `Authorization: Bearer` (neither `server.auth_token` nor the peer token
+is accepted). Requests are signed with HMAC-SHA256 keyed by `peers.token`; the token itself is
+never sent.
+
+Signature headers: `X-CCW-Peer-Timestamp` (Unix milliseconds), `X-CCW-Peer-Nonce` (32 hex
+characters, single use) and `X-CCW-Peer-Signature` (64 hex characters). The signature is
+`hex(HMAC-SHA256(peers.token, canonical))` where `canonical` is
+`METHOD\nPATH\nTIMESTAMP\nNONCE\nhex(SHA256(raw body))` (for example
+`POST\n/v1/peers/messages\n1700000000000\n<nonce>\n<body sha256>`). The timestamp must be
+within `peers.max_clock_skew_seconds` of the receiver's clock, and a nonce is remembered for twice
+that window: a repeat is rejected. Any authentication failure is `401 unauthorized` with a
+generic message, with the receiver never called. A full nonce cache is `429 rate_limited`.
+
+The raw body is capped at `peers.max_message_bytes` + 4096 bytes, checked on `Content-Length`
+first and while streaming otherwise (`413 message_too_large`); a `message` over
+`peers.max_message_bytes` UTF-8 bytes is also `413 message_too_large`.
+
+Body: `{"from": "<instance>/<session id>", "to_session": "ses_...", "message": "...",
+"msg_id": "msg_...", "notify_when_idle": false}`. Response `202`:
+`{"msg_id": "msg_...", "queued": true}`, plus `"duplicate": true` for a repeated `msg_id`.
+Errors: `401 unauthorized`, `404 not_found` (unknown session), `413 message_too_large`,
+`422 invalid_request`, `429 inbox_full`, `429 rate_limited`. Delivery is at-most-once.
+
+### `POST /v1/peers/notices`
+
+Report the outcome of a message you sent earlier. Same mounting, signature, skew, nonce and
+body-cap rules as [`POST /v1/peers/messages`](#post-v1peersmessages).
+
+Body: `{"from": "<instance>/<session id>", "to_session": "ses_...", "msg_id": "msg_...",
+"status": "delivered|rejected|dropped", "state": "completed", "reason": "..."}`. Response `202`:
+`{"msg_id": "msg_...", "queued": true}`, plus `"duplicate": true` for a repeat. Errors: `401
+unauthorized`, `404 not_found`, `413 message_too_large`, `422 invalid_request`, `429 rate_limited`.
+
+### `POST /v1/peers/heartbeat`
+
+Membership. The first heartbeat from an instance is its join; a heartbeat with `"leaving": true`
+removes it. There are no separate join or leave routes. Same mounting, signature, skew, nonce
+and body-cap rules as [`POST /v1/peers/messages`](#post-v1peersmessages).
+
+Body: the sender's view `{"instance": "name", "url": "http://host:8080", "sessions":
+[{"session_id": "ses_...", "name": "...", "cwd": "..."}], "members": [{"instance": "name",
+"url": "..."}], "leaving": false}`. Response `200`: the receiver's own view in the same shape.
+Errors: `401 unauthorized`, `413 message_too_large`, `422 invalid_request`, `429 rate_limited`.
+
 ### `GET /healthz`
 
 Liveness. No auth. Response `200`: `{"status": "ok"}`.
@@ -1389,6 +1436,22 @@ failure. Cannot veto. `data`: `kind` (`fatal`, `exited`, `restart`, `hook_relay`
 `resume_failed`), `message`, plus `tail` (fatal), `code` (exited), `count` (restart) or `step`
 (create and resume failures).
 
+### `preJoin`
+
+Trigger: before this instance joins the peer mesh, ahead of the first heartbeat round. Order: `preJoin` -> first heartbeat round -> `postJoin`, all before any session can be created. Awaited when `blocking`; a `deny` means this instance runs standalone (no heartbeats, no peer tools). Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment). The envelope has an empty `session_id` and `workdir`, and null `claude_session_id` and `turn_id`; actions run in the sessions root.
+
+### `postJoin`
+
+Trigger: after the first heartbeat round, before any session can be created. Cannot veto (a `deny` is treated as allow). Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment), `failures` (`[{url, error}]`, the seeds that did not answer) and `standalone` (true when `preJoin` denied the join).
+
+### `preLeave`
+
+Trigger: on shutdown, before the leaving heartbeat round. Observe only: annotations are collected but the decision is ignored. Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment).
+
+### `postLeave`
+
+Trigger: after the leaving heartbeat round, before any `onDestroy` fires. Cannot veto. Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment), `failures` (`[{url, error}]`, the peers the leaving heartbeat did not reach).
+
 ### Command actions
 
 The payload envelope is written to stdin. Environment: the FULL service environment (every
@@ -1741,6 +1804,9 @@ FastAPI's `{"detail": ...}` body instead.
 | `missing_variable` | 422 | a required template variable has no value or default |
 | `invalid_request` | 422 | the body, query or path failed validation, or the merged `env` is invalid; the message lists `field: problem` entries |
 | `too_large` | 413 | prompt over `limits.max_prompt_bytes`, or turn `files` over `limits.max_file_bytes` or `limits.max_files_per_turn` |
+| `message_too_large` | 413 | a peer request body over `peers.max_message_bytes` + 4096 bytes, or a peer `message` over `peers.max_message_bytes` |
+| `inbox_full` | 429 | the target session's peer inbox is at `peers.inbox_max` |
+| `rate_limited` | 429 | a peer sender over `peers.max_messages_per_minute`, or the peer nonce cache is full |
 | `invalid_command` | 422 | unknown command, invalid `args`, or `force` not allowed |
 | `command_queue_full` | 429 | the session already has the maximum of queued commands |
 | `too_many_sessions` | 429 | `sessions.max_sessions` reached |
@@ -2428,6 +2494,10 @@ hooks:
 | `hooks.onCommandComplete` | list | `[]` | - | List of hook actions run after a queued slash command completed, failed or was cancelled. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onInterrupt` | list | `[]` | - | List of hook actions run after a turn was interrupted. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onError` | list | `[]` | - | List of hook actions run on fatal pattern, crash, boot timeout, step failure or relay error. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.preJoin` | list | `[]` | - | List of hook actions run before this instance joins the peer mesh; blocking actions can deny, which runs the instance standalone. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.postJoin` | list | `[]` | - | List of hook actions run after the first heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.preLeave` | list | `[]` | - | List of hook actions run before the leaving heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.postLeave` | list | `[]` | - | List of hook actions run after the leaving heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 
 ### `sessions`
 

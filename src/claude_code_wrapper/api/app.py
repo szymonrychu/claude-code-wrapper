@@ -7,7 +7,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, Response
 
-from claude_code_wrapper.api import commands, events, sessions, turns
+from claude_code_wrapper import peer_auth
+from claude_code_wrapper.api import commands, events, peers, sessions, turns
 from claude_code_wrapper.api.auth import require_auth
 from claude_code_wrapper.api.errors import ApiError, install_handlers
 from claude_code_wrapper.config import Config
@@ -76,6 +77,12 @@ def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> Fas
     v1.include_router(events.router)
     app.state.v1 = v1
     app.include_router(v1)
+
+    if cfg.peers.enabled:
+        # HMAC-signed, so deliberately outside the bearer-protected /v1 router.
+        manager.redactor.add([cfg.peers.token])
+        app.state.peer_nonces = peer_auth.NonceCache(cfg.peers.max_clock_skew_seconds)
+        app.include_router(peers.router, prefix=V1_PREFIX)
 
     @app.get("/metrics")
     async def prometheus() -> Response:
