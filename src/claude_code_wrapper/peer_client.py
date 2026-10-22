@@ -23,7 +23,12 @@ _MSG_ID_RE = r"^msg_[0-9a-f]{16}$"
 MAX_ENTRIES = 1024
 
 # Receiving-side error codes -> HTTP status for the endpoint.
-RECEIVER_STATUS: dict[str, int] = {"not_found": 404, "inbox_full": 429, "rate_limited": 429}
+RECEIVER_STATUS: dict[str, int] = {
+    "not_found": 404,
+    "left": 409,
+    "inbox_full": 429,
+    "rate_limited": 429,
+}
 
 _PREFIX = {
     "unknown_peer": "unknown peer",
@@ -32,6 +37,7 @@ _PREFIX = {
     "inbox_full": "inbox full",
     "rate_limited": "rate limited",
     "unauthorized": "peer rejected the request",
+    "left": "peer has left",
     "invalid": "invalid arguments",
 }
 
@@ -174,6 +180,8 @@ class PeerClient:
         status = response.status_code
         if status == 404:
             return self._err("unknown_peer", url)
+        if status == 409 and _envelope_code(response) == "left":
+            return self._err("left", url)
         if status == 413:
             return self._err("too_large")
         if status == 429:

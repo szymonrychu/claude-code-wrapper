@@ -645,7 +645,8 @@ and body-cap rules as [`POST /v1/peers/messages`](#post-v1peersmessages).
 Body: the sender's view `{"instance": "name", "url": "http://host:8080", "sessions":
 [{"session_id": "ses_...", "name": "...", "cwd": "..."}], "members": [{"instance": "name",
 "url": "..."}], "leaving": false}`. Response `200`: the receiver's own view in the same shape.
-Errors: `401 unauthorized`, `413 message_too_large`, `422 invalid_request`, `429 rate_limited`.
+Errors: `401 unauthorized`, `409 left` (this instance has already left; only a `"leaving": true`
+heartbeat is still answered), `413 message_too_large`, `422 invalid_request`, `429 rate_limited`.
 
 ### `GET /healthz`
 
@@ -1852,7 +1853,9 @@ is no join or leave endpoint.
 - **Reachability.** A member that missed `peers.max_missed_heartbeats` rounds in a row is dropped
   from the table and `peer_member_left` is emitted with reason `missed_heartbeats`; it returns on its
   next heartbeat.
-- **Leave.** On shutdown an instance sends one final heartbeat with `"leaving": true`.
+- **Leave.** On shutdown an instance sends one final heartbeat with `"leaving": true`. From then on
+  it answers other heartbeats with `409 left`, and a peer that gets that answer drops it at once, so
+  a departing instance is never re-added while it finishes shutting down.
 - **Standalone.** If a blocking `preJoin` hook denies, the instance runs standalone: no heartbeats
   and no peer tools.
 - **Startup order.** [`preJoin`](#prejoin), the join, [`postJoin`](#postjoin), then sessions can

@@ -68,7 +68,7 @@ class Stub:
         self.url = url
         self.sid = sid
         self.members = members or []
-        self.mode = "ok"  # ok | down | hang | slow | refuse
+        self.mode = "ok"  # ok | down | hang | slow | refuse | left
         self.down_calls = 0
 
     async def __call__(self, request: httpx.Request, view: MemberView) -> httpx.Response:
@@ -81,6 +81,8 @@ class Stub:
             await asyncio.sleep(0.2)
         if self.mode == "refuse":
             return httpx.Response(503, json={"error": {"code": "unavailable", "message": "no"}})
+        if self.mode == "left":
+            return httpx.Response(409, json={"error": {"code": "left", "message": "left"}})
         return httpx.Response(
             200,
             json={
@@ -508,20 +510,37 @@ async def test_leave_order_and_bound(env):
     assert lines(env.log) == log
 
 
-async def test_heartbeat_after_leave_still_answered(env):
+async def test_heartbeat_after_leave_refused(env):
     svc = env.build()
     await svc.join()
     await svc.leave()
-    # after leave an inbound heartbeat is still recorded and answered, like any other
+    # after leave an inbound heartbeat is refused, so peers cannot re-add a departed instance
     view = MemberView(
         instance="b", url=B, sessions=[{"session_id": SID_B, "name": "b", "cwd": "/w"}]
     )
-    answer = await svc.accept_heartbeat(view)
-    assert answer.instance == "a"
-    assert names(svc) == {"b"}
-    # a leaving peer is still taken out
+    with pytest.raises(PeerError) as exc:
+        await svc.accept_heartbeat(view)
+    assert exc.value.code == "left"
+    assert RECEIVER_STATUS["left"] == 409
+    assert names(svc) == set()
+    # a leaving peer is still answered
     answer = await svc.accept_heartbeat(MemberView(instance="b", url=B, leaving=True))
     assert answer.instance == "a"
+
+
+async def test_left_answer_drops_member_at_once(env):
+    b = Stub("b", B, SID_B)
+    env.net.routes[B] = b
+    events: list[tuple[str, str, str]] = []
+    svc = env.build(
+        static=[B],
+        max_missed_heartbeats=100,
+        on_change=lambda kind, member, reason: events.append((kind, member.instance, reason)),
+    )
+    await svc.join()
+    assert names(svc) == {"b"}
+    b.mode = "left"
+    await until(lambda: ("left", "b", "leave") in events)
     assert names(svc) == set()
 
 

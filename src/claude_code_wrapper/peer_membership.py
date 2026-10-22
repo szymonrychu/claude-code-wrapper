@@ -139,6 +139,11 @@ class MembershipService:
             try:
                 answer = await self._call(url, view, timeout)
             except Exception as exc:  # noqa: BLE001 - every failure is a miss, never a crash
+                if isinstance(exc, PeerError) and exc.code == "left":
+                    # the peer has left: drop it now instead of counting misses
+                    self._mutate("leave", lambda: self._table.remove(url))
+                    self._count(op, "failed")
+                    return
                 error = _error_text(exc, timeout)
                 log.debug("peer heartbeat to %s failed: %s", url, error)
                 failures.append({"url": url, "error": error})
@@ -245,6 +250,8 @@ class MembershipService:
         if view.leaving:
             self._mutate("leave", lambda: self._table.remove(view.instance))
             return self._view()
+        if self._leaving:
+            raise PeerError("left", "this instance has left")
         try:
             self._record(view, "heartbeat")
         except TableFull:
