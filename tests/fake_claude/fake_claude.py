@@ -966,6 +966,7 @@ def log_invocation(argv: list[str]) -> None:
         "CLAUDE_CODE_PROJECT_DIR_NAME",
         "CCW_SESSION_ID",
         "CCW_INTERNAL_URL",
+        "CLAUDE_CODE_HARBOR_KITE",
     )
     with open(path, "a", encoding="utf-8") as f:
         f.write(
