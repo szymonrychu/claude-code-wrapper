@@ -1,0 +1,56 @@
+# Two peered ccw containers, one image build, no shared volume:
+#   CCW_AUTH_TOKEN=... CCW_PEER_TOKEN=... CLAUDE_CODE_OAUTH_TOKEN=... \
+#     docker compose -f examples/docker-compose.peers.yml up -d --build
+# ccw-a listens on 127.0.0.1:8181, ccw-b on 127.0.0.1:8182; they reach each other by service name.
+x-ccw-common: &ccw-common
+  restart: unless-stopped
+  stop_grace_period: 30s
+
+services:
+  ccw-a:
+    <<: *ccw-common
+    build: ..
+    image: claude-code-wrapper:local
+    ports:
+      - "127.0.0.1:${CCW_PEER_A_PORT:-8181}:8080"
+    environment:
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      CCW_AUTH_TOKEN: ${CCW_AUTH_TOKEN:?set CCW_AUTH_TOKEN}
+      CCW_PEER_TOKEN: ${CCW_PEER_TOKEN:?set CCW_PEER_TOKEN}
+      CCW_PEER_NAME: a
+      CCW_PEER_URL: http://ccw-a:8080
+      CCW_PEER_SEED: http://ccw-b:8080
+    volumes:
+      - a-workdir:/workdir
+      - a-sessions:/sessions
+      - a-mise:/opt/mise
+      - ./peers.config.yaml:/etc/ccw/config.yaml:ro
+
+  ccw-b:
+    <<: *ccw-common
+    image: claude-code-wrapper:local
+    pull_policy: never
+    depends_on:
+      - ccw-a
+    ports:
+      - "127.0.0.1:${CCW_PEER_B_PORT:-8182}:8080"
+    environment:
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      CCW_AUTH_TOKEN: ${CCW_AUTH_TOKEN:?set CCW_AUTH_TOKEN}
+      CCW_PEER_TOKEN: ${CCW_PEER_TOKEN:?set CCW_PEER_TOKEN}
+      CCW_PEER_NAME: b
+      CCW_PEER_URL: http://ccw-b:8080
+      CCW_PEER_SEED: http://ccw-a:8080
+    volumes:
+      - b-workdir:/workdir
+      - b-sessions:/sessions
+      - b-mise:/opt/mise
+      - ./peers.config.yaml:/etc/ccw/config.yaml:ro
+
+volumes:
+  a-workdir:
+  a-sessions:
+  a-mise:
+  b-workdir:
+  b-sessions:
+  b-mise:

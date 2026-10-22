@@ -1,0 +1,23 @@
+# Two or more ccw instances that message each other through the `peers` and `send_message` tools.
+# Used by examples/docker-compose.peers.yml: every instance gets its own name, advertise url and
+# a seed pointing at the other. One shared peer token is one trust domain: any holder can push
+# prompts into the agents of every peer, so give it only to instances you trust equally.
+# Environment: CCW_AUTH_TOKEN (API bearer), CCW_PEER_TOKEN (16+ chars, same on every peer),
+# CCW_PEER_NAME, CCW_PEER_URL (how the others reach this instance), CCW_PEER_SEED (another peer).
+
+server:
+  auth_token: ${CCW_AUTH_TOKEN}
+
+claude:
+  env:
+    claude_code_oauth_token: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    disable_autoupdater: true
+
+peers:
+  enabled: true
+  name: ${CCW_PEER_NAME}
+  advertise_url: ${CCW_PEER_URL}
+  token: ${CCW_PEER_TOKEN}
+  # Seeds are only the first contact; members learn the rest of the mesh from heartbeats.
+  static:
+    - "${CCW_PEER_SEED}"

@@ -10,6 +10,11 @@ STUB_ENV = {
     "CLAUDE_CODE_OAUTH_TOKEN": "tok",
     "GIT_USER_NAME": "Test User",
     "GIT_USER_EMAIL": "test@example.com",
+    "CCW_AUTH_TOKEN": "auth-token-0123456789",
+    "CCW_PEER_TOKEN": "peer-token-abcdefghij",
+    "CCW_PEER_NAME": "a",
+    "CCW_PEER_URL": "http://ccw-a:8080",
+    "CCW_PEER_SEED": "http://ccw-b:8080",
 }
 
 
