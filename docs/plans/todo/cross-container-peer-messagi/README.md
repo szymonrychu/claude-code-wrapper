@@ -11,35 +11,40 @@ created: 2026-10-22
 
 ## Project brief
 
-What: Native Claude peer messaging between ccw sessions and containers over a shared /peers mount, with a ccw peers discovery tool
-How: --messaging-socket-path into a shared 0700 dir, crossSessionInbound accept, ccw-written peer directory plus a peers MCP tool, compose example and docker integration test
-Why: The user will run several ccw containers whose main agents must talk to each other
+What: ccw-owned peer messaging between the main agents of ccw sessions, across containers, nodes and clusters, replacing Claude's native SendMessage/ListAgents for ccw sessions
+How: an opt-in `peers:` config section, a heartbeat-refreshed JSON peer directory on a shared (optionally RWX) volume, two ccw MCP tools (`peers`, `send_message`), a peer-token-authenticated `POST /v1/peers/messages` and `POST /v1/peers/notices`, and a per-session inbox that delivers each message as a new turn when the session is idle
+Why: the user runs several ccw containers, possibly on different nodes, whose main agents must talk to each other; Claude's native peer messaging rides on Unix sockets, which never cross a node, not even on RWX CephFS
 
 ## Description
 
-Main agents in different ccw containers (and different sessions in one container) should be able to message each other with Claude Code's native peer messaging (SendMessage to a `uds:` socket address). Today they cannot: each session has a private CLAUDE_CONFIG_DIR registry, sockets live in a private /tmp, every container's claude gets the same small pid so a shared registry collides, and ccw's bypass permission mode makes Claude hold inbound peer messages for a TUI approval nobody can give.
+Main agents in different ccw sessions (same container, other containers, other nodes or clusters) should message each other. The first plan used Claude Code's native peer messaging (`SendMessage` to a `uds:` socket on a shared mount). The user rejected it: Unix sockets are kernel-local and do not cross nodes, even on a shared RWX CephFS volume. User decision: "go with custom tooling".
 
-Research (2.1.304/2.1.307 bundles plus Docker experiments): scratchpad peer-messaging-research.md, carried into design.md. User decision: shared mount plus a ccw `peers` tool (not a shared pid namespace).
+ccw now owns the whole path. Discovery is a directory of small JSON files on a shared volume, one per live session, refreshed by a heartbeat. The agent lists peers and sends messages with two ccw MCP tools. The sending ccw POSTs the message to the target instance's public HTTP API, authenticated by a shared peer token. The target ccw queues it in the session's inbox and delivers it as a new turn when the session is idle, framed as an `<agent-message>` that tells the agent how to reply. With `notify_when_idle` the target posts an idle notice back to the sender once the turn that handled the message ends. Claude's native SendMessage and ListAgents are switched off for peered sessions so the agent never reaches for a transport that cannot work.
+
+The research brief on native messaging (2.1.304/2.1.307 bundles plus Docker experiments) is background only; its findings and the reason the native design was dropped are carried in design.md.
 
 ## Goals
 
-- Opt-in `peers` config section; off by default, no behaviour change when off.
-- When on, each session binds its messaging socket at `<peers.dir>/socks/<session id>.sock` via `--messaging-socket-path`, with `crossSessionInbound: accept`, `CLAUDE_CODE_HARBOR_KITE=1` and `CLAUDE_CODE_SESSION_NAME` set.
-- ccw publishes a peer directory on the shared mount and the ccw MCP server exposes a `peers` tool listing live peers (socket probe) with their `uds:` addresses.
-- The image pre-creates the peers dir owned by the agent uid with mode 0700, so a fresh named volume works.
-- A compose example with two ccw containers sharing one peers volume, and a docker integration test proving a session in one container lists and connects to a session in the other.
-- README documents setup, addressing, the same-host limit and the trust model.
+- Opt-in `peers:` config section (enabled, name, advertise_url, token, directory, heartbeat_seconds, stale_seconds, max_message_bytes, inbox_max); off by default and zero behaviour change when off.
+- When on, the native SendMessage and ListAgents are disabled three ways (env, settings deny, tool gate) and the agent is told to use `mcp__ccw__peers` and `mcp__ccw__send_message`.
+- A heartbeat-refreshed peer directory on a shared volume, readable by every ccw instance that mounts it, with liveness by heartbeat age.
+- `POST /v1/peers/messages` and `POST /v1/peers/notices`, authenticated by the peer token only, with size and inbox bounds.
+- Per-session inbox delivery as new turns, in arrival order, never into a busy PTY; replies and `notify_when_idle` idle notices work end to end.
+- SSE events and Prometheus counters for received, sent and delivered peer messages.
+- Proof: unit tests per module, an in-process test with two ccw services on real HTTP ports, and a docker two-container test run by `mise run test:integration` in CI.
+- Image, compose example and README (setup, addressing, config rows, routes, trust model, cross-node, TLS note).
 
 ## Non-goals
 
-- Shared pid namespace or native ListAgents discovery across containers.
-- Mirroring Claude's own session registry.
-- Cross-host messaging or an HTTP relay (Unix sockets are kernel-local).
-- A public HTTP peers endpoint.
+- Native Claude peer messaging over Unix sockets, `--messaging-socket-path`, `crossSessionInbound`, a shared pid namespace or mirroring Claude's session registry.
+- A static peer list or a ccw-to-ccw listing API; discovery is the shared directory only.
+- TLS termination in ccw; `advertise_url` may be https behind an ingress or mesh.
+- Messaging subagents or teammates; the tools are main-agent only.
+- Testing the tool schemas against a real claude (no credentials); recorded as cannotVerify.
 
 ## Time
 
-Estimate: 540 min | Actual: 0 min | Remaining estimate: 540 min
+Estimate: 945 min | Actual: 0 min | Remaining estimate: 945 min
 
 ## Review
 

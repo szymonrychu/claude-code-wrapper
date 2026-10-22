@@ -50,17 +50,19 @@ Interfaces: the three EVENT_TYPES names (the `peer-events` part; cross-epic `eve
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+See the Requirement's Interfaces paragraph; keep every name and signature stated there.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+The three peer event types and counters exist, are pinned and documented, ready for the inbox and service to emit.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_peer_metrics.py` first; run `uv run pytest tests/test_peer_metrics.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peer_metrics.py -q` and expect all passed.
+- Run the task verify: `uv run pytest tests/test_event_log.py tests/test_peer_metrics.py tests/test_metrics.py tests/test_readme_api.py -q && mise run lint`; expect all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+test_readme_api.py fails the suite for an undocumented event type, so the README headings land in the same commit as the EVENT_TYPES change.

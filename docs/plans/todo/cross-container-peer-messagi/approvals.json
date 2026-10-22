@@ -1,79 +1,106 @@
 [
   {
     "id": "A",
-    "text": "Discovery is a shared mount plus a ccw peers tool (research fixes 1 and 3); not a shared pid namespace, not registry mirroring, not an HTTP relay.",
+    "text": "Go with custom tooling: ccw-owned peer messaging over its HTTP API replaces native SendMessage/ListAgents for ccw sessions and works across containers, nodes and clusters; native Unix-socket messaging is dropped because sockets do not cross nodes, even on RWX CephFS.",
     "decisions": ["D1"],
-    "tasks": ["peer-directory-module", "peers-mcp-tool", "manager-peers-lifecycle"],
+    "tasks": ["peer-http-client", "peer-messages-endpoint", "peer-service-core", "manager-peers-lifecycle"],
     "status": "approved"
   },
   {
     "id": "B",
-    "text": "Opt-in peers config section, disabled by default, zero behaviour change when off; keys enabled, dir (default /peers, same path in every container, socket path at most 103 bytes validated at config load), name (instance name, default hostname), probe_timeout_ms.",
+    "text": "Opt-in peers config section, default disabled, zero behaviour change when off; keys enabled, name (default hostname), advertise_url (default http://<hostname>:<server port>), token (required when enabled, normally ${CCW_PEER_TOKEN}, refuse to start without it, never logged, redacted), directory (default /peers, may be RWX), heartbeat_seconds, stale_seconds, max_message_bytes, inbox_max.",
     "decisions": ["D2"],
     "tasks": ["peers-config-section", "manager-peers-lifecycle"],
     "status": "approved"
   },
   {
     "id": "C",
-    "text": "When enabled, per session: argv gets --messaging-socket-path <dir>/socks/<ccw session id>.sock; env gets CLAUDE_CODE_HARBOR_KITE=1 and CLAUDE_CODE_SESSION_NAME=<instance>-<session name or id>; the ccw-written user settings.json gets crossSessionInbound: accept (only when enabled).",
+    "text": "Built-ins off when enabled: CLAUDE_CODE_HARBOR_KITE=0 in the session env, permissions.deny SendMessage and ListAgents in the ccw-written settings.json, and the PreToolUse tool gate denies SendMessage/ListAgents with reason 'use mcp__ccw__send_message / mcp__ccw__peers'.",
     "decisions": ["D3"],
     "tasks": ["peer-session-bootstrap", "manager-peers-lifecycle"],
     "status": "approved"
   },
   {
     "id": "D",
-    "text": "ccw creates <dir>/socks and <dir>/directory at startup with 0700 owned by the service uid, and refuses to start peers with a clear error if the dir is not ours or is group/world writable without the sticky bit, so Claude never silently falls back to /tmp/cc-socks-<uid>.",
+    "text": "The ccw MCP server gains peers (optional instance filter; live peers excluding the caller, address <instance>/<session id>, plus name and cwd) and send_message ({to, message, notify_when_idle?}; returns msg_id or a clear error: unknown peer, peer unreachable, too large, inbox full); both only registered when peers.enabled; main agent only like the command tool; the agent instructions get a short paragraph about them when enabled.",
     "decisions": ["D4"],
-    "tasks": ["peer-directory-module", "manager-peers-lifecycle"],
+    "tasks": ["peers-mcp-tools", "peer-session-bootstrap", "peer-service-core"],
     "status": "approved"
   },
   {
     "id": "E",
-    "text": "Peer directory: ccw writes <dir>/directory/<session id>.json atomically on session create {session_id, name, instance, address uds:<sock path>, cwd, started_at} and removes it on destroy and shutdown; liveness is an AF_UNIX connect probe with a timeout; sweeping stale entries whose socket refuses is allowed.",
+    "text": "Discovery is plain JSON files <directory>/<instance>/<session id>.json {instance, session_id, name, cwd, url, started_at, heartbeat_at}, written atomically on create, refreshed every heartbeat_seconds, removed on destroy/shutdown; live when heartbeat_at is within stale_seconds (no socket probes); ccw removes its own stale entries at startup; no static peer list, no ccw-to-ccw listing API.",
     "decisions": ["D5"],
-    "tasks": ["peer-directory-module", "manager-peers-lifecycle"],
+    "tasks": ["peer-directory-module", "peer-service-core", "manager-peers-lifecycle"],
     "status": "approved"
   },
   {
     "id": "F",
-    "text": "The ccw MCP server gets a second tool peers (no required params, optional instance filter) returning live peers excluding the caller, each with its uds address and a one-line SendMessage hint; registered only when peers.enabled; the agent instructions bootstrap gets a short paragraph about it when enabled.",
+    "text": "POST /v1/peers/messages on the target instance, authenticated by the peer token only (constant-time compare; server.auth_token not accepted there and the peer token not accepted elsewhere), body {from, to_session, message, msg_id, notify_when_idle}; 202 queued, 401, 404 unknown session, 413 too large, 429 inbox full; only mounted when enabled; plus POST /v1/peers/notices with the same auth; body size capped before parse.",
     "decisions": ["D6"],
-    "tasks": ["peers-mcp-tool", "peer-session-bootstrap", "manager-peers-lifecycle"],
+    "tasks": ["peer-messages-endpoint", "peer-http-client"],
     "status": "approved"
   },
   {
     "id": "G",
-    "text": "The Dockerfile pre-creates /peers owned by agent (uid 1000) mode 0700 so a fresh named volume inherits ownership; a compose example runs two ccw services sharing one named peers volume mounted at /peers.",
-    "decisions": ["D7"],
-    "tasks": ["peers-image-compose-and-docs"],
+    "text": "Per-session inbox: an idle session gets the message as a turn now, a busy one as a new turn after the current turn completes (never typed into a busy PTY, never mid-turn), in arrival order, framed as <agent-message from=... msg_id=...> with a line telling the agent to reply with mcp__ccw__send_message; SSE events peer_message_received, peer_message_sent, peer_message_delivered and metrics counters; the EVENT_TYPES pin in tests/test_event_log.py updated.",
+    "decisions": ["D7", "D9"],
+    "tasks": ["peer-events-and-metrics", "peer-inbox-delivery", "peer-service-core"],
     "status": "approved"
   },
   {
     "id": "H",
-    "text": "Tests use the fake claude only; only the fake-claude task edits tests/conftest.py; the fake claude accepts --messaging-socket-path and binds an AF_UNIX listener there; a docker-marked integration test starts two containers sharing a peers volume, creates a session in each via the API, and proves A's peers tool lists B and a connect from container A to B's socket succeeds; real-claude delivery is recorded as cannotVerify, not as a task.",
+    "text": "notify_when_idle: when the turn that handled a message completes, the target ccw POSTs /v1/peers/notices to the sender instance url and the sender ccw delivers it to the sending session as a short <peer-idle-notice from=... msg_id=...> message under the same inbox and delivery rules.",
     "decisions": ["D8"],
-    "tasks": ["fake-claude-peer-socket", "manager-peers-lifecycle", "peers-two-container-test"],
+    "tasks": ["peer-inbox-delivery", "peer-service-core", "peers-two-instance-e2e"],
     "status": "approved"
   },
   {
     "id": "I",
-    "text": "README: setup, addressing, same-host-only limit (Unix sockets are kernel-local; Kubernetes needs pods on one node with a shared hostPath or RWX local volume), trust model (anything running as the agent uid with access to the dir can inject prompts into bypass-mode agents; the auth line is optional on Linux), config rows for every new key; examples config is a committed symlink into src/claude_code_wrapper/data/examples.",
-    "decisions": ["D9", "D7"],
-    "tasks": ["peers-config-section", "peers-mcp-tool", "peers-image-compose-and-docs"],
+    "text": "Same-cluster TLS is out of scope for ccw itself (it does not terminate TLS); advertise_url may be https behind an ingress or mesh; the README says so.",
+    "decisions": ["D11"],
+    "tasks": ["peers-image-compose-docs"],
     "status": "approved"
   },
   {
     "id": "J",
-    "text": "Follow the repo CLAUDE.md: test-first, uv run, plain ASCII, no em dashes.",
-    "decisions": ["D8"],
+    "text": "Compose example with two ccw services sharing one named peers volume for the directory, a shared CCW_PEER_TOKEN, explicit instance names a and b, one image build; the Dockerfile pre-creates /peers owned by agent uid 1000 so a fresh named volume is writable.",
+    "decisions": ["D10"],
+    "tasks": ["peers-image-compose-docs"],
+    "status": "approved"
+  },
+  {
+    "id": "K",
+    "text": "Tests use the fake claude only, only the fake-claude task edits tests/conftest.py, reusing the fake's MCP tool calls; unit tests per module; an in-process test with two ccw services on real HTTP ports sharing a tmp directory proving send, framed receive, reply and notify_when_idle; a docker two-container integration test (scripts plus a mise task run by mise run test:integration in CI) proving the same across containers; real-claude acceptance of the tool schemas is cannotVerify, not a skipped task.",
+    "decisions": ["D12"],
+    "tasks": ["fake-claude-peer-harness", "peers-two-instance-e2e", "peers-two-container-test"],
+    "status": "approved"
+  },
+  {
+    "id": "L",
+    "text": "README: setup, addressing, config rows for every new key, every new route documented, trust model (any holder of the peer token can push prompts into bypass-mode agents), cross-node via an RWX directory, the TLS note; examples/*.config.yaml are committed symlinks into src/claude_code_wrapper/data/examples.",
+    "decisions": ["D11"],
+    "tasks": ["peers-config-section", "peer-events-and-metrics", "peer-messages-endpoint", "peers-mcp-tools", "peers-image-compose-docs"],
+    "status": "approved"
+  },
+  {
+    "id": "M",
+    "text": "Follow the repo CLAUDE.md: test-first, uv run, plain ASCII, no em dashes; tasks of about an hour, at most 8 files.",
+    "decisions": ["D12"],
     "tasks": [
-      "fake-claude-peer-socket",
+      "fake-claude-peer-harness",
       "peers-config-section",
       "peer-directory-module",
+      "peer-events-and-metrics",
+      "peer-http-client",
+      "peer-inbox-delivery",
+      "peer-messages-endpoint",
+      "peers-mcp-tools",
       "peer-session-bootstrap",
-      "peers-mcp-tool",
+      "peer-service-core",
       "manager-peers-lifecycle",
-      "peers-image-compose-and-docs",
+      "peers-two-instance-e2e",
+      "peers-image-compose-docs",
       "peers-two-container-test"
     ],
     "status": "approved"

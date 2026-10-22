@@ -2,274 +2,400 @@
 
 ## Summary
 
-Main agents in different ccw sessions and containers message each other with Claude Code's native
-peer messaging (SendMessage to a `uds:` socket address). An opt-in `peers:` config section (off by
-default, zero change when off) makes ccw launch every session with `--messaging-socket-path
-<peers.dir>/socks/<session id>.sock` on a shared mount, set `CLAUDE_CODE_HARBOR_KITE=1` and
-`CLAUDE_CODE_SESSION_NAME`, and write `crossSessionInbound: accept`. Discovery is a ccw-owned peer
-directory on the same mount plus a `peers` tool on the ccw MCP server; the image pre-creates `/peers`,
-a compose example runs two peered containers, and a docker test proves cross-container discovery and
-reachability with the fake claude.
+ccw gets its own peer messaging for the main agents of its sessions, working across containers,
+nodes and clusters. An opt-in `peers:` section (off by default, zero change when off) turns it on.
+Each ccw instance publishes one heartbeat-refreshed JSON file per live session in a shared
+directory (`/peers` by default, may be an RWX volume such as CephFS). The ccw MCP server gains
+`peers` and `send_message`. A send is an HTTP POST to the target instance's
+`POST /v1/peers/messages`, authenticated by a shared peer token. The target queues the message in
+the session's inbox and delivers it as a new turn when the session is idle, framed as an
+`<agent-message>`. `notify_when_idle` makes the target POST `/v1/peers/notices` back once the
+handling turn ends. Claude's native SendMessage/ListAgents are switched off for peered sessions.
 
 ## Intent and why
 
-The user will run several ccw containers whose main agents must talk to each other. Today they
-cannot: each session has a private `CLAUDE_CONFIG_DIR` registry, sockets sit in a container-private
-`/tmp`, every container's first claude gets the same small pid so a shared native registry collides,
-and ccw's bypass permission mode makes Claude hold every inbound peer message for a TUI approval that
-nobody can give. The native transport itself already works between containers (facts F3, F9), so the
-work is configuration, discovery and packaging, not a new transport.
+The user runs several ccw containers, possibly on different Kubernetes nodes, whose main agents
+must talk to each other. The first plan used Claude Code's native peer messaging over Unix sockets
+on a shared mount. The user rejected it: a Unix socket is a kernel object and never crosses a node,
+even when the socket file sits on an RWX CephFS volume (F9 shows it works only inside one kernel).
+User decision: "go with custom tooling", ccw-owned messaging over its HTTP API that must work
+across containers, nodes and clusters.
 
 ## Goals
 
-- `peers.enabled: false` (the default): argv, env, settings.json, .claude.json and CLAUDE.md are
-  byte-identical to today, and no peers path is touched.
-- `peers.enabled: true`: each session binds its messaging socket at `<dir>/socks/<session id>.sock`,
-  has `CLAUDE_CODE_HARBOR_KITE=1`, `CLAUDE_CODE_SESSION_NAME=<instance>-<session name or id>` and
-  `crossSessionInbound: accept`, and is published in `<dir>/directory/<session id>.json` until it stops.
-- The ccw MCP `peers` tool lists live peers (connect probe) other than the caller with `uds:` addresses.
-- ccw refuses to start with a clear error when the peers dir is insecure or not ours.
-- `/peers` exists in the image as agent:agent 0700; a compose example runs two peered containers.
-- A docker test shows a session in container A listing and reaching a session in container B.
-- README documents setup, addressing, the same-host limit and the trust model; every new config key
-  has a README row.
+- `peers.enabled: false` (the default): argv, env, settings.json, .claude.json, CLAUDE.md, the
+  mounted routes, the MCP tool list and the filesystem are exactly as today.
+- `peers.enabled: true`: every session is published in `<directory>/<instance>/<session id>.json`
+  while it lives, refreshed every `heartbeat_seconds`, and removed on every stop path.
+- `mcp__ccw__peers` lists live peers other than the caller; `mcp__ccw__send_message` delivers to a
+  peer on any instance that can reach the target's `advertise_url`, or returns a clear error.
+- A delivered message is a new turn on the target session, in arrival order, never typed into a
+  busy PTY; a reply and an idle notice reach the sender the same way.
+- SendMessage and ListAgents are unavailable to peered sessions (env, settings deny, tool gate).
+- Peer routes accept only the peer token; the peer token is accepted nowhere else.
+- Events `peer_message_received`, `peer_message_sent`, `peer_message_delivered` and Prometheus
+  counters exist and are documented.
+- Two ccw services in one process on real HTTP ports, and two containers under compose, complete a
+  send, a reply and an idle notice with the fake claude.
+- README documents setup, addressing, every key, every route, the trust model, cross-node use and
+  the TLS note; the image and a compose example work with a fresh named volume.
 
 ## Non-goals
 
-- Shared pid namespace or native ListAgents discovery across containers.
-- Mirroring Claude's own session registry (`<config>/sessions/<pid>.json`).
-- Cross-host messaging, an HTTP relay, or a public HTTP peers endpoint.
-- Testing delivery into a real claude (no credentials in tests).
+- Native Claude peer messaging: `--messaging-socket-path`, `crossSessionInbound`, a shared pid
+  namespace, Claude's session registry.
+- A static peer list, a ccw-to-ccw listing API or socket probes; discovery is the shared directory.
+- TLS termination inside ccw.
+- Messaging from subagents or teammates.
+- Testing the tool schemas against a real logged-in claude.
 
 ## Anti-goals
 
 - Any behaviour change for configs without `peers.enabled: true`.
-- Claude silently falling back to its private `/tmp/cc-socks-<uid>` while ccw advertises a shared address.
-- One ccw deleting a live peer's directory entry.
-- Depending on Claude's undocumented on-disk registry format.
+- A message typed into a running turn, or two peer turns interleaved.
+- The peer token appearing in a log line, an event, `GET /v1/config`, the directory or a file in a
+  session dir.
+- The peer token opening any `/v1` route other than the two peer routes, or `server.auth_token`
+  opening a peer route.
+- One ccw deleting a live entry of another instance.
+- An unbounded inbox or an unbounded request body.
 
 ## Constraints
 
-- Repo CLAUDE.md: test-first (red, green, refactor), always `uv run`, plain ASCII, no em dashes.
+- Repo CLAUDE.md: test-first (red, green, refactor), always `uv run`, plain ASCII, no em dashes,
+  never write service files into a session workdir.
 - Tests use the fake claude under tests/fake_claude only; only the fake-claude task
-  (fake-claude-peer-socket) edits tests/conftest.py.
-- Claude Code 2.1.304 in the image (Dockerfile `CLAUDE_CODE_VERSION`).
-- Unix socket paths are at most 103 bytes (F2), validated at config load.
-- Every config key needs a README row (tests/test_readme_config.py); examples/*.config.yaml are
-  committed symlinks into src/claude_code_wrapper/data/examples.
+  (fake-claude-peer-harness) edits tests/conftest.py.
+- Every config key needs a README row (tests/test_readme_config.py); every route needs a README
+  heading (tests/test_readme_api.py); every event type needs a README heading under
+  `## Events (SSE)`; every API error code is documented under `## Errors`.
+- examples/*.config.yaml are committed symlinks into src/claude_code_wrapper/data/examples.
+- The EVENT_TYPES pin in tests/test_event_log.py is updated, not loosened.
+- Tasks of about an hour, at most 8 files each.
 
-## Facts (verified by research, carried from the scratch brief)
+## Facts (background: native messaging research, carried from the scratch brief)
 
 Source: reverse engineering of the claude 2.1.307 (macOS) and 2.1.304 (Linux, from the image)
-bundles plus throwaway Docker experiments with `--network none`, no credentials.
+bundles plus throwaway Docker experiments with `--network none`, no credentials. These facts are
+why the native design was planned and why it was dropped; the new design keeps only F8 (how to
+switch the built-ins off), F10 (ccw today) and the shape of F7 (reply and idle-notice semantics).
 
-- F1 Registry: Claude's native registry is `$CLAUDE_CONFIG_DIR/sessions/<pid>.json` (follows
-  CLAUDE_CONFIG_DIR; verified in a container). The file name is the pid, there is no uniqueness check,
-  status updates read-modify-write it and exit unlinks it. `pidDomain` is `linux:<machine-id>:<pid ns>`;
-  a foreign domain is listed only if its socket accepts a connect (250 ms probe). Sweeping is declined
-  inside Docker.
-- F2 Socket path: default `$XDG_RUNTIME_DIR/cc-socks/<pid>.sock`, else `$CLAUDE_CODE_TMPDIR`, else
-  `/tmp/cc-socks`; limit 103 bytes. `--messaging-socket-path <path>` must be absolute, without `..`,
-  at most 103 bytes, in a parent dir owned by the uid with mode 0700, and not already live. Every
-  ancestor must be owned by us or root and be private or sticky; the leaf is chmod'ed 0700 and the
-  socket 0600. A refusal falls back to `/tmp/cc-socks-<uid>` with the error text "A directory on the
-  sockets path is shared (world- or group-writable without the sticky bit, e.g. a container volume
-  mounted at /tmp)".
-- F3 Wire: NDJSON over AF_UNIX, one JSON object per line (max 1048576 chars), first line within 30 s.
-  An optional first `{"type":"auth","token":...}` line; auth is required only on Windows, so on Linux
-  an unauthenticated line is accepted. User message:
-  `{"type":"user","message":{"role":"user","content":"..."},"priority":"next","from":"uds:<sender socket>",...}`.
-- F4 Liveness: Claude's own listing probes each socket with a 250 ms connect; ccw mirrors that default.
-- F5 Pid collision: two containers sharing one native registry both ran claude as pid 10; the socket
-  collision was handled (`10-<8hex>.sock`) but the registry kept one `10.json` (A's was overwritten).
-  This is why discovery is a ccw directory keyed by ccw's unique session id.
-- F6 Inbound policy: setting `crossSessionInbound` = accept | hold | refuse, read from user settings
-  (an explicit value wins). Unset, a bypass-mode receiver of a message with no asserted mode holds it
-  for a TUI approval ("no-mode-asserted") and headless it expires. ccw runs bypassPermissions, so it
-  must write `accept`.
-- F7 Replies and receipts: a reply is a new SendMessage to the sender's `from` address, which must be
-  reachable from the receiver's filesystem. Receipts and `notify_when_idle` are vetted: same directory
-  as the receiver's own socket is accepted; otherwise a kernel-verified peer pid is needed, which is
-  0 across pid namespaces. With every socket in one shared dir, replies, receipts and idle notices work.
-- F8 Gating: `CLAUDE_CODE_HARBOR_KITE` overrides the GrowthBook gate `tengu_harbor_kite` (default
-  true) either way; pin it to 1. `--bare`/`CLAUDE_CODE_SIMPLE` skip messaging unless
-  `--messaging-socket-path` is given. No gate on TTY, login, `IS_SANDBOX` or skip-permissions.
-  `CLAUDE_CODE_SESSION_NAME` sets a stable display name (derived names are `<cwd basename>-<2 hex>`).
-- F9 Docker: a Python AF_UNIX server in one container and a client in another connected through a
-  named volume and through a host bind mount (Docker Desktop, linuxkit kernel); SO_PEERCRED reports
-  pid 0 across namespaces. A fresh named volume is root:root 755 (uid 1000 gets EACCES) unless the
-  image pre-creates the mount point owned by the user, which Docker copies into a new volume.
-- F10 ccw today: per-session `CLAUDE_CONFIG_DIR=/sessions/<id>/config`, env built from an allow-list
-  (session.py `build_env`), argv `claude [--model] [--effort] --session-id|--resume <uuid> [extra_args]`
-  (session.py `_argv`), session ids `ses_` plus 12 hex (manager.py `_new_session_id`), uid 1000
-  `agent`, ccw is PID 1. The ccw MCP server (mcp_server.py) exposes one `command` tool on the
-  loopback internal API.
+- F1 Registry: native discovery is `$CLAUDE_CONFIG_DIR/sessions/<pid>.json`, keyed by pid with no
+  uniqueness check; a foreign pid domain is listed only if its socket accepts a 250 ms connect.
+- F2 Socket path: `--messaging-socket-path` must be absolute, at most 103 bytes, in a 0700 dir
+  owned by the uid; any vetting failure silently falls back to `/tmp/cc-socks-<uid>`.
+- F3 Wire: NDJSON over AF_UNIX; the auth line is optional off Windows.
+- F5 Pid collision: two containers sharing one registry both ran claude as pid 10 and one record
+  overwrote the other.
+- F6 Inbound policy: a bypass-mode receiver holds unasserted peer messages for a TUI approval
+  unless `crossSessionInbound: accept`.
+- F7 Replies and idle notices: a reply is a new SendMessage to the sender's `from` address;
+  `notify_when_idle` asks the receiver for a `peer_idle_notice {state, finished_at, detail}` once
+  it goes idle after handling the message.
+- F8 Gating: the tools sit behind the GrowthBook gate `tengu_harbor_kite` (default true);
+  `CLAUDE_CODE_HARBOR_KITE` overrides it either way, so `CLAUDE_CODE_HARBOR_KITE=0` turns
+  SendMessage/ListAgents off. A settings `permissions.deny` rule also blocks a tool by name.
+- F9 Docker: AF_UNIX connect works between containers through a named volume or bind mount only
+  because both containers share one kernel. A fresh named volume is root:root 755 unless the image
+  pre-creates the mount point owned by the user, which Docker copies into the new volume.
+- F10 ccw today: per-session `CLAUDE_CONFIG_DIR=/sessions/<id>/config`, child env from an
+  allow-list (session.py `build_env`), session ids `ses_` plus 12 hex (manager.py
+  `_new_session_id`), uid 1000 `agent`. The ccw MCP server (mcp_server.py) exposes one `command`
+  tool on the loopback internal API; router.py `_on_pre_tool_use` already denies every
+  `mcp__ccw__*` call that carries an `agent_id` (main agent only).
+
+Why native sockets were dropped: F9 is kernel-local by nature. On Kubernetes, pods on different
+nodes share an RWX CephFS file but not a kernel, so a connect to the socket file fails. Making it
+work would need a same-node scheduling constraint, which defeats the use case. F1, F2, F5 and F6
+add four more fragile couplings to undocumented Claude internals. HTTP between ccw instances has
+none of these limits and stays under ccw's control.
 
 ## Decisions
 
-### D1: Discovery is a ccw peer directory on the shared mount plus a ccw `peers` tool
+### D1: ccw-owned peer messaging over HTTP replaces native SendMessage/ListAgents
 
-User decision: shared mount plus ccw peers tool (research fixes 1 and 3). Rejected: shared pid
-namespace (couples container lifecycles and lets containers signal each other, single owner process
-needed), mirroring Claude's registry under synthetic pids (undocumented format, brittle across
-versions), HTTP relay (not native SendMessage). Serves A.
+User decision: custom tooling. ccw carries messages between instances over its public HTTP API
+and the agent uses ccw MCP tools. Rejected: native Unix-socket messaging on a shared mount (does
+not cross nodes, see "Why native sockets were dropped"), a shared pid namespace, mirroring
+Claude's registry, a message broker (new infrastructure the user did not ask for). Serves A.
 
 ### D2: Opt-in `peers:` config section
 
-`peers: {enabled: false, dir: /peers, name: "", probe_timeout_ms: 250}`. `dir` is absolute, the same
-path in every container, and `len("<dir>/socks/<16-char session id>.sock")` must be at most 103 bytes,
-checked at config load. `name` is the instance name, empty meaning the host name at runtime, limited to
-`[A-Za-z0-9._-]`, at most 64 chars (my call). With peers on, `--messaging-socket-path` in
-`claude.extra_args` and a user `claude.mcp_servers.ccw` are config errors (my call). Serves B.
+`peers: {enabled: false, name: "", advertise_url: "", token: "", directory: "/peers",
+heartbeat_seconds: 10, stale_seconds: 30, max_message_bytes: 65536, inbox_max: 32}` (defaults
+my call). Validation at config load, each error at its `peers.<key>` path:
 
-### D3: Per-session claude wiring
+- `token` is required when enabled ("required when peers.enabled; set it, normally from
+  ${CCW_PEER_TOKEN}"), at least 16 characters (my call), and must differ from
+  `server.auth_token` (my call: keeps the two tokens from opening each other's routes).
+- `name`: empty means the host name at runtime; otherwise `[A-Za-z0-9._-]{1,64}` (my call).
+- `advertise_url`: empty means `http://<hostname>:<bound public port>`; otherwise an absolute
+  `http` or `https` URL without a trailing slash; the literal `{port}` is replaced by the bound
+  public port (my call: lets tests and port-0 setups advertise a port they do not know yet).
+- `directory`: absolute path.
+- `heartbeat_seconds > 0`, `stale_seconds > heartbeat_seconds`, `1 <= max_message_bytes <=
+  1048576`, `inbox_max >= 1`.
+- With peers enabled a user `claude.mcp_servers.ccw` is a config error (the name is reserved).
 
-When enabled, per session: argv gets `--messaging-socket-path <dir>/socks/<session id>.sock` right
-after the session id (create and resume); env gets `CLAUDE_CODE_HARBOR_KITE=1` and
-`CLAUDE_CODE_SESSION_NAME=<instance>-<session name or id>` (characters outside `[A-Za-z0-9._-]`
-replaced by `-`, my call), layered over user env so ccw's values win (my call); the ccw-written user
-settings.json gets `crossSessionInbound: accept` (an explicit `claude.settings` overlay still wins,
-my call) and the allow rule `mcp__ccw__peers`. Turning peers off and resuming removes a ccw-written
-`accept` (my call). Serves C.
+`Config.redacted()` masks `peers.token`; the service adds the token to the redactor. Serves B.
 
-### D4: Peers dir preparation and vetting at startup
+### D3: Native built-ins off when peers are enabled
 
-At manager construction ccw creates `<dir>` (if missing), `<dir>/socks` and `<dir>/directory` with
-0700, owned by the service uid, and refuses to start (service exits 1, `ccw: peers: ...`) when the
-dir or a subdir is not ours, or the dir or an ancestor is group- or world-writable without the sticky
-bit, or an ancestor is owned by neither us nor root. This mirrors Claude's own vetting (F2) so Claude
-never silently falls back to `/tmp/cc-socks-<uid>`. Ancestor checks are my call, taken from F2.
-Serves D.
+Per session, only when enabled: the child env gets `CLAUDE_CODE_HARBOR_KITE=0` as a managed var
+(user env cannot override it, my call); the ccw-written settings.json gets `SendMessage` and
+`ListAgents` in `permissions.deny` and `mcp__ccw__peers` and `mcp__ccw__send_message` in
+`permissions.allow`; the PreToolUse gate in router.py denies `SendMessage` and `ListAgents` with
+the reason `use mcp__ccw__send_message / mcp__ccw__peers`, emitting `tool_denied` and counting a
+deny. The subagent deny reason is reworded to cover every `mcp__ccw__*` tool (my call). Disabled,
+none of this is written. Serves C.
 
-### D5: Peer directory entries and liveness
+### D4: ccw MCP tools `peers` and `send_message`
 
-ccw writes `<dir>/directory/<session id>.json` atomically (temp file plus rename, 0600) after a
-session's onCreate/onResume gate passes: `{session_id, name, instance, address:
-"uds:<dir>/socks/<session id>.sock", cwd, started_at}`, `name` being the CLAUDE_CODE_SESSION_NAME
-value (my call). It removes the entry and the socket file in `_teardown`, which every stop path
-(destroy, failed or vetoed create, retire, abandon, shutdown) goes through. Liveness is an AF_UNIX
-connect probe with `probe_timeout_ms`, run concurrently. Sweeping: listing only hides dead entries;
-`prepare()` at startup deletes dead entries of its own instance only (my call: a peer whose claude is
-restarting briefly refuses connects, and deleting another instance's entry would hide it for good).
-Serves E.
+Registered in `tools/list` only when peers are enabled; with peers on the ccw MCP server is
+injected into `.claude.json` even when the agent command allowlist is empty. Main agent only
+through the existing `mcp__ccw__*` subagent deny.
 
-### D6: ccw MCP `peers` tool and agent instructions
+- `peers {instance?: string}`: JSON text, a list of `{address, instance, session_id, name, cwd}`
+  for live entries, excluding the caller, sorted by address (my call), filtered by `instance`
+  when given.
+- `send_message {to: string, message: string, notify_when_idle?: bool}`: validates `to` as
+  `<instance>/<session id>` and not the caller (my call), the message as non-empty and at most
+  `max_message_bytes` UTF-8 bytes, looks `to` up among live entries, generates
+  `msg_id = "msg_" + 16 hex`, POSTs to the target, and returns
+  `Sent <msg_id> to <to>. Its reply arrives as a new turn.` or an error result (`isError: true`)
+  whose text starts with one of: `unknown peer`, `peer unreachable`, `message too large`,
+  `inbox full`, `peer rejected the token`, `invalid arguments`.
 
-The ccw MCP server gets a second tool `peers` (no required params, optional `instance` filter)
-returning live peers excluding the caller, each with its `uds:` address and a one-line SendMessage
-hint, as compact JSON text. It is listed only when peers are enabled; when enabled the ccw MCP server
-is injected even with an empty agent allowlist. `handle_message` becomes async so the concurrent
-probes never block the event loop (my call). The CLAUDE.md that ccw writes gets one paragraph
-explaining the tool, SendMessage and `<agent-message>` replies when enabled. Serves F.
+`handle_message` becomes async with an optional `peers` argument (`PeerTools` protocol); the
+`command` tool behaves exactly as before. `initialize` instructions and the CLAUDE.md that ccw
+writes get a short peers paragraph when enabled: what the tools do, the address format, reply to
+an `<agent-message>` with `mcp__ccw__send_message` to its `from`, never use SendMessage. Serves D.
 
-### D7: Image and compose example
+### D5: Discovery is a directory of heartbeat-refreshed JSON files
 
-The Dockerfile pre-creates `/peers` owned by agent (uid 1000) mode 0700 so a fresh named volume
-inherits it (F9). `examples/docker-compose.peers.yml` runs `ccw-a` and `ccw-b` sharing one named
-`peers` volume at `/peers`, each with its own state volumes and loopback port, from a peers example
-config that is a committed symlink into the package data. Serves G.
+`<directory>/<instance>/<session id>.json` holds `{instance, session_id, name, cwd, url,
+started_at, heartbeat_at}` (`name` is the session name or the session id, `url` the instance's
+advertise url, times ISO 8601 UTC). Written atomically (temp file in the same dir, then rename)
+after the session's onCreate/onResume gate passes, rewritten every `heartbeat_seconds` by one
+instance-wide heartbeat task (a missing file is recreated), removed in the manager teardown that
+every stop path runs. An entry is live when `now - heartbeat_at <= stale_seconds`; there are no
+socket probes and no other liveness signal. Unreadable or malformed files are skipped.
 
-### D8: Tests and conventions
+At startup ccw creates `<directory>/<instance>/` if missing and removes every entry in it whose
+`url` is its own (they are from a previous run of this instance) and every stale one. If a live
+entry there has a different `url`, startup fails with `peers: name <instance> is in use by a live
+instance at <url>` (my call: two instances with one name would steal each other's addresses). It
+never touches another instance's directory. No static peer list, no listing API. Serves E.
 
-The fake claude accepts `--messaging-socket-path`, binds an AF_UNIX listener there before its idle
-footer and records received lines in `$CLAUDE_CONFIG_DIR/fake-peer-inbox.jsonl`; tests/conftest.py
-gets a short `/tmp` `peers_dir` fixture (macOS pytest tmp paths are too long for 103 bytes).
-In-process tests run two managers on one peers dir. A docker-marked integration test
-(`mise run test:integration:peers`, also run by `mise run test:integration` and so by CI, my call)
-starts two containers on one peers volume, creates a session in each through the API, shows A's
-`peers` tool listing B and a connect from container A to B's socket delivering a line. Real-claude
-delivery cannot be verified without credentials and is recorded as cannotVerify, not as a task.
-All work follows the repo conventions (test-first, `uv run`, ASCII). Serves H and J.
+### D6: Peer HTTP API and auth
 
-### D9: README
+Mounted on the public app only when enabled, outside the `/v1` bearer dependency:
 
-A `## Peer messaging` section (setup, addressing, what ccw sets, same-host-only limit including the
-Kubernetes note, trust model), a pointer from `## Trust model`, the compose example in
-`## Docker and compose`, config rows for every `peers.*` key, and the `peers` tool under
-`### POST /internal/mcp`. Serves I.
+- `POST /v1/peers/messages` body `{from, to_session, message, msg_id, notify_when_idle}` ->
+  202 `{msg_id, queued}`.
+- `POST /v1/peers/notices` body `{from, to_session, msg_id, state}` -> 202 `{msg_id, queued}`
+  (`from` is the session that handled the message, `to_session` the original sender, `state` the
+  handling turn's terminal state).
+
+Auth: `Authorization: Bearer <peers.token>`, compared with `hmac.compare_digest`; anything else,
+including `server.auth_token`, is 401 `unauthorized`. The peer token is never accepted on other
+routes (they compare against `server.auth_token` only, and D2 keeps the tokens distinct). The body
+is capped before parsing at `max_message_bytes + 4096` bytes (my call: room for the envelope),
+checking `Content-Length` first and counting streamed bytes after, so an oversize body is 413
+`message_too_large` without being buffered whole. A message over `max_message_bytes` is also 413;
+an unknown or not-running session is 404 `not_found`; a full inbox is 429 `inbox_full`; a
+malformed body is 422 like other routes. A repeated `msg_id` from the same `from` for the same
+session within the last 256 accepted ids is answered 202 again without queueing a second copy (my
+call: safe sender retries). Serves F.
+
+### D7: Inbox delivery as new turns
+
+Each session has a FIFO inbox bounded by `inbox_max` (messages and notices together). Delivery
+takes the head only when the session is `ready`, has no current turn, no command runner is
+active and no command is queued for the idle runner; it submits through `SessionRouter.submit_turn`
+with `origin: "peer"` (a new turn origin, my call) and `metadata: {peer: {from, msg_id, kind}}`,
+so the onTurn hook sees and may veto it. A `TurnRejected` (busy, booting, dead) leaves the head in
+place for the next `ready`; a veto drops it with `peer_message_delivered` result `rejected` and no
+idle notice. Triggers: an accepted message and every `ready` state change, each scheduled on the
+next loop pass. On session close the queued items are dropped, each with result `dropped`.
+
+Message framing (body XML-escaped for `&`, `<`, `>` so it cannot close the frame, my call):
+
+```
+<agent-message from="<instance>/<session>" msg_id="<msg_id>">
+<message>
+</agent-message>
+Reply with mcp__ccw__send_message to "<instance>/<session>".
+```
+
+Serves G.
+
+### D8: notify_when_idle idle notices
+
+When the turn that handled a message with `notify_when_idle` reaches a terminal state, the target
+ccw POSTs `/v1/peers/notices` to the sender instance's `url`, taken from the live directory entry
+of the sender session. A missing entry or a failed POST is logged and counted, never retried (my
+call). The sender ccw queues the notice in the sending session's inbox under D7 rules, framed as
+
+```
+<peer-idle-notice from="<instance>/<session>" msg_id="<msg_id>" state="<state>"/>
+The peer finished the turn that handled your message <msg_id> and is idle.
+```
+
+Serves H.
+
+### D9: Events and metrics
+
+New EVENT_TYPES (appended before `session_closed` is my call; the pin in tests/test_event_log.py
+is updated):
+
+- `peer_message_received` on the target session: `{msg_id, from, kind, bytes, message, queued}`.
+- `peer_message_sent` on the sending session: `{msg_id, to, kind, bytes, notify_when_idle,
+  result}` with result `ok` or the error code; a notice is logged on the session that handled
+  the message.
+- `peer_message_delivered` on the target session: `{msg_id, from, kind, turn_id, result}` with
+  result `delivered`, `rejected` or `dropped`.
+
+Counters (my call): `ccw_peer_messages_received_total{kind,result}` (result `accepted`,
+`duplicate`, `inbox_full`, `too_large`, `not_found`, `unauthorized`),
+`ccw_peer_messages_sent_total{kind,result}`, `ccw_peer_messages_delivered_total{kind,result}`.
+`kind` is `message` or `notice`. Serves G.
+
+### D10: Image and compose example
+
+The Dockerfile pre-creates `/peers` owned by `agent:agent` (uid 1000) so a fresh named volume is
+writable (F9). `examples/docker-compose.peers.yml` runs `ccw-a` and `ccw-b` from one image build,
+each with its own workdir/sessions/mise volumes and loopback port, sharing one named `peers`
+volume at `/peers` and one `CCW_PEER_TOKEN`, with instance names `a` and `b` and advertise urls
+`http://ccw-a:8080` and `http://ccw-b:8080`, from `examples/peers.config.yaml` (a committed symlink
+into the package data). Serves J.
+
+### D11: README
+
+A `## Peer messaging` section: what it replaces and why, setup, addressing
+(`<instance>/<session id>`), the directory layout and liveness, delivery and framing,
+notify_when_idle, cross-node use through an RWX volume (clocks must be NTP-synced within
+`stale_seconds`), the TLS note (ccw does not terminate TLS; `advertise_url` may be https behind an
+ingress or mesh), and the trust model (any holder of the peer token can push prompts into
+bypass-mode agents). Plus: a pointer from `## Trust model`, the compose example under
+`## Docker and compose`, a note under `## Running in Kubernetes`, `### \`peers\`` config rows for
+every key, `### \`POST /v1/peers/messages\`` and `### \`POST /v1/peers/notices\``, the new error
+codes, the new events, the new metrics, the `peer` turn origin and the two tools under
+`### \`POST /internal/mcp\``. Serves I and L.
+
+### D12: Tests and conventions
+
+The fake claude substitutes `{{name}}` with the named groups of the turn's `match` regex in the
+string values of its steps (mcp arguments and text), so a scenario can reply to whatever `from`
+arrives. tests/conftest.py gains a `ccw_service` fixture that runs `run_service` on real ports
+(port 0) and stops it at teardown, and `World.service_cfg(name, ...)` giving each service its own
+workdir and sessions roots. Unit tests per module; tests/test_peers_e2e.py runs two services on
+one tmp directory: A sends via `send_message`, B gets the framed turn, B replies, A gets the
+reply turn and the idle notice. A docker integration test (`scripts/integration-peers.sh`, mise
+task `test:integration:peers`, also run by `mise run test:integration` and so by CI) proves the
+same between two containers. Real-claude acceptance of the tool schemas is cannotVerify, not a
+task. All work is test-first, `uv run`, ASCII. Serves K and M.
 
 ## Research
 
 | Lens | Ran or skipped | Adopted | Rejected |
 |---|---|---|---|
-| Claude Code bundle reverse engineering | ran (2.1.304 Linux, 2.1.307 macOS; scratch brief) | explicit `--messaging-socket-path` (F2), `crossSessionInbound` accept (F6), `CLAUDE_CODE_HARBOR_KITE=1` and `CLAUDE_CODE_SESSION_NAME` (F8), 250 ms probe (F4) | relying on the native registry (F1, F5) |
-| Docker experiments | ran (named volume and bind mount, two containers) | shared named volume at one path, image-created `/peers` (F9) | shared pid namespace (user decision) |
-| ccw codebase | ran (session.py, manager.py, mcp_server.py, bootstrap/, Dockerfile, compose) | reuse the ccw MCP server, settings render and build_env layering (F10) | a new HTTP endpoint |
-| External prior art | skipped: the feature is specific to Claude Code's undocumented transport; the bundle is the source | - | - |
+| Claude Code bundle reverse engineering | ran (2.1.304 Linux, 2.1.307 macOS; scratch brief) | `CLAUDE_CODE_HARBOR_KITE=0` and settings deny to switch the built-ins off (F8); idle-notice shape with `state` (F7) | native socket transport (F2, F3, F6), native registry (F1, F5) |
+| Docker experiments | ran (named volume and bind mount, two containers) | image-created mount point so a fresh named volume is writable (F9) | socket on a shared mount across nodes (F9 is kernel-local) |
+| ccw codebase | ran (mcp_server.py, internal_api.py, router.py, manager.py, service.py, api/, bootstrap/, events.py, metrics.py, fake claude, conftest) | reuse the ccw MCP server, the `mcp__ccw__*` subagent deny, `submit_turn` with a new origin, the `on_state` ready trigger used by commands, `build_env` managed vars, `render_settings` permissions | typing into a busy PTY; a new process or broker |
+| External prior art | skipped: the transport is plain authenticated HTTP between ccw instances; the open questions are ccw-internal | - | - |
 
 ## Research inputs
 
 | Source | Entry | Lands in |
 |---|---|---|
-| brief section 2 (F2) | explicit socket path, 103-byte limit, dir vetting | peers-config-section, peer-directory-module, peer-session-bootstrap |
-| brief section 4 (F6) | bypass receivers hold peer messages without `crossSessionInbound: accept` | peer-session-bootstrap |
-| brief section 5 (F8) | pin `CLAUDE_CODE_HARBOR_KITE=1`, set `CLAUDE_CODE_SESSION_NAME` | peer-session-bootstrap, manager-peers-lifecycle |
-| brief section 1 (F1, F4) | foreign-domain listing by connect probe, 250 ms | peer-directory-module |
-| brief section 8 (F5) | native registry collides on pids across containers | rejected: discovery is ccw's own directory (D1) |
+| brief section 5 (F8) | `CLAUDE_CODE_HARBOR_KITE` overrides the gate either way; deny rules block by tool name | peer-session-bootstrap |
+| brief section 4 (F7) | reply goes to the sender's `from`; idle notice `{state, finished_at, detail}` after handling | peer-inbox-delivery, peer-service-core |
+| brief section 7 (F9) | fresh named volume is root 755; pre-create the mount point | peers-image-compose-docs |
+| brief section 7 (F9) | AF_UNIX works only within one kernel | rejected: native transport dropped (D1) |
+| brief section 1 (F1, F5) | native registry keyed by pid collides across containers | rejected: discovery is ccw's own directory keyed by session id (D5) |
+| brief section 2 (F2) | explicit socket path and dir vetting | rejected: no sockets in the new design (D1) |
+| brief section 4 (F6) | `crossSessionInbound: accept` for bypass receivers | rejected: native inbound not used (D1) |
 | brief section 8 fix 2 | shared pid namespace | rejected: user decision D1 |
-| brief section 8 fix 4 | registry federation with synthetic pids | rejected: brittle undocumented format (D1) |
-| brief section 8 fix 5 | HTTP relay | rejected: not native SendMessage, user decision D1 |
-| brief section 7 (F9) | fresh named volume is root 755; pre-create `/peers` | peers-image-compose-and-docs |
-| brief section 4 (F7) | replies, receipts, idle notices work with one shared socket dir | peers-image-compose-and-docs (README) |
-| brief section 3 (F3) | NDJSON wire, auth optional on Linux | fake-claude-peer-socket, peers-two-container-test, peers-image-compose-and-docs (trust model) |
-| mcp_server.py, internal_api.py | existing ccw MCP server and route | peers-mcp-tool |
+| brief section 8 fix 5 | ccw-side relay over HTTP through an MCP tool | peers-mcp-tools, peer-messages-endpoint, peer-http-client |
+| mcp_server.py, internal_api.py | existing ccw MCP server and loopback route | peers-mcp-tools |
+| router.py `_on_pre_tool_use` | `mcp__ccw__*` subagent deny already main-agent-only | peer-session-bootstrap |
+| router.py `on_state`, `submit_turn` | ready trigger and turn submission with origin | peer-inbox-delivery |
 
 ## Decision coverage
 
 | Decision | Tasks |
 |---|---|
-| D1 Discovery via ccw directory and peers tool | peer-directory-module, peers-mcp-tool, manager-peers-lifecycle |
+| D1 ccw-owned HTTP messaging | peer-http-client, peer-messages-endpoint, peer-service-core, manager-peers-lifecycle |
 | D2 Opt-in peers config | peers-config-section, manager-peers-lifecycle |
-| D3 Per-session claude wiring | peer-session-bootstrap, manager-peers-lifecycle |
-| D4 Dir preparation and vetting | peer-directory-module, manager-peers-lifecycle |
-| D5 Directory entries and liveness | peer-directory-module, manager-peers-lifecycle |
-| D6 MCP peers tool and instructions | peers-mcp-tool, peer-session-bootstrap, manager-peers-lifecycle |
-| D7 Image and compose example | peers-image-compose-and-docs |
-| D8 Tests and conventions | fake-claude-peer-socket, manager-peers-lifecycle, peers-two-container-test |
-| D9 README | peers-config-section, peers-mcp-tool, peers-image-compose-and-docs |
+| D3 Native built-ins off | peer-session-bootstrap, manager-peers-lifecycle |
+| D4 MCP tools | peers-mcp-tools, peer-session-bootstrap, peer-service-core |
+| D5 Discovery directory | peer-directory-module, peer-service-core, manager-peers-lifecycle |
+| D6 Peer HTTP API and auth | peer-messages-endpoint, peer-http-client |
+| D7 Inbox delivery | peer-inbox-delivery, peer-service-core |
+| D8 notify_when_idle | peer-inbox-delivery, peer-service-core, peers-two-instance-e2e |
+| D9 Events and metrics | peer-events-and-metrics, peer-inbox-delivery, peer-service-core |
+| D10 Image and compose | peers-image-compose-docs |
+| D11 README | peers-config-section, peer-events-and-metrics, peer-messages-endpoint, peers-mcp-tools, peers-image-compose-docs |
+| D12 Tests and conventions | fake-claude-peer-harness, peers-two-instance-e2e, peers-two-container-test |
 
 ## Contracts
 
 | Part | Owner | Consumers | Where defined |
 |---|---|---|---|
-| `fake-peer-socket` | fake-claude-peer-socket | manager-peers-lifecycle, peers-two-container-test | `tests/fake_claude/fake_claude.py` |
-| `peers-dir-fixture` | fake-claude-peer-socket | peer-directory-module, peers-mcp-tool, manager-peers-lifecycle | `tests/conftest.py` |
-| `peers-config` | peers-config-section | peer-directory-module, manager-peers-lifecycle, peers-image-compose-and-docs | `src/claude_code_wrapper/config.py` |
-| `peer-directory` | peer-directory-module | peers-mcp-tool, manager-peers-lifecycle | `src/claude_code_wrapper/peers.py` |
-| `peer-session-bootstrap` | peer-session-bootstrap | manager-peers-lifecycle | `src/claude_code_wrapper/session.py` |
-| `ccw-mcp-peers-tool` | peers-mcp-tool | manager-peers-lifecycle | `src/claude_code_wrapper/mcp_server.py` |
-| `peers-image` | peers-image-compose-and-docs | peers-two-container-test | `Dockerfile` |
+| `fake-match-substitution` | fake-claude-peer-harness | peers-two-instance-e2e, peers-two-container-test | `tests/fake_claude/fake_claude.py` |
+| `ccw-service-fixture` | fake-claude-peer-harness | peers-two-instance-e2e | `tests/conftest.py` |
+| `peers-config` | peers-config-section | peer-directory-module, peer-inbox-delivery, peer-messages-endpoint, peer-session-bootstrap, peer-service-core, manager-peers-lifecycle, peers-image-compose-docs | `src/claude_code_wrapper/config.py` |
+| `peer-directory-entry` | peer-directory-module | peer-http-client, peers-mcp-tools, peer-service-core | `src/claude_code_wrapper/peers.py` |
+| `peer-events` | peer-events-and-metrics | peer-inbox-delivery, peer-service-core | `src/claude_code_wrapper/events.py` |
+| `peer-metrics` | peer-events-and-metrics | peer-inbox-delivery, peer-messages-endpoint, peer-service-core | `src/claude_code_wrapper/metrics.py` |
+| `peer-wire` | peer-http-client | peer-inbox-delivery, peer-messages-endpoint, peers-mcp-tools, peer-service-core | `src/claude_code_wrapper/peer_client.py` |
+| `peer-inbox` | peer-inbox-delivery | peer-service-core, manager-peers-lifecycle | `src/claude_code_wrapper/peer_inbox.py` |
+| `peer-messages-endpoint` | peer-messages-endpoint | peer-service-core, manager-peers-lifecycle | `src/claude_code_wrapper/api/peers.py` |
+| `ccw-mcp-peers-tool` | peers-mcp-tools | peer-service-core, manager-peers-lifecycle | `src/claude_code_wrapper/mcp_server.py` |
+| `peer-session-bootstrap` | peer-session-bootstrap | manager-peers-lifecycle | `src/claude_code_wrapper/bootstrap/settings.py` |
+| `peer-service` | peer-service-core | manager-peers-lifecycle | `src/claude_code_wrapper/peer_service.py` |
+| `peers-image` | peers-image-compose-docs | peers-two-container-test | `Dockerfile` |
 
-Cross-epic (docs/plans/contracts.json): this epic owns `peers-config`, `peer-directory-entry` and
-`ccw-mcp-peers-tool`, and consumes `ccw-mcp-tool` (owner agent-callable-slash-command; the `command`
-tool stays unchanged, `handle_message` becomes async with an optional `peers` argument).
+Cross-epic (docs/plans/contracts.json): this epic owns `peers-config`, `peer-directory-entry`,
+`peer-messages-endpoint` and `ccw-mcp-peers-tool`, and consumes `ccw-mcp-tool` (owner
+agent-callable-slash-command: `handle_message` becomes async with an optional `peers` argument,
+the `command` tool unchanged) and `event-types` (owner hook-capabilities-for-tatara: three types
+added).
 
 ## Review focus
 
-- Zero change when off: argv, env, settings.json, .claude.json, CLAUDE.md and the filesystem
-  (manager-peers-lifecycle AC4, peer-session-bootstrap AC1, AC2, AC4).
-- Dir vetting matches Claude's rules closely enough that Claude never falls back silently (D4, F2).
-- Every stop path removes the entry and socket (`_teardown`), and nothing deletes another instance's
-  entry (D5).
-- `handle_message` going async must not change any `command` tool behaviour (ccw-mcp-tool contract).
-- Trust model wording in README: prompt injection into bypass-mode agents by anything with the uid.
+- Zero change when off: argv, env, settings.json, .claude.json, CLAUDE.md, routes, MCP tool list
+  and filesystem (peer-session-bootstrap, peers-mcp-tools, peer-messages-endpoint,
+  manager-peers-lifecycle ACs).
+- Token separation: the peer token opens only the peer routes, `server.auth_token` never opens
+  them, and the peer token never appears in logs, events, `GET /v1/config` or files.
+- Delivery concurrency (peer-inbox-delivery): never submits while a turn or command runner is
+  active, keeps arrival order, does not lose the head on `TurnRejected`, does not race the idle
+  command runner, and drops cleanly on close.
+- Directory safety: atomic writes, never deleting another instance's entries, startup refusal on a
+  live name clash, every stop path removing the entry.
+- Body cap before parse on the peer routes.
+- `handle_message` going async must not change any `command` tool behaviour (ccw-mcp-tool).
 
 ## Left to the builder
 
-- Internal structure of peers.py (helpers, dataclass vs dict for entries) within the stated interface.
-- The exact wording of PEERS_INSTRUCTIONS, PEERS_DESCRIPTION and the README prose, within the content
-  listed in the tasks.
-- How the docker test waits (poll interval) within bounded deadlines.
+- Internal structure of peers.py, peer_client.py, peer_inbox.py and peer_service.py within the
+  interfaces stated in the tasks.
+- The exact wording of the peers paragraph, the tool descriptions and the README prose, within the
+  content listed in the tasks.
+- Poll intervals in tests, within bounded deadlines.
 
 ## Assumptions and unknowns
 
-- Real claude delivery end to end (SendMessage from one real claude to another across containers) is
-  not testable without credentials; F3, F6 and F9 come from the bundle and the Docker experiments.
-  Recorded as cannotVerify at run time; the user can confirm with two logged-in containers.
-- Claude 2.1.304 accepts `--messaging-socket-path` in interactive mode (F2, F8 from the bundle); the
-  flag is not exercised by the fake in a way that proves Claude's parsing. Confirmed only by a real run.
-- Docker copies image directory ownership into a fresh named volume (standard Docker behaviour, F9);
-  confirmed by the docker integration test.
+- Real claude honours `CLAUDE_CODE_HARBOR_KITE=0` and the settings deny rules (F8, from the
+  bundle); not testable without credentials. cannotVerify at run time; the user can confirm with
+  one logged-in container (`ListAgents` absent from the tool list).
+- Real claude accepts the `peers` and `send_message` input schemas; cannotVerify, same reason.
+- Docker copies image directory ownership into a fresh named volume (F9); confirmed by the docker
+  integration test.
+- Nodes sharing an RWX directory have clocks within `stale_seconds` of each other; documented as
+  an operator requirement in the README.
 
 ## Open questions
 
