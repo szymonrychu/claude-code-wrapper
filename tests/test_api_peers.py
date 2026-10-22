@@ -236,6 +236,19 @@ def test_heartbeat_metrics() -> None:
     assert rec.received == []
 
 
+def test_heartbeat_metrics_other_failures() -> None:
+    c, _, rec = _metric_client()
+    assert post(c, "heartbeat", raw=b"x" * (1024 * 1024 + 4097)).status_code == 413
+    assert post(c, "heartbeat", {"bogus": 1}).status_code == 422
+    c.app.state.peer_nonces = peer_auth.NonceCache(60, capacity=1)
+    assert post(c, "heartbeat").status_code == 200
+    assert post(c, "heartbeat").status_code == 429
+    assert rec.membership == [("inbound_heartbeat", "failed")] * 2 + [
+        ("inbound_heartbeat", "ok"),
+        ("inbound_heartbeat", "failed"),
+    ]
+
+
 @pytest.mark.parametrize("route", ROUTES)
 @pytest.mark.parametrize("token", [SERVER_TOKEN, PEER_TOKEN])
 def test_bearer_tokens_rejected(route, token) -> None:

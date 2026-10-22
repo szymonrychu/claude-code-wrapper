@@ -93,8 +93,6 @@ async def _read_verified(request: Request, kind: str | None) -> bytes:
         log.debug("peer request rejected: %s", exc.reason)
         if kind:
             _count(request, kind, "unauthorized")
-        else:
-            _membership(request, "failed")
         raise ApiError(401, "unauthorized", "peer authentication failed") from None
     except peer_auth.NonceCacheFull:
         raise ApiError(429, "rate_limited", "too many peer requests") from None
@@ -150,12 +148,15 @@ async def post_notice(request: Request) -> dict[str, Any]:
 
 @router.post("/heartbeat")
 async def post_heartbeat(request: Request) -> Any:
-    raw = await _read_verified(request, None)
-    view = _parse(raw, MemberView)
     try:
+        raw = await _read_verified(request, None)
+        view = _parse(raw, MemberView)
         answer = await _receiver(request).accept_heartbeat(view)
     except PeerError as exc:
         _membership(request, "failed")
         raise _api_error(exc) from None
+    except (ApiError, RequestValidationError):
+        _membership(request, "failed")
+        raise
     _membership(request, "ok")
     return answer.model_dump(by_alias=True)
