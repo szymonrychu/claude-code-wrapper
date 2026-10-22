@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import World
 from test_command_runner import finished
 from test_command_runner import start as start_commands
 from test_command_turn_resume import CONTINUE
 from test_command_turn_resume import start as start_resume
+from test_stop_gate import Gate
+from test_stop_gate import start as start_stop
+from test_stop_gate import turn as stop_turn
 from test_turn_continuity import CRASH, RESUME
 from test_turn_continuity import start as start_restart
 
@@ -132,3 +136,32 @@ async def test_turn_and_snapshot_fields_pinned(world: World) -> None:
     snap = m.get(sid)
     assert {"current_turn_id", "model", "workdir"} <= set(snap)
     assert snap["current_turn_id"] is None and snap["workdir"]
+
+
+async def test_files_are_the_written_file_names(world: World) -> None:
+    m, _, sid, _ = await start_restart(world, [{"match": "^hi", "steps": [{"text": "yo"}]}])
+    record = await m.router(sid).submit_turn("hi files", files={"a.txt": "A", "sub/b.txt": "B"})
+    await world.wait_turn(m, sid)
+    (ev,) = of_type(world, sid, "user_message")
+    assert ev["data"]["turn_id"] == record.turn_id
+    assert ev["data"]["files"] == ["a.txt", "sub/b.txt"]
+
+
+@pytest.mark.parametrize("origin", ["initial", "agent"])
+async def test_initial_and_agent_origins(world: World, origin: str) -> None:
+    m, _, sid, _ = await start_restart(world, [{"match": "^hi", "steps": [{"text": "yo"}]}])
+    record = await m.router(sid).submit_turn("hi there", origin=origin)
+    await world.wait_turn(m, sid)
+    (ev,) = of_type(world, sid, "user_message")
+    assert ev["data"]["origin"] == origin and ev["data"]["turn_id"] == record.turn_id
+
+
+async def test_stop_hook_block_emits_no_user_message(world: World) -> None:
+    gate = Gate(world.tmp)
+    gate.reply(1, {"decision": "block", "reason": "write the outcome file"})
+    scenario = stop_turn([{"text": "first leg"}], on_block=[{"text": "second leg"}])
+    m, sid = await start_stop(world, world.cfg(scenario, hooks={"onStop": [gate.action()]}))
+    await m.router(sid).submit_turn("go")
+    await world.until(lambda: of_type(world, sid, "turn_continued"))
+    await world.wait_turn(m, sid)
+    assert [e["data"]["origin"] for e in of_type(world, sid, "user_message")] == ["client"]
