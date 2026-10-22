@@ -11,6 +11,12 @@ At most one delivery attempt is in flight. A `kick` while one is scheduled or ru
 pending flag, honoured when the attempt ends; an attempt that ends with items left on a ready
 session runs again on the next loop pass, so a queued item is never stranded. Delivery is at
 most once: the inbox lives in memory only.
+
+Outcomes (D8): a `message` item that was vetoed (`rejected`) or still queued at `close`
+(`dropped`) always reaches `on_outcome`; a delivered one reaches it only with `notify_when_idle`,
+once its handling turn is terminal. Notices never produce outcomes. Each call runs as an
+inbox-owned background task, so a slow sender never holds up the Stop answer, a delivery attempt
+or `close`; `drain` bounds the wait for them on shutdown.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ import asyncio
 import logging
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 from xml.sax.saxutils import escape
@@ -27,6 +33,7 @@ from xml.sax.saxutils import escape
 from .events import Event as LogEvent
 from .metrics import Metrics
 from .peer_client import PeerError
+from .redact import Redactor
 from .router import TurnVetoed
 from .session import TurnRejected
 from .turns import TurnRecord
@@ -44,6 +51,10 @@ RATE_WINDOW_SECONDS = 60.0
 _QUEUED_COMMAND_POLL = 0.05
 
 Kind = Literal["message", "notice"]
+#: What happened to a message: `on_outcome`'s status argument.
+OutcomeStatus = Literal["delivered", "rejected", "dropped"]
+#: Seconds `drain` gives cancelled outcome tasks to unwind.
+_CANCEL_GRACE = 0.05
 
 
 @dataclass
@@ -59,6 +70,10 @@ class InboxItem:
     state: str | None = None
     #: Notices: why the message was not delivered. Messages: the onTurn veto reason.
     reason: str | None = None
+
+
+#: `on_outcome(item, status, record)`; `record` is the handling turn for `delivered`, else None.
+OnOutcome = Callable[["InboxItem", OutcomeStatus, TurnRecord | None], Awaitable[None]]
 
 
 @dataclass
@@ -113,8 +128,14 @@ class PeerInbox:
         max_per_minute: int,
         metrics: Metrics | None = None,
         clock: Callable[[], float] = time.monotonic,
+        on_outcome: OnOutcome | None = None,
+        redactor: Redactor | None = None,
     ) -> None:
         self._router = router
+        self._on_outcome = on_outcome
+        #: Redacts outcome failures before they are logged; defaults to the router's.
+        self._redactor: Redactor = redactor or getattr(router, "_redactor", None) or Redactor()
+        self._outcomes: set[asyncio.Task[None]] = set()
         self._max_items = max_items
         self._max_per_minute = max_per_minute
         self._metrics = metrics
@@ -259,6 +280,7 @@ class PeerInbox:
             self._pop(item)
             item.reason = exc.reason
             self._emit_delivered(item, None, "rejected")
+            self._outcome(item, "rejected", None)
             return
         except Exception:
             log.exception("peer inbox: delivering %s failed; it stays queued", item.msg_id)
@@ -296,11 +318,61 @@ class PeerInbox:
         return self._turns.get(turn_id)
 
     def turn_finished(self, record: TurnRecord) -> None:
-        """A turn reached a terminal state (synchronous: called on the Stop hook path)."""
-        self._turns.pop(record.turn_id, None)
+        """A turn reached a terminal state (synchronous: called on the Stop hook path).
+
+        A message that asked for `notify_when_idle` gets its `delivered` outcome now, with the
+        handling turn's record, in the background.
+        """
+        item = self._turns.pop(record.turn_id, None)
+        if item is not None and item.notify_when_idle:
+            self._outcome(item, "delivered", record)
+
+    def _outcome(self, item: InboxItem, status: OutcomeStatus, record: TurnRecord | None) -> None:
+        """Run `on_outcome` for a message item as a background task; notices never notify."""
+        if self._on_outcome is None or item.kind != "message":
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            log.warning("peer inbox: no event loop; outcome %s of %s lost", status, item.msg_id)
+            return
+        task = loop.create_task(self._run_outcome(item, status, record))
+        self._outcomes.add(task)
+        task.add_done_callback(self._outcomes.discard)
+
+    async def _run_outcome(
+        self, item: InboxItem, status: OutcomeStatus, record: TurnRecord | None
+    ) -> None:
+        assert self._on_outcome is not None
+        try:
+            await self._on_outcome(item, status, record)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.error(
+                "peer inbox: outcome %s of %s failed: %s",
+                status,
+                item.msg_id,
+                self._redactor.redact(f"{type(exc).__name__}: {exc}"),
+            )
+
+    async def drain(self, timeout: float) -> None:
+        """Wait up to `timeout` seconds for outstanding outcome tasks, then cancel the rest."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while pending := [t for t in self._outcomes if not t.done()]:
+            left = deadline - loop.time()
+            if left <= 0:
+                for task in pending:
+                    task.cancel()
+                await asyncio.wait(pending, timeout=_CANCEL_GRACE)
+                return
+            await asyncio.wait(pending, timeout=left)
 
     def close(self) -> list[InboxItem]:
         """Stop scheduling and drop the queued items, emitting result `dropped` for each.
+
+        Each dropped message also gets its `dropped` outcome (in the background; `drain` waits).
 
         An attempt still in flight is cancelled: the router closes after the session stopped,
         so that attempt can only be waiting in the onTurn hook or failing on a closed PTY.
@@ -315,4 +387,5 @@ class PeerInbox:
         self._items.clear()
         for item in dropped:
             self._emit_delivered(item, None, "dropped")
+            self._outcome(item, "dropped", None)
         return dropped
