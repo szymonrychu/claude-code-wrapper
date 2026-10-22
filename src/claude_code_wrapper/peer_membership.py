@@ -245,8 +245,6 @@ class MembershipService:
         if view.leaving:
             self._mutate("leave", lambda: self._table.remove(view.instance))
             return self._view()
-        if self._leaving:
-            raise PeerError("left", "instance is leaving the mesh")
         try:
             self._record(view, "heartbeat")
         except TableFull:

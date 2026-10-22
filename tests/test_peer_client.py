@@ -177,12 +177,7 @@ def test_new_msg_id():
 
 
 def test_receiver_status():
-    assert RECEIVER_STATUS == {
-        "not_found": 404,
-        "inbox_full": 429,
-        "rate_limited": 429,
-        "left": 409,
-    }
+    assert RECEIVER_STATUS == {"not_found": 404, "inbox_full": 429, "rate_limited": 429}
 
 
 # --- client ---------------------------------------------------------------
