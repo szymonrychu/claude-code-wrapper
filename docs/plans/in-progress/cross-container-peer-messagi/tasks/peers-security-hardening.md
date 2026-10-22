@@ -56,9 +56,15 @@ Signatures, schemas and contracts this task builds or must keep, with file:symbo
 
 ## Expected outcome
 
+Every security review finding (medium and low) is closed with a pinning test; the peers suites and lint stay green.
+
 What is true and observable when the task is done.
 
 ## Steps
+
+1. Write tests/test_peers_hardening.py with one failing test per AC; run it and see each fail.
+2. Implement each bound in the listed module.
+3. Add the README config row; run the verify command.
 
 Test first. One step per bullet, with the exact command and the output to expect.
 A retirement test asserts on `git ls-files <path>`, never on the filesystem.
