@@ -82,3 +82,15 @@ def test_example_loads_with_peers(monkeypatch):
     assert cfg.peers.enabled
     assert cfg.peers.static == ["http://ccw-b:8080"]
     assert cfg.peers.name == "a"
+
+
+def test_compose_example_two_instances(compose):
+    test_two_services_with_distinct_ports(compose)
+    test_names_seeds_and_token(compose)
+    test_one_build_and_shared_image(compose)
+    test_no_shared_named_volume(compose)
+
+
+def test_example_config_symlink(monkeypatch):
+    test_example_is_committed_symlink()
+    test_example_loads_with_peers(monkeypatch)
