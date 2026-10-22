@@ -220,3 +220,40 @@ def test_view_lists_only_reachable():
 
 def test_module_exports():
     assert peers.Member and peers.ADDRESS_RE
+
+
+def test_addresses_and_resolution(monkeypatch):
+    test_address_roundtrip()
+    for bad in ("", f"../{SID}", f".x/{SID}", f"a/{SID}x"):
+        with pytest.raises(ValueError):
+            parse_address(bad)
+    test_instance_name_resolution(monkeypatch)
+    test_advertise_url(monkeypatch)
+
+
+def test_reports_and_gossip():
+    test_contacts_are_not_reachable()
+    test_report_makes_reachable_and_replaces_sessions()
+    test_gossip_only_adds_contacts()
+
+
+def test_missed_heartbeats_and_readd():
+    test_missed_heartbeats_then_rejoin()
+    test_success_resets_miss_count()
+
+
+def test_leave_removes():
+    test_leave_is_immediate_and_keeps_contact()
+    test_gossiped_contact_forgotten_seed_kept()
+
+
+def test_identity_rules_and_capacity():
+    test_known_name_new_url()
+    test_own_name_and_url_ignored()
+    test_capacity()
+
+
+def test_sessions_lookup_view():
+    test_sessions_exclude_and_filter()
+    test_lookup()
+    test_view_lists_only_reachable()
