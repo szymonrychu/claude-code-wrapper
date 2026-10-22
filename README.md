@@ -1389,6 +1389,22 @@ failure. Cannot veto. `data`: `kind` (`fatal`, `exited`, `restart`, `hook_relay`
 `resume_failed`), `message`, plus `tail` (fatal), `code` (exited), `count` (restart) or `step`
 (create and resume failures).
 
+### `preJoin`
+
+Trigger: before this instance joins the peer mesh, ahead of the first heartbeat round. Order: `preJoin` -> first heartbeat round -> `postJoin`, all before any session can be created. Awaited when `blocking`; a `deny` means this instance runs standalone (no heartbeats, no peer tools). Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment). The envelope has an empty `session_id` and `workdir`, and null `claude_session_id` and `turn_id`; actions run in the sessions root.
+
+### `postJoin`
+
+Trigger: after the first heartbeat round, before any session can be created. Cannot veto (a `deny` is treated as allow). Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment), `failures` (`[{url, error}]`, the seeds that did not answer) and `standalone` (true when `preJoin` denied the join).
+
+### `preLeave`
+
+Trigger: on shutdown, before the leaving heartbeat round. Observe only: annotations are collected but the decision is ignored. Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment).
+
+### `postLeave`
+
+Trigger: after the leaving heartbeat round, before any `onDestroy` fires. Cannot veto. Never fires when `peers.enabled` is false. `data`: `instance` (this instance name), `url` (its advertised URL), `members` (`[{instance, url}]`, the peers known at that moment), `failures` (`[{url, error}]`, the peers the leaving heartbeat did not reach).
+
 ### Command actions
 
 The payload envelope is written to stdin. Environment: the FULL service environment (every
@@ -2428,6 +2444,10 @@ hooks:
 | `hooks.onCommandComplete` | list | `[]` | - | List of hook actions run after a queued slash command completed, failed or was cancelled. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onInterrupt` | list | `[]` | - | List of hook actions run after a turn was interrupted. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 | `hooks.onError` | list | `[]` | - | List of hook actions run on fatal pattern, crash, boot timeout, step failure or relay error. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.preJoin` | list | `[]` | - | List of hook actions run before this instance joins the peer mesh; blocking actions can deny, which runs the instance standalone. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.postJoin` | list | `[]` | - | List of hook actions run after the first heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.preLeave` | list | `[]` | - | List of hook actions run before the leaving heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
+| `hooks.postLeave` | list | `[]` | - | List of hook actions run after the leaving heartbeat round. Item: command `{type: command, run, env: {}, timeout_seconds: 30, blocking: false, on_error: allow\|deny = allow, matcher}` or webhook `{type: webhook, url, secret, headers: {}, timeout_seconds: 10, retries: 3, blocking, on_error, matcher}`. See [Hooks](#hooks). |
 
 ### `sessions`
 
