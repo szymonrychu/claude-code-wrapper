@@ -199,7 +199,10 @@ class World:
                 "workdir_root": str(root / "workdir"),
                 "sessions_root": str(root / "sessions"),
             },
-            "mise": {"trusted_paths": [str(root / "workdir")]},
+            "mise": {
+                "trusted_paths": [str(root / "workdir")],
+                "global_config_path": str(root / "mise" / "config.toml"),
+            },
         }
         merged = {key: {**base[key], **sections.pop(key, {})} for key in base}
         return self.cfg(scenario, **merged, **sections)

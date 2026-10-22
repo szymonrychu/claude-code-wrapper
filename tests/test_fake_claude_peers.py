@@ -29,9 +29,7 @@ def run_named(spawn, scenario_file, match, steps, prompt):
     return p
 
 
-def test_named_groups_substituted_in_text_and_nested_mcp_arguments(
-    spawn, scenario_file, env, work, stub
-) -> None:
+def test_match_groups_substituted(spawn, scenario_file, env, work, stub) -> None:
     configure(env, url=stub.url)
     steps = [
         {"text": "hello {{who}}"},
@@ -62,14 +60,14 @@ def test_named_groups_substituted_in_text_and_nested_mcp_arguments(
     assert "hello bob" in texts
 
 
-def test_missing_group_and_no_groups_stay_literal(spawn, scenario_file, env, work) -> None:
+def test_missing_group_left_literal(spawn, scenario_file, env, work) -> None:
     p = run_named(spawn, scenario_file, r"(?P<a>\w+)", [{"text": "{{a}} {{zzz}}"}], "go")
     p.wait_for("go {{zzz}}")
     q = run_named(spawn, scenario_file, r"go", [{"text": "plain {{a}}"}], "go")
     q.wait_for("plain {{a}}")
 
 
-async def test_two_services_run_side_by_side(world, ccw_service) -> None:
+async def test_two_services_isolated(world, ccw_service) -> None:
     a = await ccw_service(world.service_cfg("a"))
     b = await ccw_service(world.service_cfg("b"))
     assert a.public_port != b.public_port
@@ -77,10 +75,15 @@ async def test_two_services_run_side_by_side(world, ccw_service) -> None:
     async with httpx.AsyncClient() as c:
         assert (await c.get(f"{a.url}/healthz")).status_code == 200
         assert (await c.get(f"{b.url}/healthz")).status_code == 200
-    ca, cb = world.service_cfg("a"), world.service_cfg("b")
-    assert ca.paths.sessions_root != cb.paths.sessions_root
-    assert ca.paths.workdir_root != cb.paths.workdir_root
-    assert ca.server.auth_token != cb.server.auth_token
+    ha = {"Authorization": "Bearer tok-a-0123456789"}
+    hb = {"Authorization": "Bearer tok-b-0123456789"}
+    async with httpx.AsyncClient() as c:
+        r = await c.post(f"{a.url}/v1/sessions", json={}, headers=ha)
+        assert r.status_code < 300, r.text
+        sid = r.json()["session_id"]
+        assert (await c.get(f"{b.url}/v1/sessions/{sid}", headers=hb)).status_code == 404
+    assert (world.tmp / "a" / "sessions" / sid).is_dir()
+    assert not (world.tmp / "b" / "sessions" / sid).exists()
     await a.stop()
     async with httpx.AsyncClient() as c:
         assert (await c.get(f"{b.url}/healthz")).status_code == 200
