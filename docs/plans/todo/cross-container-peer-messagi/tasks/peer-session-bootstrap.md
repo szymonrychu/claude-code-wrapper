@@ -59,19 +59,17 @@ Interfaces: `build_env(peers=)`, `render_settings(peers=)`, `write_instructions(
 
 ## Interfaces
 
-See the Requirement's Interfaces paragraph; keep every name and signature stated there.
+Signatures, schemas and contracts this task builds or must keep, with file:symbol.
 
 ## Expected outcome
 
-A peered session cannot use SendMessage or ListAgents by env, settings or gate, and its CLAUDE.md explains the ccw tools; a non-peered session is byte-identical to today.
+What is true and observable when the task is done.
 
 ## Steps
 
-- Write the tests named in the acceptance conditions in `tests/test_peers_bootstrap.py tests/test_peers_gate.py` first; run `uv run pytest tests/test_peers_bootstrap.py tests/test_peers_gate.py -q` and see them fail for the missing behaviour (not an import typo).
-- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peers_bootstrap.py tests/test_peers_gate.py -q` again and expect all passed.
-- Run the task verify: `uv run pytest tests/test_peers_bootstrap.py tests/test_peers_gate.py tests/test_bootstrap_settings.py tests/test_bootstrap_home.py tests/test_router.py tests/test_session_boot.py -q && mise run lint`; expect all passed and ruff clean.
-- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
+Test first. One step per bullet, with the exact command and the output to expect.
+A retirement test asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-The router change is limited to the PreToolUse gate and the reason constant. The dependency on peer-inbox-delivery exists only because both tasks edit router.py.
+Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
