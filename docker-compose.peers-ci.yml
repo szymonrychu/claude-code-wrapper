@@ -1,0 +1,22 @@
+# CI override for examples/docker-compose.peers.yml: the real image driven by the scripted fake
+# claude, no real credentials. Used by scripts/integration-peers.sh:
+#   docker compose -p ccw-it-peers -f examples/docker-compose.peers.yml -f docker-compose.peers-ci.yml
+# Compose resolves every file's relative paths against the first file's directory (examples/).
+x-ci: &ci
+  restart: "no"
+  environment: &ci-env
+    CCW_AUTH_TOKEN: ci-token
+    CCW_PEER_TOKEN: ci-peer-token-0123456789
+    CLAUDE_CODE_OAUTH_TOKEN: ""
+    ANTHROPIC_API_KEY: ""
+  volumes:
+    - ../tests/fake_claude:/opt/fake-claude:ro
+    - ../tests/integration/claude-shim.sh:/opt/ci/claude:ro
+    - ../tests/integration_peers/scenario.json:/opt/ci/scenario.json:ro
+    - ../tests/integration_peers/config.ci.yaml:/etc/ccw/config.yaml:ro
+
+services:
+  ccw-a:
+    <<: *ci
+  ccw-b:
+    <<: *ci

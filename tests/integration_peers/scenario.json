@@ -1,0 +1,33 @@
+{
+  "boot": {"bypass_dialog": true, "min_seconds": 0.1},
+  "turns": [
+    {
+      "match": "(?m)^send (?P<body>ping) to (?P<to>\\S+)$",
+      "steps": [
+        {
+          "mcp": {
+            "server": "ccw",
+            "tool": "send_message",
+            "arguments": {"to": "{{to}}", "message": "{{body}}", "notify_when_idle": true}
+          }
+        }
+      ]
+    },
+    {
+      "match": "<agent-message from=\"(?P<from>[^\"]+)\" msg_id=\"[^\"]+\">\\nping\\n</agent-message>",
+      "steps": [
+        {
+          "mcp": {
+            "server": "ccw",
+            "tool": "send_message",
+            "arguments": {"to": "{{from}}", "message": "pong"}
+          }
+        }
+      ]
+    },
+    {
+      "match": "(?m)^list peers$",
+      "steps": [{"mcp": {"server": "ccw", "tool": "peers", "arguments": {}}}]
+    }
+  ]
+}
