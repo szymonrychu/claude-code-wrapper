@@ -1,6 +1,6 @@
 ---
 title: Slash epic review fixes
-status: in-progress
+status: escalated
 repo: .
 value: Closes a high-severity command-smuggling hole and a tool schema the Anthropic API may reject before the epic closes
 files: [src/claude_code_wrapper/commands.py, src/claude_code_wrapper/mcp_server.py, src/claude_code_wrapper/data/config.example.yaml, README.md, tests/test_slash_review_fixes.py, tests/test_command_registry.py, tests/test_mcp_server.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/agent-callable-slash-command--slash-epic-review-fixes
 branch: agent-callable-slash-command--slash-epic-review-fixes
-verified_head: ""
-run: ""
+verified_head: unknown
+run: agent-callable-slash-command
 provides: []
+acs_for_audit: []
+process_gaps: ["Tests were added after the fixes, so the implementer made no red run. I ran the new test file against the merge-base source and README, copied to a scratch directory. The new tests fail there, so they would catch the fixes. Several assertions failed: control characters, flat schema, extra args, README, config comment."]
 ---
 
 # Slash epic review fixes
@@ -37,7 +39,7 @@ Epic-review remediation (whole-diff review, security review, scope audit, 2026-1
 - AC2: a smuggled second command or --force inside a param never reaches the PTY [evidence: test:tests/test_slash_review_fixes.py::test_param_smuggling_never_typed]
 - AC3: the MCP tool input_schema has no top-level oneOf, anyOf or allOf and is a flat object with name and params [evidence: test:tests/test_slash_review_fixes.py::test_tool_schema_is_flat]
 - AC4: tools/call with an unknown top-level argument returns isError and queues nothing [evidence: test:tests/test_slash_review_fixes.py::test_unknown_top_level_argument_rejected]
-- AC5: README command event sections name the record field id, not command_id [evidence: command:! grep -n "command_id" README.md | grep -v -i "onCommand"]
+- AC5: README command event sections name the record field id, not command_id [evidence: test:tests/test_slash_review_fixes.py::test_readme_command_events_use_id]
 - AC6: README documents the subagent direct-call limitation of main-agent-only [evidence: command:grep -qi "internal/mcp" README.md && grep -qi "subagent" README.md]
 - AC7: lint and the full suite stay green, including tests/test_packaging.py [evidence: command:mise run lint && mise run test]
 
