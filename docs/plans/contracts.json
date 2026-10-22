@@ -83,7 +83,7 @@
     "owner": "cross-container-peer-messagi",
     "file": "src/claude_code_wrapper/peers.py",
     "consumers": [],
-    "note": "<peers.dir>/directory/<session id>.json {session_id, name, instance, address uds:<peers.dir>/socks/<session id>.sock, cwd, started_at}; sockets at <peers.dir>/socks/<session id>.sock; read by every ccw container sharing the dir"
+    "note": "<peers.directory>/<instance>/<session id>.json {instance, session_id, name, cwd, url, started_at, heartbeat_at}, atomic writes, live when now - heartbeat_at <= stale_seconds; address <instance>/<session id>; read by every ccw instance sharing the directory"
   },
   {
     "name": "ccw-mcp-peers-tool",
