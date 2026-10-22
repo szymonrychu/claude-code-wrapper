@@ -28,10 +28,17 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.integration)
 
 
+def pytest_deselected(items: list[pytest.Item]) -> None:
+    """Say so even under -qq, so a default run visibly leaves these tests out."""
+    ours = [i for i in items if Path(__file__).parent in i.path.parents]
+    if ours:
+        print(f"{len(ours)} deselected (integration: run `mise run test:integration`)")
+
+
 def _unreachable(message: str) -> None:
     if os.environ.get("CCW_INTEGRATION_TASK") == "1":
         pytest.fail(message, pytrace=False)
-    pytest.skip(message)
+    raise pytest.skip.Exception(message)
 
 
 @pytest.fixture(scope="session", autouse=True)
