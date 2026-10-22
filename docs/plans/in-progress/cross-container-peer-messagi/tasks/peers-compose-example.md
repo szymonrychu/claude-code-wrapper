@@ -1,6 +1,6 @@
 ---
 title: Peers compose example
-status: escalated
+status: done
 repo: .
 value: Operators can run two peered containers seeded with each other from one example and one image build
 files: [examples/docker-compose.peers.yml, examples/peers.config.yaml, src/claude_code_wrapper/data/examples/peers.config.yaml, tests/test_examples.py, tests/test_peers_compose.py]
@@ -63,6 +63,10 @@ Two peered containers run from one example and one image build, each seeded with
 - Implement the smallest change that makes them pass; run `uv run pytest tests/test_peers_compose.py -q` again and expect all passed.
 - Run the task verify: `uv run pytest tests/test_peers_compose.py tests/test_examples.py -q && mise run lint`; expect all passed and ruff clean.
 - No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
+
+## Ruling
+
+- 2026-10-22 accepted: gate-repeat was the verify-task --tdd-revert symlink artifact (examples/peers.config.yaml became a regular file); symlink recreated, verify command passed by hand on HEAD bcf55ac: 16 passed, lint clean
 
 ## Notes
 

@@ -1,0 +1,8 @@
+[
+  {
+    "task": "peers-compose-example",
+    "accept": true,
+    "reason": "gate-repeat was the verify-task --tdd-revert symlink artifact (examples/peers.config.yaml became a regular file); symlink recreated, verify command passed by hand on HEAD bcf55ac: 16 passed, lint clean",
+    "at": "2026-10-22T12:17:00Z"
+  }
+]
