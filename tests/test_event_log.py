@@ -35,6 +35,7 @@ def test_event_types_exact():
         "command_completed",
         "command_failed",
         "compacted",
+        "context",
         "error",
         "destroy_output",
         "peer_message_received",

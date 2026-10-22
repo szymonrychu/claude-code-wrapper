@@ -70,13 +70,13 @@ async def history(
     }
 
 
-def _replay(log: EventLog, start: int | None, count: int) -> list[Event]:
+async def _replay(log: EventLog, start: int | None, count: int) -> list[Event]:
     if start is None:
         return log.last(count)
     out: list[Event] = []
     cursor = start
     while True:
-        page, more = log.page(cursor, MAX_PAGE_LIMIT)
+        page, more = await asyncio.to_thread(log.page, cursor, MAX_PAGE_LIMIT)
         out.extend(page)
         if not more or not page:
             return out
@@ -106,7 +106,7 @@ async def events(
     log = manager.open_event_log(session_id)
     start = _start_seq(last_event_id, after_seq)
     sub = log.subscribe()  # before the replay read, so nothing falls in the gap
-    replay = _replay(log, start, limits.sse_replay)
+    replay = await _replay(log, start, limits.sse_replay)
 
     async def stream() -> AsyncIterator[bytes]:
         sent = start if start is not None else 0
