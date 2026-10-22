@@ -27,7 +27,7 @@ def table(capacity=3, max_missed=2):
 # --- contacts --------------------------------------------------------------
 
 
-def test_gossip_contacts_capped_and_seeds_kept():
+def test_gossip_contacts_bounded():
     t = table(capacity=3)
     t.add_contacts(["http://g1:1", "http://g2:1", "http://g3:1", "http://g4:1"])
     assert t.targets() == ["http://g1:1", "http://g2:1", "http://g3:1"]
@@ -69,7 +69,7 @@ def _view():
     return MemberView.model_validate({"instance": "alpha", "url": "http://alpha:8080"})
 
 
-async def test_oversize_answer_is_unreachable():
+async def test_oversize_answer_unreachable():
     big = b'{"x": "' + b"a" * (MAX_RESPONSE_BYTES + 10) + b'"}'
     client = PeerClient(
         TOKEN, transport=httpx.MockTransport(lambda r: httpx.Response(200, content=big))
@@ -89,7 +89,7 @@ async def test_normal_answer_still_parsed():
     await client.aclose()
 
 
-def test_view_session_bounds_and_control_chars():
+def test_remote_text_bounded_and_clean():
     base = {"instance": "a", "url": "http://a:1"}
     with pytest.raises(ValidationError):
         MemberView.model_validate(
@@ -109,7 +109,7 @@ def test_view_session_bounds_and_control_chars():
 # --- auth ------------------------------------------------------------------
 
 
-def test_absurd_timestamp_is_malformed_not_500():
+def test_huge_timestamp_is_malformed():
     headers = peer_auth.sign_request(TOKEN, "POST", "/p", b"")
     headers[peer_auth.HEADER_TIMESTAMP] = "9" * 5000
     cache = peer_auth.NonceCache(60)
@@ -121,7 +121,7 @@ def test_absurd_timestamp_is_malformed_not_500():
 # --- inbox -----------------------------------------------------------------
 
 
-async def test_total_rate_limit_across_senders(tmp_path):
+async def test_total_rate_limit_and_bounded_rate_map(tmp_path):
     h = PeerHarness(tmp_path, max_items=500, max_per_minute=100, total=3)
     for i in range(3):
         h.inbox.put(msg(i, sender=f"s{i}/ses_0123456789ab"))
@@ -129,9 +129,6 @@ async def test_total_rate_limit_across_senders(tmp_path):
         h.inbox.put(msg(9, sender="s9/ses_0123456789ab"))
     assert ei.value.code == "rate_limited"
     await h.router.close()
-
-
-async def test_rate_map_bounded(tmp_path):
     from claude_code_wrapper import peer_inbox
 
     h = PeerHarness(tmp_path, max_items=5000, max_per_minute=100, total=10**6)
