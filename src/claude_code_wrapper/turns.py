@@ -24,7 +24,7 @@ from .timeutil import now_iso  # noqa: F401  (re-exported: the one service times
 
 log = logging.getLogger(__name__)
 
-Origin = Literal["client", "initial", "agent"]
+Origin = Literal["client", "initial", "agent", "peer"]
 TurnState = Literal["running", "completed", "failed", "interrupted", "timeout"]
 ProbeState = Literal["pending", "delivered", "answered"]
 
