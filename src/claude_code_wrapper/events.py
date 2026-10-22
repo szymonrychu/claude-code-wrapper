@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 EVENT_TYPES: list[str] = [
     "session_state",
     "turn_started",
+    "user_message",
     "turn_rejected",
     "turn_completed",
     "turn_failed",

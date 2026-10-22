@@ -306,6 +306,15 @@ class SessionRouter(SessionListener):
             self._last_real = time.monotonic()
         return self._event_log.append(type, self._redactor.redact_obj(dict(data or {})))
 
+    def _emit_user_message(
+        self, turn_id: str | None, origin: str, text: str, files: list[str] | None = None
+    ) -> None:
+        """One event per prompt pasted into the session (client, peer, restart, command...)."""
+        self._emit(
+            "user_message",
+            {"turn_id": turn_id, "origin": origin, "text": text, "files": files or []},
+        )
+
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.ensure_future(coro)
         self._background.add(task)
@@ -807,6 +816,7 @@ class SessionRouter(SessionListener):
             metadata=dict(metadata or {}),
         )
         self._usage.reset()
+        self._emit_user_message(record.turn_id, record.origin, text, list((files or {}).keys()))
         self._emit(
             "turn_started", {"turn_id": record.turn_id, "origin": record.origin, "text": text}
         )
@@ -1038,7 +1048,8 @@ class SessionRouter(SessionListener):
         text = f"{self.commands_cfg.continue_prompt}\n\n{_results_line(done)}"
         self._last_marker = record.turn_id  # the continuation's Stop completes this record
         self._emit("turn_resumed", {"turn_id": record.turn_id, "cause": "command", "commands": ids})
-        await session.continue_turn(record, text)
+        if await session.continue_turn(record, text):
+            self._emit_user_message(record.turn_id, record.origin, text)
 
     def _end_turn_commands(self, record: TurnRecord) -> None:
         """A turn ended without completing: its commands never resume it (D4.5-D4.7).
@@ -1216,7 +1227,9 @@ class SessionRouter(SessionListener):
             started = time.monotonic()
             self._emit_command("command_started", record)
             mark = self.signals.mark()
-            await session.send_command(render(record.name, record.args))
+            line = render(record.name, record.args)
+            await session.send_command(line)
+            self._emit_user_message(None, "command", line)
             state, result, error, output = await self._await_completion(record, mark, timeout)
             if error == "timeout":
                 await session.send_escape()
@@ -1413,6 +1426,9 @@ class SessionRouter(SessionListener):
             self._commands_turn = None  # the crash aborted its commands
         self._emit(
             "turn_resumed", {"turn_id": record.turn_id, "restart": restart, "cause": "restart"}
+        )
+        self._emit_user_message(
+            record.turn_id, "restart", self._cfg.sessions.restart_continue_prompt
         )
 
     def on_turn_end(self, record: Any) -> None:

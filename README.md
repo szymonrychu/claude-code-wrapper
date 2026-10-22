@@ -838,6 +838,28 @@ event: session_state
 data: {"seq":3,"ts":"2026-10-20T09:00:14.800Z","session_id":"ses_3f9a1c0b7d42","type":"session_state","data":{"state":"ready","since":"2026-10-20T09:00:14.800+00:00"}}
 ```
 
+### `user_message`
+
+Emitted every time a prompt is pasted into the session, so a chat view can show every line the
+agent was given. It lands after `session_state` `busy` and before `turn_started` (fresh turn),
+before the `turn_completed` of the same turn, and carries the ring and rotation of every other
+event. Additive: `turn_started.data.text` is unchanged.
+
+`data`: `turn_id` (null for `command`), `origin`, `text` (what was pasted), `files` (names of the
+files written for the turn; empty otherwise).
+
+`origin` values: `client`, `initial`, `agent`, `peer` (a fresh turn; for `peer`, `text` is the
+framed peer message), `restart` (the `sessions.restart_continue_prompt` pasted after a claude
+restart), `command` (a slash command line such as `/compact`). The continuation pasted after
+queued commands ran (`turn_resumed` with `cause: "command"`) uses the turn's own origin and the
+continue prompt as `text`. The Stop-hook continuation (`turn_continued`) pastes nothing and emits
+no `user_message`.
+
+```
+event: user_message
+data: {"seq":6,"ts":"2026-10-20T09:01:00.010Z","session_id":"ses_3f9a1c0b7d42","type":"user_message","data":{"turn_id":"turn-1k9x2m0q4zw8","origin":"client","text":"hi","files":[]}}
+```
+
 ### `turn_started`
 
 Emitted when a turn has been accepted and pasted.
