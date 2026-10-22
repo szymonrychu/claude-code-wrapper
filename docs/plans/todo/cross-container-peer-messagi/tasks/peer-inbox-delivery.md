@@ -44,7 +44,7 @@ Per-session peer inbox: queueing, bounds, rate limit and delivery as new turns (
 
 Interfaces: `peer_inbox.PeerInbox`, `InboxItem`, `PutResult`, `frame_message`, `frame_notice` (the `peer-inbox` part); `SessionRouter.peer_inbox`, `SessionRouter.emit_event`; `turns.Origin` value `peer`.
 
-Notes: the concurrency core of the epic. `submit_turn` awaits the onTurn hook, so the session can change state between the readiness check and the paste; rely on `TurnRejected` from `check_submittable`/`submit`, not on the earlier check. Never write to the PTY directly. The `peer` origin is documented in the README by peers-image-compose-docs; this task does not edit README.md.
+Notes: the concurrency core of the epic. `submit_turn` awaits the onTurn hook, so the session can change state between the readiness check and the paste; rely on `TurnRejected` from `check_submittable`/`submit`, not on the earlier check. Never write to the PTY directly. The `peer` origin is documented in the README by peers-readme-guide; this task does not edit README.md.
 
 ## Acceptance conditions
 
@@ -67,19 +67,22 @@ Notes: the concurrency core of the epic. `submit_turn` awaits the onTurn hook, s
 - `src/claude_code_wrapper/turns.py`
 - `tests/test_peer_inbox.py`
 
+
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+See the Requirement's Interfaces paragraph; keep every name and signature stated there.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Queued peer messages become new turns with origin peer, strictly in order, only when the session is idle, and no item is ever stranded.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_peer_inbox.py` first; run `uv run pytest tests/test_peer_inbox.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peer_inbox.py -q` again and expect all passed.
+- Run the task verify: `uv run pytest tests/test_peer_inbox.py tests/test_router.py tests/test_session_turns.py tests/test_turns.py tests/test_command_runner.py tests/test_auto_compact.py -q && mise run lint`; expect all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+See the Requirement's Notes paragraph. Review is full: this is the concurrency core of the epic.

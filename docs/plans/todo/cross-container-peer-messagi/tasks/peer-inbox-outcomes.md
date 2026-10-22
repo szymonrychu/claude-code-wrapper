@@ -50,19 +50,22 @@ Notes: the router change of peer-inbox-delivery already calls `turn_finished` wi
 - `src/claude_code_wrapper/peer_inbox.py`
 - `tests/test_peer_inbox_outcomes.py`
 
+
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+See the Requirement's Interfaces paragraph; keep every name and signature stated there.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Every message's outcome that the sender must hear about is reported through a background callback that never holds up the Stop hook.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_peer_inbox_outcomes.py` first; run `uv run pytest tests/test_peer_inbox_outcomes.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peer_inbox_outcomes.py -q` again and expect all passed.
+- Run the task verify: `uv run pytest tests/test_peer_inbox_outcomes.py tests/test_peer_inbox.py tests/test_stop_gate.py -q && mise run lint`; expect all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+See the Requirement's Notes paragraph.

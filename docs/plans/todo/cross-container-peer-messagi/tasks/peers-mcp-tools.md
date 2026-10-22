@@ -33,7 +33,7 @@ The ccw MCP tools `peers` and `send_message` (design D4).
   - `send_message` call: unknown keys, a non-string `to` or `message`, an empty message or a non-boolean `notify_when_idle` give an error result starting `invalid arguments`; otherwise `await peers.send(...)`; success text `Sent <msg_id> to <to>. A reply, if any, arrives as a new turn.`; a `PeerError` becomes an error result with its message (which starts with the D4 prefix).
   - Calling `peers` or `send_message` with `peers` None is the existing `unknown tool` error.
 - src/claude_code_wrapper/internal_api.py: `/internal/mcp` awaits `handle_message(router, message, peers=getattr(manager, "peers", None))`.
-- The tool descriptions name the error prefixes `unknown peer`, `peer unreachable`, `message too large`, `inbox full`, `rate limited`, `peer rejected the request`, `invalid arguments` (design D4). README documentation of the tools is done by peers-image-compose-docs; this task does not edit README.md.
+- The tool descriptions name the error prefixes `unknown peer`, `peer unreachable`, `message too large`, `inbox full`, `rate limited`, `peer rejected the request`, `invalid arguments` (design D4). README documentation of the tools is done by peers-readme-guide; this task does not edit README.md.
 - tests/test_mcp_peers.py with a fake `PeerTools`: both tools listed only with peers; schemas as stated; peers listing passes the caller and filter and returns JSON; send success text; each PeerError code (including rate_limited) surfaces as an error result with its prefix; argument validation errors; unknown tool without peers; the `command` tool unchanged with and without peers.
 
 Interfaces: `mcp_server.PeerTools`, `mcp_server.handle_message(router, message, peers=None)` now async (the `ccw-mcp-peers-tool` part; consumer change to the cross-epic `ccw-mcp-tool` contract).
@@ -56,19 +56,22 @@ Notes: only internal_api.py calls `handle_message` today (tests reach it over HT
 - `src/claude_code_wrapper/internal_api.py`
 - `tests/test_mcp_peers.py`
 
+
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+See the Requirement's Interfaces paragraph; keep every name and signature stated there.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+The ccw MCP server offers peers and send_message when given PeerTools, with exact schemas and error texts, and is unchanged otherwise.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_mcp_peers.py` first; run `uv run pytest tests/test_mcp_peers.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_mcp_peers.py -q` again and expect all passed.
+- Run the task verify: `uv run pytest tests/test_mcp_peers.py tests/test_mcp_server.py tests/test_internal_api.py tests/test_fake_claude_mcp.py -q && mise run lint`; expect all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+See the Requirement's Notes paragraph. internal_api reads manager.peers, which manager-peers-lifecycle sets; getattr keeps it None meanwhile.

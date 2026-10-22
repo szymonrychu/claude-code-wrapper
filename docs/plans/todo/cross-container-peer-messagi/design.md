@@ -4,53 +4,64 @@
 
 ccw gets its own peer messaging for the main agents of its sessions, working across containers,
 nodes and clusters. An opt-in `peers:` section (off by default, zero change when off) turns it on.
-Each ccw instance publishes one signed, heartbeat-refreshed JSON file per live session in a shared
-directory (`/peers` by default, may be an RWX volume such as CephFS). The ccw MCP server gains
-`peers` and `send_message`. A send is an HMAC-signed HTTP POST to the target instance's
-`POST /v1/peers/messages`; the shared peer token is the signing key and never travels on the wire.
-The target queues the message in the session's inbox and delivers it as a new turn when the
-session is idle, framed as an `<agent-message>`. The target posts a notice back for a rejected or
-dropped message always, and for a delivered one when `notify_when_idle` asked for it. Claude's
-native SendMessage/ListAgents are switched off for peered sessions.
+Discovery is membership between ccw instances: each instance joins the mesh through signed
+`POST /v1/peers/join` calls to a static seed list (`peers.static`, extendable with
+`ccw serve --peer URL`), learns the other members from the answers, keeps the reachable list up to
+date with signed heartbeats, and leaves with `POST /v1/peers/leave`. Join runs before any session
+exists; leave runs before any session's onDestroy. New instance-level hooks preJoin, postJoin,
+preLeave and postLeave frame both. The ccw MCP server gains `peers` and `send_message`; a send is
+an HMAC-signed POST to the target instance (the shared peer token is the signing key and never
+travels on the wire); the target delivers it as a new turn when the session is idle and notices
+flow back. Claude's native SendMessage/ListAgents are switched off for peered sessions. The
+heading keeps the epic's original title; there is no shared mount any more.
 
 ## Intent and why
 
 The user runs several ccw containers, possibly on different Kubernetes nodes, whose main agents
 must talk to each other. The first plan used Claude Code's native peer messaging over Unix sockets
-on a shared mount. The user rejected it: a Unix socket is a kernel object and never crosses a node,
-even when the socket file sits on an RWX CephFS volume (F9 shows it works only inside one kernel).
-User decision: "go with custom tooling", ccw-owned messaging over its HTTP API that must work
-across containers, nodes and clusters.
+on a shared mount; the user rejected it because a Unix socket never crosses a node, even on RWX
+CephFS. User decision: "go with custom tooling". The second plan used a shared folder of
+heartbeat files for discovery; the user rejected that too and specified membership over the
+wrapper's HTTP API (D5, verbatim).
 
 ## Goals
 
 - `peers.enabled: false` (the default): argv, env, settings.json, .claude.json, CLAUDE.md, the
-  mounted routes, the MCP tool list and the filesystem are exactly as today.
-- `peers.enabled: true`: every session is published in `<directory>/<instance>/<session id>.json`
-  while it lives, signed, refreshed every `heartbeat_seconds`, and removed on every stop path.
-- `mcp__ccw__peers` lists live, correctly signed peers other than the caller;
-  `mcp__ccw__send_message` delivers to a peer on any instance that can reach the target's
-  `advertise_url`, or returns a clear error.
+  mounted routes, the hook events that fire, the MCP tool list and outbound traffic are exactly as
+  today.
+- `peers.enabled: true`: on startup the instance runs preJoin, joins every seed and known member,
+  and runs postJoin, before any session can be created; on shutdown (SIGTERM, container stop, the
+  exit-when-last-destroyed policy) it runs preLeave, leaves every known member and runs postLeave,
+  before any session's onDestroy.
+- One reachable seed is enough: join and heartbeat answers carry the member list, so the mesh
+  converges.
+- Heartbeats keep the reachable list current: a member missing `max_missed_heartbeats`
+  consecutive heartbeats is dropped, a leave drops it at once, and a dropped member that
+  heartbeats again is re-added.
+- `mcp__ccw__peers` lists the sessions of reachable members other than the caller;
+  `mcp__ccw__send_message` delivers to a peer session or returns a clear error.
 - A delivered message is a new turn on the target session, in arrival order, never typed into a
   busy PTY, and no queued item is ever stranded; a reply and the notices reach the sender the same
-  way.
-- A sender always learns when its message was rejected or dropped.
+  way. A sender always learns when its message was rejected or dropped.
 - SendMessage and ListAgents are unavailable to peered sessions (env, settings deny, tool gate).
-- The peer token is never sent on the wire, never logged and never written to a file; peer
-  requests are signed, time-bounded and replay-protected.
-- A stalled shared filesystem degrades to errors and empty listings, never freezes sessions.
-- Events `peer_message_received`, `peer_message_sent`, `peer_message_delivered` and Prometheus
-  counters exist and are documented.
-- Two ccw services in one process on real HTTP ports, and two containers under compose, complete a
-  send, a reply and an idle notice with the fake claude.
-- README documents setup, addressing, every key, every route, the trust model, delivery guarantees,
-  cross-node use and the TLS note; the image and a compose example work with a fresh named volume.
+- The peer token is never sent on the wire, never logged and never written to a file; every peer
+  request is signed, time-bounded and replay-protected.
+- Membership and heartbeat I/O never blocks session work; an unreachable seed never blocks startup
+  beyond `join_timeout_seconds`.
+- Events and Prometheus metrics for messages and membership exist and are documented.
+- Proof: unit tests per module; an in-process test with three ccw services on real ports (one seed
+  each) proving join, gossip, listing, messages both ways, notices and leave; a docker two-container
+  test run by `mise run test:integration` in CI.
+- README documents setup, seeds, addressing, every key, every route, the four hooks, the trust
+  model, delivery guarantees, cross-node use and the TLS note; a compose example runs two peered
+  containers from one build.
 
 ## Non-goals
 
-- Native Claude peer messaging: `--messaging-socket-path`, `crossSessionInbound`, a shared pid
-  namespace, Claude's session registry.
-- A static peer list, a ccw-to-ccw listing API or socket probes; discovery is the shared directory.
+- Native Claude peer messaging (Unix sockets, `--messaging-socket-path`, `crossSessionInbound`,
+  shared pid namespace, Claude's session registry).
+- Discovery through a shared folder or volume.
+- A consensus protocol or strongly consistent membership; the view converges by gossip.
 - TLS termination or payload encryption inside ccw (ccw signs, it does not encrypt).
 - Messaging from subagents or teammates.
 - At-least-once delivery or a persistent inbox; delivery is at most once.
@@ -59,16 +70,16 @@ across containers, nodes and clusters.
 ## Anti-goals
 
 - Any behaviour change for configs without `peers.enabled: true`.
+- A session created before the join finished, or an onDestroy that runs before the leave.
+- Startup or shutdown held up without bound by an unreachable member.
 - A message typed into a running turn, two peer turns interleaved, or a queued item left waiting
   while the session is idle.
-- The peer token on the wire, in a log line, an event, `GET /v1/config`, the directory or a file in
-  a session dir.
+- The peer token on the wire, in a log line, an event, `GET /v1/config` or a file.
 - A peer request accepted with a bad signature, a stale timestamp or a replayed nonce; a
   `server.auth_token` bearer opening a peer route, or the peer token opening any other route.
 - A Stop hook answer held up by a notice POST to a slow or dead sender.
-- Directory I/O on the event loop.
 - Two agents replying to each other forever without a bound.
-- An unbounded inbox, nonce cache, directory or request body.
+- An unbounded inbox, nonce cache, member table or request body.
 
 ## Constraints
 
@@ -76,184 +87,173 @@ across containers, nodes and clusters.
   never write service files into a session workdir.
 - Tests use the fake claude under tests/fake_claude only; only the fake-claude task
   (fake-claude-peer-harness) edits tests/conftest.py.
-- Every config key needs a README row (tests/test_readme_config.py); every route needs a README
-  heading (tests/test_readme_api.py); every event type needs a README heading under
-  `## Events (SSE)`; every API error code is documented under `## Errors`.
-- README.md is edited by exactly four tasks, serialized through dependsOn: peers-config-section,
-  peer-events-and-metrics, peer-messages-endpoint, peers-readme-guide.
+- Every config key needs a README row (tests/test_readme_config.py); every route, event type and
+  hook event needs a README heading (tests/test_readme_api.py); every API error code is
+  documented under `## Errors`; every HOOK_EVENTS name appears in config.example.yaml
+  (tests/test_config.py `test_full_example_loads`).
+- README.md is edited by exactly five tasks, serialized through dependsOn: peers-config-section,
+  peer-events-and-metrics, peer-membership-hooks, peer-messages-endpoint, peers-readme-guide.
 - examples/*.config.yaml are committed symlinks into src/claude_code_wrapper/data/examples.
 - The EVENT_TYPES pin in tests/test_event_log.py is updated, not loosened.
 - Tasks of about an hour, at most 8 files.
 
 ## Facts (background: native messaging research, carried from the scratch brief)
 
-Source: reverse engineering of the claude 2.1.307 (macOS) and 2.1.304 (Linux, from the image)
-bundles plus throwaway Docker experiments with `--network none`, no credentials. These facts are
-why the native design was planned and why it was dropped; the new design keeps only F8 (how to
-switch the built-ins off), F10 (ccw today) and the shape of F7 (reply and idle-notice semantics).
+Source: reverse engineering of the claude 2.1.307 (macOS) and 2.1.304 (Linux) bundles plus
+throwaway Docker experiments, no credentials. Kept: F8 (switching the built-ins off), F7 (reply
+and idle-notice semantics), F10 (ccw today).
 
 - F1 Registry: native discovery is `$CLAUDE_CONFIG_DIR/sessions/<pid>.json`, keyed by pid with no
-  uniqueness check; a foreign pid domain is listed only if its socket accepts a 250 ms connect.
-- F2 Socket path: `--messaging-socket-path` must be absolute, at most 103 bytes, in a 0700 dir
-  owned by the uid; any vetting failure silently falls back to `/tmp/cc-socks-<uid>`.
-- F3 Wire: NDJSON over AF_UNIX; the auth line is optional off Windows.
+  uniqueness check.
 - F5 Pid collision: two containers sharing one registry both ran claude as pid 10 and one record
   overwrote the other.
-- F6 Inbound policy: a bypass-mode receiver holds unasserted peer messages for a TUI approval
-  unless `crossSessionInbound: accept`.
 - F7 Replies and idle notices: a reply is a new SendMessage to the sender's `from` address;
   `notify_when_idle` asks the receiver for a `peer_idle_notice {state, finished_at, detail}` once
   it goes idle after handling the message.
-- F8 Gating: the tools sit behind the GrowthBook gate `tengu_harbor_kite` (default true);
-  `CLAUDE_CODE_HARBOR_KITE` overrides it either way, so `CLAUDE_CODE_HARBOR_KITE=0` turns
-  SendMessage/ListAgents off. A settings `permissions.deny` rule also blocks a tool by name.
-- F9 Docker: AF_UNIX connect works between containers through a named volume or bind mount only
-  because both containers share one kernel. A fresh named volume is root:root 755 unless the image
-  pre-creates the mount point owned by the user, which Docker copies into the new volume.
+- F8 Gating: `CLAUDE_CODE_HARBOR_KITE` overrides the GrowthBook gate `tengu_harbor_kite` either
+  way, so `CLAUDE_CODE_HARBOR_KITE=0` turns SendMessage/ListAgents off. A settings
+  `permissions.deny` rule also blocks a tool by name.
+- F9 Docker: AF_UNIX connect works between containers only because they share one kernel.
 - F10 ccw today: per-session `CLAUDE_CONFIG_DIR=/sessions/<id>/config`, child env from an
-  allow-list (session.py `build_env`), session ids `ses_` plus 12 hex (manager.py
-  `_new_session_id`), uid 1000 `agent`. The ccw MCP server (mcp_server.py) exposes one `command`
-  tool on the loopback internal API; router.py `_on_pre_tool_use` already denies every
-  `mcp__ccw__*` call that carries an `agent_id` (main agent only). router.py `_on_stop` awaits
-  `_after_turn`, so anything awaited there delays the Stop relay answer. API errors are
-  `{"error": {"code", "message"}}` (api/errors.py `envelope`).
+  allow-list (session.py `build_env`), session ids `ses_` plus 12 hex, uid 1000 `agent`. The ccw
+  MCP server (mcp_server.py) exposes one `command` tool; router.py `_on_pre_tool_use` denies every
+  `mcp__ccw__*` call that carries an `agent_id`. router.py `_on_stop` awaits `_after_turn`. API
+  errors are `{"error": {"code", "message"}}`. Hooks: config.py `HOOK_EVENTS`, `VETO_EVENTS`;
+  hooks.py `EVENT_DECISIONS` and `HookDispatcher` (built per session by manager.py `_dispatcher`,
+  but constructible with any cwd). `sessions.exit_when_last_destroyed` requests exit from
+  manager.py `_maybe_exit_when_empty` after the last destroy.
 
-Why native sockets were dropped: F9 is kernel-local by nature. On Kubernetes, pods on different
-nodes share an RWX CephFS file but not a kernel, so a connect to the socket file fails. Making it
-work would need a same-node scheduling constraint, which defeats the use case. F1, F2, F5 and F6
-add four more fragile couplings to undocumented Claude internals. HTTP between ccw instances has
-none of these limits and stays under ccw's control.
+Why native sockets were dropped: F9 is kernel-local, so pods on different nodes cannot connect
+even through a shared RWX file. Why the shared folder was dropped: user decision D5.
 
 ## Decisions
 
 ### D1: ccw-owned peer messaging over HTTP replaces native SendMessage/ListAgents
 
 User decision: custom tooling. ccw carries messages between instances over its public HTTP API
-and the agent uses ccw MCP tools. Rejected: native Unix-socket messaging on a shared mount (does
-not cross nodes, see "Why native sockets were dropped"), a shared pid namespace, mirroring
-Claude's registry, a message broker (new infrastructure the user did not ask for). Serves A.
+and the agent uses ccw MCP tools. Rejected: native Unix-socket messaging (does not cross nodes), a
+shared pid namespace, mirroring Claude's registry, a message broker. Serves A.
 
 ### D2: Opt-in `peers:` config section
 
-`peers: {enabled: false, name: "", advertise_url: "", token: "", directory: "/peers",
-heartbeat_seconds: 10, stale_seconds: 30, max_message_bytes: 65536, inbox_max: 32,
-max_clock_skew_seconds: 60, max_messages_per_minute: 30}` (defaults my call; the last two from
-the plan review). Validation at config load, each error at its `peers.<key>` path:
+`peers: {enabled: false, name: "", advertise_url: "", token: "", static: [], heartbeat_seconds:
+10, max_missed_heartbeats: 3, join_timeout_seconds: 10, max_message_bytes: 65536, inbox_max: 32,
+max_clock_skew_seconds: 60, max_messages_per_minute: 30}` (defaults my call). Validation at config
+load, each error at its `peers.<key>` path:
 
 - `token` is required when enabled ("required when peers.enabled; set it, normally from
-  ${CCW_PEER_TOKEN}"), at least 16 characters (my call), and must differ from
-  `server.auth_token` (my call).
-- `name`: empty means the host name at runtime; otherwise `[A-Za-z0-9._-]{1,64}` and not `.`,
-  `..` or starting with `.` (it is a directory name on the shared volume).
+  ${CCW_PEER_TOKEN}"), at least 16 characters, and must differ from `server.auth_token` (my call).
+- `name`: empty means the host name at runtime; otherwise `[A-Za-z0-9._-]{1,64}`, not `.`, `..`
+  or starting with `.`.
 - `advertise_url`: empty means `http://<hostname>:<bound public port>`; otherwise an absolute
-  `http` or `https` URL without a trailing slash; the literal `{port}` is replaced by the bound
-  public port (my call: lets tests and port-0 setups advertise a port they do not know yet).
-- `directory`: absolute path.
-- `heartbeat_seconds > 0`, `stale_seconds > heartbeat_seconds`, `1 <= max_message_bytes <=
-  1048576`, `inbox_max >= 1`, `max_clock_skew_seconds > 0`, `max_messages_per_minute >= 1`.
-- With peers enabled a user `claude.mcp_servers.ccw` is a config error (the name is reserved).
+  `http` or `https` URL without a trailing slash; `{port}` is replaced by the bound public port
+  (my call).
+- `static`: a list of seed URLs, each a string or `{url}` (both accepted, normalized to strings,
+  my call), absolute http(s) without a trailing slash, de-duplicated; `${VAR}` interpolation works
+  as everywhere. `ccw serve --peer URL` (repeatable) appends to it at startup (my call: extends,
+  never replaces). Our own advertise url in the list is ignored at runtime.
+- `heartbeat_seconds > 0`, `max_missed_heartbeats >= 1`, `join_timeout_seconds > 0`,
+  `1 <= max_message_bytes <= 1048576`, `inbox_max >= 1`, `max_clock_skew_seconds > 0`,
+  `max_messages_per_minute >= 1`.
+- With peers enabled a user `claude.mcp_servers.ccw` is a config error.
 
-`Config.redacted()` masks `peers.token`; the service adds the token to the redactor. Names must be
-unique across instances sharing a directory; that is an operator rule stated in the README, not
-enforced at startup (D5). Serves B and N.
+`Config.redacted()` masks `peers.token`; the service adds the token to the redactor. Instance
+names must be unique within a mesh; that is an operator rule stated in the README. Serves B.
 
 ### D3: Native built-ins off when peers are enabled
 
-Per session, only when enabled: the child env gets `CLAUDE_CODE_HARBOR_KITE=0` as a managed var
-(user env cannot override it, my call); the ccw-written settings.json gets `SendMessage` and
-`ListAgents` in `permissions.deny` and `mcp__ccw__peers` and `mcp__ccw__send_message` in
-`permissions.allow`; the PreToolUse gate in router.py denies `SendMessage` and `ListAgents` with
-the reason `use mcp__ccw__send_message / mcp__ccw__peers`, emitting `tool_denied` and counting a
-deny. The subagent deny reason is reworded to cover every `mcp__ccw__*` tool (my call). Disabled,
-none of this is written. Serves C.
+Per session, only when enabled: `CLAUDE_CODE_HARBOR_KITE=0` as a managed env var; settings.json
+`permissions.deny` gains `SendMessage` and `ListAgents` and `permissions.allow` gains
+`mcp__ccw__peers` and `mcp__ccw__send_message`; the PreToolUse gate denies `SendMessage` and
+`ListAgents` with the reason `use mcp__ccw__send_message / mcp__ccw__peers`. The subagent deny
+reason is reworded to cover every `mcp__ccw__*` tool (my call). Disabled, none of this is written.
+Serves C.
 
 ### D4: ccw MCP tools `peers` and `send_message`
 
-Registered in `tools/list` only when peers are enabled; with peers on the ccw MCP server is
-injected into `.claude.json` even when the agent command allowlist is empty. Main agent only
-through the existing `mcp__ccw__*` subagent deny.
+Listed only when peers are enabled; with peers on the ccw MCP server is injected even with an
+empty agent allowlist. Main agent only through the existing `mcp__ccw__*` subagent deny.
 
-- `peers {instance?: string}`: JSON text, a list of `{address, instance, session_id, name, cwd}`
-  for live, correctly signed entries, excluding the caller, sorted by address (my call), filtered
-  by `instance` when given.
-- `send_message {to: string, message: string, notify_when_idle?: bool}`: validates `to` as
-  `<instance>/<session id>` and not the caller (my call), the message as non-empty and at most
-  `max_message_bytes` UTF-8 bytes, looks `to` up among live entries, generates
-  `msg_id = "msg_" + 16 hex`, POSTs to the target, and returns
-  `Sent <msg_id> to <to>. A reply, if any, arrives as a new turn.` or an error result
-  (`isError: true`) whose text starts with one of: `unknown peer`, `peer unreachable`,
-  `message too large`, `inbox full`, `rate limited`, `peer rejected the request`,
-  `invalid arguments`.
+- `peers {instance?: string}`: JSON text, `[{address, instance, session_id, name, cwd}]` for the
+  sessions of reachable members plus this instance's other sessions, excluding the caller, sorted
+  by address, filtered by `instance`.
+- `send_message {to, message, notify_when_idle?}`: validates `to` as `<instance>/<session id>`
+  and not the caller, the message as non-empty and at most `max_message_bytes` UTF-8 bytes,
+  resolves `to` to a reachable member's url (or this instance), generates `msg_` plus 16 hex,
+  POSTs it, and returns `Sent <msg_id> to <to>. A reply, if any, arrives as a new turn.` or an
+  error result whose text starts with `unknown peer`, `peer unreachable`, `message too large`,
+  `inbox full`, `rate limited`, `peer rejected the request` or `invalid arguments`.
 
-`handle_message` becomes async with an optional `peers` argument (`PeerTools` protocol); the
-`command` tool behaves exactly as before. `initialize` instructions and the CLAUDE.md that ccw
-writes get a short peers paragraph when enabled: what the tools do, the address format, reply to
-an `<agent-message>` with `mcp__ccw__send_message` to its `from` only when a reply is needed, never
-use SendMessage. Serves D.
+`handle_message` becomes async with an optional `peers` argument; the `command` tool is unchanged.
+The CLAUDE.md that ccw writes gets a short peers paragraph when enabled (reply only when a reply
+is needed, never use SendMessage). A send to a session of the same instance goes through the same
+signed route on our own url (my call: one code path). Serves D.
 
-### D5: Discovery is a directory of signed, heartbeat-refreshed JSON files
+### D5: Discovery is membership: join, leave, static seeds, heartbeats
 
-`<directory>/<instance>/<session id>.json` holds `{instance, session_id, name, cwd, url,
-started_at, heartbeat_at, sig}` (`name` is the session name or the session id, `url` the
-instance's advertise url, times ISO 8601 UTC with millisecond precision, `sig` the D13 entry
-signature). Written atomically (temp file in the same dir, then rename) after the session's
-onCreate/onResume gate passes, rewritten every `heartbeat_seconds` by one instance-wide heartbeat
-task (a missing file is recreated), removed in the manager teardown that every stop path runs. An
-entry is live when `now - heartbeat_at <= stale_seconds` and its signature verifies; unsigned,
-badly signed, unreadable or malformed files are ignored. There are no socket probes.
+User decision, verbatim: "No.. wrapper supports join/leave endpoints. Config/arguments allow to
+provide static list of peers for discovery. Leave/join happens on container leave/join. Join
+operation precedes start hook, leave precedes last hook in lifecycle. New hooks exist pre/postJoin
+and pre/postLeave. Heartbeat keeps reachable agents list up to date."
 
-At startup ccw creates `<directory>/<instance>/` if missing and deletes every entry in it, logging
-a warning when any of them looked live (names must be unique; a live-looking entry means a recent
-crash or a misconfigured twin). Every heartbeat pass also deletes, under any instance name, entries
-whose `heartbeat_at` is older than `10 x stale_seconds` (per-session files, so this never races a
-live writer) and then removes empty instance dirs, so dead instances do not accumulate and
-`live()` stays bounded. No static peer list, no listing API.
+Interpretation (all of it my call unless quoted above):
 
-All directory file I/O runs in `asyncio.to_thread` under a timeout (5 s, my call, constant
-`DIRECTORY_IO_TIMEOUT`); a timeout or OSError makes `live()` return what it read so far (or
-nothing), `publish` and `remove` raise or log a `PeersError`, and the heartbeat loop logs and goes
-on. Session turns never wait on the directory. Serves E and N.
+- Membership is per instance (container), keyed by instance name, each member `{instance, url,
+  sessions: [{session_id, name, cwd}], last_seen, missed}`.
+- Routes (signed, D6): `POST /v1/peers/join` body `{instance, url, sessions, members}` answers 200
+  with the target's view `{instance, url, sessions, members: [{instance, url}]}`; `POST
+  /v1/peers/heartbeat` same body and answer; `POST /v1/peers/leave` body `{instance, url}` answers
+  204. A join or heartbeat from a member adds or refreshes it as reachable with the sessions it
+  reported; a leave removes it at once. A known name with a new url takes the new url (a restarted
+  container).
+- Sessions are only taken from a member's own report (its join, heartbeat, or its answer to ours);
+  `members` lists are gossip of `{instance, url}` used only to learn whom to contact. A member is
+  reachable only after a direct successful exchange. One reachable seed is therefore enough and
+  the mesh converges within a few heartbeats.
+- Startup: after the ports are bound and before the manager accepts creates, ccw fires preJoin
+  (VETO: a deny means this instance stays standalone, logged, counted and noted in the postJoin
+  input), POSTs join to every seed and known url concurrently, each bounded by
+  `join_timeout_seconds`, then fires postJoin with `{instance, url, members, failures}`. Failed
+  seeds stay in the contact list and are retried by every heartbeat. Startup never waits longer
+  than the hook timeouts plus `join_timeout_seconds`.
+- Heartbeat: every `heartbeat_seconds` the instance POSTs its view and sessions to every known
+  url concurrently (timeout `heartbeat_seconds`), merges the answers, counts a miss per failure; a
+  member with `max_missed_heartbeats` consecutive misses leaves the reachable list (its url stays a
+  contact so it can come back). A session create or destroy triggers one immediate heartbeat round
+  (debounced to at most one in flight) so peers learn it promptly. A standalone (preJoin-denied)
+  instance does not heartbeat but still answers others.
+- Shutdown: before any session's onDestroy (SIGTERM, container stop, `exit_when_last_destroyed`,
+  `exit_when_dead`), ccw fires preLeave (observe-only: its decision is ignored, annotations kept),
+  POSTs leave to every known member concurrently bounded by `join_timeout_seconds`, fires postLeave
+  with `{instance, url, members, failures}`, and stops heartbeating, then the sessions shut down.
+  For `exit_when_last_destroyed` the leave runs before the last session's onDestroy when that
+  destroy will empty the service (my call: the destroy path checks the policy first).
+- The member table is bounded (1024 members, my call; joins beyond it are 429 `rate_limited`).
+- All membership I/O runs as background tasks or with bounded timeouts; the session lifecycle
+  and the event loop never wait on a peer beyond the join and leave bounds above.
 
-### D6: Peer HTTP API and auth
+Serves E.
 
-Mounted on the public app only when enabled, outside the `/v1` bearer dependency:
+### D6: Peer HTTP API and request signing
 
-- `POST /v1/peers/messages` body `{from, to_session, message, msg_id, notify_when_idle}` ->
-  202 `{msg_id, queued}` (`duplicate: true` for a repeat).
-- `POST /v1/peers/notices` body `{from, to_session, msg_id, status, state, reason}` -> 202
-  `{msg_id, queued}`; `from` is the session that received the original message, `to_session` the
-  original sender, `status` one of `delivered`, `rejected`, `dropped`, `state` the handling turn's
-  terminal state for `delivered` (else null), `reason` a short text for the others.
-
-Auth is D13 request signing: missing, malformed or bad signature, a timestamp outside
-`max_clock_skew_seconds`, or a nonce seen within the window is 401 `unauthorized`. A bearer
-header, including `server.auth_token` or the peer token itself, is ignored and does not
-authenticate. The peer token is never accepted on other routes (they compare a bearer against
-`server.auth_token` only, and D2 keeps the tokens distinct). The body is capped before parsing at
-`max_message_bytes + 4096` bytes (my call: room for the envelope), checking `Content-Length` first
-and counting streamed bytes after, so an oversize body is 413 `message_too_large` without being
-buffered whole; the signature is verified over the capped raw bytes before JSON parsing. A message
-over `max_message_bytes` is also 413 `message_too_large`; an unknown or not-running session is 404
-`not_found`; a full inbox is 429 `inbox_full`; a sender over `max_messages_per_minute` toward that
-session is 429 `rate_limited`; a malformed body is 422 like other routes. Serves F.
+Mounted on the public app only when enabled, outside the `/v1` bearer dependency, all under
+`/v1/peers/`: `join`, `heartbeat`, `leave` (D5), `messages` (body `{from, to_session, message,
+msg_id, notify_when_idle}`, 202 `{msg_id, queued}`) and `notices` (body `{from, to_session,
+msg_id, status, state, reason}`, 202). Signing (D13) is the only auth; a bearer header never
+authenticates. The body is capped before parsing at `max_message_bytes + 4096` bytes (413
+`message_too_large`) and the signature is verified over the capped raw bytes before JSON parsing.
+Errors: 401 `unauthorized`, 404 `not_found` (unknown or not-running session), 413
+`message_too_large`, 422, 429 `inbox_full` or `rate_limited`. Serves F.
 
 ### D7: Inbox delivery as new turns
 
-Each session has a FIFO inbox bounded by `inbox_max` (messages and notices together). Messages
-(not notices) from one sender address to one session are limited to `max_messages_per_minute` in a
-sliding 60 s window (rate limit from the plan review, against reply loops). Delivery takes the head
-only when the session is `ready`, has no current turn, no command runner is active and no command
-is queued for the idle runner; it submits through `SessionRouter.submit_turn` with
-`origin: "peer"` (a new turn origin, my call) and `metadata: {peer: {from, msg_id, kind}}`, so the
-onTurn hook sees and may veto it. A `TurnRejected` (busy, booting, dead) leaves the head in place
-for the next `ready`; a veto pops it with `peer_message_delivered` result `rejected`. After every
-attempt, whatever its outcome, the inbox re-checks the queue; a `kick()` that arrives while an
-attempt runs is recorded and honoured when the attempt ends, so no item is stranded while the
-session is idle. Triggers: an accepted item, every `ready` state change and the end of an attempt,
-each scheduled on the next loop pass. On session close the queued items are dropped with result
-`dropped`.
-
-Message framing (body XML-escaped for `&`, `<`, `>` so it cannot close the frame, my call):
+Each session has a FIFO inbox bounded by `inbox_max`; messages from one sender address to one
+session are limited to `max_messages_per_minute` per sliding minute. Delivery takes the head only
+when the session is ready with no turn, no command runner and no idle-runner command queued; it
+submits with `origin: "peer"` (new origin, my call) and `metadata: {peer: {from, msg_id, kind}}`,
+so onTurn may veto. `TurnRejected` keeps the head; a veto pops it with result `rejected`. After
+every attempt the inbox re-checks the queue, and a kick that lands mid-attempt is honoured after
+it. Close drops queued items with result `dropped`. Frame (body XML-escaped, my call):
 
 ```
 <agent-message from="<instance>/<session>" msg_id="<msg_id>">
@@ -266,164 +266,136 @@ Serves G.
 
 ### D8: Delivery notices
 
-The target posts `POST /v1/peers/notices` to the sender instance's `url` (from the live entry of
-the sender session) for: `rejected` (onTurn veto) and `dropped` (session close or shutdown with the
-message still queued), always; `delivered` when the message asked for `notify_when_idle`, once its
-handling turn reaches a terminal state, with that state. Notices themselves never produce notices.
-The POST runs as a background task (`SessionRouter._spawn` or the peer service's own task set),
-never awaited inside the Stop hook path, so a slow or dead sender cannot delay the Stop relay
-answer. A missing entry or a failed POST (after the one D14 retry) is logged and counted, never
-re-queued. On shutdown the manager waits, bounded by the shutdown budget, for pending notice tasks
-before closing the client. The sender ccw queues a notice under D7 rules (no rate limit), framed as
-
-```
-<peer-idle-notice from="<instance>/<session>" msg_id="<msg_id>" state="<state>"/>
-The peer finished the turn that handled your message <msg_id> and is idle.
-```
-
-for `delivered`, and for `rejected` or `dropped`
-
-```
-<peer-delivery-failed from="<instance>/<session>" msg_id="<msg_id>" status="<status>" reason="<reason>"/>
-Your message <msg_id> was not delivered (<status>).
-```
-
-(second frame, my call). Serves H and N.
+The target posts `/v1/peers/notices` to the sender instance's url for `rejected` and `dropped`
+always, and for `delivered` when `notify_when_idle` asked for it (with the handling turn's terminal
+state). Notices never produce notices. The POST is a background task, never awaited inside the
+Stop hook path. A failure (after the one D14 retry) is logged and counted. Shutdown waits, bounded,
+for pending notices. Frames: `<peer-idle-notice from=... msg_id=... state=.../>` with "The peer
+finished the turn that handled your message <msg_id> and is idle." for delivered, and
+`<peer-delivery-failed from=... msg_id=... status=... reason=.../>` with "Your message <msg_id>
+was not delivered (<status>)." otherwise (my call). Serves H.
 
 ### D9: Events and metrics
 
-New EVENT_TYPES (appended before `session_closed`, my call; the pin in tests/test_event_log.py is
-updated):
+EVENT_TYPES gain (before `session_closed`, my call) `peer_message_received`, `peer_message_sent`,
+`peer_message_delivered` (keys as before: received `{msg_id, from, kind, bytes, message, queued}`,
+sent `{msg_id, to, kind, bytes, notify_when_idle, result}`, delivered `{msg_id, from, kind,
+turn_id, result}`), and `peer_member_joined` and `peer_member_left` (`{instance, url, reason}`,
+reason `join`, `heartbeat`, `leave` or `missed_heartbeats`), emitted on every live session's log
+when the reachable list changes (my call: instance-level changes are visible on each session's
+stream). Counters: `ccw_peer_messages_received_total{kind,result}`,
+`ccw_peer_messages_sent_total{kind,result}`, `ccw_peer_messages_delivered_total{kind,result}`,
+`ccw_peer_membership_total{op,result}` (op `join`, `heartbeat`, `leave`, `inbound_join`,
+`inbound_heartbeat`, `inbound_leave`), and the gauge `ccw_peer_members`. Serves G and E.
 
-- `peer_message_received` on the target session: `{msg_id, from, kind, bytes, message, queued}`.
-- `peer_message_sent` on the sending session: `{msg_id, to, kind, bytes, notify_when_idle,
-  result}` with result `ok` or the error code; a notice is logged on the session that received
-  the original message, with its `status`.
-- `peer_message_delivered` on the target session: `{msg_id, from, kind, turn_id, result}` with
-  result `delivered`, `rejected` or `dropped`.
+### D10: Compose example
 
-Counters (my call): `ccw_peer_messages_received_total{kind,result}` (result `accepted`,
-`duplicate`, `inbox_full`, `rate_limited`, `too_large`, `not_found`, `unauthorized`),
-`ccw_peer_messages_sent_total{kind,result}`, `ccw_peer_messages_delivered_total{kind,result}`.
-`kind` is `message` or `notice`. Serves G.
-
-### D10: Image and compose example
-
-The Dockerfile pre-creates `/peers` owned by `agent:agent` (uid 1000) so a fresh named volume is
-writable (F9). `examples/docker-compose.peers.yml` runs `ccw-a` and `ccw-b` from one image build
-(`build: ..`), each with its own workdir/sessions/mise volumes and loopback port, sharing one named
-`peers` volume at `/peers` and one `CCW_PEER_TOKEN`, with instance names `a` and `b` and advertise
-urls `http://ccw-a:8080` and `http://ccw-b:8080`, from `examples/peers.config.yaml` (a committed
-symlink into the package data). Compose resolves every `-f` file's relative paths against the
-first file's directory, so the CI override writes host paths relative to examples/ (`../tests/...`).
-Serves J.
+`examples/docker-compose.peers.yml` runs `ccw-a` and `ccw-b` from one build (`build: ..`), each
+with its own state volumes and loopback port, one `CCW_PEER_TOKEN`, names `a` and `b`, advertise
+urls `http://ccw-a:8080` and `http://ccw-b:8080`, and `peers.static` pointing at the other
+service's url, from `examples/peers.config.yaml` (a committed symlink into the package data). No
+shared volume. Serves J.
 
 ### D11: README
 
-A `## Peer messaging` section: what it replaces and why, setup, addressing
-(`<instance>/<session id>`), unique instance names, the directory layout, signing and liveness,
-delivery and framing, notices, delivery guarantees (at most once; a restart loses the in-memory
-inbox; the dedupe window; one client retry), limits (`max_message_bytes`, `inbox_max`,
-`max_messages_per_minute`, body cap, clock skew), cross-node and cross-cluster use through an RWX
-volume (clocks NTP-synced within `max_clock_skew_seconds` and `stale_seconds`), the TLS note (ccw
-signs but does not encrypt and does not terminate TLS; cross-host traffic needs TLS in front, and
-`advertise_url` may be https behind an ingress or mesh), and the trust model: one shared peer
-token is one trust domain, any holder can push prompts into bypass-mode agents and claim any
-`from`, any agent running as the agent uid can read the token from the ccw process env, and
-main-agent-only is not enforced against a subagent calling `/internal/mcp` from Bash (same as the
-command tool). Plus: a pointer from `## Trust model`, the compose example under
-`## Docker and compose`, a note under `## Running in Kubernetes`, config rows for every key, the
-two routes, the new error codes, the new events, the new metrics, the `peer` turn origin and the
-two tools under `### \`POST /internal/mcp\``. Serves I and L.
+A `## Peer messaging` section: what it replaces and why; setup (enable, token, names, advertise
+urls, `peers.static` and `--peer`); membership (join, heartbeat, leave, gossip, reachability,
+the startup and shutdown order and their bounds); addressing `<instance>/<session id>`; unique
+names; request signing; delivery and frames; notices; delivery guarantees (at most once, a restart
+loses the in-memory inbox, the dedupe window of 256 `(from, msg_id, kind)` per session, one client
+retry); limits; cross-node and cross-cluster use (every instance's `advertise_url` reachable from
+every other, clocks within `max_clock_skew_seconds`); TLS (ccw signs but does not encrypt and does
+not terminate TLS, so cross-host traffic needs TLS in front); trust model (one shared token is one
+trust domain, any holder can push prompts into bypass-mode agents, claim any `from` and join the
+mesh, any agent running as the agent uid can read the token from the ccw process env, main-agent
+only is not enforced against a subagent calling `/internal/mcp` from Bash). Plus a pointer from
+`## Trust model`, the compose example, a Kubernetes note (per-pod advertise urls, a headless
+Service for seeds), config rows, the five routes, the error codes, events, metrics, the four
+hooks, the `peer` origin and the two tools. Serves I and L.
 
 ### D12: Tests and conventions
 
-The fake claude substitutes `{{name}}` with the named groups of the turn's `match` regex in the
-string values of its steps (mcp arguments and text). Scenarios anchor on the message body
-(`\nping\n</agent-message>` replies `pong`; a `pong` body matches nothing that sends), so the
-ping-pong cannot loop. tests/conftest.py gains a `ccw_service` fixture that runs `run_service` on
-real ports (port 0) and stops it at teardown, and `World.service_cfg(name, ...)` giving each
-service its own workdir and sessions roots. Unit tests per module; tests/test_peers_e2e.py runs
-two services on one tmp directory: A sends via `send_message`, B gets the framed turn, B replies,
-A gets the reply turn and the idle notice; tool results are read from each session's
-`fake-mcp.jsonl` and `tool_result` events. A docker integration test (`scripts/integration-peers.sh`,
-mise task `test:integration:peers`, also run by `mise run test:integration` and so by CI, with the
-image built once) proves the same between two containers. Real-claude acceptance of the tool
-schemas is cannotVerify, not a task. All work is test-first, `uv run`, ASCII. Serves K and M.
+The fake claude substitutes `{{name}}` with the named groups of the turn's `match` regex in its
+step strings. Scenarios anchor on the message body (`ping` replies `pong`, `pong` matches no
+sending turn), so the exchange cannot loop. tests/conftest.py gains a `ccw_service` fixture
+(run_service on port 0) and `World.service_cfg(name, ...)`. Unit tests per module;
+tests/test_peers_e2e.py runs three services on real ports, B seeded with A and C seeded with B
+only; tool results are read from `fake-mcp.jsonl` and `tool_result` events. A docker two-container
+test (`scripts/integration-peers.sh`, `mise run test:integration:peers`, also run by
+`mise run test:integration` with the image built once) proves join, listing, messages both ways
+and leave on stop. Real-claude acceptance of the tool schemas is cannotVerify. Serves K and M.
 
-### D13: HMAC request and entry signing
+### D13: HMAC request signing
 
-The peer token is a signing key only (plan review). New module peer_auth.py:
-
-- Requests: headers `X-CCW-Peer-Timestamp` (unix milliseconds), `X-CCW-Peer-Nonce` (32 hex) and
-  `X-CCW-Peer-Signature` (hex HMAC-SHA256 keyed by the token over
-  `<METHOD>\n<path>\n<timestamp>\n<nonce>\n<sha256 hex of the body>`). The receiver rejects a
-  timestamp more than `max_clock_skew_seconds` from its clock and a nonce already seen; the nonce
-  cache keeps entries for twice the skew window and is capped (65536 entries, my call); when full
-  after expiry, new requests are 429 `rate_limited` rather than evicting live nonces (my call).
-  Comparison is `hmac.compare_digest`.
-- Entries: `sig` = hex HMAC-SHA256 keyed by the token over the canonical JSON (sorted keys, no
-  whitespace) of the seven other fields. Readers drop entries whose `sig` is missing or wrong.
-
-Serves N.
+The peer token is a signing key only. Headers `X-CCW-Peer-Timestamp` (unix ms), `X-CCW-Peer-Nonce`
+(32 hex), `X-CCW-Peer-Signature` (hex HMAC-SHA256 over
+`<METHOD>\n<path>\n<timestamp>\n<nonce>\n<sha256 hex of body>`). The receiver rejects a timestamp
+outside `max_clock_skew_seconds`, a nonce already seen (cache kept for twice the window, capped at
+65536; when full, 429 `rate_limited` rather than evicting a live nonce, my call), and a bad
+signature, with `hmac.compare_digest`. Every peer route, including join, heartbeat and leave, is
+signed. Serves N.
 
 ### D14: Delivery guarantees and retries
 
-Delivery is at most once: the inbox lives in memory, so a ccw restart loses queued items (and
-their notices). The client retries once, with the same `msg_id` and a fresh nonce and timestamp,
-on connection-level failures only (connect error, connect or read timeout, protocol error), never
-on an HTTP answer; the receiver's dedupe of the last 256 `(from, msg_id, kind)` per session makes
-that safe. Serves N.
+Delivery is at most once; a restart loses queued items. The client retries once, with the same
+`msg_id` and a fresh nonce and timestamp, on connection-level failures only; the receiver's dedupe
+of the last 256 `(from, msg_id, kind)` per session makes that safe. Join, heartbeat and leave are
+not retried within a call (the next heartbeat is the retry). Serves N.
+
+### D15: Instance-level membership hooks
+
+`HOOK_EVENTS` gains `preJoin`, `postJoin`, `preLeave`, `postLeave`; `VETO_EVENTS` gains `preJoin`
+(deny = standalone); the others honour only allow (preLeave annotations are kept, its decision
+ignored). They fire on an instance-level `HookDispatcher` (cwd = `paths.sessions_root`, state dir
+`<sessions_root>/.peers-hook-state`, my call) with the usual payload and `session_id` empty, and
+`data` = `{instance, url, members: [{instance, url}]}` (post hooks add `failures: [{url, error}]`
+and, for postJoin, `standalone: bool`). Existing `blocking`, `timeout_seconds` and `on_error`
+semantics apply; results are logged and counted in `ccw_hook_actions_total`. They never fire with
+peers disabled. Serves E.
 
 ## Research
 
 | Lens | Ran or skipped | Adopted | Rejected |
 |---|---|---|---|
-| Claude Code bundle reverse engineering | ran (2.1.304 Linux, 2.1.307 macOS; scratch brief) | `CLAUDE_CODE_HARBOR_KITE=0` and settings deny to switch the built-ins off (F8); idle-notice shape with `state` (F7) | native socket transport (F2, F3, F6), native registry (F1, F5) |
-| Docker experiments | ran (named volume and bind mount, two containers) | image-created mount point so a fresh named volume is writable (F9) | socket on a shared mount across nodes (F9 is kernel-local) |
-| ccw codebase | ran (mcp_server.py, internal_api.py, router.py, manager.py, service.py, api/, bootstrap/, events.py, metrics.py, fake claude, conftest) | reuse the ccw MCP server, the `mcp__ccw__*` subagent deny, `submit_turn` with a new origin, the `on_state` ready trigger used by commands, `build_env` managed vars, `render_settings` permissions, `_spawn` for background work | typing into a busy PTY; awaiting network I/O in `_on_stop`; a new process or broker |
-| Plan review panel and builder check | ran (coordinator verdict) | HMAC signing (D13), status notices off the Stop path (D8), at-most-once and retry (D14), sweep instead of clash refusal and stale GC (D5), off-loop directory I/O (D5), inbox re-check (D7), rate limit (D7), README serialization | Bearer peer token on the wire; startup refusal on a name clash |
-| External prior art | skipped: the transport is plain signed HTTP between ccw instances; the open questions are ccw-internal | - | - |
+| Claude Code bundle reverse engineering | ran (scratch brief) | `CLAUDE_CODE_HARBOR_KITE=0` and settings deny (F8); idle-notice shape (F7) | native socket transport and registry (F1, F5, F9) |
+| ccw codebase | ran (mcp_server.py, internal_api.py, router.py, manager.py, service.py, api/, bootstrap/, hooks.py, config.py, events.py, metrics.py, fake claude, conftest) | ccw MCP server, `mcp__ccw__*` subagent deny, `submit_turn` with a new origin, `on_state` ready trigger, `build_env` managed vars, `render_settings`, `HookDispatcher` at instance level, `VETO_EVENTS` | typing into a busy PTY; awaiting network I/O in `_on_stop` |
+| Plan review panel and builder check | ran (coordinator verdict) | HMAC signing (D13), notices off the Stop path (D8), at-most-once and retry (D14), inbox re-check (D7), rate limit (D7), README serialization | Bearer token on the wire |
+| User review of discovery | ran (user verbatim, D5) | join/leave endpoints, static seeds, pre/post join and leave hooks, heartbeats | shared-folder discovery |
+| External prior art | skipped: gossip-style membership is standard; the open questions are ccw-internal | - | - |
 
 ## Research inputs
 
 | Source | Entry | Lands in |
 |---|---|---|
-| brief section 5 (F8) | `CLAUDE_CODE_HARBOR_KITE` overrides the gate either way; deny rules block by tool name | peer-session-bootstrap |
-| brief section 4 (F7) | reply goes to the sender's `from`; idle notice `{state, finished_at, detail}` after handling | peer-inbox-outcomes, peer-service-core |
-| brief section 7 (F9) | fresh named volume is root 755; pre-create the mount point | peers-image-compose-docs |
-| brief section 7 (F9) | AF_UNIX works only within one kernel | rejected: native transport dropped (D1) |
-| brief section 1 (F1, F5) | native registry keyed by pid collides across containers | rejected: discovery is ccw's own directory keyed by session id (D5) |
-| brief section 2 (F2) | explicit socket path and dir vetting | rejected: no sockets in the new design (D1) |
-| brief section 4 (F6) | `crossSessionInbound: accept` for bypass receivers | rejected: native inbound not used (D1) |
-| brief section 8 fix 2 | shared pid namespace | rejected: user decision D1 |
+| brief section 5 (F8) | `CLAUDE_CODE_HARBOR_KITE` overrides the gate; deny rules block by name | peer-session-bootstrap |
+| brief section 4 (F7) | reply to `from`; idle notice after handling | peer-inbox-outcomes, peer-service-core |
+| brief section 7 (F9) | AF_UNIX is kernel-local | rejected: native transport dropped (D1) |
+| brief section 1 (F1, F5) | native registry collides across containers | rejected: membership keyed by instance name (D5) |
 | brief section 8 fix 5 | ccw-side relay over HTTP through an MCP tool | peers-mcp-tools, peer-messages-endpoint, peer-http-client |
-| mcp_server.py, internal_api.py | existing ccw MCP server and loopback route | peers-mcp-tools |
-| router.py `_on_pre_tool_use` | `mcp__ccw__*` subagent deny already main-agent-only | peer-session-bootstrap |
-| router.py `on_state`, `submit_turn` | ready trigger and turn submission with origin | peer-inbox-delivery |
+| user review, verbatim | join/leave endpoints, static seeds, ordering, four hooks, heartbeat | peer-member-table, peer-membership-service, peer-membership-hooks, peers-join-leave-order |
 | router.py `_on_stop` awaits `_after_turn` | network I/O there delays the Stop answer | peer-inbox-outcomes |
-| plan review item 1 | HMAC request and entry signing | peer-auth-signing, peer-directory-module, peer-http-client, peer-messages-endpoint |
-| plan review items 4 to 6 | sweep own dir, stale GC, name rules, off-loop I/O | peers-config-section, peer-directory-module |
-| plan review items 7 to 9 | inbox re-check, rate limit, client retry | peer-inbox-delivery, peer-http-client |
+| hooks.py `HookDispatcher`, config.py `VETO_EVENTS` | reusable at instance level | peer-membership-hooks |
+| plan review items 1, 7 to 9 | signing, inbox re-check, rate limit, retry | peer-auth-signing, peer-inbox-delivery, peer-http-client |
 
 ## Decision coverage
 
 | Decision | Tasks |
 |---|---|
 | D1 ccw-owned HTTP messaging | peer-http-client, peer-messages-endpoint, peer-service-core, manager-peers-lifecycle |
-| D2 Opt-in peers config | peers-config-section, manager-peers-lifecycle |
+| D2 Opt-in peers config | peers-config-section, manager-peers-lifecycle, peers-join-leave-order |
 | D3 Native built-ins off | peer-session-bootstrap, manager-peers-lifecycle |
 | D4 MCP tools | peers-mcp-tools, peer-session-bootstrap, peer-service-core |
-| D5 Discovery directory | peer-directory-module, peer-service-core, manager-peers-lifecycle |
-| D6 Peer HTTP API and auth | peer-messages-endpoint, peer-http-client |
+| D5 Membership discovery | peer-member-table, peer-membership-service, peer-messages-endpoint, manager-peers-lifecycle, peers-join-leave-order |
+| D6 Peer HTTP API | peer-messages-endpoint, peer-http-client |
 | D7 Inbox delivery | peer-inbox-delivery, peer-service-core |
 | D8 Delivery notices | peer-inbox-outcomes, peer-service-core, peers-two-instance-e2e |
-| D9 Events and metrics | peer-events-and-metrics, peer-inbox-delivery, peer-service-core |
-| D10 Image and compose | peers-image-compose-docs |
-| D11 README | peers-config-section, peer-events-and-metrics, peer-messages-endpoint, peers-readme-guide |
+| D9 Events and metrics | peer-events-and-metrics, peer-inbox-delivery, peer-membership-service, peer-service-core |
+| D10 Compose example | peers-compose-example |
+| D11 README | peers-config-section, peer-events-and-metrics, peer-membership-hooks, peer-messages-endpoint, peers-readme-guide |
 | D12 Tests and conventions | fake-claude-peer-harness, peers-two-instance-e2e, peers-two-container-test |
-| D13 HMAC signing | peer-auth-signing, peer-directory-module, peer-http-client, peer-messages-endpoint |
+| D13 HMAC signing | peer-auth-signing, peer-http-client, peer-messages-endpoint |
 | D14 Delivery guarantees and retries | peer-http-client, peer-inbox-delivery, peers-readme-guide |
+| D15 Membership hooks | peer-membership-hooks, peer-membership-service, peers-join-leave-order |
 
 ## Contracts
 
@@ -431,60 +403,55 @@ that safe. Serves N.
 |---|---|---|---|
 | `fake-match-substitution` | fake-claude-peer-harness | peers-two-instance-e2e, peers-two-container-test | `tests/fake_claude/fake_claude.py` |
 | `ccw-service-fixture` | fake-claude-peer-harness | peers-two-instance-e2e | `tests/conftest.py` |
-| `peers-config` | peers-config-section | peer-directory-module, peer-inbox-delivery, peer-messages-endpoint, peer-session-bootstrap, peer-service-core, manager-peers-lifecycle, peers-image-compose-docs | `src/claude_code_wrapper/config.py` |
-| `peer-auth` | peer-auth-signing | peer-directory-module, peer-http-client, peer-messages-endpoint | `src/claude_code_wrapper/peer_auth.py` |
-| `peer-directory-entry` | peer-directory-module | peer-http-client, peers-mcp-tools, peer-service-core | `src/claude_code_wrapper/peers.py` |
+| `peers-config` | peers-config-section | peer-membership-hooks, peer-inbox-delivery, peer-messages-endpoint, peer-session-bootstrap, peer-membership-service, peer-service-core, manager-peers-lifecycle, peers-compose-example | `src/claude_code_wrapper/config.py` |
+| `peer-auth` | peer-auth-signing | peer-http-client, peer-messages-endpoint | `src/claude_code_wrapper/peer_auth.py` |
+| `peer-member-table` | peer-member-table | peer-http-client, peer-membership-service, peer-service-core | `src/claude_code_wrapper/peers.py` |
 | `peer-events` | peer-events-and-metrics | peer-inbox-delivery, peer-service-core | `src/claude_code_wrapper/events.py` |
-| `peer-metrics` | peer-events-and-metrics | peer-inbox-delivery, peer-messages-endpoint, peer-service-core | `src/claude_code_wrapper/metrics.py` |
-| `peer-wire` | peer-http-client | peer-inbox-delivery, peer-messages-endpoint, peers-mcp-tools, peer-service-core | `src/claude_code_wrapper/peer_client.py` |
+| `peer-metrics` | peer-events-and-metrics | peer-inbox-delivery, peer-messages-endpoint, peer-membership-service, peer-service-core | `src/claude_code_wrapper/metrics.py` |
+| `peer-membership-hooks` | peer-membership-hooks | peer-membership-service, manager-peers-lifecycle | `src/claude_code_wrapper/hooks.py` |
+| `peer-wire` | peer-http-client | peer-inbox-delivery, peer-messages-endpoint, peers-mcp-tools, peer-membership-service, peer-service-core | `src/claude_code_wrapper/peer_client.py` |
 | `peer-inbox` | peer-inbox-delivery | peer-inbox-outcomes, peer-service-core, manager-peers-lifecycle | `src/claude_code_wrapper/peer_inbox.py` |
 | `peer-inbox-outcome` | peer-inbox-outcomes | peer-service-core | `src/claude_code_wrapper/peer_inbox.py` |
-| `peer-messages-endpoint` | peer-messages-endpoint | peer-service-core, manager-peers-lifecycle | `src/claude_code_wrapper/api/peers.py` |
+| `peer-messages-endpoint` | peer-messages-endpoint | peer-membership-service, peer-service-core, manager-peers-lifecycle | `src/claude_code_wrapper/api/peers.py` |
 | `ccw-mcp-peers-tool` | peers-mcp-tools | peer-service-core, manager-peers-lifecycle | `src/claude_code_wrapper/mcp_server.py` |
 | `peer-session-bootstrap` | peer-session-bootstrap | manager-peers-lifecycle | `src/claude_code_wrapper/bootstrap/settings.py` |
+| `peer-membership` | peer-membership-service | peer-service-core | `src/claude_code_wrapper/peer_membership.py` |
 | `peer-service` | peer-service-core | manager-peers-lifecycle | `src/claude_code_wrapper/peer_service.py` |
-| `peers-image` | peers-image-compose-docs | peers-two-container-test | `Dockerfile` |
+| `peers-compose` | peers-compose-example | peers-two-container-test | `examples/docker-compose.peers.yml` |
 
-Cross-epic (docs/plans/contracts.json): this epic owns `peers-config`, `peer-directory-entry`,
+Cross-epic (docs/plans/contracts.json): this epic owns `peers-config`, `peer-member-table`,
 `peer-messages-endpoint` and `ccw-mcp-peers-tool`, and consumes `ccw-mcp-tool` (owner
-agent-callable-slash-command: `handle_message` becomes async with an optional `peers` argument,
-the `command` tool unchanged) and `event-types` (owner hook-capabilities-for-tatara: three types
-added).
+agent-callable-slash-command), `event-types` and `hook-events` and `hook-result-protocol` (owner
+hook-capabilities-for-tatara: five event types, four hook events, preJoin as a veto event). The
+earlier `peer-directory-entry` contract is retired (shared-folder discovery dropped).
 
 ## Review focus
 
-- Zero change when off: argv, env, settings.json, .claude.json, CLAUDE.md, routes, MCP tool list
-  and filesystem (peer-session-bootstrap, peers-mcp-tools, peer-messages-endpoint,
-  manager-peers-lifecycle ACs).
-- Signing (peer-auth-signing, peer-messages-endpoint, peer-directory-module): canonical strings,
-  constant-time compares, skew window, bounded nonce cache, verification over raw bytes before
-  parse, forged entries ignored, the token absent from every request and file.
-- Delivery concurrency (peer-inbox-delivery): never submits while a turn or command runner is
-  active, keeps arrival order, never strands an item, honours a kick that lands mid-attempt, does
-  not race the idle command runner or idle auto-compact, and drops cleanly on close.
-- Notices (peer-inbox-outcomes, peer-service-core): spawned off the Stop path, rejected and dropped
-  always sent, notices never produce notices, shutdown drain bounded.
-- Directory (peer-directory-module): off-loop I/O with timeouts, atomic writes, sweep and GC rules.
-- `handle_message` going async must not change any `command` tool behaviour (ccw-mcp-tool).
+- Zero change when off, including no hook fires and no outbound traffic.
+- Ordering: no session create accepted before postJoin returns; leave and postLeave before any
+  onDestroy on every shutdown path, including exit_when_last_destroyed; both bounded.
+- Membership convergence and bounds: sessions only from a member's own report, reachability only
+  from direct exchanges, miss counting, re-add, table cap, debounced immediate heartbeats.
+- Signing on all five routes, verification over raw bytes before parse, nonce cache bounds, the
+  token absent from every request.
+- Delivery concurrency (peer-inbox-delivery) and notices off the Stop path (peer-inbox-outcomes).
+- `handle_message` going async must not change the `command` tool.
 
 ## Left to the builder
 
-- Internal structure of peer_auth.py, peers.py, peer_client.py, peer_inbox.py and peer_service.py
-  within the interfaces stated in the tasks.
-- The exact wording of the peers paragraph, the tool descriptions and the README prose, within the
-  content listed in the tasks.
-- Poll intervals in tests, within bounded deadlines.
+- Internal structure of peer_auth.py, peers.py, peer_client.py, peer_inbox.py, peer_membership.py
+  and peer_service.py within the stated interfaces.
+- Wording of the peers paragraph, tool descriptions and README prose within the listed content.
+- Poll intervals in tests within bounded deadlines.
 
 ## Assumptions and unknowns
 
-- Real claude honours `CLAUDE_CODE_HARBOR_KITE=0` and the settings deny rules (F8, from the
-  bundle); not testable without credentials. cannotVerify at run time; the user can confirm with
-  one logged-in container (`ListAgents` absent from the tool list).
-- Real claude accepts the `peers` and `send_message` input schemas; cannotVerify, same reason.
-- Docker copies image directory ownership into a fresh named volume (F9); confirmed by the docker
-  integration test.
-- Nodes sharing an RWX directory have clocks within `max_clock_skew_seconds` of each other;
-  documented as an operator requirement in the README.
+- Real claude honours `CLAUDE_CODE_HARBOR_KITE=0` and the deny rules, and accepts the tool
+  schemas; cannotVerify without credentials.
+- Instances in one mesh have clocks within `max_clock_skew_seconds`; documented as an operator
+  requirement.
+- Every instance's `advertise_url` is reachable from every other; documented as an operator
+  requirement (members that are not reachable simply never become reachable).
 
 ## Open questions
 

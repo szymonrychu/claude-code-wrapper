@@ -32,7 +32,7 @@ Switch Claude's native peer messaging off and point the agent at the ccw tools, 
 - tests/test_peers_bootstrap.py: env with and without peers (HARBOR_KITE=0 wins over a user value); settings deny and allow with peers, no duplicates, removal on re-render without peers, disabled byte-identical to a render made before the change (compare to `render_settings` with the default argument); CLAUDE.md paragraph with peers, alone and after configured parts, and unchanged without.
 - tests/test_peers_gate.py with the router harness: SendMessage and ListAgents denied with the reason and a tool_denied event when enabled, allowed (reaching onAgentToolCall) when disabled; a subagent call to `mcp__ccw__send_message` denied with the reworded reason.
 
-Dependency note: this task depends on peer-inbox-delivery only because both edit src/claude_code_wrapper/router.py (this task the PreToolUse gate, that one the inbox hooks), so the edits must not run in parallel. README text about the gate and the reworded reason is written by peers-image-compose-docs; this task does not edit README.md.
+Dependency note: this task depends on peer-inbox-delivery only because both edit src/claude_code_wrapper/router.py (this task the PreToolUse gate, that one the inbox hooks), so the edits must not run in parallel. README text about the gate and the reworded reason is written by peers-readme-guide; this task does not edit README.md.
 
 Interfaces: `build_env(peers=)`, `render_settings(peers=)`, `write_instructions(peers=)`, `PEERS_INSTRUCTIONS`, `PEERS_ALLOW` (the `peer-session-bootstrap` part).
 
@@ -57,19 +57,22 @@ Interfaces: `build_env(peers=)`, `render_settings(peers=)`, `write_instructions(
 - `tests/test_peers_bootstrap.py`
 - `tests/test_peers_gate.py`
 
+
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+See the Requirement's Interfaces paragraph; keep every name and signature stated there.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A peered session cannot use SendMessage or ListAgents by env, settings or gate, and its CLAUDE.md explains the ccw tools; a non-peered session is byte-identical to today.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_peers_bootstrap.py tests/test_peers_gate.py` first; run `uv run pytest tests/test_peers_bootstrap.py tests/test_peers_gate.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peers_bootstrap.py tests/test_peers_gate.py -q` again and expect all passed.
+- Run the task verify: `uv run pytest tests/test_peers_bootstrap.py tests/test_peers_gate.py tests/test_bootstrap_settings.py tests/test_bootstrap_home.py tests/test_router.py tests/test_session_boot.py -q && mise run lint`; expect all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+The router change is limited to the PreToolUse gate and the reason constant. The dependency on peer-inbox-delivery exists only because both tasks edit router.py.

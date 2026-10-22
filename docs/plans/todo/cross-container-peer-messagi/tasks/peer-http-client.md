@@ -56,19 +56,22 @@ Interfaces: `peer_client.MessageBody`, `NoticeBody`, `PeerError`, `RECEIVER_STAT
 - `src/claude_code_wrapper/peer_client.py`
 - `tests/test_peer_client.py`
 
+
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+See the Requirement's Interfaces paragraph; keep every name and signature stated there.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A typed wire format and a signing client for messages, notices, join, heartbeat and leave, with fixed error codes and one safe retry for messages.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_peer_client.py` first; run `uv run pytest tests/test_peer_client.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peer_client.py -q` again and expect all passed.
+- Run the task verify: `uv run pytest tests/test_peer_client.py -q && mise run lint`; expect all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Use httpx (already a runtime dependency). Tests use httpx.MockTransport, never a network port.
