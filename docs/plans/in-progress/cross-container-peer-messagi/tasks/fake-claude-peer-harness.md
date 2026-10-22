@@ -12,8 +12,8 @@ model: sonnet
 estimate: 60
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--fake-claude-peer-harness
+branch: cross-container-peer-messagi--fake-claude-peer-harness
 verified_head: ""
 run: ""
 provides: []

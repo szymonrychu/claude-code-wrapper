@@ -12,8 +12,8 @@ model: opus
 estimate: 90
 actual: ""
 review: full
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-membership-service
+branch: cross-container-peer-messagi--peer-membership-service
 verified_head: ""
 run: ""
 provides: []

@@ -12,8 +12,8 @@ model: sonnet
 estimate: 75
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peers-two-container-test
+branch: cross-container-peer-messagi--peers-two-container-test
 verified_head: ""
 run: ""
 provides: []

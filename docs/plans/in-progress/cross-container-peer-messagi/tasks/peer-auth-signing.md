@@ -12,8 +12,8 @@ model: sonnet
 estimate: 45
 actual: ""
 review: full
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-auth-signing
+branch: cross-container-peer-messagi--peer-auth-signing
 verified_head: ""
 run: ""
 provides: []

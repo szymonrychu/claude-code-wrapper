@@ -12,8 +12,8 @@ model: sonnet
 estimate: 60
 actual: ""
 review: full
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--manager-peers-lifecycle
+branch: cross-container-peer-messagi--manager-peers-lifecycle
 verified_head: ""
 run: ""
 provides: []

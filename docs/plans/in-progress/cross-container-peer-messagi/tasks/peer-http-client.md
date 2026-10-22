@@ -12,8 +12,8 @@ model: sonnet
 estimate: 75
 actual: ""
 review: ""
-worktree: ""
-branch: ""
+worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-http-client
+branch: cross-container-peer-messagi--peer-http-client
 verified_head: ""
 run: ""
 provides: []
