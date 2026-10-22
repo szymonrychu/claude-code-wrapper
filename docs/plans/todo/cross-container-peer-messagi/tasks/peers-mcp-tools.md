@@ -5,9 +5,9 @@ repo: .
 value: The main agent can list peers and send them messages through two ccw tools
 files: [src/claude_code_wrapper/mcp_server.py, src/claude_code_wrapper/internal_api.py, tests/test_mcp_peers.py]
 verify: "uv run pytest tests/test_mcp_peers.py tests/test_mcp_server.py tests/test_internal_api.py tests/test_fake_claude_mcp.py -q && mise run lint"
-depends_on: [peer-http-client, peer-directory-module]
+depends_on: [peer-http-client]
 owns: [ccw-mcp-peers-tool]
-uses: [peer-wire, peer-directory-entry]
+uses: [peer-wire]
 model: sonnet
 estimate: 60
 actual: ""
@@ -58,19 +58,17 @@ Notes: only internal_api.py calls `handle_message` today (tests reach it over HT
 
 ## Interfaces
 
-See the Requirement's Interfaces paragraph; keep every name and signature stated there.
+Signatures, schemas and contracts this task builds or must keep, with file:symbol.
 
 ## Expected outcome
 
-The ccw MCP server offers peers and send_message when given PeerTools, with exact schemas and error texts, and is unchanged otherwise.
+What is true and observable when the task is done.
 
 ## Steps
 
-- Write the tests named in the acceptance conditions in `tests/test_mcp_peers.py` first; run `uv run pytest tests/test_mcp_peers.py -q` and see them fail for the missing behaviour (not an import typo).
-- Implement the smallest change that makes them pass; run `uv run pytest tests/test_mcp_peers.py -q` again and expect all passed.
-- Run the task verify: `uv run pytest tests/test_mcp_peers.py tests/test_mcp_server.py tests/test_internal_api.py tests/test_fake_claude_mcp.py -q && mise run lint`; expect all passed and ruff clean.
-- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
+Test first. One step per bullet, with the exact command and the output to expect.
+A retirement test asserts on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-See the Requirement's Notes paragraph. internal_api reads manager.peers, which manager-peers-lifecycle sets; getattr keeps it None meanwhile.
+Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
