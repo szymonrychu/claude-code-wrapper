@@ -4,7 +4,7 @@ status: todo
 repo: .
 value: "No session starts before the join and no onDestroy runs before the leave, and seeds can come from the command line"
 files: [src/claude_code_wrapper/manager.py, src/claude_code_wrapper/service.py, src/claude_code_wrapper/cli.py, tests/test_peers_startup.py]
-verify: "uv run pytest tests/test_peers_startup.py tests/test_service.py tests/test_cli.py tests/test_exit_policy.py -q && mise run lint"
+verify: "uv run pytest tests/test_peers_startup.py tests/test_service.py tests/test_cli.py tests/test_exit_policy.py tests/test_destroy_io.py -q && mise run lint"
 depends_on: [manager-peers-lifecycle]
 owns: []
 uses: [peers-config, peer-service]
@@ -70,3 +70,4 @@ No session starts before the join finished and no onDestroy runs before the leav
 ## Notes
 
 Hooks write ordered marker lines to one file; assert on that order.
+- Builder check: exit_when_last_destroyed leaves only when `_active` would become empty, before `_start_destroy` of that last session; a concurrent create or a vetoed destroy keeps membership; leave is idempotent. exit_when_dead: `_retire` awaits `leave_peers()` before that session's onDestroy runs. Leave targets every reachable member. Joining before the servers listen is accepted: peers' first heartbeats to us may miss and recover on the next one.

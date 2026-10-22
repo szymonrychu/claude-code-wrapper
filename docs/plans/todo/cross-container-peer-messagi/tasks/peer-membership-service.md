@@ -74,3 +74,4 @@ An instance joins through its seeds, converges with the mesh by heartbeat, track
 ## Notes
 
 See the Requirement's Notes paragraph. Review is full: background loops, timeouts and ordering.
+- Builder check: once `leave()` has run, `accept_join` and `accept_heartbeat` raise `PeerError` (the endpoint answers 409 `left`) so peers cannot re-add us during shutdown; add a test.
