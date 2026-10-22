@@ -618,7 +618,15 @@ Prometheus text exposition (`ccw_sessions_active`, `ccw_sessions_created_total`,
 `ccw_commands_total{command,origin,result}` (`command` is a built-in command name, anything else
 counts as `other`; `result` is the final state: `completed`, `failed`, `cancelled`),
 `ccw_command_duration_seconds{command}` (histogram),
-`ccw_compactions_total{trigger}` (`manual`, `auto`, `unknown`)). No auth.
+`ccw_compactions_total{trigger}` (`manual`, `auto`, `unknown`),
+`ccw_peer_messages_received_total{kind,result}` (`kind` is `message` or `notice`; `result` is
+`accepted`, `duplicate`, `inbox_full`, `rate_limited`, `too_large`, `not_found`, `unauthorized`),
+`ccw_peer_messages_sent_total{kind,result}` (`result` is `ok` or the peer error code),
+`ccw_peer_messages_delivered_total{kind,result}` (`delivered`, `rejected`, `dropped`),
+`ccw_peer_membership_total{op,result}` (`op` is `join`, `heartbeat`, `leave` for the outbound
+rounds, or `inbound_heartbeat`; `result` is `ok`, `failed`, `vetoed`) and the gauge
+`ccw_peer_members` (peers in the reachable list)). The peer families exist only with values once
+`peers:` is enabled. No auth.
 Response `200`, `Content-Type: text/plain; version=0.0.4`.
 
 ### Internal API
@@ -1066,6 +1074,61 @@ error}]`, `[]` when none). Also emitted on a SIGTERM shutdown when `onDestroy` c
 ```
 event: destroy_output
 data: {"seq":22,"ts":"2026-10-20T09:09:59.000Z","session_id":"ses_3f9a1c0b7d42","type":"destroy_output","data":{"outputs":[{"index":0,"ok":true,"output":{"verdict":"pass"},"error":null}]}}
+```
+
+### `peer_message_received`
+
+Emitted when an inbound peer message or notice is accepted for this session.
+
+`data`: `msg_id`, `from` (sender address), `kind` (`message` or `notice`), `bytes`, `message` (the text), `queued` (true when it waits behind a busy turn).
+
+```
+event: peer_message_received
+data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"peer_message_received","data":{"msg_id":"m1","from":"b/ses_aa","kind":"message","bytes":5,"message":"hello","queued":false}}
+```
+
+### `peer_message_sent`
+
+Emitted when this session's agent sends a peer message or notice.
+
+`data`: `msg_id`, `to` (recipient address), `kind`, `bytes`, `notify_when_idle`, `result` (`ok` or the peer error code).
+
+```
+event: peer_message_sent
+data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"peer_message_sent","data":{"msg_id":"m2","to":"b/ses_aa","kind":"message","bytes":5,"notify_when_idle":false,"result":"ok"}}
+```
+
+### `peer_message_delivered`
+
+Emitted when the inbox delivers a received message as a turn, or drops or rejects it.
+
+`data`: `msg_id`, `from`, `kind`, `turn_id` (the delivering turn), `result` (`delivered`, `rejected`, `dropped`).
+
+```
+event: peer_message_delivered
+data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"peer_message_delivered","data":{"msg_id":"m1","from":"b/ses_aa","kind":"message","turn_id":"turn_1","result":"delivered"}}
+```
+
+### `peer_member_joined`
+
+Emitted on every live session's stream when an instance enters the reachable list.
+
+`data`: `instance`, `url`, `reason` (`join`, `heartbeat`, `leave` or `missed_heartbeats`).
+
+```
+event: peer_member_joined
+data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"peer_member_joined","data":{"instance":"b","url":"http://ccw-b:8080","reason":"join"}}
+```
+
+### `peer_member_left`
+
+Emitted on every live session's stream when an instance leaves the reachable list.
+
+`data`: `instance`, `url`, `reason` (`join`, `heartbeat`, `leave` or `missed_heartbeats`).
+
+```
+event: peer_member_left
+data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"peer_member_left","data":{"instance":"b","url":"http://ccw-b:8080","reason":"missed_heartbeats"}}
 ```
 
 ### `session_closed`
