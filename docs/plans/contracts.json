@@ -84,5 +84,13 @@
     "file": "src/claude_code_wrapper/peers.py",
     "consumers": [],
     "note": "<peers.dir>/directory/<session id>.json {session_id, name, instance, address uds:<peers.dir>/socks/<session id>.sock, cwd, started_at}; sockets at <peers.dir>/socks/<session id>.sock; read by every ccw container sharing the dir"
+  },
+  {
+    "name": "ccw-mcp-peers-tool",
+    "kind": "interface",
+    "owner": "cross-container-peer-messagi",
+    "file": "src/claude_code_wrapper/mcp_server.py",
+    "consumers": [],
+    "note": "ccw MCP tool peers {instance?}: live peers excluding the caller, each {session_id, name, instance, address, cwd, started_at, hint}; listed only when peers.enabled; allow rule mcp__ccw__peers"
   }
 ]
