@@ -219,7 +219,7 @@ class Metrics:
         self._peer_delivered.labels(self._peer_kind(kind), result).inc()
 
     def peer_membership(self, op: str, result: str) -> None:
-        """`op` is `join`, `heartbeat`, `leave` or `inbound_heartbeat`; `result` ok/failed/vetoed."""
+        """`op`: `join`, `heartbeat`, `leave`, `inbound_heartbeat`; `result`: ok, failed, vetoed."""
         if op not in PEER_OPS:
             raise ValueError(f"unknown peer membership op {op!r}")
         self._peer_membership.labels(op, result).inc()
