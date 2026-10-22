@@ -558,6 +558,8 @@ Auth: bearer. Path parameter: `id`. Query parameters:
 |---|---|---|---|
 | `after_seq` | integer >= 0 | `0` | return events with `seq` greater than this |
 | `limit` | integer >= 1 | `100` | page size, capped at 1000 |
+| `before_seq` | integer >= 0 | unset | page backwards: the newest `limit` events with `seq` below this, returned in ascending `seq` order; cannot be combined with `after_seq` |
+| `types` | comma list | unset | only events of these types (any of the event types listed under Events); filters before paging, in both directions; an unknown type is `400 invalid_request` |
 
 Response `200`:
 
@@ -571,7 +573,12 @@ Response `200`:
 }
 ```
 
-Pass `next_seq` as `after_seq` to fetch the next page while `has_more` is true. Errors:
+Pass `next_seq` as `after_seq` to fetch the next page while `has_more` is true.
+
+With `before_seq` the response adds `prev_seq` (the value to pass as `before_seq` for the next
+older page; `null` when `has_more_before` is false) and `has_more_before` (older matching events
+exist). Load the newest page with a large `before_seq`, then scroll back via `prev_seq`. Errors:
+`400 invalid_request` (`before_seq` together with `after_seq`, or an unknown `types` entry),
 `401 unauthorized`, `404 not_found`, `422 invalid_request` (bad query values).
 
 ### `GET /v1/sessions/{id}/events`

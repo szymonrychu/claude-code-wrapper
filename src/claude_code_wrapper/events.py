@@ -234,7 +234,9 @@ class EventLog:
             return
         self._loop.call_soon_threadsafe(self.append, type, data)
 
-    def page(self, after_seq: int = 0, limit: int = 100) -> tuple[list[Event], bool]:
+    def page(
+        self, after_seq: int = 0, limit: int = 100, types: frozenset[str] | None = None
+    ) -> tuple[list[Event], bool]:
         limit = max(1, min(limit, MAX_PAGE_LIMIT))
         if self._ring and self._ring[0].seq <= after_seq + 1 and not self.readonly:
             source: Iterator[Event] = iter(self._ring)
@@ -244,12 +246,35 @@ class EventLog:
             source = self._read_file()
         out: list[Event] = []
         for ev in source:
-            if ev.seq <= after_seq:
+            if ev.seq <= after_seq or (types is not None and ev.type not in types):
                 continue
             if len(out) == limit:
                 return out, True
             out.append(ev)
         return out, False
+
+    def page_before(
+        self, before_seq: int, limit: int = 100, types: frozenset[str] | None = None
+    ) -> tuple[list[Event], bool]:
+        """Newest `limit` events with seq < before_seq, ascending, and whether older ones exist."""
+        limit = max(1, min(limit, MAX_PAGE_LIMIT))
+
+        def newest(source: Iterator[Event]) -> list[Event]:
+            tail: deque[Event] = deque(maxlen=limit + 1)
+            for ev in source:
+                if ev.seq < before_seq and (types is None or ev.type in types):
+                    tail.append(ev)
+            return list(tail)
+
+        found: list[Event] = []
+        if self._ring and not self.readonly:
+            found = newest(iter(self._ring))
+        # The ring only holds the newest events: use it when it spans back to seq 1 or
+        # already holds a full page plus one; otherwise the file is the source of truth.
+        if not self._ring or (len(found) <= limit and self._ring[0].seq > 1) or self.readonly:
+            found = newest(self._read_file())
+        more = len(found) > limit
+        return found[-limit:], more
 
     def last(self, n: int) -> list[Event]:
         if n <= 0:
