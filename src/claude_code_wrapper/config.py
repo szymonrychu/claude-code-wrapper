@@ -49,12 +49,12 @@ HOOK_EVENTS: tuple[str, ...] = (
     "postLeave",
 )
 VETO_EVENTS: tuple[str, ...] = (
-    "preJoin",
     "onCreate",
     "onResume",
     "onTurn",
     "onAgentToolCall",
     "onCommand",
+    "preJoin",
 )
 TOOL_EVENTS: tuple[str, ...] = ("onAgentToolCall", "onToolResult")
 WELL_KNOWN_MARKETPLACES = frozenset({"claude-plugins-official"})

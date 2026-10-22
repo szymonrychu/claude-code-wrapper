@@ -51,7 +51,14 @@ def test_minimal_config_defaults(tmp_path):
 
 def test_event_constants():
     assert len(HOOK_EVENTS) == 20 and HOOK_EVENTS[0] == "onCreate" and HOOK_EVENTS[15] == "onError"
-    assert VETO_EVENTS == ("onCreate", "onResume", "onTurn", "onAgentToolCall", "onCommand")
+    assert VETO_EVENTS == (
+        "onCreate",
+        "onResume",
+        "onTurn",
+        "onAgentToolCall",
+        "onCommand",
+        "preJoin",
+    )
     assert TOOL_EVENTS == ("onAgentToolCall", "onToolResult")
 
 
