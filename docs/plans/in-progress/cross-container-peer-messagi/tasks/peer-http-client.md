@@ -1,6 +1,6 @@
 ---
 title: Peer http client
-status: in-progress
+status: done
 repo: .
 value: "One ccw can sign and send messages, notices and heartbeats to another with clear errors"
 files: [src/claude_code_wrapper/peer_client.py, tests/test_peer_client.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-http-client
 branch: cross-container-peer-messagi--peer-http-client
-verified_head: ""
-run: ""
-provides: []
+verified_head: 812277956739392390804ee01450ed7b926ff81c
+run: cross-container-peer-messagi
+provides: [peer-wire]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peer http client

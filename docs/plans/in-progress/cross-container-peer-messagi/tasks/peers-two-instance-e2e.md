@@ -1,6 +1,6 @@
 ---
 title: Peers two instance e2e
-status: in-progress
+status: done
 repo: .
 value: "Proves seed join, gossip, messages both ways, notices and leave between three real ccw services"
 files: [tests/test_peers_e2e.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peers-two-instance-e2e
 branch: cross-container-peer-messagi--peers-two-instance-e2e
-verified_head: ""
-run: ""
+verified_head: 7b73a7fa8735dd71e145adac20b69ba8317d503b
+run: cross-container-peer-messagi
 provides: []
+acs_for_audit: [AC1, AC2, AC6]
+process_gaps: []
 ---
 
 # Peers two instance e2e

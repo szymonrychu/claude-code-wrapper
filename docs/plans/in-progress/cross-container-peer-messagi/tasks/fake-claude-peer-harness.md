@@ -1,6 +1,6 @@
 ---
 title: Fake claude peer harness
-status: in-progress
+status: done
 repo: .
 value: Tests can script peer replies and run several real ccw services in one process
 files: [tests/fake_claude/fake_claude.py, tests/conftest.py, tests/test_fake_claude_peers.py]
@@ -13,10 +13,12 @@ estimate: 60
 actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--fake-claude-peer-harness
-branch: cross-container-peer-messagi--fake-claude-peer-harness
-verified_head: ""
-run: ""
-provides: []
+branch: "HEAD (worktree cross-container-peer-messagi--fake-claude-peer-harness; commits 054f386, fc37e9a)"
+verified_head: fc37e9a23b98cba9ec27af153efcf6ad30a95a3a
+run: cross-container-peer-messagi
+provides: [ccw-service-fixture, fake-match-substitution]
+acs_for_audit: []
+process_gaps: ["TDD skipped without a listed exception; prove the tests catch the change - commit first, then for each changed non-test file: git show <merge-base>:<path> > <path>; run the test (must fail); git show HEAD:<path> > <path>; run again (must pass); paste both tails into tests.red and verification.evidence"]
 ---
 
 # Fake claude peer harness

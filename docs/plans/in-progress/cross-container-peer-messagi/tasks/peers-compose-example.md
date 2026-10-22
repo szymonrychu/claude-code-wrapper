@@ -1,6 +1,6 @@
 ---
 title: Peers compose example
-status: in-progress
+status: escalated
 repo: .
 value: Operators can run two peered containers seeded with each other from one example and one image build
 files: [examples/docker-compose.peers.yml, examples/peers.config.yaml, src/claude_code_wrapper/data/examples/peers.config.yaml, tests/test_examples.py, tests/test_peers_compose.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peers-compose-example
 branch: cross-container-peer-messagi--peers-compose-example
-verified_head: ""
-run: ""
-provides: []
+verified_head: bcf55acf062d137c88476a185052a6291ffdcdd0
+run: cross-container-peer-messagi
+provides: [peers-compose]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peers compose example

@@ -1,6 +1,6 @@
 ---
 title: Peer member table
-status: in-progress
+status: done
 repo: .
 value: Each instance knows which peer instances are reachable and which sessions they run
 files: [src/claude_code_wrapper/peers.py, tests/test_peers_membership.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-member-table
 branch: cross-container-peer-messagi--peer-member-table
-verified_head: ""
-run: ""
+verified_head: ea790b6adbfe360363fa6852ca0d85db2ab28a01
+run: cross-container-peer-messagi
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peer member table

@@ -1,6 +1,6 @@
 ---
 title: Peer service core
-status: in-progress
+status: done
 repo: .
 value: "One object per ccw instance runs membership, signed sending, receiving and notices for every session"
 files: [src/claude_code_wrapper/peer_service.py, tests/test_peer_service.py]
@@ -14,9 +14,11 @@ actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-service-core
 branch: cross-container-peer-messagi--peer-service-core
-verified_head: ""
-run: ""
+verified_head: 290104fdbc2b7142cee9fd604a6f93b1a22936bf
+run: cross-container-peer-messagi
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peer service core

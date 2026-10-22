@@ -1,6 +1,6 @@
 ---
 title: Peer membership hooks
-status: in-progress
+status: done
 repo: .
 value: "Operators can run their own logic before and after an instance joins or leaves the mesh, and can veto a join"
 files: [src/claude_code_wrapper/config.py, src/claude_code_wrapper/hooks.py, src/claude_code_wrapper/data/config.example.yaml, README.md, tests/test_peer_hooks.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-membership-hooks
 branch: cross-container-peer-messagi--peer-membership-hooks
-verified_head: ""
-run: ""
-provides: []
+verified_head: 82edbdb26dc71267d0e8a19ddd75711b2cd2fac6
+run: cross-container-peer-messagi
+provides: [peer-membership-hooks]
+acs_for_audit: [AC2]
+process_gaps: []
 ---
 
 # Peer membership hooks

@@ -1,6 +1,6 @@
 ---
 title: Peer messages endpoint
-status: in-progress
+status: done
 repo: .
 value: "Other ccw instances can heartbeat and push messages and notices, only with a valid fresh signature"
 files: [src/claude_code_wrapper/api/peers.py, src/claude_code_wrapper/api/app.py, tests/test_api_peers.py, README.md]
@@ -14,9 +14,11 @@ actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-messages-endpoint
 branch: cross-container-peer-messagi--peer-messages-endpoint
-verified_head: ""
-run: ""
+verified_head: 487530d6e0c44e8a26c63ac0d119024958bd7a3a
+run: cross-container-peer-messagi
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peer messages endpoint

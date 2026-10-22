@@ -1,6 +1,6 @@
 ---
 title: Peers MCP tools
-status: in-progress
+status: done
 repo: .
 value: The main agent can list peers and send them messages through two ccw tools
 files: [src/claude_code_wrapper/mcp_server.py, src/claude_code_wrapper/internal_api.py, tests/test_mcp_peers.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peers-mcp-tools
 branch: cross-container-peer-messagi--peers-mcp-tools
-verified_head: ""
-run: ""
+verified_head: c9b64749afb4d4e4f25146264ef99f066a1215e7
+run: cross-container-peer-messagi
 provides: []
+acs_for_audit: [AC4]
+process_gaps: []
 ---
 
 # Peers MCP tools

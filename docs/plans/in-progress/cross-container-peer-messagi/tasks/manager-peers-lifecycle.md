@@ -1,6 +1,6 @@
 ---
 title: Manager peers lifecycle
-status: in-progress
+status: done
 repo: .
 value: Every ccw session is registered with the peer mesh while it runs
 files: [src/claude_code_wrapper/manager.py, tests/test_peers_lifecycle.py]
@@ -14,9 +14,11 @@ actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--manager-peers-lifecycle
 branch: cross-container-peer-messagi--manager-peers-lifecycle
-verified_head: ""
-run: ""
+verified_head: 3f5cfae0fb753220a6f52a34cc3a0c34c1353fd7
+run: cross-container-peer-messagi
 provides: []
+acs_for_audit: [AC3]
+process_gaps: [No clean red run was recorded for the lifecycle tests. The implementer disclosed this.]
 ---
 
 # Manager peers lifecycle

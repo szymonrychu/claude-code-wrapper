@@ -1,6 +1,6 @@
 ---
 title: Peer events and metrics
-status: in-progress
+status: done
 repo: .
 value: Operators can watch peer traffic and membership on the SSE stream and in Prometheus
 files: [src/claude_code_wrapper/events.py, src/claude_code_wrapper/metrics.py, tests/test_event_log.py, tests/test_peer_metrics.py, README.md]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-events-and-metrics
 branch: cross-container-peer-messagi--peer-events-and-metrics
-verified_head: ""
-run: ""
-provides: []
+verified_head: 4fdde8e6559ed9cad8f98c7151a8ca1afa91cfa8
+run: cross-container-peer-messagi
+provides: [peer-events, peer-metrics]
+acs_for_audit: [AC4]
+process_gaps: [tests.red and verification.evidence need the revert-to-merge-base red run and restored green run tails pasted]
 ---
 
 # Peer events and metrics

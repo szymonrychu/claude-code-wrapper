@@ -1,6 +1,6 @@
 ---
 title: Peer inbox delivery
-status: in-progress
+status: done
 repo: .
 value: "Peer messages reach an agent as orderly new turns, never disturb a running turn and are never stranded"
 files: [src/claude_code_wrapper/peer_inbox.py, src/claude_code_wrapper/router.py, src/claude_code_wrapper/turns.py, tests/test_peer_inbox.py]
@@ -14,9 +14,11 @@ actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-inbox-delivery
 branch: cross-container-peer-messagi--peer-inbox-delivery
-verified_head: ""
-run: ""
-provides: []
+verified_head: 57317131101cc0fa344aa693852aadf36ee8a6b8
+run: cross-container-peer-messagi
+provides: [peer-inbox-frame, router-emit-event]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peer inbox delivery

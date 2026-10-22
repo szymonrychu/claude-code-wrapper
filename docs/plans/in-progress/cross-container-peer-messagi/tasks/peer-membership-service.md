@@ -1,6 +1,6 @@
 ---
 title: Peer membership service
-status: in-progress
+status: done
 repo: .
 value: "An instance joins the mesh through its seeds, stays current by heartbeat and leaves cleanly, with hooks in order"
 files: [src/claude_code_wrapper/peer_membership.py, tests/test_peer_membership_service.py]
@@ -14,9 +14,11 @@ actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-membership-service
 branch: cross-container-peer-messagi--peer-membership-service
-verified_head: ""
-run: ""
+verified_head: d618f95455669bcf4856ec6758b1ca5d741f0946
+run: cross-container-peer-messagi
 provides: []
+acs_for_audit: [AC4]
+process_gaps: []
 ---
 
 # Peer membership service

@@ -1,6 +1,6 @@
 ---
 title: Peer session bootstrap
-status: in-progress
+status: done
 repo: .
 value: "Peered agents cannot reach for Claude's native socket messaging and are told how to use the ccw tools"
 files: [src/claude_code_wrapper/session.py, src/claude_code_wrapper/bootstrap/settings.py, src/claude_code_wrapper/bootstrap/instructions.py, src/claude_code_wrapper/router.py, tests/test_router.py, tests/test_peers_bootstrap.py, tests/test_peers_gate.py]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-session-bootstrap
 branch: cross-container-peer-messagi--peer-session-bootstrap
-verified_head: ""
-run: ""
+verified_head: 6022e26d1ea89957b0c3425e66313f00790364d0
+run: cross-container-peer-messagi
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peer session bootstrap

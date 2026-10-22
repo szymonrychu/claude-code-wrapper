@@ -1,6 +1,6 @@
 ---
 title: Peers join leave order
-status: in-progress
+status: done
 repo: .
 value: "No session starts before the join and no onDestroy runs before the leave, and seeds can come from the command line"
 files: [src/claude_code_wrapper/manager.py, src/claude_code_wrapper/service.py, src/claude_code_wrapper/cli.py, tests/test_peers_startup.py]
@@ -14,9 +14,11 @@ actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peers-join-leave-order
 branch: cross-container-peer-messagi--peers-join-leave-order
-verified_head: ""
-run: ""
+verified_head: 96b8477317b183a0a48bbb6041c79f1729c9b0a9
+run: cross-container-peer-messagi
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peers join leave order

@@ -1,6 +1,6 @@
 ---
 title: Peers readme guide
-status: in-progress
+status: todo
 repo: .
 value: "Operators can set up, secure and reason about peer messaging and membership from the README alone"
 files: [README.md, tests/test_peers_readme.py]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peers-readme-guide
 branch: cross-container-peer-messagi--peers-readme-guide
 verified_head: ""
-run: ""
+run: cross-container-peer-messagi
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peers readme guide
@@ -67,3 +69,5 @@ An operator can set up, secure and reason about peer messaging and membership fr
 ## Notes
 
 Doc task with a test pinning the content. Last README-editing task (README order: peers-config-section, peer-events-and-metrics, peer-membership-hooks, peer-messages-endpoint, peers-readme-guide.)
+
+- 2026-10-22 run cross-container-peer-messagi: dependency-failed on peers-compose-example

@@ -1,6 +1,6 @@
 ---
 title: Peers config section
-status: in-progress
+status: done
 repo: .
 value: Operators turn peer messaging on with one validated config section and nothing changes when it is off
 files: [src/claude_code_wrapper/config.py, tests/test_peers_config.py, README.md, src/claude_code_wrapper/data/config.example.yaml]
@@ -14,9 +14,11 @@ actual: ""
 review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peers-config-section
 branch: cross-container-peer-messagi--peers-config-section
-verified_head: ""
-run: ""
-provides: []
+verified_head: 6ffbc90bfef3f475bda1d4fc5e2edce3a99fdc9e
+run: cross-container-peer-messagi
+provides: [peers-config]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peers config section

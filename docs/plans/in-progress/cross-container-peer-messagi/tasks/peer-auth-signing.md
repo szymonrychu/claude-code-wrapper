@@ -1,6 +1,6 @@
 ---
 title: Peer auth signing
-status: in-progress
+status: done
 repo: .
 value: The peer token authenticates every peer request without ever leaving the process
 files: [src/claude_code_wrapper/peer_auth.py, tests/test_peer_auth.py]
@@ -14,9 +14,11 @@ actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-auth-signing
 branch: cross-container-peer-messagi--peer-auth-signing
-verified_head: ""
-run: ""
-provides: []
+verified_head: 3c19b551bd4236832f739d63aabecab881c9cc1a
+run: cross-container-peer-messagi
+provides: [peer-auth]
+acs_for_audit: [AC1, AC4]
+process_gaps: []
 ---
 
 # Peer auth signing

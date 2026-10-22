@@ -1,6 +1,6 @@
 ---
 title: Peers two container test
-status: in-progress
+status: todo
 repo: .
 value: "CI proves join, messaging and leave across a real container boundary"
 files: [docker-compose.peers-ci.yml, scripts/integration-peers.sh, mise.toml, tests/integration_peers/__init__.py, tests/integration_peers/conftest.py, tests/integration_peers/test_peers_containers.py, tests/integration_peers/config.ci.yaml, tests/integration_peers/scenario.json]
@@ -15,8 +15,10 @@ review: ""
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peers-two-container-test
 branch: cross-container-peer-messagi--peers-two-container-test
 verified_head: ""
-run: ""
+run: cross-container-peer-messagi
 provides: []
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peers two container test
@@ -74,3 +76,5 @@ CI runs a two-container peers check after the existing integration check, on an 
 ## Notes
 
 See the Requirement's Notes paragraph. The plain pytest run deselects integration tests, so red and green both use the script.
+
+- 2026-10-22 run cross-container-peer-messagi: dependency-failed on peers-compose-example

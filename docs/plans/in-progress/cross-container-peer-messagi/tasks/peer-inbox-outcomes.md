@@ -1,6 +1,6 @@
 ---
 title: Peer inbox outcomes
-status: in-progress
+status: done
 repo: .
 value: "A sender always hears when its message was rejected or dropped, and notices never hold up a turn's end"
 files: [src/claude_code_wrapper/peer_inbox.py, tests/test_peer_inbox_outcomes.py]
@@ -14,9 +14,11 @@ actual: ""
 review: full
 worktree: /Users/szymonri/Documents/claude-code-wrapper/.claude/worktrees/cross-container-peer-messagi--peer-inbox-outcomes
 branch: cross-container-peer-messagi--peer-inbox-outcomes
-verified_head: ""
-run: ""
-provides: []
+verified_head: 42afeaa88d7b415bd485304f584998c9a8aecd0a
+run: cross-container-peer-messagi
+provides: [peer-inbox-outcome]
+acs_for_audit: []
+process_gaps: []
 ---
 
 # Peer inbox outcomes
