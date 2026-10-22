@@ -6,6 +6,7 @@ import os
 import re
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import (
@@ -574,6 +575,90 @@ class SessionsConfig(_Model):
         return self
 
 
+_PEER_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+_PEER_TOKEN_MIN = 16
+
+
+def _check_http_url(value: str) -> str:
+    """An absolute http(s) URL with a host and no trailing slash; `{port}` is allowed."""
+    try:
+        parts = urlsplit(value.replace("{port}", "1"))
+        valid = parts.scheme in ("http", "https") and parts.hostname is not None
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError(f"must be an absolute http:// or https:// URL with a host, got {value!r}")
+    if value.endswith("/"):
+        raise ValueError(f"must not end with a slash, got {value!r}")
+    return value
+
+
+class PeersConfig(_Model):
+    """Opt-in peer messaging between ccw instances (README "Peer messaging")."""
+
+    enabled: bool = False
+    name: str = ""
+    advertise_url: str = ""
+    token: str = ""
+    static: list[str] = Field(default_factory=list)
+    heartbeat_seconds: float = Field(10, gt=0)
+    max_missed_heartbeats: int = Field(3, ge=1)
+    join_timeout_seconds: float = Field(10, gt=0)
+    max_message_bytes: int = Field(65536, ge=1, le=1048576)
+    inbox_max: int = Field(32, ge=1)
+    max_clock_skew_seconds: float = Field(60, gt=0)
+    max_messages_per_minute: int = Field(30, ge=1)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        if value and (not _PEER_NAME.fullmatch(value) or value.startswith(".")):
+            raise ValueError(
+                f"must match [A-Za-z0-9._-]{{1,64}} and not start with '.', got {value!r}"
+            )
+        return value
+
+    @field_validator("advertise_url")
+    @classmethod
+    def _advertise_url(cls, value: str) -> str:
+        return _check_http_url(value) if value else value
+
+    @field_validator("static", mode="before")
+    @classmethod
+    def _static_items(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [
+            item["url"] if isinstance(item, dict) and set(item) == {"url"} else item
+            for item in value
+        ]
+
+    @field_validator("static")
+    @classmethod
+    def _static(cls, value: list[str]) -> list[str]:
+        for index, url in enumerate(value):
+            try:
+                _check_http_url(url)
+            except ValueError as e:
+                raise _at(str(index), str(e)) from e
+        return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def _token(self) -> PeersConfig:
+        if self.enabled and not self.token:
+            raise _at(
+                "token",
+                "required when peers.enabled; set it, normally from ${CCW_PEER_TOKEN}",
+            )
+        if self.token and len(self.token) < _PEER_TOKEN_MIN:
+            raise _at("token", f"must be at least {_PEER_TOKEN_MIN} characters")
+        return self
+
+    def with_static(self, urls: list[str]) -> PeersConfig:
+        """A copy whose seed list is the configured one extended by `urls` (`ccw serve --peer`)."""
+        return PeersConfig.model_validate({**self.model_dump(), "static": [*self.static, *urls]})
+
+
 class LimitsConfig(_Model):
     max_prompt_bytes: int = Field(1048576, ge=1)
     max_file_bytes: int = Field(262144, ge=1)
@@ -597,10 +682,19 @@ class Config(_Model):
     hooks: HooksConfig = Field(default_factory=HooksConfig)
     sessions: SessionsConfig = Field(default_factory=SessionsConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    peers: PeersConfig = Field(default_factory=PeersConfig)
+
+    @model_validator(mode="after")
+    def _peer_token_distinct(self) -> Config:
+        if self.peers.token and self.peers.token == self.server.auth_token:
+            raise _at("peers.token", "must differ from server.auth_token")
+        return self
 
     @model_validator(mode="after")
     def _ccw_name_reserved(self) -> Config:
-        if self.sessions.commands.agent and "ccw" in self.claude.mcp_servers:
+        if (
+            self.sessions.commands.agent or self.peers.enabled
+        ) and "ccw" in self.claude.mcp_servers:
             raise _at(
                 "claude.mcp_servers.ccw", "the name ccw is reserved for the ccw command server"
             )
@@ -612,6 +706,8 @@ class Config(_Model):
         for key in ("auth_token", "callback_secret"):
             if out["server"][key]:
                 out["server"][key] = MASK
+        if out["peers"]["token"]:
+            out["peers"]["token"] = MASK
         out["claude"]["env"] = self.claude.env.redacted()  # type: ignore[attr-defined]
         for name, server in self.claude.mcp_servers.items():
             dumped = out["claude"]["mcp_servers"][name]

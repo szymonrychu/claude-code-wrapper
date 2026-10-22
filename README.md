@@ -2424,6 +2424,33 @@ limits:
 | `limits.sse_heartbeat_seconds` | number | `15` | - | Interval of SSE heartbeat comments (> 0). |
 | `limits.shutdown_timeout_seconds` | number | `10` | - | Bounded graceful shutdown: seconds allowed to stop sessions on SIGTERM. |
 
+### `peers`
+
+```yaml
+peers:
+  enabled: true
+  token: ${CCW_PEER_TOKEN}
+  static:
+    - http://ccw-b:8080
+```
+
+Opt-in peer messaging between ccw instances; with `enabled: false` (the default) nothing is required and nothing changes. With it on, a user `claude.mcp_servers.ccw` is an error.
+
+| Key | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `peers.enabled` | boolean | `false` | - | Turn peer messaging on. Off, nothing changes: no routes, no tools, no hooks. |
+| `peers.name` | string | `""` | - | This instance's name in the peer table; empty means the hostname. `[A-Za-z0-9._-]{1,64}`, not `.`, `..` or starting with `.`. |
+| `peers.advertise_url` | string | `""` | - | URL other instances reach this one at; empty means `http://<hostname>:<server port>`. Absolute http(s), no trailing slash; the literal `{port}` is replaced by the server port. |
+| `peers.token` | string | `""` | - | Shared peer token. Required when `peers.enabled`, normally `${CCW_PEER_TOKEN}`; at least 16 characters and different from `server.auth_token`. A signing key only (HMAC-SHA256 keys, never sent on the wire), never logged and masked as `***` in `GET /v1/config`. |
+| `peers.static` | array | `[]` | - | Seed peer URLs (strings or `{url: ...}`), each absolute http(s) with no trailing slash; duplicates are dropped. `ccw serve --peer URL` (repeatable) extends the list. |
+| `peers.heartbeat_seconds` | number | `10` | - | Seconds between heartbeat rounds (> 0). |
+| `peers.max_missed_heartbeats` | integer | `3` | - | Missed heartbeat rounds before a peer is dropped (>= 1). |
+| `peers.join_timeout_seconds` | number | `10` | - | Seconds the first join round may take (> 0). |
+| `peers.max_message_bytes` | integer | `65536` | - | Largest accepted peer message in bytes (1 to 1048576). |
+| `peers.inbox_max` | integer | `32` | - | Messages queued per session inbox (>= 1). |
+| `peers.max_clock_skew_seconds` | number | `60` | - | Accepted clock difference on signed peer requests, in seconds (> 0). |
+| `peers.max_messages_per_minute` | integer | `30` | - | Per-sender message rate limit; above it the answer is 429 `rate_limited` (>= 1). |
+
 ## Claude Code environment
 
 `claude.env` is a typed model of the environment variables Claude Code reads. Each variable is one
