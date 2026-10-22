@@ -26,7 +26,8 @@ Session model:
 - Turns are strictly sequential: one running turn per session. A second submit gets `409 busy`.
 - A turn has a state: `running`, then one of `completed`, `failed`, `interrupted`, `timeout`.
   A turn also has an `origin`: `client` (submitted over the API), `initial` (the configured
-  initial prompt) or `agent` (an unsolicited Stop, for example a background task finishing).
+  initial prompt), `agent` (an unsolicited Stop, for example a background task finishing) or
+  `peer` (a message from another ccw session, see [Peer messaging](#peer-messaging)).
 - Every happening is appended to a per-session event log (`events.jsonl`), streamed over SSE and
   pageable over `history`. User hooks (command or webhook actions) fire on the same happenings.
 - After a service restart, persisted sessions list as `stopped`; `POST /v1/sessions/{id}/resume`
@@ -100,6 +101,9 @@ never put it behind a public ingress.
   a subagent's Bash can queue allowlisted slash commands directly; only the PreToolUse relay on
   `mcp__ccw__command` keeps the tool main-agent-only. This is accepted: it cannot queue anything
   outside `sessions.commands.agent`.
+- With `peers.enabled`, the shared peer token is one trust domain: any holder can push prompts into
+  the agents of every instance and claim any sender. See the trust model in
+  [Peer messaging](#peer-messaging).
 - There is no callback host policy: `callbackUrl` may point at any `http` or `https` host the
   service can reach.
 - The service must not be exposed to untrusted callers. If `server.auth_token` is empty the service
@@ -712,9 +716,10 @@ Response `200`:
 
 ### `POST /internal/mcp`
 
-The ccw MCP server (streamable HTTP, stateless, JSON responses only). It exposes one tool,
+The ccw MCP server (streamable HTTP, stateless, JSON responses only). It exposes the tool
 `command`, that lets the agent queue an allowlisted slash command (such as `compact` or
-`reload-plugins`) which runs when it ends its turn, after which it is resumed automatically.
+`reload-plugins`) which runs when it ends its turn, after which it is resumed automatically. With
+`peers.enabled` it also exposes `peers` and `send_message` (see below).
 
 Auth: same as the hook route (loopback source address, `X-CCW-Session`, `X-CCW-Hook-Token`
 compared in constant time); otherwise `403`. The body is one JSON-RPC 2.0 message: a JSON array
@@ -735,6 +740,22 @@ with a one-line status. You will be resumed automatically.`
 Errors: a rejected command (unknown params, not allowed, queue full, force not allowed, invalid
 state) returns `isError: true` with the reason; an empty allowlist returns `isError: true` "ccw
 commands are disabled for this session"; any other tool name answers JSON-RPC error `-32602`.
+
+Tools `peers` and `send_message` are listed and callable only with `peers.enabled` (otherwise they
+answer `-32602` like any unknown tool). They work even when the `command` allowlist is empty. See
+[Peer messaging](#peer-messaging).
+
+- `peers`: arguments `{instance?}` (string, only that instance). Result (`isError: false`): a JSON
+  array text of rows `{address, instance, session_id, name, cwd}`, where `address` is
+  `<instance>/<session id>`.
+- `send_message`: arguments `{to, message, notify_when_idle?}`. `to` is an address from `peers`,
+  `message` a non-empty string (at most `peers.max_message_bytes` UTF-8 bytes), `notify_when_idle`
+  a boolean (default false). Success text: `Sent <msg_id> to <to>. A reply, if any, arrives as a
+  new turn.` Delivery is at most once; success means the peer queued it, not that it was handled.
+- Errors are `isError: true` results whose text starts with one of:
+  `unknown peer`, `peer unreachable`, `message too large`, `inbox full`, `rate limited`,
+  `peer rejected the request`, or `invalid arguments` (a bad argument shape, an unknown argument,
+  an empty message).
 
 ### `GET /internal/healthz`
 
@@ -796,7 +817,7 @@ data: {"seq":3,"ts":"2026-10-20T09:00:14.800Z","session_id":"ses_3f9a1c0b7d42","
 
 Emitted when a turn has been accepted and pasted.
 
-`data`: `turn_id`, `origin` (`client`, `initial`, `agent`), `text` (the prompt).
+`data`: `turn_id`, `origin` (`client`, `initial`, `agent`, `peer`), `text` (the prompt).
 
 ```
 event: turn_started
@@ -1299,7 +1320,7 @@ on shutdown). The `output` of each blocking action is returned in the `DELETE` r
 
 ### `onTurn`
 
-Trigger: the router, before the prompt is pasted (also for `initial` and `agent` origins). Blocking:
+Trigger: the router, before the prompt is pasted (also for `initial`, `agent` and `peer` origins). Blocking:
 a `deny` vetoes the turn (`403 vetoed`, `turn_rejected` event). `data`: `text`, `files` (list of
 workdir-relative paths about to be written), `origin`, `metadata` (the submit body's object, `{}`
 when absent).
@@ -1680,7 +1701,9 @@ now with a one-line status. You will be resumed automatically.` Errors come back
 tool results: not allowed, unknown params, queue full (4 pending), `force` without `allow_force`,
 "ccw commands are disabled for this session" when the allowlist is empty. Only the main agent may
 call the tool: a call from a subagent or teammate is denied before it reaches ccw, and nothing is
-queued. That restriction is enforced by the PreToolUse relay on `mcp__ccw__command`, not by the
+queued. The deny reason is `ccw tools are available to the main agent only; subagents and
+teammates cannot call mcp__ccw__* tools.` and covers every `mcp__ccw__*` tool, including `peers`
+and `send_message` when `peers.enabled`. That restriction is enforced by the PreToolUse relay on `mcp__ccw__command`, not by the
 endpoint: a subagent's Bash can call `/internal/mcp` directly with the session token that is in
 claude's environment. It can only queue commands on the allowlist, which the trust model accepts.
 Every string param must be one line without control characters (at most 2000 characters), and
@@ -1771,6 +1794,153 @@ when both are set. Claude Code's own automatic and idle compaction is left as is
   command's local-command output in the transcript. A `reload-plugins` run that only reports it
   needs `--force` completes with result `skipped_cache`. No signal within `timeout_seconds` sends
   ESC once and fails the command `timeout`.
+
+## Peer messaging
+
+Peer messaging lets the main agents of ccw sessions talk to each other across containers, nodes and
+clusters. It is opt-in (`peers.enabled`, see [`peers`](#peers)) and replaces Claude's native
+`SendMessage` and `ListAgents` for ccw sessions. The native tools ride on Unix sockets, which never
+cross a node, even on an RWX CephFS volume, and a shared folder is not needed here: ccw carries the
+messages itself over HTTP.
+
+With `peers.enabled`, ccw switches the native path off: it sets `CLAUDE_CODE_HARBOR_KITE=0` in
+Claude's environment, adds `SendMessage` and `ListAgents` to `permissions.deny` in the session
+`settings.json`, and the PreToolUse gate refuses them with the reason `use mcp__ccw__send_message /
+mcp__ccw__peers`. The agent gets two ccw MCP tools instead, `peers` and `send_message`, documented
+under [`POST /internal/mcp`](#post-internalmcp). Without `peers.enabled` nothing changes: no routes,
+no tools, no hooks.
+
+### Setup
+
+1. Set `peers.enabled: true` and a `peers.token`, the same shared secret (16 or more characters,
+   different from `server.auth_token`) on every instance, normally `${CCW_PEER_TOKEN}`.
+2. Give each instance a name with `peers.name` (empty means the hostname). Names must be unique
+   within a mesh; `[A-Za-z0-9._-]{1,64}`, never `.`, `..` or starting with a dot. Two instances
+   with the same name shadow each other.
+3. Set `peers.advertise_url` to the URL the other instances reach this one at. It must be reachable
+   from every other instance.
+4. Seed the mesh with `peers.static` (and `ccw serve --peer URL`, repeatable). One reachable seed
+   is enough: members learn the rest from heartbeats.
+
+```yaml
+peers:
+  enabled: true
+  name: a
+  advertise_url: http://ccw-a:8080
+  token: ${CCW_PEER_TOKEN}
+  static: ["http://ccw-b:8080"]
+```
+
+A working pair is in [Docker and compose](#docker-and-compose).
+
+### Addressing
+
+A session is addressed as `<instance>/<session id>`, for example `b/ses_3f9a1c0b7d42`. The agent
+lists addresses with the `peers` tool and sends with `send_message`.
+
+### Membership
+
+There is one membership route, the signed [`POST /v1/peers/heartbeat`](#post-v1peersheartbeat); there
+is no join or leave endpoint.
+
+- **Seeds.** `peers.static` and `ccw serve --peer` give the first contacts.
+- **Join.** The first heartbeat round to the seeds is the join (bounded by
+  `peers.join_timeout_seconds`).
+- **Heartbeats.** Every `peers.heartbeat_seconds` an instance sends its view (its sessions and its
+  member list) to every known member, and the answer carries the receiver's view, so member lists
+  are gossiped and the mesh converges from a single seed.
+- **Reachability.** A member that missed `peers.max_missed_heartbeats` rounds in a row is dropped
+  from the table and `peer_member_left` is emitted with reason `missed_heartbeats`; it returns on its
+  next heartbeat.
+- **Leave.** On shutdown an instance sends one final heartbeat with `"leaving": true`.
+- **Standalone.** If a blocking `preJoin` hook denies, the instance runs standalone: no heartbeats
+  and no peer tools.
+- **Startup order.** [`preJoin`](#prejoin), the join, [`postJoin`](#postjoin), then sessions can
+  be created. Nothing session-related runs before the join finished.
+- **Shutdown order.** [`preLeave`](#preleave), the leave, [`postLeave`](#postleave), then the
+  `onDestroy` hooks. Every outbound call runs concurrently under its own timeout
+  (`peers.join_timeout_seconds`), so the join and the leave are bounded by the hook timeouts plus one
+  call bound, whatever the peers do, and a slow peer never blocks shutdown.
+
+The four hooks are described under [Hooks](#hooks): [`preJoin`](#prejoin), [`postJoin`](#postjoin),
+[`preLeave`](#preleave), [`postLeave`](#postleave). Membership changes appear as
+[`peer_member_joined`](#peer_member_joined) and [`peer_member_left`](#peer_member_left) events.
+
+### Request signing
+
+Every peer route (`/v1/peers/messages`, `/v1/peers/notices`, `/v1/peers/heartbeat`) is signed, not
+bearer-authenticated. The sender sends three headers: `X-CCW-Peer-Timestamp` (Unix milliseconds),
+`X-CCW-Peer-Nonce` (single use) and `X-CCW-Peer-Signature`, the HMAC-SHA256 of the method, path,
+timestamp, nonce and body hash keyed by `peers.token`. The token itself is never sent. The receiver
+rejects a timestamp further than `peers.max_clock_skew_seconds` from its own clock and remembers
+nonces, so a captured request cannot be replayed. Details are under
+[`POST /v1/peers/messages`](#post-v1peersmessages).
+
+### Delivery
+
+A message becomes a new turn with origin `peer` in the target session, in arrival order, when the
+session is idle; while it is busy, messages wait in a per-session inbox. The turn text is a frame:
+
+```
+<agent-message from="b/ses_aa" msg_id="msg_0123456789abcdef">
+the text
+</agent-message>
+Reply with mcp__ccw__send_message to "b/ses_aa" only if a reply is needed.
+```
+
+The agent replies only when a reply is needed; a reply is just another message, delivered as a new
+turn on the other side.
+
+**Notices.** With `notify_when_idle`, the sender is told when the receiver has handled the message:
+a `<peer-idle-notice>` frame is delivered to the sender as a new turn when the receiver's turn ends.
+If the message cannot be delivered (the turn was rejected, or the message was dropped, for example
+by a destroyed session), the sender gets a `<peer-delivery-failed>` notice with status `rejected` or
+`dropped` always, whether or not it asked. Notices ride the same signed route and never block the
+receiver's Stop hook.
+
+**Guarantees.** Delivery is at most once. The inbox is in memory only, so a restart loses queued
+messages. Each session remembers the last 256 `(from, msg_id, kind)` triples and drops a repeat. The
+client retries once on a connection failure, with the same `msg_id`, which the dedupe window makes
+safe. A successful `send_message` means the peer queued the message, not that it ran.
+
+**Limits.**
+
+| Key | Default | Effect |
+|---|---|---|
+| `peers.max_message_bytes` | 65536 | largest message; larger is `message too large` / `413` |
+| `peers.inbox_max` | 32 | queue depth per session; full is `inbox full` / `429` |
+| `peers.max_messages_per_minute` | 30 | per-sender rate; above it `rate limited` / `429 rate_limited` |
+| body cap | `max_message_bytes` + 4096 | request bodies above it are `413`, checked before reading |
+| `peers.max_clock_skew_seconds` | 60 | accepted signature clock difference |
+
+Peer I/O never blocks session work or the event loop.
+
+### Across nodes and clusters
+
+- Every instance's `advertise_url` must be reachable from every other instance, in both directions.
+- Use service DNS names for the seeds (a Kubernetes Service, a compose service name) rather than
+  pod IPs. See [Running in Kubernetes](#running-in-kubernetes).
+- Clocks must be NTP-synced to within `peers.max_clock_skew_seconds`, or signatures are rejected.
+- **TLS.** ccw signs requests but does not encrypt them and does not terminate TLS. Traffic that
+  leaves a trusted network needs TLS in front: an ingress or a service mesh, with an `https`
+  `advertise_url`. Within one cluster ccw itself needs nothing more; a mesh or ingress is your
+  choice.
+
+### Peer trust model
+
+- One shared peer token is one trust domain. Every holder of `peers.token` is fully trusted by every
+  instance.
+- Any holder can push prompts into the agents of every instance, including agents running in
+  bypass-permissions mode, and can claim any `from`: the signature proves knowledge of the token,
+  not which instance sent it.
+- Any holder can join the mesh by sending a signed heartbeat.
+- The token is in the ccw process env, so any agent running as the agent uid can read it (for
+  example from `/proc/<pid>/environ`) and act as a peer. Treat every session as holding the token.
+- Main-agent-only is not enforced against a subagent calling `/internal/mcp` from Bash with the
+  session token in its environment: the PreToolUse relay only stops the tool call, not the HTTP
+  call. This is the same as for the [ccw command tool](#the-ccw-command-tool).
+- `server.auth_token` and `peers.token` are different secrets; neither is accepted in place of the
+  other.
 
 ## Errors
 
@@ -3058,6 +3228,12 @@ Override a build arg with `docker compose build --build-arg CLAUDE_CODE_VERSION=
 - **Healthcheck.** `curl -f http://127.0.0.1:8080/healthz` every 30s (1s during the start
   period); `ccw-ready` makes `docker compose up -d` return only once the service is healthy.
 - **Shutdown.** `stop_grace_period: 30s` must exceed `limits.shutdown_timeout_seconds`.
+- **Peers example.** `examples/docker-compose.peers.yml` runs two ccw services, `ccw-a` and `ccw-b`,
+  from one image build with separate volumes and no shared folder. Each gets its own `CCW_PEER_NAME`
+  and `CCW_PEER_URL` (its service name) and is seeded by the other through `CCW_PEER_SEED`, with the
+  shared `CCW_PEER_TOKEN`; both mount `examples/peers.config.yaml`. Start it with
+  `CCW_AUTH_TOKEN=... CCW_PEER_TOKEN=... docker compose -f examples/docker-compose.peers.yml up -d --build`.
+  See [Peer messaging](#peer-messaging).
 
 **Anthropic policy note.** Anthropic's terms for Claude subscriptions (OAuth tokens from
 `claude setup-token`) are for your own use of Claude Code. Products offered to third parties
@@ -3083,6 +3259,10 @@ No chart is shipped; the image runs as-is.
   process exit 0 once the last session is deleted (or reaped idle), so a Job completes;
   `sessions.exit_when_dead: true` exits 3 when a session dies and writes the reason to
   `/dev/termination-log` for the pod's termination message. Both stop through the normal shutdown.
+- **Peers**: give each pod its own `peers.advertise_url` (for example from the pod name through an
+  env var) and seed with a headless Service (`clusterIP: None`) name, or with a StatefulSet pod DNS
+  name such as `http://ccw-0.ccw.ns.svc:8080`, so the seed resolves per pod. Every pod's
+  `advertise_url` must be reachable from every other; see [Peer messaging](#peer-messaging).
 - **Replicas**: one instance per project or assignment; see the [Trust model](#trust-model). Keep
   the Service cluster-internal and never expose it through a public ingress.
 
