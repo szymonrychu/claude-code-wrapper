@@ -52,7 +52,7 @@ def test_on_command_is_a_veto_event():
 
 
 def test_hook_events_include_command_hooks():
-    assert len(HOOK_EVENTS) == 20
+    assert len(HOOK_EVENTS) == 21
     start = HOOK_EVENTS.index("onCommand")
     assert HOOK_EVENTS[start : start + 3] == ("onCommand", "onCommandComplete", "onError")
     assert "onCommand" in VETO_EVENTS
