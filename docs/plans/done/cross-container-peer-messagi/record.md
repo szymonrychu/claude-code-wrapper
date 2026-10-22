@@ -6,7 +6,7 @@ Asked: ccw-owned peer messaging between main agents of ccw sessions across conta
 Shipped: 20 planned tasks plus 1 post-merge task (peers-security-hardening) on main, base b83793c, head 9fd0b96 (89 files, +10971/-44 per `git diff --stat b83793c..main`). Approvals A-O all landed per the orchestrator's scope audit.
 Verdict: delivered; the workflow's own `audit` was "off" and `scopeAudit` null in all three runs, so the scope audit was done by hand (sonnet).
 Final suite: `mise run test` on 08d4742: 1493 passed, 12 deselected; lint clean (269 files formatted). Post-hardening regression (departed instance re-added via heartbeats) caught by the suite and fixed in 08d4742 (409 left).
-CI: PENDING
+CI: GitHub run 39787818719 on c53f7ed: pre-commit, unit, integration (incl. two-container peers test), build-push to Harbor all success.
 
 ## Planned vs built
 
@@ -135,7 +135,7 @@ Estimate vs actual (task files; `actual` is empty in every task file, README `Ti
 
 No MR or PR URLs were provided. Work is merged to local main (head 9fd0b96, merge: peers-security-hardening); no push or deploy was reported.
 Final suite: `mise run test` on 08d4742: 1493 passed, 12 deselected; lint clean (269 files formatted). Post-hardening regression (departed instance re-added via heartbeats) caught by the suite and fixed in 08d4742 (409 left).
-CI: PENDING
+CI: GitHub run 39787818719 on c53f7ed: pre-commit, unit, integration (incl. two-container peers test), build-push to Harbor all success.
 
 ## Lessons routed to
 
