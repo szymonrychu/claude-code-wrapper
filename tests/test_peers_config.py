@@ -157,3 +157,47 @@ def test_example_config_loads_with_peers_disabled(monkeypatch):
     monkeypatch.delenv("CCW_PEER_TOKEN", raising=False)
     cfg = load_config(ROOT / "src/claude_code_wrapper/data/config.example.yaml")
     assert cfg.peers == PeersConfig()
+
+
+def test_defaults_disabled(tmp_path):
+    test_defaults()
+    test_absent_section_and_disabled_need_nothing(tmp_path)
+
+
+def test_token_rules(tmp_path):
+    test_token_required_when_enabled(tmp_path)
+    test_token_too_short(tmp_path)
+    test_token_differs_from_auth_token(tmp_path)
+
+
+def test_key_validation(tmp_path):
+    for name in ["a b", "x" * 65, ".", "..", ".hidden", "a/b"]:
+        test_bad_names(tmp_path, name)
+    for url in ["ftp://h", "h:80", "http://", "http://h/"]:
+        test_bad_advertise_url(tmp_path, url)
+    test_good_advertise_url(tmp_path, "http://h:{port}")
+    for key, value in [
+        ("heartbeat_seconds", 0),
+        ("max_missed_heartbeats", 0),
+        ("join_timeout_seconds", 0),
+        ("max_message_bytes", 0),
+        ("max_message_bytes", 1048577),
+        ("inbox_max", 0),
+        ("max_clock_skew_seconds", 0),
+        ("max_messages_per_minute", 0),
+    ]:
+        test_numeric_bounds(tmp_path, key, value)
+
+
+def test_static_seeds(tmp_path):
+    test_static_string_and_url_items_dedup(tmp_path)
+    test_static_bad_item_path(tmp_path)
+    test_with_static()
+
+
+def test_ccw_name_reserved_with_peers(tmp_path):
+    test_user_ccw_mcp_server_reserved_when_enabled(tmp_path)
+
+
+def test_token_redacted(tmp_path):
+    test_redacted_token(tmp_path)
