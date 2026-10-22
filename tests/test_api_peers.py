@@ -99,7 +99,7 @@ def post(c, route, body=None, *, headers=None, raw=None, token=PEER_TOKEN, path=
 
 
 @pytest.mark.parametrize("route,status", [("messages", 202), ("notices", 202), ("heartbeat", 200)])
-def test_signed_accepted(route, status) -> None:
+def test_accepts_signed_requests(route, status) -> None:
     c, mgr = make()
     r = post(c, route)
     assert r.status_code == status, r.text
@@ -132,8 +132,8 @@ def test_no_join_leave_routes(route) -> None:
 
 
 @pytest.mark.parametrize("route", ROUTES)
-@pytest.mark.parametrize("case", ["none", "badsig", "changed", "stale", "replay", "wrongtoken"])
-def test_unauthorized(route, case) -> None:
+@pytest.mark.parametrize("case", ["none", "badsig", "changed", "wrongtoken"])
+def test_bad_signature_401(route, case) -> None:
     c, mgr = make()
     raw = json.dumps(BODIES[route]).encode()
     path = f"/v1/peers/{route}"
@@ -146,28 +146,99 @@ def test_unauthorized(route, case) -> None:
     elif case == "changed":
         h = peer_auth.sign_request(PEER_TOKEN, "POST", path, raw)
         r = post(c, route, raw=raw + b" ", headers=h)
-    elif case == "stale":
-        h = peer_auth.sign_request(PEER_TOKEN, "POST", path, raw, now_ms=1000)
-        r = post(c, route, headers=h)
-    elif case == "wrongtoken":
-        r = post(c, route, token="other-token")
     else:
-        h = peer_auth.sign_request(PEER_TOKEN, "POST", path, raw)
-        assert post(c, route, headers=h).status_code in (200, 202)
-        mgr.peers.calls.clear()
-        r = post(c, route, headers=h)
+        r = post(c, route, token="other-token")
     assert r.status_code == 401
     assert r.json()["error"]["code"] == "unauthorized"
     assert PEER_TOKEN not in r.text
-    if case != "replay":
-        assert mgr.peers.calls == []
-    else:
-        assert mgr.peers.calls == []
+    assert mgr.peers.calls == []
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_stale_timestamp_401(route) -> None:
+    c, mgr = make()
+    raw = json.dumps(BODIES[route]).encode()
+    h = peer_auth.sign_request(PEER_TOKEN, "POST", f"/v1/peers/{route}", raw, now_ms=1000)
+    r = post(c, route, headers=h)
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "unauthorized"
+    assert mgr.peers.calls == []
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_replayed_nonce_401(route) -> None:
+    c, mgr = make()
+    raw = json.dumps(BODIES[route]).encode()
+    h = peer_auth.sign_request(PEER_TOKEN, "POST", f"/v1/peers/{route}", raw)
+    assert post(c, route, headers=h).status_code in (200, 202)
+    mgr.peers.calls.clear()
+    r = post(c, route, headers=h)
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "unauthorized"
+    assert mgr.peers.calls == []
+
+
+class RecordingMetrics:
+    def __init__(self) -> None:
+        self.received: list[tuple[str, str]] = []
+        self.membership: list[tuple[str, str]] = []
+
+    def peer_received(self, kind, result):
+        self.received.append((kind, result))
+
+    def peer_membership(self, op, result):
+        self.membership.append((op, result))
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+def _metric_client():
+    c, mgr = make(max_message_bytes=100)
+    rec = RecordingMetrics()
+    c.app.state.metrics = rec
+    return c, mgr, rec
+
+
+def test_route_metrics() -> None:
+    c, mgr, rec = _metric_client()
+    post(c, "messages", headers={})
+    post(c, "notices", headers={})
+    post(c, "messages", raw=b"x" * 5000)
+    post(c, "notices", raw=b"x" * 5000)
+    post(c, "messages", {**MESSAGE, "message": "x" * 101})
+    mgr.peers.error = PeerError("not_found", "nope")
+    post(c, "messages")
+    post(c, "notices")
+    assert rec.received == [
+        ("message", "unauthorized"),
+        ("notice", "unauthorized"),
+        ("message", "too_large"),
+        ("notice", "too_large"),
+        ("message", "too_large"),
+        ("message", "not_found"),
+        ("notice", "not_found"),
+    ]
+    assert rec.membership == []
+
+
+def test_heartbeat_metrics() -> None:
+    c, mgr, rec = _metric_client()
+    assert post(c, "heartbeat").status_code == 200
+    assert post(c, "heartbeat", headers={}).status_code == 401
+    mgr.peers.error = PeerError("rate_limited", "slow")
+    assert post(c, "heartbeat").status_code == 429
+    assert rec.membership == [
+        ("inbound_heartbeat", "ok"),
+        ("inbound_heartbeat", "failed"),
+        ("inbound_heartbeat", "failed"),
+    ]
+    assert rec.received == []
 
 
 @pytest.mark.parametrize("route", ROUTES)
 @pytest.mark.parametrize("token", [SERVER_TOKEN, PEER_TOKEN])
-def test_bearer_never_authenticates(route, token) -> None:
+def test_bearer_tokens_rejected(route, token) -> None:
     c, mgr = make()
     raw = json.dumps(BODIES[route]).encode()
     r = c.post(
@@ -186,7 +257,7 @@ def test_peer_bearer_not_accepted_on_v1() -> None:
 
 
 @pytest.mark.parametrize("route", ROUTES)
-def test_oversize_by_content_length_and_stream(route) -> None:
+def test_body_cap_before_parse(route) -> None:
     c, mgr = make(max_message_bytes=100)
     raw = b"x" * (100 + 4096 + 1)
     r = post(c, route, raw=raw)
@@ -216,7 +287,7 @@ def test_oversize_message_utf8() -> None:
     "code,status", [("not_found", 404), ("inbox_full", 429), ("rate_limited", 429)]
 )
 @pytest.mark.parametrize("route", ROUTES)
-def test_peer_error_mapping(route, code, status) -> None:
+def test_error_statuses(route, code, status) -> None:
     c, mgr = make()
     mgr.peers.error = PeerError(code, "nope")
     r = post(c, route)
@@ -245,7 +316,7 @@ def test_nonce_cache_full_429() -> None:
 
 
 @pytest.mark.parametrize("route", ROUTES)
-def test_absent_when_disabled(route) -> None:
+def test_routes_absent_when_disabled(route) -> None:
     c, _ = make(enabled=False)
     assert post(c, route).status_code == 404
 
@@ -255,7 +326,7 @@ def test_peer_token_redacted() -> None:
     assert PEER_TOKEN not in mgr.redactor.redact(f"x {PEER_TOKEN} y")
 
 
-def test_readme_headings() -> None:
+def test_peer_routes_documented() -> None:
     readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
     api = re.search(r"^## API reference\s*$(.*?)^## ", readme, re.S | re.M).group(1)
     for route in ROUTES:
