@@ -59,17 +59,19 @@ Interfaces: `config.PeersConfig`, `Config.peers` (the `peers-config` contract).
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+See the Requirement's Interfaces paragraph; keep every name and signature stated there.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+A config without a peers section loads exactly as today; an enabled one is validated with path-precise errors and its token is masked.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_peers_config.py` first; run `uv run pytest tests/test_peers_config.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peers_config.py -q` again and expect all passed.
+- Run the task verify: `uv run pytest tests/test_peers_config.py tests/test_config.py tests/test_readme_config.py tests/test_examples.py -q && mise run lint`; expect all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+Defaults are design D2. The README row default column uses the JSON rendering test_readme_config.py expects. First of the four README-editing tasks (README order: peers-config-section, peer-events-and-metrics, peer-messages-endpoint, peers-readme-guide).

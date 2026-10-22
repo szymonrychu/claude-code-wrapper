@@ -62,17 +62,19 @@ Interfaces: `peers.PeerDirectory`, `PeerEntry`, `PeersError`, `parse_address`, `
 
 ## Interfaces
 
-Signatures, schemas and contracts this task builds or must keep, with file:symbol.
+See the Requirement's Interfaces paragraph; keep every name and signature stated there.
 
 ## Expected outcome
 
-What is true and observable when the task is done.
+Several PeerDirectory objects on one directory see each other's live, signed sessions, sweep and garbage-collect safely, and never block the event loop.
 
 ## Steps
 
-Test first. One step per bullet, with the exact command and the output to expect.
-A retirement test asserts on `git ls-files <path>`, never on the filesystem.
+- Write the tests named in the acceptance conditions in `tests/test_peers_directory.py` first; run `uv run pytest tests/test_peers_directory.py -q` and see them fail for the missing behaviour (not an import typo).
+- Implement the smallest change that makes them pass; run `uv run pytest tests/test_peers_directory.py -q` again and expect all passed.
+- Run the task verify: `uv run pytest tests/test_peers_directory.py -q && mise run lint`; expect all passed and ruff clean.
+- No retirement test in this task; a removal pin would assert on `git ls-files <path>`, never on the filesystem.
 
 ## Notes
 
-Context the implementer needs: pitfalls, shared parts to reuse, decisions already made.
+The file layout is a cross-instance contract (peer-directory-entry): keep the key names exactly. No socket probes.

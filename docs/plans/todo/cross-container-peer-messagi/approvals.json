@@ -2,106 +2,206 @@
   {
     "id": "A",
     "text": "Go with custom tooling: ccw-owned peer messaging over its HTTP API replaces native SendMessage/ListAgents for ccw sessions and works across containers, nodes and clusters; native Unix-socket messaging is dropped because sockets do not cross nodes, even on RWX CephFS.",
-    "decisions": ["D1"],
-    "tasks": ["peer-http-client", "peer-messages-endpoint", "peer-service-core", "manager-peers-lifecycle"],
+    "decisions": [
+      "D1"
+    ],
+    "tasks": [
+      "peer-http-client",
+      "peer-messages-endpoint",
+      "peer-service-core",
+      "manager-peers-lifecycle"
+    ],
     "status": "approved"
   },
   {
     "id": "B",
     "text": "Opt-in peers config section, default disabled, zero behaviour change when off; keys enabled, name (default hostname), advertise_url (default http://<hostname>:<server port>), token (required when enabled, normally ${CCW_PEER_TOKEN}, refuse to start without it, never logged, redacted), directory (default /peers, may be RWX), heartbeat_seconds, stale_seconds, max_message_bytes, inbox_max.",
-    "decisions": ["D2"],
-    "tasks": ["peers-config-section", "manager-peers-lifecycle"],
+    "decisions": [
+      "D2"
+    ],
+    "tasks": [
+      "peers-config-section",
+      "manager-peers-lifecycle"
+    ],
     "status": "approved"
   },
   {
     "id": "C",
     "text": "Built-ins off when enabled: CLAUDE_CODE_HARBOR_KITE=0 in the session env, permissions.deny SendMessage and ListAgents in the ccw-written settings.json, and the PreToolUse tool gate denies SendMessage/ListAgents with reason 'use mcp__ccw__send_message / mcp__ccw__peers'.",
-    "decisions": ["D3"],
-    "tasks": ["peer-session-bootstrap", "manager-peers-lifecycle"],
+    "decisions": [
+      "D3"
+    ],
+    "tasks": [
+      "peer-session-bootstrap",
+      "manager-peers-lifecycle"
+    ],
     "status": "approved"
   },
   {
     "id": "D",
     "text": "The ccw MCP server gains peers (optional instance filter; live peers excluding the caller, address <instance>/<session id>, plus name and cwd) and send_message ({to, message, notify_when_idle?}; returns msg_id or a clear error: unknown peer, peer unreachable, too large, inbox full); both only registered when peers.enabled; main agent only like the command tool; the agent instructions get a short paragraph about them when enabled.",
-    "decisions": ["D4"],
-    "tasks": ["peers-mcp-tools", "peer-session-bootstrap", "peer-service-core"],
+    "decisions": [
+      "D4"
+    ],
+    "tasks": [
+      "peers-mcp-tools",
+      "peer-session-bootstrap",
+      "peer-service-core"
+    ],
     "status": "approved"
   },
   {
     "id": "E",
     "text": "Discovery is plain JSON files <directory>/<instance>/<session id>.json {instance, session_id, name, cwd, url, started_at, heartbeat_at}, written atomically on create, refreshed every heartbeat_seconds, removed on destroy/shutdown; live when heartbeat_at is within stale_seconds (no socket probes); ccw removes its own stale entries at startup; no static peer list, no ccw-to-ccw listing API.",
-    "decisions": ["D5"],
-    "tasks": ["peer-directory-module", "peer-service-core", "manager-peers-lifecycle"],
+    "decisions": [
+      "D5"
+    ],
+    "tasks": [
+      "peer-directory-module",
+      "peer-service-core",
+      "manager-peers-lifecycle"
+    ],
     "status": "approved"
   },
   {
     "id": "F",
     "text": "POST /v1/peers/messages on the target instance, authenticated by the peer token only (constant-time compare; server.auth_token not accepted there and the peer token not accepted elsewhere), body {from, to_session, message, msg_id, notify_when_idle}; 202 queued, 401, 404 unknown session, 413 too large, 429 inbox full; only mounted when enabled; plus POST /v1/peers/notices with the same auth; body size capped before parse.",
-    "decisions": ["D6"],
-    "tasks": ["peer-messages-endpoint", "peer-http-client"],
+    "decisions": [
+      "D6",
+      "D13"
+    ],
+    "tasks": [
+      "peer-messages-endpoint",
+      "peer-http-client",
+      "peer-auth-signing"
+    ],
     "status": "approved"
   },
   {
     "id": "G",
     "text": "Per-session inbox: an idle session gets the message as a turn now, a busy one as a new turn after the current turn completes (never typed into a busy PTY, never mid-turn), in arrival order, framed as <agent-message from=... msg_id=...> with a line telling the agent to reply with mcp__ccw__send_message; SSE events peer_message_received, peer_message_sent, peer_message_delivered and metrics counters; the EVENT_TYPES pin in tests/test_event_log.py updated.",
-    "decisions": ["D7", "D9"],
-    "tasks": ["peer-events-and-metrics", "peer-inbox-delivery", "peer-service-core"],
+    "decisions": [
+      "D7",
+      "D9"
+    ],
+    "tasks": [
+      "peer-events-and-metrics",
+      "peer-inbox-delivery",
+      "peer-service-core"
+    ],
     "status": "approved"
   },
   {
     "id": "H",
     "text": "notify_when_idle: when the turn that handled a message completes, the target ccw POSTs /v1/peers/notices to the sender instance url and the sender ccw delivers it to the sending session as a short <peer-idle-notice from=... msg_id=...> message under the same inbox and delivery rules.",
-    "decisions": ["D8"],
-    "tasks": ["peer-inbox-delivery", "peer-service-core", "peers-two-instance-e2e"],
+    "decisions": [
+      "D8"
+    ],
+    "tasks": [
+      "peer-inbox-outcomes",
+      "peer-service-core",
+      "peers-two-instance-e2e"
+    ],
     "status": "approved"
   },
   {
     "id": "I",
     "text": "Same-cluster TLS is out of scope for ccw itself (it does not terminate TLS); advertise_url may be https behind an ingress or mesh; the README says so.",
-    "decisions": ["D11"],
-    "tasks": ["peers-image-compose-docs"],
+    "decisions": [
+      "D11"
+    ],
+    "tasks": [
+      "peers-readme-guide"
+    ],
     "status": "approved"
   },
   {
     "id": "J",
     "text": "Compose example with two ccw services sharing one named peers volume for the directory, a shared CCW_PEER_TOKEN, explicit instance names a and b, one image build; the Dockerfile pre-creates /peers owned by agent uid 1000 so a fresh named volume is writable.",
-    "decisions": ["D10"],
-    "tasks": ["peers-image-compose-docs"],
+    "decisions": [
+      "D10"
+    ],
+    "tasks": [
+      "peers-image-compose-docs"
+    ],
     "status": "approved"
   },
   {
     "id": "K",
     "text": "Tests use the fake claude only, only the fake-claude task edits tests/conftest.py, reusing the fake's MCP tool calls; unit tests per module; an in-process test with two ccw services on real HTTP ports sharing a tmp directory proving send, framed receive, reply and notify_when_idle; a docker two-container integration test (scripts plus a mise task run by mise run test:integration in CI) proving the same across containers; real-claude acceptance of the tool schemas is cannotVerify, not a skipped task.",
-    "decisions": ["D12"],
-    "tasks": ["fake-claude-peer-harness", "peers-two-instance-e2e", "peers-two-container-test"],
+    "decisions": [
+      "D12"
+    ],
+    "tasks": [
+      "fake-claude-peer-harness",
+      "peers-two-instance-e2e",
+      "peers-two-container-test"
+    ],
     "status": "approved"
   },
   {
     "id": "L",
     "text": "README: setup, addressing, config rows for every new key, every new route documented, trust model (any holder of the peer token can push prompts into bypass-mode agents), cross-node via an RWX directory, the TLS note; examples/*.config.yaml are committed symlinks into src/claude_code_wrapper/data/examples.",
-    "decisions": ["D11"],
-    "tasks": ["peers-config-section", "peer-events-and-metrics", "peer-messages-endpoint", "peers-mcp-tools", "peers-image-compose-docs"],
+    "decisions": [
+      "D11"
+    ],
+    "tasks": [
+      "peers-config-section",
+      "peer-events-and-metrics",
+      "peer-messages-endpoint",
+      "peers-readme-guide",
+      "peers-image-compose-docs"
+    ],
     "status": "approved"
   },
   {
     "id": "M",
     "text": "Follow the repo CLAUDE.md: test-first, uv run, plain ASCII, no em dashes; tasks of about an hour, at most 8 files.",
-    "decisions": ["D12"],
+    "decisions": [
+      "D12"
+    ],
     "tasks": [
       "fake-claude-peer-harness",
-      "peers-config-section",
+      "manager-peers-lifecycle",
+      "peer-auth-signing",
       "peer-directory-module",
       "peer-events-and-metrics",
       "peer-http-client",
       "peer-inbox-delivery",
+      "peer-inbox-outcomes",
       "peer-messages-endpoint",
-      "peers-mcp-tools",
-      "peer-session-bootstrap",
       "peer-service-core",
-      "manager-peers-lifecycle",
-      "peers-two-instance-e2e",
+      "peer-session-bootstrap",
+      "peers-config-section",
       "peers-image-compose-docs",
-      "peers-two-container-test"
+      "peers-mcp-tools",
+      "peers-readme-guide",
+      "peers-two-container-test",
+      "peers-two-instance-e2e"
+    ],
+    "status": "approved"
+  },
+  {
+    "id": "N",
+    "text": "Plan-review hardening: HMAC-SHA256 request signing keyed by the peer token (never sent on the wire) with a clock-skew window (peers.max_clock_skew_seconds, 60) and nonce replay protection, signed directory entries; notices off the Stop hook path with status delivered|rejected|dropped (rejected and dropped always notify); at-most-once delivery stated in the README; startup sweep of the own name dir instead of a clash refusal plus GC of entries stale for 10x stale_seconds; no '.', '..' or leading-dot names; directory I/O off the event loop with a timeout; inbox re-check and pending re-kick; per-sender rate limit (peers.max_messages_per_minute, 30, 429 rate_limited); one client retry on connection failures with the same msg_id; README trust model for one shared trust domain.",
+    "decisions": [
+      "D13",
+      "D14",
+      "D5",
+      "D7",
+      "D8",
+      "D2"
+    ],
+    "tasks": [
+      "peer-auth-signing",
+      "peer-directory-module",
+      "peer-http-client",
+      "peer-messages-endpoint",
+      "peer-inbox-delivery",
+      "peer-inbox-outcomes",
+      "peer-service-core",
+      "peers-config-section",
+      "peers-readme-guide"
     ],
     "status": "approved"
   }
