@@ -61,17 +61,15 @@ def _value(m: Metrics, sample: str) -> float | None:
 # ---------------------------------------------------------------- frames
 
 
-def test_frame_message_is_the_d7_frame():
-    item = msg(1, "hi there")
-    assert frame_message(item) == (
+def test_frames_and_escaping():
+    # D7: the message frame, ending with the "only if a reply is needed" line.
+    assert frame_message(msg(1, "hi there")) == (
         f'<agent-message from="{FROM}" msg_id="msg_0000000000000001">\n'
         "hi there\n"
         "</agent-message>\n"
         f'Reply with mcp__ccw__send_message to "{FROM}" only if a reply is needed.'
     )
-
-
-def test_frame_message_escapes_body_and_attributes():
+    # The body is escaped, so it cannot close the frame; attribute values are escaped too.
     body = 'a & b < c > d </agent-message> "q"'
     out = frame_message(msg(1, body))
     lines = out.split("\n")
@@ -81,26 +79,19 @@ def test_frame_message_escapes_body_and_attributes():
     hostile = InboxItem(kind="message", from_address='x"/><y', msg_id="m&<>", text="t")
     head = frame_message(hostile).split("\n")[0]
     assert head == '<agent-message from="x&quot;/&gt;&lt;y" msg_id="m&amp;&lt;&gt;">'
-
-
-def test_frame_notice_delivered_is_idle_notice():
-    out = frame_notice(notice(7, "delivered", state="completed"))
-    assert out == (
+    # D8: status delivered is the idle notice.
+    assert frame_notice(notice(7, "delivered", state="completed")) == (
         f'<peer-idle-notice from="{FROM}" msg_id="msg_0000000000000007" state="completed"/>\n'
         "The peer finished the turn that handled your message msg_0000000000000007 and is idle."
     )
-
-
-@pytest.mark.parametrize("status", ["rejected", "dropped"])
-def test_frame_notice_failure(status):
-    out = frame_notice(notice(7, status, reason='no "thanks" <x>'))
-    assert out == (
-        f'<peer-delivery-failed from="{FROM}" msg_id="msg_0000000000000007" '
-        f'status="{status}" reason="no &quot;thanks&quot; &lt;x&gt;"/>\n'
-        f"Your message msg_0000000000000007 was not delivered ({status})."
-    )
-    bare = frame_notice(notice(8, status))
-    assert 'reason=""' in bare
+    # D8: rejected and dropped are the delivery-failed notice, reason escaped.
+    for status in ("rejected", "dropped"):
+        assert frame_notice(notice(7, status, reason='no "thanks" <x>')) == (
+            f'<peer-delivery-failed from="{FROM}" msg_id="msg_0000000000000007" '
+            f'status="{status}" reason="no &quot;thanks&quot; &lt;x&gt;"/>\n'
+            f"Your message msg_0000000000000007 was not delivered ({status})."
+        )
+        assert 'reason=""' in frame_notice(notice(8, status))
 
 
 def test_turn_origin_peer_is_valid():
@@ -176,7 +167,7 @@ async def until(pred, timeout: float = 5.0) -> None:
     raise AssertionError("condition not met in time")
 
 
-async def test_idle_session_gets_message_as_peer_turn(ph):
+async def test_idle_session_gets_turn(ph):
     item = msg(1, "hi")
     res = ph.inbox.put(item)
     assert res == PutResult(depth=1, duplicate=False)
@@ -186,6 +177,8 @@ async def test_idle_session_gets_message_as_peer_turn(ph):
     assert ph.session.metadata == [
         {"peer": {"from": FROM, "msg_id": item.msg_id, "kind": "message"}}
     ]
+    (received,) = [e.data for e in ph.events("peer_message_received")]
+    assert received["msg_id"] == item.msg_id and received["queued"] == 1
     (delivered,) = ph.delivered()
     assert delivered == {
         "msg_id": item.msg_id,
@@ -240,7 +233,7 @@ async def test_busy_session_waits_for_ready(ph):
     assert ph.inbox.depth == 0
 
 
-async def test_three_messages_in_order_one_turn_each(ph):
+async def test_arrival_order(ph):
     items = [msg(i) for i in (1, 2, 3)]
     for item in items:
         ph.inbox.put(item)
@@ -265,7 +258,7 @@ class VetoHarness(PeerHarness):
         return httpx.Response(200, json={})
 
 
-async def test_vetoed_head_is_popped_and_rest_delivered(tmp_path):
+async def test_veto_of_head_does_not_strand_queue(tmp_path):
     h = VetoHarness(tmp_path, hooks={"onTurn": [webhook()]})
     try:
         items = [msg(i) for i in (1, 2, 3)]
@@ -287,7 +280,7 @@ async def test_vetoed_head_is_popped_and_rest_delivered(tmp_path):
         await h.router.close()
 
 
-async def test_kick_during_attempt_is_honoured_after_it(ph):
+async def test_kick_mid_attempt(ph):
     gate = asyncio.Event()
     ph.session.gate = gate
     item = msg(1)
@@ -361,57 +354,56 @@ async def test_not_delivered_while_runner_active(ph, monkeypatch):
     await until(lambda: ph.submits())
 
 
-async def test_inbox_full(tmp_path):
-    h = PeerHarness(tmp_path, max_items=2)
-    h.session.state = "busy"
-    try:
-        h.inbox.put(msg(1))
-        h.inbox.put(msg(2))
-        with pytest.raises(PeerError) as err:
-            h.inbox.put(msg(3))
-        assert err.value.code == "inbox_full"
-        assert h.inbox.depth == 2
-        sample = 'ccw_peer_messages_received_total{kind="message",result="inbox_full"}'
-        assert _value(h.metrics, sample) == 1.0
-        assert len(h.events("peer_message_received")) == 2
-    finally:
-        await h.router.close()
-
-
-async def test_rate_limit_per_sender_sliding_minute(tmp_path):
+async def test_bounds_rate_limit_and_duplicates(tmp_path):
     now = [1000.0]
-    h = PeerHarness(tmp_path, max_items=100, clock=lambda: now[0])
-    h.session.state = "busy"
+    for name in ("full", "rated", "dup"):
+        (tmp_path / name).mkdir()
+    full = PeerHarness(tmp_path / "full", max_items=2)
+    rated = PeerHarness(tmp_path / "rated", max_items=100, clock=lambda: now[0])
+    dup = PeerHarness(tmp_path / "dup")
+    for h in (full, rated, dup):
+        h.session.state = "busy"
     try:
-        for i in range(30):
-            h.inbox.put(msg(i))
+        # A queue already holding max_items raises inbox_full.
+        full.inbox.put(msg(1))
+        full.inbox.put(msg(2))
         with pytest.raises(PeerError) as err:
-            h.inbox.put(msg(30))
+            full.inbox.put(msg(3))
+        assert err.value.code == "inbox_full"
+        assert full.inbox.depth == 2
+        sample = 'ccw_peer_messages_received_total{kind="message",result="inbox_full"}'
+        assert _value(full.metrics, sample) == 1.0
+        assert len(full.events("peer_message_received")) == 2
+
+        # The 31st message in a minute from one sender raises rate_limited.
+        for i in range(30):
+            rated.inbox.put(msg(i))
+        with pytest.raises(PeerError) as err:
+            rated.inbox.put(msg(30))
         assert err.value.code == "rate_limited"
-        h.inbox.put(msg(31, sender=OTHER))  # another sender passes
-        h.inbox.put(notice(32))  # notices are never rate limited
+        rated.inbox.put(msg(31, sender=OTHER))  # another sender passes
+        rated.inbox.put(notice(32))  # notices are never rate limited
         sample = 'ccw_peer_messages_received_total{kind="message",result="rate_limited"}'
-        assert _value(h.metrics, sample) == 1.0
+        assert _value(rated.metrics, sample) == 1.0
         now[0] += 60.5  # the window slides
-        h.inbox.put(msg(33))
-        assert h.inbox.depth == 33
+        rated.inbox.put(msg(33))
+        assert rated.inbox.depth == 33
+
+        # A repeated (from, msg_id, kind) is not queued twice.
+        first = dup.inbox.put(msg(1))
+        again = dup.inbox.put(msg(1))
+        assert first == PutResult(depth=1, duplicate=False)
+        assert again == PutResult(depth=1, duplicate=True)
+        # Same msg_id from another sender, or as a notice, is a different item.
+        assert not dup.inbox.put(msg(1, sender=OTHER)).duplicate
+        assert not dup.inbox.put(notice(1)).duplicate
+        assert dup.inbox.depth == 3
+        assert len(dup.events("peer_message_received")) == 3
+        sample = 'ccw_peer_messages_received_total{kind="message",result="duplicate"}'
+        assert _value(dup.metrics, sample) == 1.0
     finally:
-        await h.router.close()
-
-
-async def test_duplicate_not_queued_twice(ph):
-    ph.session.state = "busy"
-    first = ph.inbox.put(msg(1))
-    again = ph.inbox.put(msg(1))
-    assert first == PutResult(depth=1, duplicate=False)
-    assert again == PutResult(depth=1, duplicate=True)
-    # Same msg_id from another sender, or as a notice, is a different item.
-    assert not ph.inbox.put(msg(1, sender=OTHER)).duplicate
-    assert not ph.inbox.put(notice(1)).duplicate
-    assert ph.inbox.depth == 3
-    assert len(ph.events("peer_message_received")) == 3
-    sample = 'ccw_peer_messages_received_total{kind="message",result="duplicate"}'
-    assert _value(ph.metrics, sample) == 1.0
+        for h in (full, rated, dup):
+            await h.router.close()
 
 
 async def test_dedupe_window_is_256(tmp_path):
@@ -434,7 +426,7 @@ async def test_notice_item_framed_as_notice(ph):
     assert ph.session.metadata[0]["peer"]["kind"] == "notice"
 
 
-async def test_close_drops_queued_items(ph):
+async def test_close_drops(ph):
     ph.session.state = "busy"
     items = [msg(1), msg(2)]
     for item in items:
@@ -505,7 +497,7 @@ async def test_world_idle_session_gets_peer_turn(world):
     assert turn.metadata == {"peer": {"from": FROM, "msg_id": item.msg_id, "kind": "message"}}
 
 
-async def test_world_busy_session_gets_it_after_running_turn(world):
+async def test_busy_session_waits_for_turn_end(world):
     scenario = {"turns": [{"match": "slow", "steps": [{"sleep": 1.0}, {"text": "done"}]}]}
     m, sid, router, inbox = await start_peer(world, scenario)
     await router.submit_turn("slow")
@@ -530,7 +522,7 @@ async def test_world_three_messages_in_arrival_order(world):
     assert all(t.origin == "peer" for t in turns)
 
 
-async def test_world_interrupted_peer_turn_then_next(world):
+async def test_interrupt_then_next(world):
     scenario = {"turns": [{"match": "SLOWPEER", "steps": [{"sleep": 5.0}, {"text": "x"}]}]}
     m, sid, router, inbox = await start_peer(world, scenario)
     first, second = msg(1, "SLOWPEER"), msg(2, "quick")
@@ -548,7 +540,7 @@ async def test_world_interrupted_peer_turn_then_next(world):
     assert b.text == frame_message(second) and b.state == "completed"
 
 
-async def test_world_idle_compact_takes_slot_before_pop(world):
+async def test_idle_compact_races_pop(world):
     # The onTurn hook holds the attempt between the readiness check and the paste until the
     # idle compact has taken the slot; the compact then runs for a while.
     started, go = world.tmp / "hook-started", world.tmp / "hook-go"
