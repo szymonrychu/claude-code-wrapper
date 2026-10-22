@@ -135,6 +135,9 @@ def test_trust_model_and_callback_contract_documented() -> None:
         "fully trusted",
     ):
         assert phrase in trust, phrase
+    assert "user_message" in trust
+    assert "history" in trust
+    assert "redactor" in trust
     assert "callbackUrl" in README
     assert "callback_secret" in README
     assert "onTurnComplete" in section("Hooks")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -17,6 +18,10 @@ class FakeRouter:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.gate: asyncio.Event | None = None
+        self.statuslines: list[dict[str, Any]] = []
+
+    def on_statusline(self, values: dict[str, Any]) -> None:
+        self.statuslines.append(values)
 
     async def handle_claude_hook(self, event: str, payload: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((event, payload))
@@ -226,3 +231,52 @@ async def test_pretooluse_deny_round_trip_through_relay() -> None:
     finally:
         server.should_exit = True
         await asyncio.wait_for(task, 10)
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"input_tokens": "lots"},
+        {"input_tokens": [1]},
+        {"cache_read_input_tokens": {"a": 1}},
+        {"input_tokens": -5},
+        {"input_tokens": True},
+        {"input_tokens": 1e999},
+        {"input_tokens": float("nan")},
+    ],
+)
+async def test_statusline_rejects_non_numeric_usage(usage: dict[str, Any]) -> None:
+    mgr = FakeManager()
+    async with client(mgr) as c:
+        body = json.dumps({"context_window": {"current_usage": usage}}, allow_nan=True)
+        r = await c.post(
+            "/internal/statusline", content=body, headers={**H, "content-type": "application/json"}
+        )
+        assert r.status_code == 400
+        for bad in ("lots", -1, 1e999):
+            r = await c.post(
+                "/internal/statusline",
+                content=json.dumps({"context_window": {"context_window_size": bad}}),
+                headers={**H, "content-type": "application/json"},
+            )
+            assert r.status_code == 400
+        r = await c.post(
+            "/internal/statusline",
+            json={"context_window": {"current_usage": {"input_tokens": 5, "output_tokens": None}}},
+            headers=H,
+        )
+        assert r.status_code == 204
+    assert len(mgr.r.statuslines) == 1
+
+
+async def test_statusline_body_cap() -> None:
+    mgr = FakeManager()
+    async with client(mgr) as c:
+        big = json.dumps({"model": "x" * 5000})
+        r = await c.post(
+            "/internal/statusline", content=big, headers={**H, "content-type": "application/json"}
+        )
+        assert r.status_code == 413
+        r = await c.post("/internal/statusline", json={"model": "x" * 100}, headers=H)
+        assert r.status_code == 204
+    assert len(mgr.r.statuslines) == 1

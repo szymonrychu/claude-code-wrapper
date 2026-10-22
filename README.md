@@ -104,6 +104,9 @@ never put it behind a public ingress.
 - With `peers.enabled`, the shared peer token is one trust domain: any holder can push prompts into
   the agents of every instance and claim any sender. See the trust model in
   [Peer messaging](#peer-messaging).
+- `user_message` events carry the prompt text and the names of attached files into the event log,
+  the SSE stream and the history. Only the configured redactor scrubs them; anything it does not
+  match is stored and streamed verbatim to every holder of the bearer token.
 - There is no callback host policy: `callbackUrl` may point at any `http` or `https` host the
   service can reach.
 - The service must not be exposed to untrusted callers. If `server.auth_token` is empty the service
