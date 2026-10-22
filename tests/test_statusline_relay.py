@@ -8,7 +8,6 @@ import threading
 from typing import Any
 
 import httpx
-import pytest
 
 from claude_code_wrapper import statusline
 from claude_code_wrapper.bootstrap.settings import render_settings
