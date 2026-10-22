@@ -243,6 +243,7 @@ async def test_pretooluse_deny_round_trip_through_relay() -> None:
         {"input_tokens": True},
         {"input_tokens": 1e999},
         {"input_tokens": float("nan")},
+        {"input_tokens": 10**400},
     ],
 )
 async def test_statusline_rejects_non_numeric_usage(usage: dict[str, Any]) -> None:
@@ -267,6 +268,17 @@ async def test_statusline_rejects_non_numeric_usage(usage: dict[str, Any]) -> No
         )
         assert r.status_code == 204
     assert len(mgr.r.statuslines) == 1
+
+
+async def test_statusline_rejects_huge_integer_percentage() -> None:
+    mgr = FakeManager()
+    async with client(mgr) as c:
+        r = await c.post(
+            "/internal/statusline",
+            content='{"context_window": {"used_percentage": 1' + "0" * 400 + "}}",
+            headers={**H, "content-type": "application/json"},
+        )
+        assert r.status_code == 400
 
 
 async def test_statusline_body_cap() -> None:

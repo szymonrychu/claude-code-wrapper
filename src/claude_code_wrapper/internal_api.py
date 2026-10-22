@@ -49,6 +49,13 @@ def _optional(value: Any, kind: type | tuple[type, ...], name: str) -> Any:
     return value
 
 
+def _finite(value: float) -> bool:
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an int too large for a float
+        return False
+
+
 def _check_usage(usage: dict[str, Any] | None) -> None:
     """Token counts must be absent/null or finite non-negative numbers (never bool)."""
     for key, value in (usage or {}).items():
@@ -57,7 +64,7 @@ def _check_usage(usage: dict[str, Any] | None) -> None:
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
-            or not math.isfinite(value)
+            or not _finite(value)
             or value < 0
         ):
             raise ValueError(f"context_window.current_usage.{key} must be a finite number >= 0")
@@ -82,7 +89,7 @@ def parse_statusline(payload: dict[str, Any]) -> dict[str, Any]:
         "model": _optional(payload.get("model"), (dict, str), "model"),
     }
     pct = values["used_percentage"]
-    if pct is not None and (not math.isfinite(pct) or pct < 0):
+    if pct is not None and (not _finite(pct) or pct < 0):
         raise ValueError("context_window.used_percentage must be a finite number >= 0")
     size = values["context_window_size"]
     if size is not None and size < 0:
