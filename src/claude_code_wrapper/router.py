@@ -73,9 +73,11 @@ log = logging.getLogger(__name__)
 
 CCW_TOOL_PREFIX = "mcp__ccw__"
 CCW_SUBAGENT_DENY_REASON = (
-    "ccw commands are available to the main agent only; "
-    "subagents and teammates cannot call mcp__ccw__command."
+    "ccw tools are available to the main agent only; "
+    "subagents and teammates cannot call mcp__ccw__* tools."
 )
+NATIVE_PEER_TOOLS = ("SendMessage", "ListAgents")
+NATIVE_PEER_DENY_REASON = "use mcp__ccw__send_message / mcp__ccw__peers"
 QUESTION_DENY_REASON = (
     "Question forwarded to the API client. Ask the user in plain text, "
     "end your turn now and wait for their reply in the next message."
@@ -534,19 +536,24 @@ class SessionRouter(SessionListener):
             self._deliver(self._callback_url(self.session.current_turn), event)
             return {"stdout": deny_output(QUESTION_DENY_REASON), "stderr": "", "exit_code": 0}
         who = _attribution(payload)
-        if tool_name.startswith(CCW_TOOL_PREFIX) and payload.get("agent_id"):
+        gate_reason = None
+        if self._cfg.peers.enabled and tool_name in NATIVE_PEER_TOOLS:
+            gate_reason = NATIVE_PEER_DENY_REASON
+        elif tool_name.startswith(CCW_TOOL_PREFIX) and payload.get("agent_id"):
+            gate_reason = CCW_SUBAGENT_DENY_REASON
+        if gate_reason is not None:
             self._emit(
                 "tool_denied",
                 {
                     "tool_use_id": tool_use_id,
                     "tool_name": tool_name,
-                    "reason": CCW_SUBAGENT_DENY_REASON,
+                    "reason": gate_reason,
                     **who,
                 },
             )
             if self._metrics is not None:
                 self._metrics.tool_call(tool_name, "deny")
-            return {"stdout": deny_output(CCW_SUBAGENT_DENY_REASON), "stderr": "", "exit_code": 0}
+            return {"stdout": deny_output(gate_reason), "stderr": "", "exit_code": 0}
         data = {
             "tool_use_id": tool_use_id,
             "tool_name": tool_name,
