@@ -190,3 +190,55 @@ def test_token_never_leaks():
     for e in errs:
         assert TOKEN not in str(e) and TOKEN not in repr(e)
     assert TOKEN not in repr(NonceCache(60))
+
+
+def test_sign_verify_and_tamper():
+    _verify(_signed())
+    for kw in ({"method": "GET"}, {"path": "/v1/peers/notices"}, {"body": b"tampered"}):
+        assert _reason(lambda kw=kw: _verify(_signed(), **kw)) == "bad_signature"
+    h = _signed()
+    assert _reason(lambda: _verify(dict(h, **{HEADER_TIMESTAMP: str(NOW + 1)}))) == "bad_signature"
+    assert _reason(lambda: _verify(dict(h, **{HEADER_NONCE: "0" * 32}))) == "bad_signature"
+
+
+def test_missing_and_malformed_headers():
+    for name in (HEADER_TIMESTAMP, HEADER_NONCE, HEADER_SIGNATURE):
+        h = _signed()
+        del h[name]
+        assert _reason(lambda h=h: _verify(h)) == "missing"
+    h = _signed()
+    assert _reason(lambda: _verify(dict(h, **{HEADER_TIMESTAMP: "abc"}))) == "malformed"
+    assert _reason(lambda: _verify(dict(h, **{HEADER_NONCE: "zz"}))) == "malformed"
+    assert _reason(lambda: _verify(dict(h, **{HEADER_SIGNATURE: "nothex"}))) == "malformed"
+
+
+def test_skew_window():
+    _verify(_signed(now_ms=NOW - 60_000))
+    assert _reason(lambda: _verify(_signed(now_ms=NOW - 60_001))) == "stale"
+    assert _reason(lambda: _verify(_signed(now_ms=NOW + 60_001))) == "stale"
+
+
+def test_replay_and_forgery():
+    cache = NonceCache(60)
+    h = _signed()
+    forged = dict(h, **{HEADER_SIGNATURE: "0" * 64})
+    assert _reason(lambda: _verify(forged, cache=cache)) == "bad_signature"
+    _verify(h, cache=cache)
+    assert _reason(lambda: _verify(h, cache=cache)) == "replayed"
+
+
+def test_nonce_cache_bounds():
+    t = [0.0]
+    cache = NonceCache(10, capacity=2, clock=lambda: t[0])
+    assert cache.add("a") is True
+    assert cache.add("a") is False
+    cache.add("b")
+    with pytest.raises(NonceCacheFull):
+        cache.add("c")
+    assert cache.add("a") is False
+    t[0] = 25.0
+    assert cache.add("c") is True
+
+
+def test_token_never_exposed():
+    test_token_never_leaks()
