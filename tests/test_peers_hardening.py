@@ -131,8 +131,14 @@ async def test_total_rate_limit_and_bounded_rate_map(tmp_path):
     await h.router.close()
     from claude_code_wrapper import peer_inbox
 
-    h = PeerHarness(tmp_path / "b", max_items=5000, max_per_minute=100, total=10**6)
+    h = PeerHarness(_sub(tmp_path), max_items=5000, max_per_minute=100, total=10**6)
     for i in range(peer_inbox.MAX_RATE_SENDERS + 20):
         h.inbox.put(msg(i, sender=f"s{i}/ses_0123456789ab"))
     assert len(h.inbox._rate) <= peer_inbox.MAX_RATE_SENDERS
     await h.router.close()
+
+
+def _sub(path):
+    sub = path / "b"
+    sub.mkdir()
+    return sub
