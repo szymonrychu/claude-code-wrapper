@@ -10,7 +10,11 @@ from typing import Any
 import httpx
 
 from claude_code_wrapper import statusline
-from claude_code_wrapper.bootstrap.settings import render_settings
+from claude_code_wrapper.bootstrap.settings import (
+    _install_statusline,
+    default_statusline_command,
+    render_settings,
+)
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.internal_api import create_internal_app
 from claude_code_wrapper.router import SessionRouter
@@ -37,6 +41,9 @@ class _Capture(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *a: Any) -> None:
         pass
+
+
+_CMD = default_statusline_command()
 
 
 def _run(monkeypatch, capsys, stdin: bytes) -> str:
@@ -92,7 +99,7 @@ def test_post_failure_is_best_effort(monkeypatch, capsys, tmp_path) -> None:
 
 def test_settings_install_and_chain(tmp_path) -> None:
     doc = render_settings(tmp_path, Config(), relay_command="/r")
-    assert doc["statusLine"] == {"type": "command", "command": "ccw statusline"}
+    assert doc["statusLine"] == {"type": "command", "command": _CMD}
     assert not statusline.chain_path(tmp_path).exists()
 
     cfg = Config.model_validate(
@@ -105,7 +112,7 @@ def test_settings_install_and_chain(tmp_path) -> None:
     d = tmp_path / "b"
     d.mkdir()
     doc = render_settings(d, cfg, relay_command="/r")
-    assert doc["statusLine"] == {"type": "command", "command": "ccw statusline", "padding": 2}
+    assert doc["statusLine"] == {"type": "command", "command": _CMD, "padding": 2}
     assert json.loads(statusline.chain_path(d).read_text()) == {"command": "mine"}
 
 
@@ -119,7 +126,7 @@ def test_chain_taken_after_overlay_and_idempotent(tmp_path) -> None:
     assert json.loads(statusline.chain_path(tmp_path).read_text()) == {"command": "mine"}
     # No overlay on a re-render: the installed relay is not chained to itself.
     third = render_settings(tmp_path, Config(), relay_command="/r")
-    assert third["statusLine"]["command"] == "ccw statusline"
+    assert third["statusLine"]["command"] == _CMD
     assert json.loads(statusline.chain_path(tmp_path).read_text()) == {"command": "mine"}
 
 
@@ -178,3 +185,43 @@ def test_router_on_statusline_stores_latest() -> None:
     router.on_statusline({"used_percentage": 3.0})
     router.on_statusline({"used_percentage": 4.0})
     assert router.statusline == {"used_percentage": 4.0}
+
+
+def test_statusline_command_is_absolute(tmp_path, monkeypatch) -> None:
+    fake = tmp_path / "venv" / "bin"
+    fake.mkdir(parents=True)
+    (fake / "ccw").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(sys, "executable", str(fake / "python"))
+    assert default_statusline_command() == f"{fake / 'ccw'} statusline"
+    doc = render_settings(tmp_path, Config(), relay_command="/r")
+    assert doc["statusLine"]["command"] == f"{fake / 'ccw'} statusline"
+
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "nowhere" / "python"))
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    command = default_statusline_command()
+    assert command.endswith("-m claude_code_wrapper.statusline")
+    assert command.startswith(("/", "'/"))
+
+
+def test_install_statusline_idempotent_by_basename(tmp_path) -> None:
+    doc = {"statusLine": {"type": "command", "command": "/other/venv/bin/ccw statusline"}}
+    _install_statusline(doc, tmp_path)
+    assert doc["statusLine"]["command"] == _CMD
+    assert not statusline.chain_path(tmp_path).exists()
+
+    doc = {"statusLine": {"type": "command", "command": "'/a b/bin/ccw' statusline"}}
+    _install_statusline(doc, tmp_path)
+    assert not statusline.chain_path(tmp_path).exists()
+
+    doc = {"statusLine": {"type": "command", "command": "/x/mine-ccw statusline"}}
+    _install_statusline(doc, tmp_path)
+    assert json.loads(statusline.chain_path(tmp_path).read_text()) == {
+        "command": "/x/mine-ccw statusline"
+    }
+
+
+def test_chain_env_drops_hook_token(monkeypatch) -> None:
+    monkeypatch.setenv("CCW_HOOK_TOKEN", "secret")
+    monkeypatch.setenv("CCW_SESSION_ID", "s1")
+    out = statusline.run_chain('echo "[${CCW_HOOK_TOKEN-unset}][$CCW_SESSION_ID]"', b"{}")
+    assert out == "[unset][s1]\n"

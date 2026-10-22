@@ -29,7 +29,9 @@ from claude_code_wrapper.hook_relay import (
     MAX_STDIN,
 )
 
-STATUSLINE_COMMAND = "ccw statusline"
+STATUSLINE_SCRIPT = "ccw"
+STATUSLINE_ARGS = "statusline"
+STATUSLINE_MODULE = "claude_code_wrapper.statusline"
 STATUSLINE_PATH = "/internal/statusline"
 CHAIN_FILE = "ccw-statusline-chain.json"
 POST_TIMEOUT = 2.0
@@ -76,11 +78,13 @@ def chained_command() -> str | None:
 
 
 def run_chain(command: str, body: bytes) -> str:
+    env = {k: v for k, v in os.environ.items() if k != ENV_TOKEN}
     try:
         done = subprocess.run(  # noqa: S602
             command,
             input=body,
             shell=True,
+            env=env,
             capture_output=True,
             timeout=CHAIN_TIMEOUT,
             check=False,
@@ -99,3 +103,7 @@ def main() -> int:
         sys.stdout.write(run_chain(command, body))
         sys.stdout.flush()
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
