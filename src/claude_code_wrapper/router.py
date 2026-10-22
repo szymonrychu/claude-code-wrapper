@@ -256,6 +256,8 @@ class SessionRouter(SessionListener):
         self._ac_handle: asyncio.TimerHandle | None = None
         self._ac_armed = False
         self._last_context: int | None = None
+        #: Latest statusLine values relayed by `ccw statusline` (see `on_statusline`).
+        self.statusline: dict[str, Any] | None = None
         #: Monotonic time of the last event that is not an idle-origin command's.
         self._last_real = time.monotonic()
         #: While idle-origin commands run: the seq of the first event and whether only idle
@@ -445,6 +447,10 @@ class SessionRouter(SessionListener):
         if isinstance(path, str) and path and Path(path) != Path(self.session.transcript_path):
             self.session.transcript_path = path
         self.ensure_tailing()
+
+    def on_statusline(self, payload: Mapping[str, Any]) -> None:
+        """Store the latest context-window values and model from the statusLine relay."""
+        self.statusline = dict(payload)
 
     # ------------------------------------------------------------------ claude hooks
 

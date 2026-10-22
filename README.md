@@ -745,6 +745,35 @@ Response `200`:
 | 403 | non-loopback caller, missing or wrong token, or unknown or stopped session |
 | 404 | `event` is not a Claude hook event |
 
+### `POST /internal/statusline`
+
+Internal, loopback-only, not for clients. The statusLine relay: `ccw statusline` posts the JSON
+Claude Code pipes to its `statusLine.command` here, so the wrapper learns the real context-window
+usage. The body must be a JSON object; `context_window.used_percentage` (number),
+`context_window.context_window_size` (integer), `context_window.current_usage` (object) and `model`
+(object or string) are validated, each may be `null` (Claude Code sends null before the first
+assistant message and after `/compact`), and the router callback `on_statusline` stores the latest
+values. Answers `204`.
+
+Auth: same as the hook route (loopback source address, `X-CCW-Session`, `X-CCW-Hook-Token`).
+
+| Status | When |
+|---|---|
+| 204 | stored |
+| 400 | body is not a JSON object, or a context field has the wrong type |
+| 403 | non-loopback caller, missing or wrong token, or unknown or stopped session |
+
+`ccw statusline` reads the statusLine JSON on stdin, posts it to this route (best effort, 2 second
+timeout, a failure never fails the statusline), then runs the chained command with the same stdin
+and prints its stdout; with no chained command it prints nothing. At session bootstrap the rendered
+`settings.json` gets `statusLine: {type: command, command: "ccw statusline"}` as the last step,
+after the relay hooks, permissions and the `claude.settings` overlay merge. The chained command is
+the `statusLine.command` the document holds after that merge (typically `claude.settings.statusLine`);
+it is written to `ccw-statusline-chain.json` beside `settings.json`, and its `padding` and
+`refreshInterval` are kept on the replacement. Re-rendering is idempotent: a `statusLine` that already
+is `ccw statusline` leaves the chain file as is and is never chained to itself. `ccw` must be on the
+`PATH` of the claude process.
+
 ### `POST /internal/mcp`
 
 The ccw MCP server (streamable HTTP, stateless, JSON responses only). It exposes the tool
@@ -3429,6 +3458,9 @@ mise run lint       # ruff check + ruff format --check
 mise run fmt        # ruff format + autofix
 mise run run        # serve with config.example.yaml
 ```
+
+- **Before a PR.** Rebase the branch onto `origin/main` first: another session develops this repo
+  concurrently.
 
 - **Fake claude.** `tests/fake_claude` is a scripted PTY program that stands in for `claude` (boot
   dialogs, bracketed-paste input, Stop hook, transcript writing), so the suite never needs a real

@@ -30,6 +30,36 @@ from claude_code_wrapper.mcp_server import (
 )
 
 DEDUPE_LIMIT = 256
+
+
+def _optional(value: Any, kind: type | tuple[type, ...], name: str) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, kind):
+        raise ValueError(f"{name} has the wrong type")
+    return value
+
+
+def parse_statusline(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate a Claude Code statusLine payload down to the context values the router stores.
+
+    `context_window` and its fields are null before the first assistant message and after
+    /compact; null is accepted and stored as null."""
+    window = _optional(payload.get("context_window"), dict, "context_window") or {}
+    return {
+        "used_percentage": _optional(
+            window.get("used_percentage"), (int, float), "context_window.used_percentage"
+        ),
+        "context_window_size": _optional(
+            window.get("context_window_size"), int, "context_window.context_window_size"
+        ),
+        "current_usage": _optional(
+            window.get("current_usage"), dict, "context_window.current_usage"
+        ),
+        "model": _optional(payload.get("model"), (dict, str), "model"),
+    }
+
+
 _LOOPBACK_NAMES = frozenset({"localhost"})
 
 
@@ -102,6 +132,22 @@ def create_internal_app(manager: SessionManager) -> FastAPI:
                 del cache[delivery]
             raise
         return JSONResponse(result)
+
+    @app.post("/internal/statusline")
+    async def statusline(request: Request) -> Response:
+        router = _authorized_router(manager, request)
+        try:
+            payload: Any = await request.json()
+        except ValueError:
+            raise HTTPException(400, "body must be a JSON object") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "body must be a JSON object")
+        try:
+            values = parse_statusline(payload)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        router.on_statusline(values)
+        return Response(status_code=204)
 
     @app.post("/internal/mcp")
     async def mcp(request: Request) -> Response:

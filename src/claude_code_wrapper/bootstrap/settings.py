@@ -10,6 +10,7 @@ from typing import Any, NamedTuple
 
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.hook_relay import CLAUDE_HOOK_EVENTS
+from claude_code_wrapper.statusline import STATUSLINE_COMMAND, chain_path
 
 from .claude_json import _deep_merge, _load, atomic_write
 
@@ -84,6 +85,29 @@ def _without_relay(groups: Any, relay: str) -> list[Any]:
     return kept
 
 
+def _install_statusline(doc: dict[str, Any], config_dir: str | Path) -> None:
+    """Replace `doc["statusLine"]` with the relay; chain the command it held (after the overlay).
+
+    A statusLine that already is the relay leaves the chain file alone, so a re-render never
+    chains the relay to itself."""
+    current = doc.get("statusLine")
+    replacement: dict[str, Any] = {"type": "command", "command": STATUSLINE_COMMAND}
+    if isinstance(current, dict) and current.get("command") != STATUSLINE_COMMAND:
+        command = current.get("command")
+        if isinstance(command, str) and command.strip():
+            for key in ("padding", "refreshInterval"):
+                if key in current:
+                    replacement[key] = current[key]
+            atomic_write(
+                chain_path(config_dir), json.dumps({"command": command}, sort_keys=True) + "\n"
+            )
+    elif isinstance(current, dict):
+        replacement.update(
+            {k: v for k, v in current.items() if k in ("padding", "refreshInterval")}
+        )
+    doc["statusLine"] = replacement
+
+
 def render_settings(
     config_dir: str | Path,
     cfg: Config,
@@ -141,6 +165,8 @@ def render_settings(
                 if group not in existing:
                     existing.append(group)
             doc["hooks"][event] = existing
+
+    _install_statusline(doc, config_dir)
 
     atomic_write(path, json.dumps(doc, indent=2, sort_keys=True) + "\n")
     return doc
