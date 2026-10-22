@@ -5,7 +5,7 @@ repo: .
 value: "Closes the epic security review findings: bounded gossip contacts, capped response reads, no 500 on malformed timestamps, per-session total rate limit, bounded remote text"
 files: [src/claude_code_wrapper/peers.py, src/claude_code_wrapper/peer_membership.py, src/claude_code_wrapper/peer_client.py, src/claude_code_wrapper/peer_auth.py, src/claude_code_wrapper/peer_inbox.py, src/claude_code_wrapper/config.py, README.md, tests/test_peers_hardening.py]
 verify: "uv run pytest tests/test_peers_hardening.py tests/test_peer_auth.py tests/test_peer_inbox.py tests/test_peer_client.py tests/test_peers_config.py tests/test_readme_config.py -q && mise run lint"
-depends_on: []
+depends_on: [fake-claude-peer-harness, manager-peers-lifecycle, peer-auth-signing, peer-events-and-metrics, peer-http-client, peer-inbox-delivery, peer-inbox-outcomes, peer-member-table, peer-membership-hooks, peer-membership-service, peer-messages-endpoint, peer-service-core, peer-session-bootstrap, peers-compose-example, peers-config-section, peers-join-leave-order, peers-mcp-tools, peers-readme-guide, peers-two-container-test, peers-two-instance-e2e]
 owns: []
 uses: []
 model: sonnet
@@ -32,12 +32,12 @@ Epic security review hardening (verified findings on main):
 
 ## Acceptance conditions
 
-- AC1: gossip advertising more urls than the table capacity leaves the contact set at or below capacity, seeds kept [evidence: test]
-- AC2: a heartbeat answer larger than the cap gives an unreachable error without reading it all [evidence: test]
-- AC3: a request with a 5000-digit timestamp gets 401 malformed [evidence: test]
-- AC4: messages from rotating from addresses beyond max_messages_per_minute_total get rate_limited; the _rate map stays bounded [evidence: test]
-- AC5: an oversize name or cwd in a peer view is rejected; control characters never reach the peers tool result [evidence: test]
-- AC6: README documents peers.max_messages_per_minute_total and test_every_config_key_documented passes [evidence: test]
+- AC1: gossip advertising more urls than the table capacity leaves the contact set at or below capacity, seeds kept [evidence: test:tests/test_peers_hardening.py::test_gossip_contacts_bounded]
+- AC2: a heartbeat answer larger than the cap gives an unreachable error without reading it all [evidence: test:tests/test_peers_hardening.py::test_oversize_answer_unreachable]
+- AC3: a request with a 5000-digit timestamp gets 401 malformed [evidence: test:tests/test_peers_hardening.py::test_huge_timestamp_is_malformed]
+- AC4: messages from rotating from addresses beyond max_messages_per_minute_total get rate_limited; the _rate map stays bounded [evidence: test:tests/test_peers_hardening.py::test_total_rate_limit_and_bounded_rate_map]
+- AC5: an oversize name or cwd in a peer view is rejected; control characters never reach the peers tool result [evidence: test:tests/test_peers_hardening.py::test_remote_text_bounded_and_clean]
+- AC6: README documents peers.max_messages_per_minute_total and test_every_config_key_documented passes [evidence: test:tests/test_readme_config.py::test_every_config_key_documented]
 
 ## Files
 
