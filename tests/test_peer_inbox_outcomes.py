@@ -86,29 +86,29 @@ async def oh(tmp_path, rec):
 # ---------------------------------------------------------------- delivered
 
 
-async def test_notify_when_idle_gives_one_delivered_outcome(oh, rec):
-    item = wish(1)
-    oh.inbox.put(item)
+async def test_delivered_outcome_only_with_notify(oh, rec):
+    # A plain message: its handling turn completes without any outcome.
+    oh.inbox.put(msg(1))
     await until(lambda: oh.submits())
+    await oh.stop()
+    await asyncio.sleep(0.05)
+    assert rec.started == []
+    # A notify_when_idle message: exactly one `delivered` outcome, after its turn ends,
+    # carrying that turn's record and state.
+    item = wish(2)
+    oh.inbox.put(item)
+    await until(lambda: len(oh.submits()) == 2)
     await asyncio.sleep(0.05)
     assert rec.calls == []  # not before the handling turn ends
     record = await oh.stop()
     await until(lambda: rec.calls)
+    await oh.inbox.drain(1.0)
     await asyncio.sleep(0.05)
     assert rec.calls == [(item, "delivered", record)]
     assert rec.calls[0][2].state == "completed"
 
 
-async def test_plain_message_gives_no_outcome(oh, rec):
-    oh.inbox.put(msg(1))
-    await until(lambda: oh.submits())
-    await oh.stop()
-    await oh.inbox.drain(1.0)
-    await asyncio.sleep(0.05)
-    assert rec.started == []
-
-
-async def test_notice_items_never_produce_outcomes(tmp_path, rec):
+async def check_notices_never_produce_outcomes(tmp_path, rec: Recorder) -> None:
     h = VetoHarness(tmp_path, hooks={"onTurn": [webhook()]})
     h.inbox = PeerInbox(h.router, max_items=32, max_per_minute=30, on_outcome=rec)
     h.router.peer_inbox = h.inbox
@@ -140,7 +140,7 @@ async def test_notice_items_never_produce_outcomes(tmp_path, rec):
 # ---------------------------------------------------------------- rejected and dropped
 
 
-async def test_vetoed_message_gives_rejected_with_reason(tmp_path, rec):
+async def test_rejected_always_notifies(tmp_path, rec):
     h = VetoHarness(tmp_path, hooks={"onTurn": [webhook()]})
     h.inbox = PeerInbox(h.router, max_items=32, max_per_minute=30, on_outcome=rec)
     h.router.peer_inbox = h.inbox
@@ -154,39 +154,60 @@ async def test_vetoed_message_gives_rejected_with_reason(tmp_path, rec):
         await h.router.close()
 
 
-async def test_close_gives_one_dropped_per_queued_message(oh, rec):
+async def test_dropped_always_notifies(oh, rec, tmp_path):
     oh.session.state = "busy"
-    items = [msg(1), wish(2), msg(3)]
+    items = [msg(1), wish(2), msg(3)]  # dropped always notifies, notify_when_idle or not
     for item in items:
         oh.inbox.put(item)
-    oh.inbox.put(notice(4))
-    assert oh.inbox.close() != []
+    oh.inbox.put(notice(4))  # a dropped notice produces no outcome
+    assert len(oh.inbox.close()) == 4
     await until(lambda: len(rec.calls) == 3)
+    await oh.inbox.drain(1.0)
     await asyncio.sleep(0.05)
     assert rec.calls == [(i, "dropped", None) for i in items]
+    # Notices never produce outcomes, whatever their result.
+    (tmp_path / "notices").mkdir()
+    await check_notices_never_produce_outcomes(tmp_path / "notices", Recorder())
 
 
 # ---------------------------------------------------------------- off the Stop path
 
 
-async def test_blocking_outcome_does_not_delay_stop_relay(tmp_path):
+async def blocked_outcome(h: OutcomeHarness, slow: Recorder) -> TurnRecord:
+    """Deliver a notify_when_idle message and end its turn through the Stop relay, timed."""
+    h.inbox.put(wish(1))
+    await until(lambda: h.submits())
+    record = h.session.turn
+    record.state = "completed"
+    h.session.complete_result = record
+    t0 = time.monotonic()
+    answer = await asyncio.wait_for(h.router.handle_claude_hook("Stop", {}), 1.0)
+    assert time.monotonic() - t0 < 1.0
+    assert answer["exit_code"] == 0
+    await until(lambda: slow.started)  # the outcome is running, blocked on the sender
+    assert slow.calls == []
+    return record
+
+
+async def test_slow_sender_does_not_delay_stop(tmp_path):
     slow = Recorder(block=10.0)
     h = OutcomeHarness(tmp_path, slow)
     try:
-        h.inbox.put(wish(1))
-        await until(lambda: h.submits())
-        record = h.session.turn
-        record.state = "completed"
-        h.session.complete_result = record
-        t0 = time.monotonic()
-        answer = await asyncio.wait_for(h.router.handle_claude_hook("Stop", {}), 1.0)
-        assert time.monotonic() - t0 < 1.0
-        assert answer["exit_code"] == 0
+        record = await blocked_outcome(h, slow)
         (done,) = [e.data["record"] for e in h.events("turn_completed")]
         assert done["turn_id"] == record.turn_id and done["state"] == "completed"
-        await until(lambda: slow.started)  # the outcome is running, blocked on the sender
-        assert slow.calls == []
-        # drain is bounded and cancels what is left.
+        h.session.finish(h.router)
+        assert h.session.state == "ready"
+    finally:
+        await h.inbox.drain(0.2)
+        await h.router.close()
+
+
+async def test_drain_bounded(tmp_path):
+    slow = Recorder(block=10.0)
+    h = OutcomeHarness(tmp_path, slow)
+    try:
+        await blocked_outcome(h, slow)
         t0 = time.monotonic()
         await h.inbox.drain(0.2)
         elapsed = time.monotonic() - t0
@@ -195,6 +216,16 @@ async def test_blocking_outcome_does_not_delay_stop_relay(tmp_path):
         t0 = time.monotonic()
         await h.inbox.drain(0.2)  # nothing outstanding: returns at once
         assert time.monotonic() - t0 < 0.1
+        # A fast outcome finishes inside the window: drain waits for it, cancels nothing.
+        fast = Recorder(block=0.05)
+        (tmp_path / "fast").mkdir()
+        h2 = OutcomeHarness(tmp_path / "fast", fast)
+        try:
+            await blocked_outcome(h2, fast)
+            await h2.inbox.drain(1.0)
+            assert fast.cancelled == 0 and len(fast.calls) == 1
+        finally:
+            await h2.router.close()
     finally:
         await h.router.close()
 
@@ -221,7 +252,7 @@ async def test_blocking_outcome_does_not_delay_delivery_or_close(tmp_path):
         await h.router.close()
 
 
-async def test_outcome_exception_is_logged_and_inbox_keeps_delivering(tmp_path, caplog):
+async def test_outcome_error_isolated(tmp_path, caplog):
     bad = Recorder(fail=f"sender down {SECRET}")
     h = OutcomeHarness(tmp_path, bad)
     caplog.set_level(logging.DEBUG)
