@@ -1,7 +1,7 @@
 ---
 title: Cross-container peer messaging over a shared mount
 blockers: []
-stage: build
+stage: review
 owner: Szymon Richert
 repos: [claude-code-wrapper]
 created: 2026-10-22
