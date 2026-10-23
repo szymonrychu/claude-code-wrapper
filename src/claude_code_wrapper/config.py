@@ -682,6 +682,8 @@ class LimitsConfig(_Model):
     max_prompt_bytes: int = Field(1048576, ge=1)
     max_file_bytes: int = Field(262144, ge=1)
     max_files_per_turn: int = Field(16, ge=0)
+    files_max_entries: int = Field(2000, ge=1)
+    file_preview_max_bytes: int = Field(1048576, ge=1)
     turn_max_seconds: float = Field(0, ge=0)
     event_ring_size: int = Field(1000, ge=1)
     event_log_max_bytes: int = Field(52428800, ge=0)

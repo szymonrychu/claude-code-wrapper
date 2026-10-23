@@ -110,6 +110,7 @@ def _error_codes() -> set[str]:
     codes.update(re.findall(r"^    code = \"([a-z_]+)\"", read("manager.py"), re.MULTILINE))
     codes.update(re.findall(r"PromptError\(\s*\"([a-z_]+)\"", read("prompts.py")))
     codes.update(re.findall(r"FileWriteError\(\s*\"([a-z_]+)\"", read("workdir.py")))
+    codes.update(re.findall(r"FileError\(\s*\"([a-z_]+)\"", read("files.py")))
     codes.update(re.findall(r"\"(busy|booting|dead)\"", read("api", "turns.py")))
     codes.add("http_error")  # errors.py fallback for any other HTTP status
     codes.discard("error")  # ManagerError's abstract base code

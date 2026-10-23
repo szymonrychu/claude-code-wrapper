@@ -115,6 +115,12 @@ never put it behind a public ingress.
 - `/healthz`, `/readyz` and `/metrics` are unauthenticated by design (cluster-internal probes and
   Prometheus scrape); keep the port off untrusted networks. The compose file publishes it on
   `127.0.0.1` only.
+- The file API (`GET /v1/sessions/{id}/files` and `.../files/content`) is read-only and reads only
+  inside the session workdir: every path is resolved with symlinks followed and refused unless the
+  result stays inside the workdir's real path. File content (and, with the terminal API, terminal
+  frames) is not passed through the secret redactor: redaction would corrupt files and PTY
+  streams, and the shell already runs as the agent uid, so anything the agent can read a client
+  holding the bearer token can read.
 - The internal hook API (`/internal/...`) is bound to `127.0.0.1` only and additionally requires a
   per-session token; it is not part of the client surface.
 
@@ -593,6 +599,73 @@ older page; `null` when `has_more_before` is false) and `has_more_before` (older
 exist). Load the newest page with a large `before_seq`, then scroll back via `prev_seq`. Errors:
 `400 invalid_request` (`before_seq` together with `after_seq`, or an unknown `types` entry),
 `401 unauthorized`, `404 not_found`, `422 invalid_request` (bad query values).
+
+### `GET /v1/sessions/{id}/files`
+
+List one directory of the session workdir (works for stopped sessions while the workdir exists).
+Everything is listed, dotfiles and `.git` included. Read-only.
+
+Auth: bearer. Path parameter: `id`. Query parameters:
+
+| Parameter | Type | Default | Meaning |
+|---|---|---|---|
+| `path` | string | empty | directory to list, relative to the workdir; empty is the workdir itself |
+| `offset` | integer >= 0 | `0` | index of the first entry of the page (pass the previous `next_offset`) |
+
+Response `200`:
+
+```json
+{
+  "session_id": "ses_3f9a1c0b7d42",
+  "root": "/workspace/demo",
+  "path": "src",
+  "entries": [
+    {"name": "pkg", "type": "dir", "size": null, "mtime": "2026-10-23T09:01:00.011Z"},
+    {"name": "main.py", "type": "file", "size": 812, "mtime": "2026-10-23T09:02:10.500Z"}
+  ],
+  "next_offset": null
+}
+```
+
+`root` is the absolute real path of the workdir and `path` the normalised relative path (empty
+for the root). `type` is `dir`, `file`, `symlink` (listed, never followed here) or `other` (FIFO,
+socket, device); `size` is bytes for a `file` and `null` otherwise; `mtime` is UTC ISO-8601 with
+milliseconds. Directories come first, then everything else, each ordered by name bytes. A page
+holds at most `limits.files_max_entries` entries; `next_offset` is the `offset` of the next page,
+or `null` on the last one. Errors: `400 invalid_path` (absolute path, NUL byte, or a path that
+leaves the workdir through `..` or a symlink), `400 not_a_directory`, `401 unauthorized`,
+`404 not_found` (unknown session, missing path, or the session workdir no longer exists),
+`422 invalid_request` (bad `offset`).
+
+### `GET /v1/sessions/{id}/files/content`
+
+Read one file of the session workdir. Read-only; the content is not passed through the secret
+redactor (see [Trust model](#trust-model)).
+
+Auth: bearer. Path parameter: `id`. Query parameter: `path` (string, relative to the workdir).
+
+Response `200`:
+
+```json
+{
+  "session_id": "ses_3f9a1c0b7d42",
+  "path": "src/main.py",
+  "size": 812,
+  "mtime": "2026-10-23T09:02:10.500Z",
+  "mime": "text/x-python",
+  "kind": "text",
+  "content": "print('hi')\n"
+}
+```
+
+`mime` comes from the file name (`null` when unknown). `kind` is `too_large` when `size` exceeds
+`limits.file_preview_max_bytes` (the file is not read, `content` is `null`), `binary` when the
+first 8 KiB hold a NUL byte or the file is not valid UTF-8 (`content` is `null`), else `text`
+with the decoded `content`. A symlink is followed only when its target stays inside the workdir.
+The file is opened once with `O_NOFOLLOW | O_NONBLOCK` after the path check and only a regular
+file is read, so a FIFO, socket or device never blocks the service. Errors: `400 invalid_path`,
+`400 not_a_file` (directory, FIFO, socket or device), `401 unauthorized`, `404 not_found`
+(unknown session, missing path, or the workdir no longer exists).
 
 ### `GET /v1/sessions/{id}/events`
 
@@ -2075,7 +2148,7 @@ FastAPI's `{"detail": ...}` body instead.
 |---|---|---|
 | `unauthorized` | 401 | missing or invalid bearer token |
 | `vetoed` | 403 | a blocking `onCreate`, `onResume` or `onTurn` hook denied; the message is the hook's reason |
-| `not_found` | 404 | unknown session, turn, probe or route |
+| `not_found` | 404 | unknown session, turn, probe, file or route (or a session whose workdir no longer exists) |
 | `command_not_found` | 404 | unknown command id |
 | `no_transcript` | 404 | the session has no transcript yet |
 | `command_not_allowed` | 403 | the command is not in the session's client allowlist (`sessions.commands.client`) |
@@ -2085,7 +2158,9 @@ FastAPI's `{"detail": ...}` body instead.
 | `not_resumable` | 409 | the session cannot be resumed |
 | `invalid_callback_url` | 400 | `callbackUrl` is not an `http` or `https` URL |
 | `invalid_last_event_id` | 400 | the `Last-Event-ID` header is not an integer |
-| `invalid_path` | 400 | a turn `files` path is invalid, escapes the workdir or conflicts with an existing entry |
+| `invalid_path` | 400 | a turn `files` path is invalid, escapes the workdir or conflicts with an existing entry; also a file API path that is absolute, holds a NUL byte or leaves the workdir (`..` or a symlink) |
+| `not_a_directory` | 400 | the file listing `path` is not a directory |
+| `not_a_file` | 400 | the file content `path` is a directory, FIFO, socket or device |
 | `text_or_template` | 400 | exactly one of `text` and `template` is required (turns), or both initial prompts were given (create) |
 | `unknown_template` | 422 | the named prompt template does not exist |
 | `unknown_variable` | 422 | a variable is not declared by the template, or variables were sent without a template |
@@ -2830,6 +2905,8 @@ Idle auto-compact (`sessions.auto_compact`): a session that ended a turn (any te
 ```yaml
 limits:
   max_prompt_bytes: 1048576
+  files_max_entries: 2000
+  file_preview_max_bytes: 1048576
   sse_replay: 100
   shutdown_timeout_seconds: 10
 ```
@@ -2839,6 +2916,8 @@ limits:
 | `limits.max_prompt_bytes` | integer | `1048576` | - | Largest accepted turn prompt in bytes. |
 | `limits.max_file_bytes` | integer | `262144` | - | Largest accepted turn file in bytes. |
 | `limits.max_files_per_turn` | integer | `16` | - | Most files accepted with one turn. |
+| `limits.files_max_entries` | integer | `2000` | - | Most directory entries per file-listing response (>= 1). |
+| `limits.file_preview_max_bytes` | integer | `1048576` | - | Largest file the file content route returns inline, in bytes (>= 1); bigger files answer `kind: too_large`. |
 | `limits.turn_max_seconds` | number | `0` | - | Hard cap per turn; 0 for none. |
 | `limits.event_ring_size` | integer | `1000` | - | Events kept in memory per session. |
 | `limits.event_log_max_bytes` | integer | `52428800` | - | On-disk `events.jsonl` cap per session in bytes; 0 for unlimited. |
