@@ -121,6 +121,14 @@ never put it behind a public ingress.
   frames) is not passed through the secret redactor: redaction would corrupt files and PTY
   streams, and the shell already runs as the agent uid, so anything the agent can read a client
   holding the bearer token can read.
+- Terminals (`/v1/sessions/{id}/terminals`) are interactive login shells (`/bin/bash -l`, or
+  `/bin/sh -l` without bash) running as the agent uid in the session workdir, so a client holding
+  the bearer token can run anything the agent can. Their environment is the one Claude gets with
+  every secret-kind Claude variable (for example `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK`, `MCP_CLIENT_SECRET`) and the service's
+  `CCW_AUTH_TOKEN`, `CCW_PEER_TOKEN` and `CCW_HOOK_TOKEN` removed. That is defence in depth, not
+  isolation: the shell can still read whatever the agent uid can read on disk. Terminals exist
+  only while their session is active and close when it stops or is destroyed.
 - The internal hook API (`/internal/...`) is bound to `127.0.0.1` only and additionally requires a
   per-session token; it is not part of the client surface.
 
@@ -146,6 +154,8 @@ Modules (`src/claude_code_wrapper/`):
 | `redact.py` | secret redaction for responses, events, payloads and logs |
 | `config.py`, `interpolation.py` | `config.yaml` schema, `${VAR}` interpolation, strict validation |
 | `ring.py`, `pty_proc.py` | PTY child process and the ANSI-stripped screen ring |
+| `files.py` | workdir path confinement, directory listing and file preview |
+| `terminals.py` | terminal registry: interactive login shells per session, fan-out, idle reaper |
 | `bootstrap/` | per-session `.claude.json`, `CLAUDE.md` and `settings.json` rendering |
 | `hook_relay.py` | `ccw-hook`: stdlib relay from a Claude hook call to the internal API |
 | `hooks.py` | user hook dispatcher: command and signed-webhook actions, callbacks |
@@ -157,7 +167,7 @@ Modules (`src/claude_code_wrapper/`):
 | `prompts.py` | prompt templates and variable substitution |
 | `manager.py` | multi-session lifecycle: create, resume, destroy, snapshots |
 | `internal_api.py` | loopback-only hook relay app |
-| `api/` | public app, bearer auth, error envelope and the session, turn and event routers |
+| `api/` | public app, bearer auth, error envelope and the session, turn, event, file and terminal routers |
 | `metrics.py`, `service.py`, `cli.py` | Prometheus metrics, service startup and shutdown, the `ccw` CLI |
 
 ## API reference
@@ -171,6 +181,8 @@ bodies, turn records, snapshots). Errors use the envelope in [Errors](#errors). 
 is passed through the secret redactor.
 
 Missing or wrong token on any `/v1` route: `401 unauthorized` (with `WWW-Authenticate: Bearer`).
+The WebSocket route takes the same `Authorization` header on its upgrade request; without a valid
+one the upgrade is denied with that `401` response before the socket is accepted.
 
 ### `POST /v1/sessions`
 
@@ -666,6 +678,125 @@ The file is opened once with `O_NOFOLLOW | O_NONBLOCK` after the path check and 
 file is read, so a FIFO, socket or device never blocks the service. Errors: `400 invalid_path`,
 `400 not_a_file` (directory, FIFO, socket or device), `401 unauthorized`, `404 not_found`
 (unknown session, missing path, or the workdir no longer exists).
+
+### `POST /v1/sessions/{id}/terminals`
+
+Start an interactive login shell in the session workdir. The session must be active (running);
+the shell lives until it is deleted, exits and is reaped, sits with no attached client for
+`limits.terminal_idle_reap_seconds`, or its session stops or is destroyed. Attach to it with
+[`WS /v1/sessions/{id}/terminals/{terminal_id}/attach`](#ws-v1sessionsidterminalsterminal_idattach).
+
+Auth: bearer. Path parameter: `id`. Body (optional; unknown keys are rejected):
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `rows` | integer 1..1000 | `24` | initial window rows |
+| `cols` | integer 1..1000 | `80` | initial window columns |
+
+```bash
+curl -s -X POST -H "$H" -H 'Content-Type: application/json' \
+  -d '{"rows": 40, "cols": 120}' localhost:8080/v1/sessions/$SID/terminals
+```
+
+Response `201`, the terminal object:
+
+```json
+{
+  "terminal_id": "term_3f9a1c0b7d42",
+  "session_id": "ses_3f9a1c0b7d42",
+  "created_at": "2026-10-23T09:01:00.011Z",
+  "alive": true,
+  "exit_code": null,
+  "attached": 0,
+  "rows": 40,
+  "cols": 120
+}
+```
+
+`terminal_id` is `term_` and 12 lowercase hex digits. `alive` is false once the shell exited,
+with its `exit_code` (`null` while alive or when unknown); `attached` counts the WebSocket clients
+attached now; `rows` and `cols` are the current window size (a resize control frame changes them).
+Errors: `401 unauthorized`, `404 not_found` (unknown session), `409 session_not_active` (the
+session exists but is not running), `409 terminal_limit` (`limits.terminals_max` terminals
+already exist in this service process, alive or exited), `422 invalid_size` (`rows` or `cols`
+outside 1..1000), `422 invalid_request` (unknown body field or a non-integer size).
+
+### `GET /v1/sessions/{id}/terminals`
+
+List the session's terminals (alive, and exited ones not yet reaped). A session that is not
+active has none.
+
+Auth: bearer. Path parameter: `id`.
+
+Response `200`: `{"terminals": [<terminal object>, ...]}` (see
+[`POST /v1/sessions/{id}/terminals`](#post-v1sessionsidterminals)). Errors: `401 unauthorized`,
+`404 not_found` (unknown session).
+
+### `DELETE /v1/sessions/{id}/terminals/{terminal_id}`
+
+Close a terminal: SIGTERM to every process of the shell's session, SIGKILL after a short grace,
+then the PTY is closed. Attached clients receive the exit frame and close `1000`.
+
+Auth: bearer. Path parameters: `id`, `terminal_id` (must match `^term_[0-9a-f]{12}$`).
+
+Response `204`, no body. Errors: `401 unauthorized`, `404 not_found` (unknown session),
+`404 terminal_not_found` (no such terminal in the session, or already closed),
+`422 invalid_request` (malformed `terminal_id`; checked before anything else is looked up).
+
+### `WS /v1/sessions/{id}/terminals/{terminal_id}/attach`
+
+Attach to a terminal over a WebSocket (not in any OpenAPI document: this section is the
+contract). Any number of clients may attach to one terminal at once; each sees the same output.
+
+Auth: bearer, as an `Authorization: Bearer <server.auth_token>` header on the upgrade request.
+Path parameters: `id`, `terminal_id` (must match `^term_[0-9a-f]{12}$`).
+
+Refusals happen before the socket is accepted, as an HTTP response with the error envelope
+(clients that support WebSocket denial responses see the status and body):
+
+| Status | Code | When |
+|---|---|---|
+| 401 | `unauthorized` | missing or wrong bearer token |
+| 422 | `invalid_request` | `terminal_id` does not match `^term_[0-9a-f]{12}$` |
+| 404 | `not_found` | unknown session |
+| 409 | `session_not_active` | the session exists but is not running |
+| 404 | `terminal_not_found` | no such terminal in the session |
+
+Frames after accept:
+
+- Server binary frames: PTY output bytes. First the terminal's scrollback (the last
+  `limits.terminal_scrollback_bytes` of output) in frames of at most 64 KiB, then live output.
+  The bytes are raw terminal output (ANSI sequences included) and are not passed through the
+  secret redactor.
+- Client binary frames: input bytes written to the shell as typed. Split large input (a paste)
+  into frames of at most `limits.terminal_max_frame_bytes`.
+- Client text frames: JSON control.
+  - `{"type": "resize", "cols": C, "rows": R}` sets the window size (integers 1..1000). A resize
+    with missing, non-integer or out-of-range values is logged and ignored; the socket stays open.
+  - `{"type": "ping"}` is answered with `{"type": "pong"}` (send one every 20 s or so to keep
+    proxies from idling the connection).
+  - Anything else (not JSON, not an object, an unknown `type`) closes the socket with `1003`.
+- Server text frames: `{"type": "pong"}`, and `{"type": "exit", "code": N}` when the shell
+  exits or is closed (`code` is the exit status, `null` when unknown), followed by close `1000`.
+  Attaching to a shell that already exited replays its scrollback, sends the exit frame and
+  closes `1000`.
+
+Close codes sent by the server:
+
+| Code | Meaning |
+|---|---|
+| `1000` | the shell exited or was closed; the exit frame came first |
+| `1003` | an unknown or malformed control frame |
+| `1009` | a client frame (binary or text) over `limits.terminal_max_frame_bytes` |
+| `1013` | the client fell too far behind the output and was dropped; reattach to get the scrollback |
+
+Closing the socket only detaches: the shell keeps running, and a later attach replays what it
+printed meanwhile (within the scrollback size).
+
+```bash
+# H, SID as in Quick start; TID is the terminal_id from POST /v1/sessions/{id}/terminals
+websocat -H "$H" --binary ws://localhost:8080/v1/sessions/$SID/terminals/$TID/attach
+```
 
 ### `GET /v1/sessions/{id}/events`
 
@@ -2154,6 +2285,10 @@ FastAPI's `{"detail": ...}` body instead.
 | `command_not_allowed` | 403 | the command is not in the session's client allowlist (`sessions.commands.client`) |
 | `method_not_allowed` | 405 | the route exists but not for this method |
 | `busy` | 409 | a turn is already running in the session |
+| `session_not_active` | 409 | the session exists but is not running, so it has no terminals (terminal create or attach) |
+| `terminal_limit` | 409 | `limits.terminals_max` terminals already exist in this service process |
+| `terminal_not_found` | 404 | unknown terminal id in the session (terminal delete or attach) |
+| `invalid_size` | 422 | terminal `rows` or `cols` outside 1..1000 |
 | `invalid_state` | 409 | the operation does not apply to the session's current state (for example delete while `creating`) |
 | `not_resumable` | 409 | the session cannot be resumed |
 | `invalid_callback_url` | 400 | `callbackUrl` is not an `http` or `https` URL |
@@ -2165,7 +2300,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `unknown_template` | 422 | the named prompt template does not exist |
 | `unknown_variable` | 422 | a variable is not declared by the template, or variables were sent without a template |
 | `missing_variable` | 422 | a required template variable has no value or default |
-| `invalid_request` | 422 | the body, query or path failed validation, or the merged `env` is invalid; the message lists `field: problem` entries |
+| `invalid_request` | 422 | the body, query or path failed validation (including a `terminal_id` outside `^term_[0-9a-f]{12}$`), or the merged `env` is invalid; the message lists `field: problem` entries |
 | `too_large` | 413 | prompt over `limits.max_prompt_bytes`, or turn `files` over `limits.max_file_bytes` or `limits.max_files_per_turn` |
 | `message_too_large` | 413 | a peer request body over `peers.max_message_bytes` + 4096 bytes, or a peer `message` over `peers.max_message_bytes` |
 | `inbox_full` | 429 | the target session's peer inbox is at `peers.inbox_max` |

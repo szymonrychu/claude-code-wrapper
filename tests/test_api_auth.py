@@ -6,6 +6,7 @@ import logging
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.testclient import WebSocketDenialResponse
 
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.config import Config
@@ -94,3 +95,32 @@ def test_probes_and_metrics_stay_open_with_token() -> None:
     assert c.get("/healthz").status_code == 200
     assert c.get("/readyz").status_code == 200
     assert c.get("/metrics").status_code == 200
+
+
+ATTACH = "/v1/sessions/ses_aaaaaaaaaaaa/terminals/{}/attach"
+
+
+@pytest.mark.parametrize(
+    "headers", [{}, {"Authorization": "Bearer wrong"}, {"Authorization": "Basic " + TOKEN}]
+)
+def test_websocket_requires_bearer(headers: dict[str, str]) -> None:
+    c = client()
+    with (
+        pytest.raises(WebSocketDenialResponse) as exc,
+        c.websocket_connect(ATTACH.format("term_0123456789ab"), headers=headers),
+    ):
+        pass
+    assert exc.value.status_code == 401
+    assert exc.value.headers["www-authenticate"] == "Bearer"
+    assert exc.value.json()["error"]["code"] == "unauthorized"
+    # The right token gets past auth to the route (which refuses the malformed id).
+    with (
+        pytest.raises(WebSocketDenialResponse) as exc,
+        c.websocket_connect(ATTACH.format("nope"), headers={"Authorization": f"Bearer {TOKEN}"}),
+    ):
+        pass
+    assert exc.value.status_code == 422
+    assert exc.value.json()["error"]["code"] == "invalid_request"
+    # HTTP auth is unchanged.
+    assert c.get("/v1/sessions", headers=headers).status_code == 401
+    assert c.get("/v1/sessions", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200

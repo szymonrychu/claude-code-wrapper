@@ -1,10 +1,10 @@
-"""Bearer-token dependency for every /v1 route (D9)."""
+"""Bearer-token dependency for every /v1 route, HTTP and WebSocket alike (D9)."""
 
 from __future__ import annotations
 
 import hmac
 
-from fastapi import Request
+from starlette.requests import HTTPConnection
 
 from claude_code_wrapper.api.errors import ApiError
 
@@ -18,15 +18,17 @@ def _unauthorized() -> ApiError:
     )
 
 
-async def require_auth(request: Request) -> None:
+async def require_auth(conn: HTTPConnection) -> None:
     """Reject the request unless it carries `Authorization: Bearer <server.auth_token>`.
 
-    An empty configured token disables auth.
+    `HTTPConnection` so the one dependency guards HTTP and WebSocket routes; on a WebSocket the
+    raised `ApiError` becomes a 401 denial response before accept. An empty configured token
+    disables auth.
     """
-    expected: str = request.app.state.auth_token
+    expected: str = conn.app.state.auth_token
     if not expected:
         return
-    scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
+    scheme, _, supplied = conn.headers.get("authorization", "").partition(" ")
     if scheme.lower() != "bearer" or not hmac.compare_digest(
         supplied.strip().encode(), expected.encode()
     ):

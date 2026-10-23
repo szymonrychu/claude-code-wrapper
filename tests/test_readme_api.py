@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, APIWebSocketRoute
 
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.config import HOOK_EVENTS, Config
@@ -38,21 +38,26 @@ def h3_headings(title: str) -> set[str]:
     return set(re.findall(r"^### (.+?)\s*$", section(title), re.MULTILINE))
 
 
-def _walk(router, prefix: str = ""):
-    """(path, methods) of every route; FastAPI includes routers lazily, so descend into them."""
+def _walk(router, prefix: str = "", kind: type = APIRoute):
+    """(path, methods) of every `kind` route; FastAPI includes routers lazily, so descend into
+    them. A WebSocket route has the single method `WS`."""
     for route in router.routes:
-        if isinstance(route, APIRoute):
-            yield prefix + route.path, route.methods
+        if isinstance(route, kind):
+            yield prefix + route.path, getattr(route, "methods", None) or {"WS"}
         elif hasattr(route, "original_router"):
-            yield from _walk(route.original_router, prefix + route.include_context.prefix)
+            yield from _walk(route.original_router, prefix + route.include_context.prefix, kind)
 
 
-def route_headings(app) -> set[str]:
+def _doc_path(path: str) -> str:
+    """The README spelling of a route path: `{id}` for the session id, no `:path` convertors."""
+    return re.sub(r"\{(\w+):\w+\}", r"{\1}", path).replace("{session_id}", "{id}")
+
+
+def route_headings(app, kind: type = APIRoute) -> set[str]:
     out = set()
-    for path, methods in _walk(app):
-        path = path.replace("{session_id}", "{id}")
+    for path, methods in _walk(app, kind=kind):
         for method in sorted(methods - {"HEAD"}):
-            out.add(f"`{method} {path}`")
+            out.add(f"`{method} {_doc_path(path)}`")
     return out
 
 
@@ -75,6 +80,17 @@ def test_every_public_route_documented() -> None:
     assert len(expected) >= 17
     missing = expected - h3_headings("API reference")
     assert not missing, f"undocumented public routes: {sorted(missing)}"
+
+
+def test_every_websocket_route_documented() -> None:
+    app = create_app(_StubManager(), Config.model_validate({"server": {"allow_anonymous": True}}))
+    expected = route_headings(app, APIWebSocketRoute)
+    assert "`WS /v1/sessions/{id}/terminals/{terminal_id}/attach`" in expected
+    headings = h3_headings("API reference")
+    missing = expected - headings
+    assert not missing, f"undocumented WebSocket routes: {sorted(missing)}"
+    stale = {h for h in headings if h.startswith("`WS ")} - expected
+    assert not stale, f"README documents WebSocket routes the app lacks: {sorted(stale)}"
 
 
 def test_every_internal_route_documented() -> None:
@@ -112,14 +128,30 @@ def _error_codes() -> set[str]:
     codes.update(re.findall(r"FileWriteError\(\s*\"([a-z_]+)\"", read("workdir.py")))
     codes.update(re.findall(r"FileError\(\s*\"([a-z_]+)\"", read("files.py")))
     codes.update(re.findall(r"\"(busy|booting|dead)\"", read("api", "turns.py")))
+    codes.update(_terminal_error_codes())
     codes.add("http_error")  # errors.py fallback for any other HTTP status
     codes.discard("error")  # ManagerError's abstract base code
+    return codes
+
+
+def _terminal_error_codes() -> set[str]:
+    """Codes of the registry errors the terminal routes answer with over HTTP (4xx and 5xx);
+    the abstract base and the WebSocket-only overflow code are not HTTP answers."""
+    from claude_code_wrapper.api.terminals import TerminalError
+
+    pending, codes = list(TerminalError.__subclasses__()), set()
+    while pending:
+        cls = pending.pop()
+        pending.extend(cls.__subclasses__())
+        if 400 <= cls.status < 600:
+            codes.add(cls.code)
     return codes
 
 
 def test_error_codes_documented() -> None:
     codes = _error_codes()
     assert {"unauthorized", "not_found", "too_large", "text_or_template", "vetoed"} <= codes
+    assert {"terminal_limit", "terminal_not_found", "session_not_active", "invalid_size"} <= codes
     rows = {
         m.group(1) for m in re.finditer(r"^\|\s*`([a-z_]+)`\s*\|", section("Errors"), re.MULTILINE)
     }
