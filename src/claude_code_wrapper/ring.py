@@ -71,6 +71,11 @@ class Ring:
         with self._lock:
             return self._written
 
+    def raw(self) -> bytes:
+        """The newest bytes exactly as appended (escapes kept, undecoded), at most `capacity`."""
+        with self._lock:
+            return bytes(self._buf)
+
     def text(self) -> str:
         """The buffer decoded (errors replaced), escapes removed, whitespace runs collapsed."""
         with self._lock:

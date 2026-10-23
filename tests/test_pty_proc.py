@@ -106,6 +106,42 @@ async def test_window_size_and_controlling_tty(spawn):
     assert p.ring.contains("SIZE=33x120 FG=True LEADER=True"), p.ring.text()
 
 
+# Prints the size on every SIGWINCH, so a resize is visible from outside.
+WINCH_REPORTER = r"""
+import os, signal, sys, time
+def report(*_):
+    s = os.get_terminal_size(0)
+    sys.stdout.write("WINSZ=%dx%d\n" % (s.lines, s.columns)); sys.stdout.flush()
+signal.signal(signal.SIGWINCH, report)
+sys.stdout.write("READY\n"); sys.stdout.flush()
+time.sleep(30)
+"""
+
+
+async def test_resize_reaches_child(spawn):
+    p = await spawn(py(WINCH_REPORTER), rows=24, cols=80)
+    await wait_until(lambda: p.ring.contains("READY"))
+    p.resize(40, 132)
+    await wait_until(lambda: p.ring.contains("WINSZ=40x132"))
+    p.resize(10, 20)
+    await wait_until(lambda: p.ring.contains("WINSZ=10x20"))
+
+
+async def test_resize_rejects_bad_sizes_and_states(spawn):
+    fresh = PtyProcess()
+    with pytest.raises(RuntimeError):
+        fresh.resize(24, 80)
+    p = await spawn(["/bin/cat"])
+    for rows, cols in [(0, 80), (24, 0), (-1, 80), (24, -5), (1001, 80), (24, 1001)]:
+        with pytest.raises(ValueError):
+            p.resize(rows, cols)
+    p.resize(1, 1)
+    p.resize(1000, 1000)
+    await p.close(grace=1.0)
+    with pytest.raises(RuntimeError):
+        p.resize(24, 80)
+
+
 async def test_write_round_trip_cat(spawn):
     p = await spawn(["/bin/cat"])
     await p.write(b"ping-pong\n")

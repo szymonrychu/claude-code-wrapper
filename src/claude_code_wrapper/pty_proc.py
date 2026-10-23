@@ -36,6 +36,8 @@ log = logging.getLogger(__name__)
 PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
 READ_SIZE = 65536
+#: Largest rows or cols `resize` accepts.
+MAX_DIMENSION = 1000
 #: How often the exit watcher polls the child's return code.
 EXIT_POLL_SECONDS = 0.05
 #: How long `close()` waits for the leader to be reaped after SIGKILL.
@@ -143,6 +145,21 @@ class PtyProcess:
         loop.add_reader(master, self._on_readable)
         self._reading = True
         self._watch_task = loop.create_task(self._watch_exit())
+
+    def resize(self, rows: int, cols: int) -> None:
+        """Set the child's window size (TIOCSWINSZ on the master; the kernel sends SIGWINCH).
+
+        Rows and cols are 1..1000, else `ValueError`. `RuntimeError` before `start()` or after
+        `close()`. A single non-blocking ioctl, so safe to call from the event loop.
+        """
+        if not (1 <= rows <= MAX_DIMENSION and 1 <= cols <= MAX_DIMENSION):
+            raise ValueError(f"rows and cols must be 1..{MAX_DIMENSION}, got {rows}x{cols}")
+        if self._closed or self._fd is None:
+            raise RuntimeError("pty is not running")
+        try:
+            _set_winsize(self._fd, rows, cols)
+        except OSError as exc:
+            raise RuntimeError(f"resize failed: {exc}") from exc
 
     # -- output ---------------------------------------------------------------------------
 
