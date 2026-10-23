@@ -188,9 +188,6 @@ async def start_background_job(att: Attachment) -> int:
     return pid
 
 
-needs_proc = pytest.mark.skipif(not os.path.isdir("/proc/self"), reason="needs /proc")
-
-
 # ------------------------------------------------------------------ config
 
 
@@ -505,7 +502,6 @@ async def test_attach_during_reap_never_hangs(make) -> None:
         await asyncio.wait_for(reaping, 5)
 
 
-@needs_proc
 async def test_close_kills_whole_shell_session(make) -> None:
     reg = make()
     info = await reg.create(SID)
@@ -640,7 +636,6 @@ async def test_session_not_active_and_closed_on_stop(world: World) -> None:
         m.terminals.attach(UNKNOWN_SESSION, info.terminal_id)
 
 
-@needs_proc
 async def test_closed_on_destroy_and_shutdown(world: World, make) -> None:
     # close: the registry alone.
     reg = make()
