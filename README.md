@@ -2909,6 +2909,7 @@ limits:
   file_preview_max_bytes: 1048576
   sse_replay: 100
   shutdown_timeout_seconds: 10
+  terminals_max: 8
 ```
 
 | Key | Type | Default | Env var | Description |
@@ -2924,6 +2925,10 @@ limits:
 | `limits.sse_replay` | integer | `100` | - | Events replayed to a new SSE subscriber without `Last-Event-ID`. |
 | `limits.sse_heartbeat_seconds` | number | `15` | - | Interval of SSE heartbeat comments (> 0). |
 | `limits.shutdown_timeout_seconds` | number | `10` | - | Bounded graceful shutdown: seconds allowed to stop sessions on SIGTERM. |
+| `limits.terminals_max` | integer | `8` | - | Most interactive terminals (login shells) per service process, alive or exited, >= 0; 0 disables terminals. |
+| `limits.terminal_scrollback_bytes` | integer | `262144` | - | Scrollback kept per terminal and replayed to a client on attach, in bytes (>= 1). |
+| `limits.terminal_idle_reap_seconds` | number | `900` | - | A terminal with no attached client for this long (since creation or the last detach) is closed; an exited one with no client goes at the next reaper tick (> 0). |
+| `limits.terminal_max_frame_bytes` | integer | `65536` | - | Largest terminal WebSocket frame a client may send, in bytes (>= 1). |
 
 ### `peers`
 

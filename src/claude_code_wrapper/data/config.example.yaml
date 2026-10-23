@@ -196,6 +196,10 @@ limits:
   sse_replay: 100            # events replayed to a new SSE subscriber
   sse_heartbeat_seconds: 15
   shutdown_timeout_seconds: 10
+  terminals_max: 8           # interactive shells per service process (0 = no terminals)
+  terminal_scrollback_bytes: 262144   # scrollback replayed to a terminal client on attach
+  terminal_idle_reap_seconds: 900     # a shell with no client this long is closed
+  terminal_max_frame_bytes: 65536     # largest terminal WebSocket frame
 
 peers:
   enabled: false             # opt-in peer messaging between ccw instances (README "Peer messaging")

@@ -690,6 +690,10 @@ class LimitsConfig(_Model):
     sse_replay: int = Field(100, ge=0)
     sse_heartbeat_seconds: float = Field(15, gt=0)
     shutdown_timeout_seconds: float = Field(10, ge=0)
+    terminals_max: int = Field(8, ge=0)
+    terminal_scrollback_bytes: int = Field(262144, ge=1)
+    terminal_idle_reap_seconds: float = Field(900, gt=0)
+    terminal_max_frame_bytes: int = Field(65536, ge=1)
 
 
 class Config(_Model):

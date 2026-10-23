@@ -72,6 +72,7 @@ from .session import (
     build_env,
     passthrough_names,
 )
+from .terminals import CLOSE_GRACE_SECONDS, SessionNotActive, ShellTarget, TerminalRegistry
 from .tooling import install_workdir, mise_env
 from .turns import TurnStore, now_iso
 from .workdir import prepare_workdir, run_setup_commands, write_gitconfig
@@ -302,6 +303,8 @@ class SessionManager:
         self.peers: PeerService | None = None
         self._peers_joined = not cfg.peers.enabled
         self._peers_left = False
+        #: Interactive shells of the running sessions (closed with their session).
+        self.terminals = TerminalRegistry(cfg.limits, self._terminal_target)
 
     # ------------------------------------------------------------------ peers
 
@@ -679,6 +682,16 @@ class SessionManager:
             env["GIT_CONFIG_GLOBAL"] = str(gitconfig)
         return env
 
+    def _terminal_target(self, session_id: str) -> ShellTarget:
+        """Workdir and env of a running session's shells: the env claude gets (the registry
+        scrubs its secrets). `SessionNotFound` when unknown, `SessionNotActive` otherwise."""
+        ctx = self._active.get(session_id)
+        if ctx is None:
+            raise SessionNotActive(session_id, str(self._read_meta(session_id).get("state")))
+        if self._closing or ctx.phase != "running" or ctx.workdir is None:
+            raise SessionNotActive(session_id, self._snapshot(ctx)["state"])
+        return ShellTarget(workdir=str(ctx.workdir), env=self._child_env(ctx))
+
     def _gate_fail(self) -> str:
         return gate_fail_mode(self.cfg.hooks)
 
@@ -909,9 +922,12 @@ class SessionManager:
         close_timeout: float | None = None,
         emit_closed: bool = True,
     ) -> None:
-        """Stop claude (if started) and close the router (its drain bounded by
-        `close_timeout`, else the router default); the slot is free afterwards."""
+        """Stop claude (if started), the session's shells and the router (its drain bounded
+        by `close_timeout`, else the router default); the slot is free afterwards."""
         ctx.phase = "closing"
+        shells = asyncio.ensure_future(
+            self.terminals.close_session(ctx.session_id, min(grace, CLOSE_GRACE_SECONDS))
+        )
         for task in list(ctx.background):
             task.cancel()
         if ctx.session is not None:
@@ -930,6 +946,10 @@ class SessionManager:
                     await ctx.router.close(drain_timeout=close_timeout, emit_closed=False)
             except Exception:
                 log.exception("session %s: closing the router failed", ctx.session_id)
+        try:
+            await shells
+        except Exception:
+            log.exception("session %s: closing the terminals failed", ctx.session_id)
         if emit_closed:
             self._emit_closed(ctx)
         if self._active.get(ctx.session_id) is ctx:
@@ -1102,8 +1122,8 @@ class SessionManager:
         return reaped
 
     async def shutdown(self) -> None:
-        """Stop every active session concurrently within `shutdown_timeout_seconds`, then
-        drain the hook dispatchers.
+        """Stop every active session and every terminal concurrently within
+        `shutdown_timeout_seconds`, then drain the hook dispatchers.
 
         The bound is split: claude stops (SIGKILL after 30% of it), the router drains (15%)
         and onDestroy runs (25%) inside the first 75%, destroys already in flight are
@@ -1122,6 +1142,8 @@ class SessionManager:
             self._reaper.cancel()  # a reap in progress carries on in its destroy task
             await asyncio.gather(self._reaper, return_exceptions=True)
             self._reaper = None
+        # Every shell goes, with its reaper; bounded with the sessions by the stop share.
+        terminals = asyncio.ensure_future(self.terminals.shutdown(min(grace, CLOSE_GRACE_SECONDS)))
         contexts = list(self._active.values())
         for ctx in contexts:
             if ctx.phase == "running":
@@ -1141,6 +1163,7 @@ class SessionManager:
             asyncio.ensure_future(ctx.closed.wait()) for ctx in contexts
         ]
         waits.extend(self._tasks)
+        waits.append(terminals)
         if waits:
             await asyncio.wait(waits, timeout=budget * SHUTDOWN_STOP_SHARE)
         # Past the stop share: cancel what is left, then kill whatever claude still runs.
