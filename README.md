@@ -847,6 +847,16 @@ Auth: bearer. Response `200`:
                 "variables": {"pr": {"required": true, "default": null}}}]}
 ```
 
+### `POST /v1/sessions/{id}/notes`
+
+Push a note into a hived session's notes inbox (see [Notes](#notes)). Auth: bearer. Body:
+`{"text": "...", "key": "hive_state", "source": "orchestrator"}` where `text` is 1 to
+`notes.max_note_chars` characters, `key` (optional) matches `^[a-z0-9_]{1,40}$` and replaces the
+previous note with the same key, and `source` (optional) is at most 80 characters. Response
+`202`: `{"key": "hive_state", "pending": 1}` (`key` is null for an appended note; `pending` is the
+number of notes awaiting delivery). Errors: `401 unauthorized`, `404 not_found` (unknown
+session), `409 notes_disabled`, `409 invalid_state` (session not running), `422 invalid_request`.
+
 ### `GET /v1/peers`
 
 The peer mesh as this instance sees it. Always mounted (unlike the signed `POST /v1/peers/*`
@@ -1528,6 +1538,28 @@ Emitted on every live session's stream when an instance leaves the reachable lis
 ```
 event: peer_member_left
 data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"peer_member_left","data":{"instance":"b","url":"http://ccw-b:8080","reason":"missed_heartbeats"}}
+```
+
+### `note_received`
+
+Emitted when a pushed note is accepted into the session's notes inbox.
+
+`data`: `key` (the note key, or null for an appended note), `source` (the pusher label, or null), `text` (the note text as pushed, at most `notes.max_note_chars` characters), `chars` (its length).
+
+```
+event: note_received
+data: {"seq":25,"ts":"2026-10-20T09:11:30.000Z","session_id":"ses_3f9a1c0b7d42","type":"note_received","data":{"key":"hive_state","source":"orchestrator","text":"leader is ses_aa","chars":16}}
+```
+
+### `note_delivered`
+
+Emitted when pending notes are delivered to the agent.
+
+`data`: `keys` (the keys delivered, null entries for appended notes), `count` (notes delivered), `chars` (characters delivered).
+
+```
+event: note_delivered
+data: {"seq":26,"ts":"2026-10-20T09:11:31.000Z","session_id":"ses_3f9a1c0b7d42","type":"note_delivered","data":{"keys":["hive_state"],"count":1,"chars":16}}
 ```
 
 ### `session_closed`
@@ -2283,6 +2315,27 @@ Peer I/O never blocks session work or the event loop.
 - `server.auth_token` and `peers.token` are different secrets; neither is accepted in place of the
   other.
 
+## Notes
+
+A client-pushed notes inbox for hived agents, so an orchestrator can hand a running session hive
+state and activity notes. It exists only when `notes.enabled` is true, which is meant for hived
+agents; otherwise the route answers `409 notes_disabled` and no inbox is used.
+
+- A keyed note (`key` set) replaces the previous note with the same key and is pending again
+  until delivered. Use it for state that is overwritten, such as `hive_state`.
+- An appended note (no `key`) joins a FIFO of at most `notes.max_notes` notes per session; the
+  oldest is dropped first. Each note is at most `notes.max_note_chars` characters.
+- Notes live in memory per session. Nothing is written to the workdir and nothing survives a
+  restart; the orchestrator re-pushes its `hive_state`.
+- Notes are data from peers, not instructions. The inbox keeps the text unmodified, exactly as
+  pushed, and exposes it for delivery unmodified. The text is escaped when delivery frames it
+  for the agent, never at storage.
+- `note_received` is emitted for every accepted note; `note_delivered` when notes are delivered
+  to the agent. Delivery limits are `notes.delivery_max_chars`, `notes.throttle_seconds` and
+  `notes.throttle_tool_results`.
+
+See [`POST /v1/sessions/{id}/notes`](#post-v1sessionsidnotes) and the `notes` config section.
+
 ## Errors
 
 Every public API error has the envelope:
@@ -2324,6 +2377,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `message_too_large` | 413 | a peer request body over `peers.max_message_bytes` + 4096 bytes, or a peer `message` over `peers.max_message_bytes` |
 | `inbox_full` | 429 | the target session's peer inbox is at `peers.inbox_max` |
 | `rate_limited` | 429 | a peer sender over `peers.max_messages_per_minute`, or the peer nonce cache is full |
+| `notes_disabled` | 409 | `POST /v1/sessions/{id}/notes` while `notes.enabled` is false |
 | `invalid_command` | 422 | unknown command, invalid `args`, or `force` not allowed |
 | `command_queue_full` | 429 | the session already has the maximum of queued commands |
 | `too_many_sessions` | 429 | `sessions.max_sessions` reached |
@@ -3113,6 +3167,25 @@ Opt-in peer messaging between ccw instances; with `enabled: false` (the default)
 | `peers.max_clock_skew_seconds` | number | `60` | - | Accepted clock difference on signed peer requests, in seconds (> 0). |
 | `peers.max_messages_per_minute` | integer | `30` | - | Per-sender message rate limit; above it the answer is 429 `rate_limited` (>= 1). |
 | `peers.max_messages_per_minute_total` | integer | `120` | - | Per-session message rate limit across all senders together; above it the answer is 429 `rate_limited` (>= 1). |
+
+### `notes`
+
+```yaml
+notes:
+  enabled: true
+  max_notes: 50
+```
+
+Opt-in notes inbox for hived agents (see [Notes](#notes)); with `enabled: false` (the default) the route answers `409 notes_disabled` and nothing changes.
+
+| Key | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `notes.enabled` | boolean | `false` | - | Turn the notes inbox on. Off, `POST /v1/sessions/{id}/notes` answers `409 notes_disabled`. |
+| `notes.max_notes` | integer | `50` | - | Appended notes kept per session; the oldest is dropped first (>= 1). |
+| `notes.max_note_chars` | integer | `2000` | - | Longest accepted note text in characters (>= 1). |
+| `notes.delivery_max_chars` | integer | `8000` | - | Most characters of notes delivered in one hook output, below Claude Code's 10,000-character hook limit (>= 1). |
+| `notes.throttle_seconds` | integer | `30` | - | Minimum seconds between note deliveries on tool results (>= 0). |
+| `notes.throttle_tool_results` | integer | `10` | - | Tool results between note deliveries (>= 0). |
 
 ## Claude Code environment
 

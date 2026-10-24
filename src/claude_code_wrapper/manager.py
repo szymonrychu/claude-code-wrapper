@@ -57,6 +57,7 @@ from .hooks import (
     instance_dispatcher,
 )
 from .metrics import Metrics
+from .notes import NoteStore
 from .peer_service import PeerService
 from .plugins import install_plugins
 from .prompts import render_template, resolve_prompt
@@ -295,6 +296,8 @@ class SessionManager:
         self._reaper_interval = reaper_interval
         self._root = Path(cfg.paths.sessions_root)
         self._active: dict[str, _Active] = {}
+        #: In-memory notes inbox per session (`notes.enabled`); nothing is persisted.
+        self._notes: dict[str, NoteStore] = {}
         self._dispatchers: set[HookDispatcher] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._reaper: asyncio.Task[None] | None = None
@@ -377,6 +380,16 @@ class SessionManager:
             return ctx.router
         meta = self._read_meta(session_id)
         raise InvalidState(session_id, str(meta.get("state")))
+
+    def note_store(self, session_id: str) -> NoteStore:
+        """The session's notes inbox, created on first use; `InvalidState` unless running."""
+        if session_id not in self._active:
+            meta = self._read_meta(session_id)
+            raise InvalidState(session_id, str(meta.get("state")))
+        store = self._notes.get(session_id)
+        if store is None:
+            store = self._notes[session_id] = NoteStore(self.cfg.notes.max_notes)
+        return store
 
     def hook_token_matches(self, session_id: str, token: str | None) -> bool:
         ctx = self._active.get(session_id)
@@ -954,6 +967,7 @@ class SessionManager:
             self._emit_closed(ctx)
         if self._active.get(ctx.session_id) is ctx:
             del self._active[ctx.session_id]
+            self._notes.pop(ctx.session_id, None)
             if self.metrics is not None:
                 self.metrics.session_closed()
 

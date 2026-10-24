@@ -43,6 +43,8 @@ def test_event_types_exact():
         "peer_message_delivered",
         "peer_member_joined",
         "peer_member_left",
+        "note_received",
+        "note_delivered",
         "session_closed",
     ]
 
