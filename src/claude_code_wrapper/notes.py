@@ -99,6 +99,7 @@ def render_block(notes: list[Note], max_chars: int) -> tuple[str, list[str], int
     lines = [_line(n) for n in appended]
     start = len(lines)
     budget = max_chars - used
+    overfull = budget < 0  # keyed notes alone exceed the cap: they win, the omitted line stays
     for i in range(len(lines) - 1, -1, -1):
         if budget - (len(lines[i]) + 1) < 0:
             break
@@ -109,6 +110,8 @@ def render_block(notes: list[Note], max_chars: int) -> tuple[str, list[str], int
         budget += len(lines[start]) + 1
         start += 1
     kept = lines[start:]
-    body = [f"... {start} earlier notes omitted"] if start else []
+    omitted = f"... {start} earlier notes omitted"
+    # when every appended note is cut the line may not fit either: the cap wins, drop it
+    body = [omitted] if start and (kept or overfull or budget >= len(omitted) + 1) else []
     text = "\n".join([*head, *body, *kept, "</peer-notes>"])
     return text, [n.key for n in keyed if n.key is not None], len(appended)

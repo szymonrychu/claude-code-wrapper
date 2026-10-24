@@ -164,3 +164,19 @@ def test_store_remove(n):
     k = s.put("k", key="x")
     s.remove([a, k])
     assert s.notes() == [] and s.pending() == 0
+
+
+def test_cap_holds_when_every_appended_note_is_cut():
+    from claude_code_wrapper.notes import render_block
+
+    s = NoteStore()
+    s.put("k" * 20, key="hive_state")
+    s.put("a" * 100)
+    base = len(render_block(s.notes()[:1], 10_000)[0])
+    for cap in range(base, base + 60):
+        text, _, _ = render_block(s.notes(), cap)
+        assert len(text) <= cap or cap < base, cap
+    text, _, _ = render_block(s.notes(), base + 5)
+    assert len(text) <= base + 5 and "a" * 100 not in text
+    text, _, _ = render_block(s.notes(), base + 40)
+    assert "... 1 earlier notes omitted" in text and len(text) <= base + 40
