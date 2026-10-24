@@ -101,6 +101,9 @@ never put it behind a public ingress.
   a subagent's Bash can queue allowlisted slash commands directly; only the PreToolUse relay on
   `mcp__ccw__command` keeps the tool main-agent-only. This is accepted: it cannot queue anything
   outside `sessions.commands.agent`.
+- `claude.main_agent_only_tools` denies matching tools to subagents in PreToolUse. This is a
+  best-effort guard, not a security boundary: subagents share the pod and trust domain with the
+  main agent (their Bash can read the same environment, for example `ORCH_AGENT_TOKEN`).
 - With `peers.enabled`, the shared peer token is one trust domain: any holder can push prompts into
   the agents of every instance and claim any sender. See the trust model in
   [Peer messaging](#peer-messaging).
@@ -2469,6 +2472,7 @@ claude:
 | `claude.extra_args` | list | `[]` | - | Extra argv appended after the service flags. `--dangerously-skip-permissions` is rejected (it adds a boot dialog). |
 | `claude.passthrough_env` | list | `[]` | - | List of env var name patterns (`fnmatch`, case-sensitive; a plain name matches only itself, `GH_*` matches by prefix) copied from the service environment into Claude's environment and the setup-command environment when present. `CCW_*` names and service-managed names are never passed, even through `*` (the refusal is logged). Warning: `*` hands every service secret to Claude; use explicit globs plus `passthrough_env_exclude`. |
 | `claude.passthrough_env_exclude` | list | `[]` | - | List of `fnmatch` patterns removing names matched by `claude.passthrough_env`, for example `["*_SECRET*", "AWS_*"]`. |
+| `claude.main_agent_only_tools` | list | `[]` | - | List of `fnmatch` globs (case-sensitive) of tool names that PreToolUse denies when the call comes from a subagent (hook payload carries `agent_id`), for example `["mcp__any-mcp__orchestrator_*"]`. Main-agent calls pass. Best-effort guard, not a security boundary: subagents share the pod and trust domain with the main agent. |
 | `claude.permissions.allow` | list | `[]` | - | List of allow rules, for example `Bash(git status:*)`. |
 | `claude.permissions.deny` | list | `["EnterPlanMode", "ExitPlanMode"]` | - | List of deny rules. Plan-mode tools are denied by default. |
 | `claude.settings` | map | `{}` | - | Map deep-merged into `settings.json`; hook lists are appended to the service's own hooks. |

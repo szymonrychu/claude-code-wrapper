@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fnmatch
 import json
 import logging
 import sys
@@ -73,6 +74,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 CCW_TOOL_PREFIX = "mcp__ccw__"
+MAIN_AGENT_ONLY_DENY_REASON = (
+    "this tool is main agent only (claude.main_agent_only_tools); subagents cannot call it."
+)
 CCW_SUBAGENT_DENY_REASON = (
     "ccw tools are available to the main agent only; "
     "subagents and teammates cannot call mcp__ccw__* tools."
@@ -612,6 +616,10 @@ class SessionRouter(SessionListener):
             gate_reason = NATIVE_PEER_DENY_REASON
         elif tool_name.startswith(CCW_TOOL_PREFIX) and payload.get("agent_id"):
             gate_reason = CCW_SUBAGENT_DENY_REASON
+        elif payload.get("agent_id") and any(
+            fnmatch.fnmatchcase(tool_name, g) for g in self._cfg.claude.main_agent_only_tools
+        ):
+            gate_reason = MAIN_AGENT_ONLY_DENY_REASON
         if gate_reason is not None:
             self._emit(
                 "tool_denied",
