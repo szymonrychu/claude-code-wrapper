@@ -388,7 +388,9 @@ class SessionManager:
             raise InvalidState(session_id, str(meta.get("state")))
         store = self._notes.get(session_id)
         if store is None:
-            store = self._notes[session_id] = NoteStore(self.cfg.notes.max_notes)
+            store = self._notes[session_id] = NoteStore(
+                self.cfg.notes.max_notes, self.cfg.notes.max_keyed_notes
+            )
         return store
 
     def hook_token_matches(self, session_id: str, token: str | None) -> bool:

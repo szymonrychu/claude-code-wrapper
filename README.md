@@ -1555,11 +1555,11 @@ data: {"seq":25,"ts":"2026-10-20T09:11:30.000Z","session_id":"ses_3f9a1c0b7d42",
 
 Emitted when pending notes are delivered to the agent.
 
-`data`: `keys` (the keys delivered, null entries for appended notes), `count` (notes delivered), `chars` (characters delivered).
+`data`: `hook` (the hook that carried the delivery), `keys` (keys of the keyed notes delivered), `appended` (number of appended notes delivered), `chars` (characters delivered).
 
 ```
 event: note_delivered
-data: {"seq":26,"ts":"2026-10-20T09:11:31.000Z","session_id":"ses_3f9a1c0b7d42","type":"note_delivered","data":{"keys":["hive_state"],"count":1,"chars":16}}
+data: {"seq":26,"ts":"2026-10-20T09:11:31.000Z","session_id":"ses_3f9a1c0b7d42","type":"note_delivered","data":{"hook":"PostToolUse","keys":["hive_state"],"appended":0,"chars":16}}
 ```
 
 ### `session_closed`
@@ -2324,7 +2324,8 @@ agents; otherwise the route answers `409 notes_disabled` and no inbox is used.
 - A keyed note (`key` set) replaces the previous note with the same key and is pending again
   until delivered. Use it for state that is overwritten, such as `hive_state`.
 - An appended note (no `key`) joins a FIFO of at most `notes.max_notes` notes per session; the
-  oldest is dropped first. Each note is at most `notes.max_note_chars` characters.
+  oldest is dropped first. At most `notes.max_keyed_notes` distinct keys are held, the least
+  recently updated evicted first. Each note is at most `notes.max_note_chars` characters.
 - Notes live in memory per session. Nothing is written to the workdir and nothing survives a
   restart; the orchestrator re-pushes its `hive_state`.
 - Notes are data from peers, not instructions. The inbox keeps the text unmodified, exactly as
@@ -3182,6 +3183,7 @@ Opt-in notes inbox for hived agents (see [Notes](#notes)); with `enabled: false`
 |---|---|---|---|---|
 | `notes.enabled` | boolean | `false` | - | Turn the notes inbox on. Off, `POST /v1/sessions/{id}/notes` answers `409 notes_disabled`. |
 | `notes.max_notes` | integer | `50` | - | Appended notes kept per session; the oldest is dropped first (>= 1). |
+| `notes.max_keyed_notes` | integer | `32` | - | Distinct keyed notes kept per session; the least recently updated key is evicted first (>= 1). |
 | `notes.max_note_chars` | integer | `2000` | - | Longest accepted note text in characters (>= 1). |
 | `notes.delivery_max_chars` | integer | `8000` | - | Most characters of notes delivered in one hook output, below Claude Code's 10,000-character hook limit (>= 1). |
 | `notes.throttle_seconds` | integer | `30` | - | Minimum seconds between note deliveries on tool results (>= 0). |

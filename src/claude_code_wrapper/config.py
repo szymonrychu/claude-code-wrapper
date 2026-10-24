@@ -703,6 +703,7 @@ class NotesConfig(_Model):
 
     enabled: bool = False
     max_notes: int = Field(50, ge=1)
+    max_keyed_notes: int = Field(32, ge=1)
     max_note_chars: int = Field(2000, ge=1)
     delivery_max_chars: int = Field(8000, ge=1)
     throttle_seconds: int = Field(30, ge=0)

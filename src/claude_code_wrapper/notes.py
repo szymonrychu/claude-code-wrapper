@@ -1,8 +1,10 @@
 """Per-session notes inbox: client-pushed notes held in memory (part `wrapper-notes-inbox`).
 
 A keyed note replaces the previous note with the same key and is pending again; an appended
-note (no key) joins a FIFO capped at `max_notes`, the oldest dropped first. Text is stored as
-pushed: it is peer data, escaped only when delivery frames it. Nothing survives a restart.
+note (no key) joins a FIFO capped at `max_notes`, the oldest dropped first.
+Distinct keys are capped at `max_keys`, the least recently updated key evicted first.
+Text is stored as pushed: it is peer data, escaped only when delivery frames it.
+Nothing survives a restart.
 """
 
 from __future__ import annotations
@@ -23,8 +25,9 @@ class Note:
 
 
 class NoteStore:
-    def __init__(self, max_notes: int = 50) -> None:
+    def __init__(self, max_notes: int = 50, max_keys: int = 32) -> None:
         self.max_notes = max_notes
+        self.max_keys = max(1, max_keys)
         self._keyed: dict[str, Note] = {}
         self._appended: deque[Note] = deque(maxlen=max(1, max_notes))
 
@@ -35,6 +38,8 @@ class NoteStore:
         else:
             self._keyed.pop(key, None)  # re-insert so the newest keyed note sorts last
             self._keyed[key] = note
+            while len(self._keyed) > self.max_keys:
+                del self._keyed[next(iter(self._keyed))]
         return note
 
     def notes(self) -> list[Note]:

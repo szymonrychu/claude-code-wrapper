@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.events import EventLog
-from claude_code_wrapper.manager import SessionNotFound
+from claude_code_wrapper.manager import InvalidState, SessionNotFound
 from claude_code_wrapper.notes import NoteStore
 from claude_code_wrapper.redact import Redactor
 
@@ -25,9 +25,11 @@ class StubManager:
         self.started = True
         self.redactor = Redactor()
         self.log = EventLog(tmp_path / "events.jsonl", SID, ring_size=100, max_bytes=0)
-        self.store = NoteStore(max_notes=cfg.notes.max_notes)
+        self.store = NoteStore(max_notes=cfg.notes.max_notes, max_keys=cfg.notes.max_keyed_notes)
 
     def note_store(self, sid: str) -> NoteStore:
+        if sid == "ses_stopped":
+            raise InvalidState(sid, "stopped")
         if sid != SID:
             raise SessionNotFound(sid)
         return self.store
@@ -116,6 +118,7 @@ def test_config_defaults() -> None:
         2000,
         8000,
     )
+    assert n.max_keyed_notes == 32
     assert (n.throttle_seconds, n.throttle_tool_results) == (30, 10)
 
 
@@ -129,3 +132,18 @@ def test_store_pending_and_delivered() -> None:
     s.put("c", key="k")
     assert s.pending() == 2
     assert pytest.approx(1) == len([n for n in s.notes() if n.key == "k"])
+
+
+def test_not_running_session_is_409_invalid_state(tmp_path: Path) -> None:
+    client, _ = make(tmp_path)
+    r = post(client, {"text": "x"}, sid="ses_stopped")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "invalid_state"
+
+
+def test_keyed_notes_capped_oldest_evicted() -> None:
+    s = NoteStore(max_notes=5, max_keys=2)
+    s.put("a", key="a")
+    s.put("b", key="b")
+    s.put("a2", key="a")  # refreshes a; b is now oldest
+    s.put("c", key="c")
+    assert [(n.key, n.text) for n in s.notes()] == [("a", "a2"), ("c", "c")]
