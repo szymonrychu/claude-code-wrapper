@@ -188,12 +188,18 @@ limits:
   max_prompt_bytes: 1048576
   max_file_bytes: 262144
   max_files_per_turn: 16
+  files_max_entries: 2000    # entries per file-listing page
+  file_preview_max_bytes: 1048576   # largest file the content route returns
   turn_max_seconds: 0        # hard cap per turn (0 = none)
   event_ring_size: 1000      # in-memory events kept per session
   event_log_max_bytes: 52428800   # on-disk event log cap per session
   sse_replay: 100            # events replayed to a new SSE subscriber
   sse_heartbeat_seconds: 15
   shutdown_timeout_seconds: 10
+  terminals_max: 8           # interactive shells per service process (0 = no terminals)
+  terminal_scrollback_bytes: 262144   # scrollback replayed to a terminal client on attach
+  terminal_idle_reap_seconds: 900     # a shell with no client this long is closed
+  terminal_max_frame_bytes: 65536     # largest terminal WebSocket frame
 
 peers:
   enabled: false             # opt-in peer messaging between ccw instances (README "Peer messaging")

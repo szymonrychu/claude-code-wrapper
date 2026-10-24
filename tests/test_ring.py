@@ -67,3 +67,19 @@ def test_ring_written_is_monotonic_across_reset():
     assert r.written == 8
     r.append(b"i")
     assert r.written == 9
+
+
+def test_raw_keeps_escapes_and_caps():
+    r = Ring(capacity=16)
+    assert r.raw() == b""
+    r.append(b"\x1b[1;31mHi\x1b[0m\r\n\xff")
+    assert r.raw() == b"\x1b[1;31mHi\x1b[0m\r\n\xff"
+    assert isinstance(r.raw(), bytes)
+    r.append(b"0123456789abcdefXYZ")
+    assert r.raw() == b"3456789abcdefXYZ"[-16:]
+    assert len(r.raw()) == 16
+    r.append(b"\x1b[2J")
+    assert r.raw().endswith(b"XYZ\x1b[2J") and len(r.raw()) == 16
+    assert r.written == 16 + 19 + 4
+    r.reset()
+    assert r.raw() == b""

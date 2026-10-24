@@ -36,6 +36,8 @@ log = logging.getLogger(__name__)
 PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
 READ_SIZE = 65536
+#: Largest rows or cols `resize` accepts.
+MAX_DIMENSION = 1000
 #: How often the exit watcher polls the child's return code.
 EXIT_POLL_SECONDS = 0.05
 #: How long `close()` waits for the leader to be reaped after SIGKILL.
@@ -77,6 +79,7 @@ class PtyProcess:
     def __init__(self, ring_capacity: int = DEFAULT_CAPACITY) -> None:
         self.ring = Ring(ring_capacity)
         self.pid: int | None = None
+        self._group_abandoned = False
         self._proc: subprocess.Popen[bytes] | None = None
         self._fd: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -143,6 +146,21 @@ class PtyProcess:
         loop.add_reader(master, self._on_readable)
         self._reading = True
         self._watch_task = loop.create_task(self._watch_exit())
+
+    def resize(self, rows: int, cols: int) -> None:
+        """Set the child's window size (TIOCSWINSZ on the master; the kernel sends SIGWINCH).
+
+        Rows and cols are 1..1000, else `ValueError`. `RuntimeError` before `start()` or after
+        `close()`. A single non-blocking ioctl, so safe to call from the event loop.
+        """
+        if not (1 <= rows <= MAX_DIMENSION and 1 <= cols <= MAX_DIMENSION):
+            raise ValueError(f"rows and cols must be 1..{MAX_DIMENSION}, got {rows}x{cols}")
+        if self._closed or self._fd is None:
+            raise RuntimeError("pty is not running")
+        try:
+            _set_winsize(self._fd, rows, cols)
+        except OSError as exc:
+            raise RuntimeError(f"resize failed: {exc}") from exc
 
     # -- output ---------------------------------------------------------------------------
 
@@ -317,14 +335,20 @@ class PtyProcess:
             with contextlib.suppress(OSError):
                 os.close(fd)
 
+    def abandon_group(self) -> None:
+        """Never signal the child's process group again: its pid may have been reused."""
+        self._group_abandoned = True
+
     def _signal_group(self, sig: int) -> None:
-        if self.pid is not None:
+        if self.pid is not None and not self._group_abandoned:
             with contextlib.suppress(OSError):
                 os.killpg(self.pid, sig)
 
     def _group_alive(self) -> bool:
         assert self._proc is not None and self.pid is not None
-        self._proc.poll()  # reap the leader: an unreaped zombie still counts as a member
+        self._proc.poll()
+        if self._group_abandoned:
+            return False  # reap the leader: an unreaped zombie still counts as a member
         try:
             os.killpg(self.pid, 0)
         except ProcessLookupError:

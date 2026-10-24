@@ -23,6 +23,7 @@ dependencies = [
     "pyyaml",
     "httpx",
     "prometheus-client",
+    "anyio",
 ]
 
 [project.scripts]
