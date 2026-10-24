@@ -128,24 +128,23 @@ never put it behind a public ingress.
   `CLAUDE_CODE_OAUTH_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK`, `MCP_CLIENT_SECRET`) and the service's
   `CCW_AUTH_TOKEN`, `CCW_PEER_TOKEN` and `CCW_HOOK_TOKEN` removed, as is every other variable
   whose name matches the redactor's secret pattern (`TOKEN`, `KEY`, `SECRET`, `PASSWORD`, `AUTH`
-  or `CREDENTIAL`, any case). That is defence in depth, not isolation: the shell can still read
-  whatever the agent uid can read on disk. Terminals exist only while their session is active and
-  close when it stops or is destroyed. The real limits:
-  - The scrub covers only the shell's own environment block. It does not cover
-    `/proc/<pid>/environ` of other processes running as the same uid (claude, the wrapper), which
-    the shell can read.
+  or `CREDENTIAL`, any case). The scrub shrinks what the shell inherits; it does not sandbox it:
+  the shell reads whatever the agent uid reads on disk. Terminals exist only while their session
+  is active and close when it stops or is destroyed. What the shell can still do:
+  - It can read `/proc/<pid>/environ` of other processes running as the same uid (claude, the
+    wrapper), because the scrub changes only the shell's own environment block.
   - Close, destroy and the idle reaper kill the shell's session. A process the shell started with
-    `setsid` or a double fork leaves that session and is not killed.
-  - File reads open the final path component with `O_NOFOLLOW`, which guards only that last
-    component: a parent directory swapped for a symlink between the containment check and the open
-    is not prevented. The reader is a trusted bearer holder, so this is accepted.
-  - Passthrough and extra env names that do not match the secret pattern still reach the shell:
+    `setsid` or a double fork lives in another session and keeps running after those.
+  - File reads open the final path component with `O_NOFOLLOW`, which guards that last component
+    only: a parent directory swapped for a symlink between the containment check and the open
+    can redirect the read. The reader is a trusted bearer holder, so the wrapper allows this.
+  - Passthrough and extra env names that do not match the secret pattern reach the shell:
     names in `claude.passthrough_env` or `claude.env.extra` such as `GITHUB_PAT` or
-    `NETRC_LOGIN` carry a credential but do not match, so they are not removed (a name like
-    `GIT_TOKEN` is removed only because it matches). Name secrets so they match, or do not pass
-    them through.
-  - Closing a terminal whose shell already exited signals nothing if its pid has since been
-    reused by an unrelated process (the shell's start time is checked first).
+    `NETRC_LOGIN` carry a credential but do not match, so they stay in its environment (a name
+    like `GIT_TOKEN` is removed because it matches). Name secrets so they match, or leave them out
+    of passthrough.
+  - Closing a terminal whose shell already exited signals nothing when its pid now belongs to
+    another process (the shell's start time is compared first).
 - The internal hook API (`/internal/...`) is bound to `127.0.0.1` only and additionally requires a
   per-session token; it is not part of the client surface.
 
