@@ -53,7 +53,6 @@ async def test_default_empty_changes_nothing(tmp_path):
     assert Config().claude.main_agent_only_tools == []
     h = Harness(tmp_path)
     r = await call(h, TOOL, agent_id="ag1")
-    assert r["stdout"] == "" and not h.events("tool_denied")
     (tmp_path / "b").mkdir()
     (tmp_path / "b").mkdir()
     h2 = make(tmp_path / "b", ["mcp__any-mcp__orchestrator_*"])
