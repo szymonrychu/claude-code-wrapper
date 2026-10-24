@@ -37,6 +37,7 @@ from .events import EventLog
 from .hook_relay import RelayResponse, deny_output
 from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
+from .notes import NoteStore, render_block
 from .pty_proc import PtyClosed
 from .redact import Redactor
 from .session import Session, SessionListener, TurnRejected
@@ -275,6 +276,12 @@ class SessionRouter(SessionListener):
         self._idle_spans: list[tuple[int, int]] = []
         #: The session's peer inbox (D7), set by the manager when peers are enabled.
         self.peer_inbox: PeerInbox | None = None
+        #: The session's notes inbox, set by the manager when `notes.enabled` (memory only).
+        self.notes: NoteStore | None = None
+        #: Notes delivery throttle: monotonic time of the last delivery and the main-agent tool
+        #: results seen since.
+        self._notes_last = time.monotonic()
+        self._notes_tool_results = 0
         # The dispatcher is built before the router; route its per-action results here.
         if getattr(dispatcher, "_on_result", None) is None:
             dispatcher._on_result = self.on_hook_result
@@ -598,7 +605,45 @@ class SessionRouter(SessionListener):
     async def _on_user_prompt_submit(
         self, event_name: str, payload: Mapping[str, Any]
     ) -> RelayResponse:
-        return _allow()
+        return self._with_notes(event_name, payload, None)
+
+    def _with_notes(
+        self, event_name: str, payload: Mapping[str, Any], user_context: str | None
+    ) -> RelayResponse:
+        """The hook answer: user-hook context first, then due pending notes as a peer block.
+
+        Main agent only; memory only (no I/O: the UserPromptSubmit hook has a 15 s timeout).
+        """
+        parts = [user_context] if user_context else []
+        store = self.notes
+        if store is not None and self._cfg.notes.enabled and not payload.get("agent_id"):
+            cfg = self._cfg.notes
+            if event_name == "UserPromptSubmit":
+                due = True
+            else:
+                self._notes_tool_results += 1
+                due = (
+                    time.monotonic() - self._notes_last >= cfg.throttle_seconds
+                    or self._notes_tool_results >= cfg.throttle_tool_results
+                )
+            pending = [n for n in store.notes() if not n.delivered]
+            if due and pending:
+                text, keys, appended = render_block(pending, cfg.delivery_max_chars)
+                store.remove(pending)
+                self._notes_last = time.monotonic()
+                self._notes_tool_results = 0
+                self._emit(
+                    "note_delivered",
+                    {"hook": event_name, "keys": keys, "appended": appended, "chars": len(text)},
+                )
+                parts.append(text)
+        if not parts:
+            return _allow()
+        return {
+            "stdout": _additional_context(event_name, "\n".join(parts)),
+            "stderr": "",
+            "exit_code": 0,
+        }
 
     async def _on_pre_tool_use(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         tool_name = str(payload.get("tool_name") or "")
@@ -672,13 +717,7 @@ class SessionRouter(SessionListener):
         self.session.record_tool_call()
         outcome = await self._fire("onToolResult", data, tool_name=tool_name)
         self._annotate(self.session.current_turn, outcome)
-        if outcome.additional_context:
-            return {
-                "stdout": _additional_context(event_name, outcome.additional_context),
-                "stderr": "",
-                "exit_code": 0,
-            }
-        return _allow()
+        return self._with_notes(event_name, payload, outcome.additional_context)
 
     async def _on_stop(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         await self._flush_transcripts()

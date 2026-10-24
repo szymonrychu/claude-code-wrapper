@@ -386,6 +386,9 @@ class SessionManager:
         if session_id not in self._active:
             meta = self._read_meta(session_id)
             raise InvalidState(session_id, str(meta.get("state")))
+        return self._notes_for(session_id)
+
+    def _notes_for(self, session_id: str) -> NoteStore:
         store = self._notes.get(session_id)
         if store is None:
             store = self._notes[session_id] = NoteStore(
@@ -747,6 +750,8 @@ class SessionManager:
             commands=self._commands_for(meta),
             on_state_change=lambda state: self._on_session_state(ctx, state),
         )
+        if self.cfg.notes.enabled:
+            ctx.router.notes = self._notes_for(ctx.session_id)
         spec = SessionSpec(
             session_id=ctx.session_id,
             claude_session_id=str(meta["claude_session_id"]),
