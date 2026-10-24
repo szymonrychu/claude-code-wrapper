@@ -126,9 +126,26 @@ never put it behind a public ingress.
   the bearer token can run anything the agent can. Their environment is the one Claude gets with
   every secret-kind Claude variable (for example `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
   `CLAUDE_CODE_OAUTH_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK`, `MCP_CLIENT_SECRET`) and the service's
-  `CCW_AUTH_TOKEN`, `CCW_PEER_TOKEN` and `CCW_HOOK_TOKEN` removed. That is defence in depth, not
-  isolation: the shell can still read whatever the agent uid can read on disk. Terminals exist
-  only while their session is active and close when it stops or is destroyed.
+  `CCW_AUTH_TOKEN`, `CCW_PEER_TOKEN` and `CCW_HOOK_TOKEN` removed, as is every other variable
+  whose name matches the redactor's secret pattern (`TOKEN`, `KEY`, `SECRET`, `PASSWORD`, `AUTH`
+  or `CREDENTIAL`, any case). That is defence in depth, not isolation: the shell can still read
+  whatever the agent uid can read on disk. Terminals exist only while their session is active and
+  close when it stops or is destroyed. The real limits:
+  - The scrub covers only the shell's own environment block. It does not cover
+    `/proc/<pid>/environ` of other processes running as the same uid (claude, the wrapper), which
+    the shell can read.
+  - Close, destroy and the idle reaper kill the shell's session. A process the shell started with
+    `setsid` or a double fork leaves that session and is not killed.
+  - File reads open the final path component with `O_NOFOLLOW`, which guards only that last
+    component: a parent directory swapped for a symlink between the containment check and the open
+    is not prevented. The reader is a trusted bearer holder, so this is accepted.
+  - Passthrough and extra env names that do not match the secret pattern still reach the shell:
+    names in `claude.passthrough_env` or `claude.env.extra` such as `GITHUB_PAT` or
+    `NETRC_LOGIN` carry a credential but do not match, so they are not removed (a name like
+    `GIT_TOKEN` is removed only because it matches). Name secrets so they match, or do not pass
+    them through.
+  - Closing a terminal whose shell already exited signals nothing if its pid has since been
+    reused by an unrelated process (the shell's start time is checked first).
 - The internal hook API (`/internal/...`) is bound to `127.0.0.1` only and additionally requires a
   per-session token; it is not part of the client surface.
 
@@ -788,7 +805,7 @@ Close codes sent by the server:
 | `1000` | the shell exited or was closed; the exit frame came first |
 | `1003` | an unknown or malformed control frame |
 | `1009` | a client frame (binary or text) over `limits.terminal_max_frame_bytes` |
-| `1013` | the client fell too far behind the output and was dropped; reattach to get the scrollback |
+| `1013` | the client fell too far behind the output and was dropped (reattach to get the scrollback), or, with reason `too many clients`, the terminal already has `limits.terminal_max_subscribers` clients attached (sent right after accept) |
 
 Closing the socket only detaches: the shell keeps running, and a later attach replays what it
 printed meanwhile (within the scrollback size).
@@ -3064,6 +3081,7 @@ limits:
 | `limits.terminal_scrollback_bytes` | integer | `262144` | - | Scrollback kept per terminal and replayed to a client on attach, in bytes (>= 1). |
 | `limits.terminal_idle_reap_seconds` | number | `900` | - | A terminal with no attached client for this long (since creation or the last detach) is closed; an exited one with no client goes at the next reaper tick (> 0). |
 | `limits.terminal_max_frame_bytes` | integer | `65536` | - | Largest terminal WebSocket frame a client may send, in bytes (>= 1). |
+| `limits.terminal_max_subscribers` | integer | `8` | - | Most clients attached to one terminal at once; an attach beyond it is closed with `1013` and reason `too many clients` (>= 1). |
 
 ### `peers`
 

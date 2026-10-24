@@ -79,6 +79,7 @@ class PtyProcess:
     def __init__(self, ring_capacity: int = DEFAULT_CAPACITY) -> None:
         self.ring = Ring(ring_capacity)
         self.pid: int | None = None
+        self._group_abandoned = False
         self._proc: subprocess.Popen[bytes] | None = None
         self._fd: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -334,14 +335,20 @@ class PtyProcess:
             with contextlib.suppress(OSError):
                 os.close(fd)
 
+    def abandon_group(self) -> None:
+        """Never signal the child's process group again: its pid may have been reused."""
+        self._group_abandoned = True
+
     def _signal_group(self, sig: int) -> None:
-        if self.pid is not None:
+        if self.pid is not None and not self._group_abandoned:
             with contextlib.suppress(OSError):
                 os.killpg(self.pid, sig)
 
     def _group_alive(self) -> bool:
         assert self._proc is not None and self.pid is not None
-        self._proc.poll()  # reap the leader: an unreaped zombie still counts as a member
+        self._proc.poll()
+        if self._group_abandoned:
+            return False  # reap the leader: an unreaped zombie still counts as a member
         try:
             os.killpg(self.pid, 0)
         except ProcessLookupError:

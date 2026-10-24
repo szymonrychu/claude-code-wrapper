@@ -12,15 +12,20 @@ import os
 import random
 import re
 import shutil
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 from conftest import World, wait_until
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from test_api_terminals import AUTH, Host, StubManager
 
+from claude_code_wrapper import service as service_mod
 from claude_code_wrapper import terminals as terminals_mod
+from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.claude_env import ClaudeEnv
 from claude_code_wrapper.config import Config, LimitsConfig
 from claude_code_wrapper.manager import CreateSessionRequest, SessionManager, SessionNotFound
@@ -37,7 +42,9 @@ from claude_code_wrapper.terminals import (
     TerminalLimit,
     TerminalNotFound,
     TerminalRegistry,
+    TooManyClients,
     login_shell_argv,
+    shell_env,
 )
 
 SH = ("/bin/sh",)
@@ -197,12 +204,14 @@ def test_limits_terminal_keys() -> None:
     assert limits.terminal_scrollback_bytes == 262144
     assert limits.terminal_idle_reap_seconds == 900
     assert limits.terminal_max_frame_bytes == 65536
+    assert limits.terminal_max_subscribers == 8
     assert LimitsConfig(terminals_max=0).terminals_max == 0
     for bad in (
         {"terminals_max": -1},
         {"terminal_scrollback_bytes": 0},
         {"terminal_idle_reap_seconds": 0},
         {"terminal_max_frame_bytes": 0},
+        {"terminal_max_subscribers": 0},
     ):
         with pytest.raises(ValidationError):
             LimitsConfig(**bad)
@@ -514,6 +523,92 @@ async def test_close_kills_whole_shell_session(make) -> None:
     assert session_members(shell) == []
     with pytest.raises(TerminalNotFound):
         reg.get(SID, info.terminal_id)
+
+
+async def test_close_skips_reused_pid(make) -> None:
+    """An exited shell whose pid now belongs to another session leader is closed without
+    signalling that session: the recorded start time no longer matches."""
+    reg = make()
+    info = await reg.create(SID)
+    shell = reg.pid(SID, info.terminal_id)
+    os.kill(shell, 9)
+    await wait_until(lambda: reg.get(SID, info.terminal_id).alive is False, timeout=10)
+    victim = subprocess.Popen(["sleep", "300"], start_new_session=True)
+    try:
+        term = reg._terminals[info.terminal_id]
+        term.pty.pid = victim.pid  # the pid was reused by an unrelated session leader
+        assert victim.pid in session_members(victim.pid)
+        assert await reg.close(SID, info.terminal_id) is True
+        assert victim.poll() is None, "the unrelated session was signalled"
+        assert live(victim.pid)
+    finally:
+        victim.kill()
+        victim.wait()
+
+
+async def test_close_skips_vanished_pid(make) -> None:
+    reg = make()
+    info = await reg.create(SID)
+    term = reg._terminals[info.terminal_id]
+    assert term.shell_start is not None
+    os.kill(term.pty.pid, 9)
+    await wait_until(lambda: reg.get(SID, info.terminal_id).alive is False, timeout=10)
+    assert terminals_mod._start_time(2**22 + 12345) is None
+    assert await reg.close(SID, info.terminal_id) is True
+
+
+def test_shell_env_drops_secret_named_keys() -> None:
+    env = shell_env(
+        {
+            "PATH": "/usr/bin",
+            "MY_SERVICE_TOKEN": "t",
+            "db_password": "p",
+            "SOME_API_KEY": "k",
+            "MY_PLAIN": "ok",
+        }
+    )
+    assert env == {"PATH": "/usr/bin", "MY_PLAIN": "ok", "TERM": "xterm-256color"}
+
+
+def test_uvicorn_ws_max_size_matches_frame_cap() -> None:
+    cfg = Config.model_validate({"limits": {"terminal_max_frame_bytes": 4321}})
+    server = service_mod._server(object(), cfg)
+    assert server.config.ws_max_size == 4321
+
+
+async def test_attach_beyond_subscriber_cap_refused(make) -> None:
+    reg = make(limits={"terminal_max_subscribers": 2})
+    info = await reg.create(SID)
+    a = reg.attach(SID, info.terminal_id)
+    b = reg.attach(SID, info.terminal_id)
+    with pytest.raises(TooManyClients):
+        reg.attach(SID, info.terminal_id)
+    a.detach()
+    c = reg.attach(SID, info.terminal_id)  # a freed slot is reusable
+    b.detach()
+    c.detach()
+
+
+def test_attach_beyond_subscriber_cap_closed_1013(tmp_path: Path) -> None:
+    host = Host(tmp_path)
+    limits = {"terminal_max_subscribers": 1}
+    registry = TerminalRegistry(LimitsConfig(**limits), host.resolve, argv=SH)
+    cfg = Config.model_validate(
+        {"server": {"auth_token": "tok-terminals-0123456789"}, "limits": limits}
+    )
+    app = create_app(StubManager(host, registry), cfg)
+    with TestClient(app) as client:
+        created = client.post(f"/v1/sessions/{SID}/terminals", json={}, headers=AUTH)
+        url = f"/v1/sessions/{SID}/terminals/{created.json()['terminal_id']}/attach"
+        with (
+            client.websocket_connect(url, headers=AUTH),
+            client.websocket_connect(url, headers=AUTH) as second,
+        ):
+            msg = second.receive()
+            assert msg["type"] == "websocket.close"
+            assert msg["code"] == 1013
+            assert msg["reason"] == "too many clients"
+        client.portal.call(registry.shutdown, 1.0)
 
 
 # ------------------------------------------------------------------ manager

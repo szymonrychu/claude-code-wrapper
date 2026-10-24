@@ -18,6 +18,8 @@ synchronous step (no await inside), which is what makes the guarantees hold:
 
 A close kills every process of the shell's session (its session id is the shell pid, found
 through `/proc/<pid>/stat`), not only its process group, so a `nohup`'d job does not survive.
+The shell's start time (field 22 of that file) is recorded at spawn; when the shell is gone and
+its pid now has another start time (or no process), the pid was reused and nothing is signalled.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .claude_env import ClaudeEnv
+from .claude_env import SECRET_KEY_RE, ClaudeEnv
 from .config import LimitsConfig
 from .files import resolve_in_workdir
 from .pty_proc import MAX_DIMENSION, PtyClosed, PtyProcess
@@ -56,6 +58,7 @@ __all__ = [
     "TerminalLimit",
     "TerminalNotFound",
     "TerminalRegistry",
+    "TooManyClients",
     "login_shell_argv",
     "shell_env",
 ]
@@ -134,6 +137,18 @@ class SubscriberOverflow(TerminalError):
     status = 1013  # the WebSocket close code the API uses
 
 
+class TooManyClients(TerminalError):
+    """The terminal already has `limits.terminal_max_subscribers` attached clients."""
+
+    code = "too_many_clients"
+    status = 1013  # the WebSocket close code the API uses
+    reason = "too many clients"
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(f"{self.reason}: at most {limit} attached per terminal")
+        self.limit = limit
+
+
 @dataclass(frozen=True)
 class TerminalExit:
     """The exit marker: the last item a subscriber receives. `code` is None when unknown."""
@@ -170,8 +185,13 @@ def login_shell_argv() -> tuple[str, ...]:
 
 
 def shell_env(claude_env: Mapping[str, str]) -> dict[str, str]:
-    """The Claude process env minus every scrubbed name, with `TERM` for xterm.js."""
-    env = {k: v for k, v in claude_env.items() if k not in SCRUBBED_ENV}
+    """The Claude process env minus every scrubbed name and every name the redactor treats as
+    secret (`SECRET_KEY_RE`), with `TERM` for xterm.js."""
+    env = {
+        k: v
+        for k, v in claude_env.items()
+        if k not in SCRUBBED_ENV and not SECRET_KEY_RE.search(k.upper())
+    }
     env["TERM"] = SHELL_TERM
     return env
 
@@ -206,6 +226,18 @@ def _session_members(sid: int) -> list[int]:
     return members
 
 
+def _start_time(pid: int) -> str | None:
+    """Field 22 of `/proc/<pid>/stat` (start time in clock ticks since boot); None when the
+    pid has no process or /proc is unreadable. A reused pid has a different start time."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii", errors="replace") as fh:
+            stat = fh.read()
+    except OSError:
+        return None
+    fields = stat.rpartition(")")[2].split()
+    return fields[19] if len(fields) > 19 else None
+
+
 def _signal_all(pids: Sequence[int], sig: int) -> None:
     for pid in pids:
         if pid != os.getpid():
@@ -225,6 +257,7 @@ class _Terminal:
         self.pty = PtyProcess(ring_capacity=scrollback)
         self.subscribers: set[Attachment] = set()
         self.started = False
+        self.shell_start: str | None = None  # the shell's /proc start time, recorded at spawn
         self.exited = False
         self.exit_code: int | None = None
         self.idle_since = now
@@ -423,6 +456,8 @@ class TerminalRegistry:
         if self._terminals.get(terminal_id) is not term:  # closed while starting
             await self._terminate(term, 0)
             raise SessionNotActive(session_id, "closed while the shell started")
+        if term.pty.pid is not None:
+            term.shell_start = _start_time(term.pty.pid)
         term.started = True
         self._ensure_reaper()
         log.info("session %s: terminal %s started (pid %s)", session_id, terminal_id, term.pty.pid)
@@ -439,12 +474,15 @@ class TerminalRegistry:
     def attach(self, session_id: str, terminal_id: str) -> Attachment:
         """Subscribe to a terminal; its scrollback snapshot and the subscription are one step.
 
-        An exited terminal replays its scrollback, then the exit marker.
+        An exited terminal replays its scrollback, then the exit marker. `TooManyClients` when
+        `limits.terminal_max_subscribers` clients are already attached.
         """
         if self._closed:
             raise SessionNotActive(session_id, "service shutting down")
         self._resolve(session_id)
         term = self._find(session_id, terminal_id)
+        if len(term.subscribers) >= self.limits.terminal_max_subscribers:
+            raise TooManyClients(self.limits.terminal_max_subscribers)
         att = Attachment(self, term, term.pty.ring.raw(), self._queue_bytes)
         if term.exited:
             att._finish(term.exit_code)
@@ -535,6 +573,12 @@ class TerminalRegistry:
         """SIGTERM the shell's session, close the PTY (SIGKILL after `grace`), then SIGKILL
         whatever is left of the session; every subscriber gets the exit marker."""
         sid = term.pty.pid
+        if sid is not None and not self._same_shell(term, sid):
+            log.info(
+                "terminal %s: pid %s was reused or is gone; no signal sent", term.terminal_id, sid
+            )
+            term.pty.abandon_group()
+            sid = None
         if sid is not None:
             _signal_all(_session_members(sid), signal.SIGTERM)
         try:
@@ -547,6 +591,14 @@ class TerminalRegistry:
             term.exit_code = code
             for att in list(term.subscribers):
                 att._finish(code)
+
+    @staticmethod
+    def _same_shell(term: _Terminal, pid: int) -> bool:
+        """True while `pid` is still the shell this terminal spawned. A shell that exited and
+        was reaped leaves no process: its pid may belong to an unrelated session by now."""
+        if term.shell_start is None:
+            return not term.exited  # start time unreadable (no /proc): only a live shell
+        return _start_time(pid) == term.shell_start
 
     @staticmethod
     async def _kill_session(sid: int) -> None:

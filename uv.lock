@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 
 [[package]]
@@ -47,6 +47,7 @@ name = "claude-code-wrapper"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "prometheus-client" },
@@ -64,6 +65,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "prometheus-client" },

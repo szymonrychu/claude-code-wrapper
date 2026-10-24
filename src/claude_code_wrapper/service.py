@@ -137,11 +137,12 @@ def _bind(host: str, port: int) -> socket.socket:
     return sock
 
 
-def _server(app: Any, level: str) -> _Server:
+def _server(app: Any, cfg: Config) -> _Server:
     config = uvicorn.Config(
         app,
         log_config=None,
-        log_level=level,
+        log_level=cfg.server.log_level,
+        ws_max_size=cfg.limits.terminal_max_frame_bytes,
         access_log=False,
         timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
         lifespan="off",
@@ -242,10 +243,9 @@ async def _run(
         )
         await manager.start_peers(handle.public_port)
         await manager.load_persisted()
-        level = cfg.server.log_level
         servers = [
-            _server(create_app(manager, cfg, metrics), level),
-            _server(create_internal_app(manager), level),
+            _server(create_app(manager, cfg, metrics), cfg),
+            _server(create_internal_app(manager), cfg),
         ]
         tasks = [
             asyncio.create_task(srv.serve(sockets=[sock]))

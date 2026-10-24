@@ -694,6 +694,7 @@ class LimitsConfig(_Model):
     terminal_scrollback_bytes: int = Field(262144, ge=1)
     terminal_idle_reap_seconds: float = Field(900, gt=0)
     terminal_max_frame_bytes: int = Field(65536, ge=1)
+    terminal_max_subscribers: int = Field(8, ge=1)
 
 
 class Config(_Model):

@@ -6,7 +6,8 @@ denial response with the usual error envelope: the bearer (`require_auth`), the 
 format, the session (404 `not_found` unknown, 409 `session_not_active`) and the terminal (404
 `terminal_not_found`). After accept, HTTP exception handlers no longer apply: failures are close
 codes (1003 unknown control, 1009 frame over `limits.terminal_max_frame_bytes`, 1013 dropped
-for falling behind, 1000 after the exit frame).
+for falling behind or an attach beyond `limits.terminal_max_subscribers`, 1000 after the exit
+frame).
 
 Frame protocol: binary frames are PTY bytes both ways (the scrollback snapshot first, in chunks
 of at most `SEND_CHUNK_BYTES`, then live output); text frames are JSON control. Client:
@@ -37,6 +38,7 @@ from claude_code_wrapper.terminals import (
     TerminalError,
     TerminalExit,
     TerminalRegistry,
+    TooManyClients,
 )
 
 __all__ = ["SEND_CHUNK_BYTES", "TERMINAL_ID_RE", "TerminalError", "router"]
@@ -110,6 +112,10 @@ async def attach_terminal(websocket: WebSocket, session_id: str, terminal_id: st
     _check_terminal_id(terminal_id)
     try:
         att = _registry(websocket.app).attach(session_id, terminal_id)
+    except TooManyClients as exc:
+        await websocket.accept()
+        await websocket.close(CLOSE_TRY_AGAIN, exc.reason)
+        return
     except TerminalError as exc:
         raise _api_error(exc) from exc
     try:
