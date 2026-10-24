@@ -169,3 +169,13 @@ def test_single_example_config_source():
         or root_copy.is_symlink()
         or root_copy.read_bytes() == packaged.read_bytes()
     )
+
+
+def test_version_matches_pyproject():
+    from importlib.metadata import version
+
+    import claude_code_wrapper
+
+    assert VERSION == "0.2.0"
+    assert claude_code_wrapper.__version__ == VERSION
+    assert version("claude-code-wrapper") == VERSION

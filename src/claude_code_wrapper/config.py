@@ -190,6 +190,7 @@ class ClaudeConfig(_Model):
     env: ClaudeEnv = Field(default_factory=ClaudeEnv)  # type: ignore[valid-type]
     passthrough_env: list[str] = Field(default_factory=list)
     passthrough_env_exclude: list[str] = Field(default_factory=list)
+    main_agent_only_tools: list[str] = Field(default_factory=list)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     settings: dict[str, Any] = Field(default_factory=dict)
     claude_json: dict[str, Any] = Field(default_factory=dict)
@@ -697,6 +698,18 @@ class LimitsConfig(_Model):
     terminal_max_subscribers: int = Field(8, ge=1)
 
 
+class NotesConfig(_Model):
+    """Client-pushed notes inbox for hived agents (README "Notes")."""
+
+    enabled: bool = False
+    max_notes: int = Field(50, ge=1)
+    max_keyed_notes: int = Field(32, ge=1)
+    max_note_chars: int = Field(2000, ge=1)
+    delivery_max_chars: int = Field(8000, ge=1)
+    throttle_seconds: int = Field(30, ge=0)
+    throttle_tool_results: int = Field(10, ge=0)
+
+
 class Config(_Model):
     server: ServerConfig = Field(default_factory=ServerConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
@@ -709,6 +722,7 @@ class Config(_Model):
     sessions: SessionsConfig = Field(default_factory=SessionsConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     peers: PeersConfig = Field(default_factory=PeersConfig)
+    notes: NotesConfig = Field(default_factory=NotesConfig)
 
     @model_validator(mode="after")
     def _peer_token_distinct(self) -> Config:
