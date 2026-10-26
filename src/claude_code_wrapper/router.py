@@ -559,8 +559,13 @@ class SessionRouter(SessionListener):
             return response
 
     async def _on_compact_hook(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
-        """Compaction hooks only feed the signal bus; `compacted` comes from the boundary."""
+        """PreCompact emits `compacting` and signals; `compacted` comes from the boundary."""
         if event_name == "PreCompact":
+            trigger = payload.get("trigger")
+            self._emit(
+                "compacting",
+                {"trigger": trigger if trigger in ("manual", "auto") else "unknown"},
+            )
             self.signals.publish(
                 "pre_compact",
                 {

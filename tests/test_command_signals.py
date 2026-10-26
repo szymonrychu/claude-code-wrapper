@@ -72,6 +72,29 @@ async def test_pre_and_post_compact_relays_publish(h):
     assert h.events("compacted") == []
 
 
+async def test_pre_compact_emits_compacting(h):
+    for trigger in ("auto", "manual"):
+        before = len(h.events("compacting"))
+        r = await h.router.handle_claude_hook(
+            "PreCompact", {"trigger": trigger, "custom_instructions": "keep"}
+        )
+        evs = h.events("compacting")
+        assert len(evs) == before + 1
+        assert evs[-1].data == {"trigger": trigger}
+        assert r["exit_code"] == 0 and r["stdout"] == ""
+    assert h.events("compacted") == []
+
+
+async def test_compacting_trigger_normalised(h):
+    await h.router.handle_claude_hook("PreCompact", {})
+    await h.router.handle_claude_hook("PreCompact", {"trigger": "weird"})
+    await h.router.handle_claude_hook("PreCompact", {"trigger": 7})
+    assert [e.data for e in h.events("compacting")] == [{"trigger": "unknown"}] * 3
+    before = len(h.events("compacting"))
+    await h.router.handle_claude_hook("PostCompact", {"trigger": "auto", "compact_summary": "s"})
+    assert len(h.events("compacting")) == before
+
+
 async def test_compact_boundary_emits_once_counts_and_publishes(h):
     await h.router.handle_claude_hook("PostCompact", {"trigger": "auto"})
     ev = CompactBoundary(trigger="auto", pre_tokens=100, post_tokens=10, duration_ms=5)

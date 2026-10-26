@@ -34,6 +34,7 @@ def test_event_types_exact():
         "command_started",
         "command_completed",
         "command_failed",
+        "compacting",
         "compacted",
         "context",
         "error",

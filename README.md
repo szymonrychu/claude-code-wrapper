@@ -1443,6 +1443,12 @@ Emitted when the command failed (including `vetoed` by an `onCommand` hook) or w
 
 `data`: `{record}`, the CommandRecord fields (`id`, `name`, `args`, `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
 
+### `compacting`
+
+Emitted once per PreCompact hook call, before the compaction runs, for manual and auto compactions alike. The hook relay answers at once and does not hold the compaction.
+
+`data`: `trigger` (`manual`, `auto` or `unknown`).
+
 ### `compacted`
 
 Emitted once for every compaction, manual and auto alike, including Claude Code's own automatic ones.
