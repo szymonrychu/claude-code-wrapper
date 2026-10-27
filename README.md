@@ -228,7 +228,7 @@ Request body (all fields optional):
 | `template` | string | name of a configured prompt template to use as the initial prompt (instead of `prompt`) |
 | `variables` | object of string | values for the template's `{{name}}` placeholders |
 | `callbackUrl` | string | `http`/`https` URL that receives turn-terminal and question callbacks for this session (a turn's own `callbackUrl` wins) |
-| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`; all optional, unset fields inherit); unknown command names are rejected; stored with the session and reapplied on resume |
+| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `deny`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`; all optional, unset fields inherit, a set `deny` replaces the default list); command names outside the name pattern are rejected; stored with the session and reapplied on resume |
 
 When neither `prompt` nor `template` is given, `prompts.initial_prompt` (if configured) is used.
 Secret `env` overrides are never persisted; resend them on resume.
@@ -551,8 +551,8 @@ Response `202`: the command record.
 `state` is `queued`, `running`, `completed`, `failed` or `cancelled`; `turn_id` is the turn running
 when it was queued (`null` when idle).
 
-Errors: `401 unauthorized`, `404 not_found` (unknown session), `403 command_not_allowed` (not in
-the client allowlist), `422 invalid_command` (unknown command, bad `args`, or `force` without
+Errors: `401 unauthorized`, `404 not_found` (unknown session), `403 command_denied` (in
+`sessions.commands.deny`, checked first), `403 command_not_allowed` (not in the client allowlist), `422 invalid_command` (unknown command, bad `args`, or `force` without
 `commands.allow_force`), `422 invalid_request` (bad body), `429 command_queue_full`, `409 dead`
 or `409 booting` (the session cannot take commands now).
 
@@ -2276,7 +2276,8 @@ Progress is visible as the `command_queued`, `command_started`, `command_complet
 sessions:
   commands:
     agent: [compact, reload-plugins]       # main agent, through the ccw MCP tool
-    client: [compact, reload-plugins, reload-skills, mcp, context]   # API clients
+    client: [compact, reload-plugins, reload-skills, mcp, context]   # API clients; "*" allows any
+    # deny: [exit, quit, clear, ...]       # default list: see the configuration reference
     timeout_seconds: {compact: 600, default: 60}
     continue_prompt: "The slash commands you queued have run. Continue the task you were working on."
     allow_force: false                     # true lets reload-plugins take force
@@ -2287,8 +2288,14 @@ sessions:
     min_context_tokens: 0
 ```
 
-The keys are in the [configuration reference](#configuration-reference). `POST /v1/sessions`
-accepts a per-session `commands` override. Worked examples are in
+`agent` and `client` take command names or `*`. `sessions.commands.deny` is checked first, for
+both, and wins over either allowlist (`*` included): its default refuses the commands that end,
+replace or move the claude session or process, hand it to another controller, or change account
+identity or credentials (`exit`, `clear`, `resume`, `cd`, `login` and the rest, aliases such as
+`quit`, `reset`, `new` and `continue` listed by name), matched case-insensitively, with `403
+command_denied`. The keys are in the [configuration reference](#configuration-reference).
+`POST /v1/sessions` accepts a per-session `commands` override; a `deny` there replaces the default
+list. Worked examples are in
 [Hook examples](#hook-examples) (tatara, magic-trainer) and the workbench example config.
 
 ### Idle auto-compact
@@ -2526,6 +2533,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `not_found` | 404 | unknown session, turn, probe, file or route (or a session whose workdir no longer exists) |
 | `command_not_found` | 404 | unknown command id |
 | `no_transcript` | 404 | the session has no transcript yet |
+| `command_denied` | 403 | the command is in the session's deny list (`sessions.commands.deny`, matched case-insensitively), checked before the allowlist |
 | `command_not_allowed` | 403 | the command is not in the session's client allowlist (`sessions.commands.client`) |
 | `method_not_allowed` | 405 | the route exists but not for this method |
 | `busy` | 409 | a turn is already running in the session |
@@ -3270,9 +3278,10 @@ sessions:
 | `sessions.restart_continue_prompt` | string | `""` | - | Prompt pasted (with the same turn marker) into a resumed relaunch after claude crashed mid-turn, so the running turn continues instead of failing with `claude_exited`, and into a session resumed after a service shutdown cut its turn off, so that turn continues instead of failing with `service_shutdown` (a `turn_resumed` event, `cause` `restart` or `resume`); empty disables both. See "Crash during a turn" and "Service shutdown during a turn" under `POST /v1/sessions/{id}/turns`. |
 | `sessions.exit_when_last_destroyed` | boolean | `false` | - | Exit 0 through the normal shutdown (hooks drained) when a DELETE or the idle reaper leaves no active session and one was created in this process; the triggering DELETE still returns its full body first. |
 | `sessions.exit_when_dead` | boolean | `false` | - | Exit 3 through the normal shutdown when a session reaches `dead`, after writing `session <id> dead: <last_fatal or "claude exited">` to `/dev/termination-log` when writable. |
-| `sessions.commands.agent` | list of string | `[]` | - | Slash commands the main agent may queue through the ccw MCP tool; any of `compact`, `context`, `mcp`, `reload-plugins`, `reload-skills`. Empty allows none. |
-| `sessions.commands.client` | list of string | `[]` | - | Slash commands API clients may queue; same names as `agent`. Empty allows none. |
-| `sessions.commands.timeout_seconds` | map of number | `{"compact": 600, "default": 60}` | - | Seconds a command may run before it fails with `timeout`; keys are a command name or `default`, values > 0. |
+| `sessions.commands.agent` | list of string | `[]` | - | Slash commands the main agent may queue through the ccw MCP tool: names (matching `^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$`) or `*` for every name not in `deny`. Empty allows none. |
+| `sessions.commands.client` | list of string | `[]` | - | Slash commands API clients may queue: names (same pattern as `agent`) or `*` for every name not in `deny`. Empty allows none. |
+| `sessions.commands.deny` | list of string | `["exit", "quit", "clear", "reset", "new", "resume", "continue", "branch", "fork", "cd", "background", "bg", "teleport", "tp", "stop", "remote-control", "rc", "restart", "update", "login", "logout", "upgrade", "setup-bedrock", "setup-vertex", "web-setup", "design-login"]` | - | Slash commands refused for the agent and API clients (`403 command_denied`) before either allowlist is checked, even when an allowlist names them or holds `*`: they end, replace or move the claude session or process, hand it to another controller, or change account identity or credentials. Matched case-insensitively (`/EXIT`, `/Clear` are denied); aliases are listed by name. Names match the `agent` pattern (no `*`); a set value (config or create override) replaces the default list. |
+| `sessions.commands.timeout_seconds` | map of number | `{"compact": 600, "default": 60}` | - | Seconds a command may run before it fails with `timeout`; keys are a command name (same pattern as `agent`) or `default`, values > 0. |
 | `sessions.commands.continue_prompt` | string | `"The slash commands you queued have run. Continue the task you were working on."` | - | Non-empty text that resumes the agent after its queued commands ran, followed by a blank line and the `Command results: ...` line (see [`turn_resumed`](#turn_resumed)). |
 | `sessions.commands.allow_force` | boolean | `false` | - | Allow `force: true` on `reload-plugins` (typed as `--force`). |
 | `sessions.commands.quiet_seconds` | number | `1.5` | - | Seconds of PTY silence to wait for before typing a command, >= 0. |

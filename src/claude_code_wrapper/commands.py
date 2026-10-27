@@ -10,7 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from claude_code_wrapper.config import (
-    BUILTIN_COMMAND_NAMES,
+    COMMAND_WILDCARD,
     INSTRUCTIONS_CONTROL,
     MAX_INSTRUCTIONS,
     CommandsConfig,
@@ -40,7 +40,6 @@ BUILTIN_COMMANDS: dict[str, dict[str, tuple[str, str, bool]]] = {
     },
     "context": {},
 }
-assert tuple(sorted(BUILTIN_COMMANDS)) == tuple(sorted(BUILTIN_COMMAND_NAMES))
 
 Origin = Literal["agent", "client", "idle"]
 State = Literal["queued", "running", "completed", "failed", "cancelled"]
@@ -59,7 +58,7 @@ def validate_params(name: str, params: Mapping[str, Any] | None, *, allow_force:
     if spec is None:
         raise CommandRejected(
             "unknown_command",
-            f"unknown command {name!r}; allowed: {', '.join(BUILTIN_COMMAND_NAMES)}",
+            f"unknown command {name!r}; allowed: {', '.join(BUILTIN_COMMANDS)}",
         )
     if params is None:
         params = {}
@@ -168,11 +167,15 @@ class CommandQueue:
     ) -> tuple[CommandRecord, bool]:
         if origin == "idle":
             allowed = ["compact"]
-        elif origin == "agent":
-            allowed = self.cfg.agent
         else:
-            allowed = self.cfg.client
-        if name not in allowed:
+            if name.lower() in {d.lower() for d in self.cfg.deny}:
+                raise CommandRejected(
+                    "denied",
+                    f"/{name} is denied (sessions.commands.deny): it would end, replace or move "
+                    "the session or change its account or credentials",
+                )
+            allowed = self.cfg.agent if origin == "agent" else self.cfg.client
+        if name not in allowed and COMMAND_WILDCARD not in allowed:
             raise CommandRejected(
                 "not_allowed",
                 f"/{name} is not allowed for {origin}; allowed: {', '.join(allowed) or 'none'}",

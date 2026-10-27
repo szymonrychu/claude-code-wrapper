@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .command_signals import Signal, SignalBus
-from .commands import CommandQueue, CommandRecord, CommandRejected, render, validate_params
+from .commands import CommandQueue, CommandRecord, CommandRejected, render
 from .commands import Origin as CommandOrigin
 from .config import CommandsConfig, Config
 from .events import Event as LogEvent
@@ -1066,7 +1066,6 @@ class SessionRouter(SessionListener):
         emits nothing. On a ready session with no turn the runner starts at once (idle path);
         while a turn runs the command stays queued for that turn's Stop.
         """
-        validate_params(name, params, allow_force=self.commands_cfg.allow_force)
         if self.session.state not in ("ready", "busy"):
             raise CommandRejected("invalid_state", f"session is {self.session.state}")
         turn = self.session.current_turn

@@ -67,8 +67,28 @@ async def test_post_command_not_allowed_403(world):
         assert r.status_code == 403 and r.json()["error"]["code"] == "command_not_allowed"
 
 
+async def test_denied_command_403(world):
+    m, sid, router, c = await boot(world, client=["*"])
+    async with c:
+        for name in ("exit", "Reset"):
+            r = await c.post(f"/v1/sessions/{sid}/commands", json={"name": name})
+            assert r.status_code == 403 and r.json()["error"]["code"] == "command_denied", name
+        assert router.commands.list() == []
+        assert (await c.get(f"/v1/sessions/{sid}/commands")).json()["commands"] == []
+        assert not [e for e in world.events(sid) if e["type"].startswith("command_")]
+
+
+async def test_wildcard_client_allowlist(world):
+    m, sid, router, c = await boot(world, client=["*"])
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "context"})
+        assert r.status_code == 202 and r.json()["name"] == "context"
+        final = await settled(c, f"/v1/sessions/{sid}/commands/{r.json()['id']}")
+        assert final["state"] == "completed"
+
+
 async def test_post_command_bad_args_422(world):
-    m, sid, router, c = await boot(world)
+    m, sid, router, c = await boot(world, client=["*"])
     async with c:
         for body in (
             {"name": "compact", "args": {"nope": 1}},

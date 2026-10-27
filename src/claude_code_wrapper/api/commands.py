@@ -16,6 +16,7 @@ router = APIRouter()
 
 #: CommandRejected.code -> (status, envelope code)
 _REJECT = {
+    "denied": (403, "command_denied"),
     "not_allowed": (403, "command_not_allowed"),
     "unknown_command": (422, "invalid_command"),
     "invalid_params": (422, "invalid_command"),

@@ -17,6 +17,7 @@ from claude_code_wrapper.commands import (
     validate_params,
 )
 from claude_code_wrapper.config import (
+    DEFAULT_COMMAND_DENY,
     CommandsConfig,
     CommandsOverride,
     Config,
@@ -46,28 +47,157 @@ def test_commands_config_defaults_off():
     assert c.continue_prompt and c.allow_force is False and c.quiet_seconds == 1.5
 
 
+DENY = [
+    "exit",
+    "quit",
+    "clear",
+    "reset",
+    "new",
+    "resume",
+    "continue",
+    "branch",
+    "fork",
+    "cd",
+    "background",
+    "bg",
+    "teleport",
+    "tp",
+    "stop",
+    "remote-control",
+    "rc",
+    "restart",
+    "update",
+    "login",
+    "logout",
+    "upgrade",
+    "setup-bedrock",
+    "setup-vertex",
+    "web-setup",
+    "design-login",
+]
+BAD_NAMES = ["rm -rf", "-x", "/clear", "notes.txt"]
+
+
+def code_of(q: CommandQueue, name: str, origin: str = "client") -> str | None:
+    """The rejection code of queueing `name`, None when it was queued."""
+    try:
+        q.request(name, {}, origin=origin, turn_id=None)
+    except CommandRejected as exc:
+        return exc.code
+    return None
+
+
 def test_unknown_command_name_rejected_at_config(tmp_path):
     p = tmp_path / "c.yaml"
-    p.write_text("sessions:\n  commands:\n    agent: [compact, clear]\n")
-    with pytest.raises(ConfigError) as e:
-        load_config(p)
-    assert str(e.value) == (
-        "sessions.commands.agent.1: unknown command 'clear'; "
-        "allowed: compact, context, mcp, reload-plugins, reload-skills"
-    )
+    for bad in BAD_NAMES:
+        p.write_text(f"sessions:\n  commands:\n    agent: [compact, {json.dumps(bad)}]\n")
+        with pytest.raises(ConfigError) as e:
+            load_config(p)
+        assert str(e.value).startswith(f"sessions.commands.agent.1: invalid command name {bad!r}")
 
 
 def test_unknown_client_and_timeout_key(tmp_path):
     p = tmp_path / "c.yaml"
-    p.write_text("sessions:\n  commands:\n    client: [nope]\n    timeout_seconds: {bogus: 5}\n")
+    p.write_text(
+        'sessions:\n  commands:\n    client: ["rm -rf"]\n    timeout_seconds: {"notes.txt": 5}\n'
+    )
     with pytest.raises(ConfigError) as e:
         load_config(p)
     msg = str(e.value)
-    assert "sessions.commands.client.0: unknown command 'nope'" in msg
-    assert "sessions.commands.timeout_seconds.bogus: unknown command 'bogus'" in msg
+    assert "sessions.commands.client.0: invalid command name 'rm -rf'" in msg
+    assert "sessions.commands.timeout_seconds.notes.txt: invalid command name 'notes.txt'" in msg
+    p.write_text('sessions:\n  commands:\n    timeout_seconds: {"*": 5}\n')
+    with pytest.raises(ConfigError, match=r"timeout_seconds\.\*: invalid command name"):
+        load_config(p)
     p.write_text("sessions:\n  commands:\n    timeout_seconds: {compact: 0}\n")
     with pytest.raises(ConfigError, match=r"timeout_seconds\.compact: must be greater than 0"):
         load_config(p)
+    p.write_text("sessions:\n  commands:\n    timeout_seconds: {model: 5, default: 9}\n")
+    assert load_config(p).sessions.commands.timeout_seconds == {"model": 5, "default": 9}
+
+
+def test_command_names_free_form_and_wildcard(tmp_path):
+    long = "a" * 100
+    for names in (["_x", long, "workbench:x", "Model"], ["*"]):
+        c = CommandsConfig(agent=names, client=names)
+        assert c.agent == names and c.client == names
+        assert CommandsOverride(agent=names, client=names).client == names
+    p = tmp_path / "c.yaml"
+    for bad in BAD_NAMES:
+        for key in ("agent", "client"):
+            p.write_text(f"sessions:\n  commands:\n    {key}: [{json.dumps(bad)}]\n")
+            with pytest.raises(ConfigError) as e:
+                load_config(p)
+            assert str(e.value).startswith(f"sessions.commands.{key}.0: invalid command name")
+        with pytest.raises(ValidationError, match="invalid command name"):
+            CommandsOverride(client=[bad])
+    with pytest.raises(ValidationError, match="invalid command name"):
+        CreateSessionRequest.model_validate({"commands": {"agent": ["rm -rf"]}})
+
+
+def test_deny_list_default_and_override(tmp_path):
+    assert len(DENY) == 26
+    assert list(DEFAULT_COMMAND_DENY) == DENY
+    assert Config().sessions.commands.deny == DENY
+    assert CommandsConfig().deny == DENY
+    out = effective_commands(CommandsConfig(), CommandsOverride(deny=["exit"]))
+    assert out.deny == ["exit"]
+    assert code_of(CommandQueue(out.model_copy(update={"client": ["*"]})), "clear") != "denied"
+    assert effective_commands(CommandsConfig(), CommandsOverride(client=["*"])).deny == DENY
+    req = CreateSessionRequest.model_validate({"commands": {"deny": ["exit", "clear"]}})
+    assert req.commands.deny == ["exit", "clear"]
+    p = tmp_path / "c.yaml"
+    p.write_text("sessions:\n  commands:\n    deny: [exit]\n")
+    assert load_config(p).sessions.commands.deny == ["exit"]
+    for bad in ("*", "rm -rf"):
+        p.write_text(f"sessions:\n  commands:\n    deny: [exit, {json.dumps(bad)}]\n")
+        with pytest.raises(ConfigError) as e:
+            load_config(p)
+        assert str(e.value).startswith("sessions.commands.deny.1: invalid command name")
+
+
+def test_deny_list_covers_aliases_and_session_moving_commands():
+    q = CommandQueue(CommandsConfig(agent=["*"], client=["*"]))
+    aliases = ["reset", "new", "continue", "quit", "update", "bg", "tp", "rc"]
+    moving = ["cd", "stop", "upgrade", "setup-bedrock", "setup-vertex", "web-setup", "design-login"]
+    for name in aliases + moving:
+        assert name in DEFAULT_COMMAND_DENY, name
+        for origin in ("agent", "client"):
+            assert code_of(q, name, origin) == "denied", (name, origin)
+    for name in ("session", "remote"):
+        assert name not in DEFAULT_COMMAND_DENY
+        for origin in ("agent", "client"):
+            assert code_of(q, name, origin) not in ("denied", "not_allowed"), name
+    assert q.pending() == []
+
+
+def test_deny_is_case_insensitive():
+    q = CommandQueue(CommandsConfig(agent=["*"], client=["*"]))
+    for name in ("EXIT", "Clear", "Reset", "ReMoTe-CoNtRoL"):
+        e = rejected(q.request, name, {}, origin="client", turn_id=None)
+        assert e.code == "denied" and name in e.message
+    upper = CommandQueue(CommandsConfig(client=["*"], deny=["EXIT"]))
+    assert code_of(upper, "exit") == "denied"
+
+
+def test_deny_checked_before_allowlist():
+    named = CommandQueue(CommandsConfig(agent=["exit", "compact"], client=["clear", "compact"]))
+    assert code_of(named, "exit", "agent") == "denied"
+    assert code_of(named, "clear", "client") == "denied"
+    star = CommandQueue(CommandsConfig(agent=["*"], client=["*"]))
+    assert code_of(star, "exit", "agent") == "denied"
+    assert code_of(star, "clear", "client") == "denied"
+    assert star.pending() == []
+    rec, new = star.request("context", {}, origin="client", turn_id=None)
+    assert new and rec.name == "context"
+    rec, new = star.request("compact", {}, origin="agent", turn_id=None)
+    assert new and rec.name == "compact"
+    # a free name passes deny and allowlist and reaches the registry
+    assert code_of(star, "model") == "unknown_command"
+    # a name outside the allowlist is still not_allowed; idle stays compact only
+    assert code_of(CommandQueue(CommandsConfig(client=["compact"])), "context") == "not_allowed"
+    assert code_of(star, "context", "idle") == "not_allowed"
+    assert code_of(star, "exit", "idle") == "not_allowed"
 
 
 def test_bounds_and_extra_forbid():
@@ -195,8 +325,8 @@ def test_effective_commands():
 def test_create_request_override_validates():
     req = CreateSessionRequest.model_validate({"commands": {"agent": ["compact"]}})
     assert req.commands.agent == ["compact"]
-    with pytest.raises(ValidationError, match="unknown command 'clear'"):
-        CreateSessionRequest.model_validate({"commands": {"agent": ["clear"]}})
+    with pytest.raises(ValidationError, match="invalid command name '/clear'"):
+        CreateSessionRequest.model_validate({"commands": {"agent": ["/clear"]}})
     with pytest.raises(ValidationError):
         CreateSessionRequest.model_validate({"commands": {"bogus": 1}})
 
