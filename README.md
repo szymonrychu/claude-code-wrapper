@@ -118,10 +118,10 @@ never put it behind a public ingress.
 - `/healthz`, `/readyz` and `/metrics` are unauthenticated by design (cluster-internal probes and
   Prometheus scrape); keep the port off untrusted networks. The compose file publishes it on
   `127.0.0.1` only.
-- The file API (`GET /v1/sessions/{id}/files` and `.../files/content`) is read-only and reads only
-  inside the session workdir: every path is resolved with symlinks followed and refused unless the
-  result stays inside the workdir's real path. File content (and, with the terminal API, terminal
-  frames) is not passed through the secret redactor: redaction would corrupt files and PTY
+- The file API (`GET /v1/sessions/{id}/files`, `.../files/content` and `.../files/download`) is
+  read-only and reads only inside the session workdir: every path is resolved with symlinks followed and refused unless the
+  result stays inside the workdir's real path. File content and downloads (and, with the terminal API, terminal
+  frames) are not passed through the secret redactor: redaction would corrupt files and PTY
   streams, and the shell already runs as the agent uid, so anything the agent can read a client
   holding the bearer token can read.
 - Terminals (`/v1/sessions/{id}/terminals`) are interactive login shells (`/bin/bash -l`, or
@@ -173,7 +173,7 @@ Modules (`src/claude_code_wrapper/`):
 | `redact.py` | secret redaction for responses, events, payloads and logs |
 | `config.py`, `interpolation.py` | `config.yaml` schema, `${VAR}` interpolation, strict validation |
 | `ring.py`, `pty_proc.py` | PTY child process and the ANSI-stripped screen ring |
-| `files.py` | workdir path confinement, directory listing and file preview |
+| `files.py` | workdir path confinement, directory listing, file preview and download |
 | `terminals.py` | terminal registry: interactive login shells per session, fan-out, idle reaper |
 | `bootstrap/` | per-session `.claude.json`, `CLAUDE.md` and `settings.json` rendering |
 | `hook_relay.py` | `ccw-hook`: stdlib relay from a Claude hook call to the internal API |
@@ -651,8 +651,9 @@ Response `200`:
   "root": "/workspace/demo",
   "path": "src",
   "entries": [
-    {"name": "pkg", "type": "dir", "size": null, "mtime": "2026-10-23T09:01:00.011Z"},
-    {"name": "main.py", "type": "file", "size": 812, "mtime": "2026-10-23T09:02:10.500Z"}
+    {"name": "pkg", "type": "dir", "size": null, "mtime": "2026-10-23T09:01:00.011Z", "target_type": null},
+    {"name": "main.py", "type": "file", "size": 812, "mtime": "2026-10-23T09:02:10.500Z", "target_type": null},
+    {"name": "latest", "type": "symlink", "size": null, "mtime": "2026-10-23T09:02:11.000Z", "target_type": "file"}
   ],
   "next_offset": null
 }
@@ -661,7 +662,10 @@ Response `200`:
 `root` is the absolute real path of the workdir and `path` the normalised relative path (empty
 for the root). `type` is `dir`, `file`, `symlink` (listed, never followed here) or `other` (FIFO,
 socket, device); `size` is bytes for a `file` and `null` otherwise; `mtime` is UTC ISO-8601 with
-milliseconds. Directories come first, then everything else, each ordered by name bytes. A page
+milliseconds. `target_type` is set only on a `symlink` entry: `dir`, `file` or `other` (what the
+link resolves to) when the link resolves to an existing path inside the workdir, `null` when it is
+dangling, loops or resolves outside the workdir (whatever it points at, so the listing tells
+nothing about paths outside the workdir); it is `null` on every other entry. Directories come first, then everything else, each ordered by name bytes. A page
 holds at most `limits.files_max_entries` entries; `next_offset` is the `offset` of the next page,
 or `null` on the last one. Errors: `400 invalid_path` (absolute path, NUL byte, or a path that
 leaves the workdir through `..` or a symlink), `400 not_a_directory`, `401 unauthorized`,
@@ -697,6 +701,47 @@ The file is opened once with `O_NOFOLLOW | O_NONBLOCK` after the path check and 
 file is read, so a FIFO, socket or device never blocks the service. Errors: `400 invalid_path`,
 `400 not_a_file` (directory, FIFO, socket or device), `401 unauthorized`, `404 not_found`
 (unknown session, missing path, or the workdir no longer exists).
+
+### `GET /v1/sessions/{id}/files/download`
+
+Download one file of the session workdir as raw bytes, byte-exact, for text and binary files of
+any size. Read-only; the bytes are not passed through the secret redactor (see
+[Trust model](#trust-model)).
+
+Auth: bearer. Path parameter: `id`. Query parameter: `path` (string, relative to the workdir).
+
+```bash
+curl -fsS -H "$H" -OJ "localhost:8080/v1/sessions/$SID/files/download?path=src/main.py"
+```
+
+Response `200`: the file bytes, streamed in chunks of at most 1 MiB read off the event loop.
+Headers:
+
+| Header | Value |
+|---|---|
+| `Content-Type` | the mime type guessed from the file name (the `mime` of `files/content`), else `application/octet-stream` |
+| `Content-Length` | the file size from `fstat` of the opened descriptor; at most that many bytes are sent |
+| `Content-Disposition` | `attachment; filename="<fallback>"; filename*=UTF-8''<encoded>` (RFC 6266 with the RFC 5987 extended value) |
+| `X-Content-Type-Options` | `nosniff` |
+| `Cache-Control` | `no-store` (workspace files change under the agent) |
+
+The saved name is the last segment of the normalised requested path, so a symlink downloads under
+the link's name, not the target's. `<encoded>` is the name's UTF-8 bytes percent-encoded except
+RFC 5987 `attr-char` (undecodable name bytes show as `?`, as in the listing); `<fallback>` is the
+name with every character outside printable ASCII (0x20 to 0x7E), `"` and `\` replaced by `_`.
+There is no size cap: `limits.file_preview_max_bytes` does not apply. An empty file answers
+`200` with no body. The file is not buffered; a file that shrinks while it is sent ends the
+response short of `Content-Length`, so the client sees a failed transfer rather than a short file.
+
+The path is checked exactly as for `files/content`: the file is opened once with
+`O_NOFOLLOW | O_NONBLOCK` after the confinement check and only a regular file (checked with
+`fstat` of that descriptor) is sent, all before the first byte, so every refusal is the usual
+JSON error and no refused answer carries the bytes of a file outside the workdir. A symlink is
+followed only when its target stays inside the workdir. The descriptor is closed when the stream
+ends, fails or the client goes away. Errors: `400 invalid_path` (absolute path, NUL byte, a path
+that leaves the workdir through `..` or a symlink, or a final symlink that cannot be followed),
+`400 not_a_file` (directory, FIFO, socket, device or the workdir itself), `401 unauthorized`,
+`404 not_found` (unknown session, missing path, or the workdir no longer exists).
 
 ### `POST /v1/sessions/{id}/terminals`
 
@@ -3155,7 +3200,7 @@ limits:
 | `limits.max_file_bytes` | integer | `262144` | - | Largest accepted turn file in bytes. |
 | `limits.max_files_per_turn` | integer | `16` | - | Most files accepted with one turn. |
 | `limits.files_max_entries` | integer | `2000` | - | Most directory entries per file-listing response (>= 1). |
-| `limits.file_preview_max_bytes` | integer | `1048576` | - | Largest file the file content route returns inline, in bytes (>= 1); bigger files answer `kind: too_large`. |
+| `limits.file_preview_max_bytes` | integer | `1048576` | - | Largest file the file content route returns inline, in bytes (>= 1); bigger files answer `kind: too_large` (the download route has no cap). |
 | `limits.turn_max_seconds` | number | `0` | - | Hard cap per turn; 0 for none. |
 | `limits.event_ring_size` | integer | `1000` | - | Events kept in memory per session. |
 | `limits.event_log_max_bytes` | integer | `52428800` | - | On-disk `events.jsonl` cap per session in bytes; 0 for unlimited. |
