@@ -118,9 +118,14 @@ never put it behind a public ingress.
 - `/healthz`, `/readyz` and `/metrics` are unauthenticated by design (cluster-internal probes and
   Prometheus scrape); keep the port off untrusted networks. The compose file publishes it on
   `127.0.0.1` only.
-- The file API (`GET /v1/sessions/{id}/files`, `.../files/content` and `.../files/download`) is
-  read-only and reads only inside the session workdir: every path is resolved with symlinks followed and refused unless the
-  result stays inside the workdir's real path. File content and downloads (and, with the terminal API, terminal
+- The file API (`GET /v1/sessions/{id}/files`, `.../files/content` and `.../files/download`) reads
+  only inside the session workdir, and its one write route (`PUT /v1/sessions/{id}/files/content`)
+  replaces only an existing regular file there: every path is resolved with symlinks followed and
+  refused unless the result stays inside the workdir's real path, the target is opened with
+  `O_NOFOLLOW` and checked with `fstat`, the content is capped at `limits.file_preview_max_bytes`
+  and a stale write is refused (`file_changed`). A client holding the bearer token can therefore
+  overwrite any regular file the agent uid can write in the workdir (but create, rename and delete
+  nothing). File content, downloads and written content (and, with the terminal API, terminal
   frames) are not passed through the secret redactor: redaction would corrupt files and PTY
   streams, and the shell already runs as the agent uid, so anything the agent can read a client
   holding the bearer token can read.
@@ -173,7 +178,7 @@ Modules (`src/claude_code_wrapper/`):
 | `redact.py` | secret redaction for responses, events, payloads and logs |
 | `config.py`, `interpolation.py` | `config.yaml` schema, `${VAR}` interpolation, strict validation |
 | `ring.py`, `pty_proc.py` | PTY child process and the ANSI-stripped screen ring |
-| `files.py` | workdir path confinement, directory listing, file preview and download |
+| `files.py` | workdir path confinement, directory listing, file preview, download and atomic write |
 | `terminals.py` | terminal registry: interactive login shells per session, fan-out, idle reaper |
 | `bootstrap/` | per-session `.claude.json`, `CLAUDE.md` and `settings.json` rendering |
 | `hook_relay.py` | `ccw-hook`: stdlib relay from a Claude hook call to the internal API |
@@ -742,6 +747,69 @@ ends, fails or the client goes away. Errors: `400 invalid_path` (absolute path, 
 that leaves the workdir through `..` or a symlink, or a final symlink that cannot be followed),
 `400 not_a_file` (directory, FIFO, socket, device or the workdir itself), `401 unauthorized`,
 `404 not_found` (unknown session, missing path, or the workdir no longer exists).
+
+### `PUT /v1/sessions/{id}/files/content`
+
+Replace the content of one existing regular file of the session workdir with UTF-8 text, guarded
+by the workdir confinement and a stale-write check. It creates nothing: a missing path is
+`404 not_found`. The content is not passed through the secret redactor (see
+[Trust model](#trust-model)) and is never logged.
+
+Auth: bearer. Path parameter: `id`. Query parameter: `path` (string, relative to the workdir).
+Body (both keys required, unknown keys are rejected):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `content` | string | the whole new content, written as UTF-8 bytes (no newline is added or converted); at most `limits.file_preview_max_bytes` bytes once encoded (the cap counts bytes, not characters) |
+| `expected` | object or `null` | `{"mtime": string, "size": integer >= 0}`: the `mtime` and `size` the editor loaded (from `files/content`, or from the answer of its last save); `null` overwrites unconditionally |
+
+```bash
+curl -fsS -X PUT -H "$H" -H 'Content-Type: application/json' \
+     -d '{"content":"print(1)\n","expected":{"mtime":"2026-10-23T09:02:10.500Z","size":812}}' \
+     "localhost:8080/v1/sessions/$SID/files/content?path=src/main.py"
+```
+
+Response `200` (the `size` and `mtime` are those a following `GET .../files/content` reports):
+
+```json
+{
+  "session_id": "ses_3f9a1c0b7d42",
+  "path": "src/main.py",
+  "size": 12,
+  "mtime": "2026-10-23T09:05:41.207Z"
+}
+```
+
+`path` is the normalised relative real path, so a write through a symlink reports the target.
+
+How the write runs, and its limits:
+
+- Order of checks: the path is confined (as for `files/content`), the encoded `content` is
+  measured against the cap (an over-cap body never touches the disk), the parent directory is
+  opened with `O_RDONLY | O_DIRECTORY | O_NOFOLLOW` and the file inside it with
+  `O_RDONLY | O_NOFOLLOW | O_NONBLOCK`, `fstat` of that descriptor must be a regular file, and
+  `expected` is compared with the `mtime` and `size` of the same descriptor.
+- The replace is atomic: the bytes go to a temporary file `.<name>.<random>.tmp` created
+  exclusively in the same directory, carrying the original's permission bits, flushed with
+  `fsync` and renamed over the name (`rename` through the directory descriptor). A reader sees
+  the old or the new file, never a half-written one; a failed write leaves the original intact and
+  removes the temporary file. The file gets a new inode, so hard links to it are not updated;
+  its owner is the service uid.
+- The stale-write check and the replace are not one atomic step: a write landing in the small
+  window between them is not detected. `mtime` has millisecond precision (as in the listing), so
+  two writes of the same size within one millisecond are not told apart.
+- A path that is a symlink inside the workdir to a regular file writes the target and the link
+  stays a link (a symlink leaving the workdir is `400 invalid_path`). A write failure from the
+  file system (for example no space left) answers `400 invalid_path` with `cannot write file`
+  and the reason.
+
+Errors: `400 invalid_path` (absolute path, NUL byte, a path that leaves the workdir through `..`
+or a symlink, a final symlink that cannot be followed, or a file system write failure),
+`400 not_a_file` (directory, FIFO, socket, device or the workdir itself), `401 unauthorized`,
+`404 not_found` (unknown session, missing path, or the workdir no longer exists),
+`409 file_changed` (`expected` differs from the file's `mtime` or `size`), `413 too_large`
+(content over `limits.file_preview_max_bytes` UTF-8 bytes), `422 invalid_request` (a body without
+`content` or `expected`, with an extra key, a non-string `content` or a negative `size`).
 
 ### `POST /v1/sessions/{id}/terminals`
 
@@ -2438,15 +2506,16 @@ FastAPI's `{"detail": ...}` body instead.
 | `not_resumable` | 409 | the session cannot be resumed |
 | `invalid_callback_url` | 400 | `callbackUrl` is not an `http` or `https` URL |
 | `invalid_last_event_id` | 400 | the `Last-Event-ID` header is not an integer |
-| `invalid_path` | 400 | a turn `files` path is invalid, escapes the workdir or conflicts with an existing entry; also a file API path that is absolute, holds a NUL byte or leaves the workdir (`..` or a symlink) |
+| `invalid_path` | 400 | a turn `files` path is invalid, escapes the workdir or conflicts with an existing entry; also a file API path (listing, content, download or write) that is absolute, holds a NUL byte or leaves the workdir (`..` or a symlink) |
 | `not_a_directory` | 400 | the file listing `path` is not a directory |
-| `not_a_file` | 400 | the file content `path` is a directory, FIFO, socket or device |
+| `not_a_file` | 400 | the file content, download or write `path` is a directory, FIFO, socket or device (or the workdir itself) |
 | `text_or_template` | 400 | exactly one of `text` and `template` is required (turns), or both initial prompts were given (create) |
 | `unknown_template` | 422 | the named prompt template does not exist |
 | `unknown_variable` | 422 | a variable is not declared by the template, or variables were sent without a template |
 | `missing_variable` | 422 | a required template variable has no value or default |
 | `invalid_request` | 422 | the body, query or path failed validation (including a `terminal_id` outside `^term_[0-9a-f]{12}$`), or the merged `env` is invalid; the message lists `field: problem` entries |
-| `too_large` | 413 | prompt over `limits.max_prompt_bytes`, or turn `files` over `limits.max_file_bytes` or `limits.max_files_per_turn` |
+| `too_large` | 413 | prompt over `limits.max_prompt_bytes`, or turn `files` over `limits.max_file_bytes` or `limits.max_files_per_turn`; also a file write (`PUT .../files/content`) whose content is over `limits.file_preview_max_bytes` UTF-8 bytes |
+| `file_changed` | 409 | a file write (`PUT .../files/content`) whose `expected` `mtime` or `size` differs from the file on disk |
 | `message_too_large` | 413 | a peer request body over `peers.max_message_bytes` + 4096 bytes, or a peer `message` over `peers.max_message_bytes` |
 | `inbox_full` | 429 | the target session's peer inbox is at `peers.inbox_max` |
 | `rate_limited` | 429 | a peer sender over `peers.max_messages_per_minute`, or the peer nonce cache is full |

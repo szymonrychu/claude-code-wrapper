@@ -1,4 +1,5 @@
-"""Session file routes: read-only listing, preview and download of the session workdir (D1)."""
+"""Session file routes: listing, preview and download of the session workdir (D1) and the write
+of an existing file, `PUT .../files/content`."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.background import BackgroundTask
 
 from claude_code_wrapper import files
@@ -22,8 +24,35 @@ def _workdir(request: Request, session_id: str) -> str | None:
     return str(workdir) if workdir else None
 
 
+_STATUS = {"not_found": 404, "file_changed": 409, "too_large": 413}
+
+
 def _raise(exc: files.FileError) -> ApiError:
-    return ApiError(404 if exc.code == "not_found" else 400, exc.code, exc.message)
+    return ApiError(_STATUS.get(exc.code, 400), exc.code, exc.message)
+
+
+class FileStamp(BaseModel):
+    """The `mtime` and `size` of a file as the `files/content` route reported them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mtime: str
+    size: int = Field(ge=0)
+
+
+class WriteFile(BaseModel):
+    """Body of a file write: both keys are required; `expected: null` overwrites unconditionally."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+    expected: FileStamp | None
+
+    @field_validator("content")
+    @classmethod
+    def _utf8(cls, value: str) -> str:
+        value.encode("utf-8")  # a lone surrogate is not text a file can hold
+        return value
 
 
 @router.get("/sessions/{session_id}/files")
@@ -53,6 +82,22 @@ async def file_content(
     except files.FileError as exc:
         raise _raise(exc) from exc
     return {"session_id": session_id, **body}
+
+
+@router.put("/sessions/{session_id}/files/content")
+async def write_file_content(
+    session_id: str, request: Request, body: WriteFile, path: Annotated[str, Query()] = ""
+) -> Any:
+    workdir = _workdir(request, session_id)
+    cap = request.app.state.cfg.limits.file_preview_max_bytes
+    expected = body.expected.model_dump() if body.expected else None
+    try:
+        written = await asyncio.to_thread(
+            files.write_file, workdir, path, body.content, expected, cap
+        )
+    except files.FileError as exc:
+        raise _raise(exc) from exc
+    return {"session_id": session_id, **written}
 
 
 async def _stream(handle: files.Download) -> AsyncIterator[bytes]:

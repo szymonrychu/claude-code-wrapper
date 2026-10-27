@@ -1,15 +1,18 @@
-"""Read-only access to a session workdir: confinement (part `wrapper-path-confinement`).
+"""Access to a session workdir: confinement (part `wrapper-path-confinement`), listing, preview,
+download and the atomic write of an existing file.
 
 `resolve_in_workdir` is the one path resolver of the file API (and of the terminal shell cwd).
-The listing and preview helpers below are blocking; callers run them in a worker thread.
+The listing, preview and write helpers below are blocking; callers run them in a worker thread.
 """
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import errno
 import mimetypes
 import os
+import secrets
 import stat
 import threading
 from pathlib import Path, PurePosixPath
@@ -74,10 +77,11 @@ def _resolve(workdir: str | None, rel: str) -> tuple[Path, Path]:
     return Path(os.path.realpath(workdir)), resolved
 
 
-def _open_nofollow(path: Path) -> int:
-    """Open `path` without following a final symlink and without blocking on a FIFO."""
+def _open_nofollow(path: Path | str, dir_fd: int | None = None) -> int:
+    """Open `path` (relative to the directory `dir_fd` when given) without following a final
+    symlink and without blocking on a FIFO."""
     try:
-        return os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        return os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
     except (FileNotFoundError, NotADirectoryError) as exc:
         raise FileError("not_found", "no such file or directory") from exc
     except OSError as exc:
@@ -274,3 +278,95 @@ def open_download(workdir: str | None, rel: str) -> Download:
         raise
     name = PurePosixPath(os.path.normpath(rel)).name
     return Download(fd, st.st_size, name, mimetypes.guess_type(resolved.name)[0])
+
+
+def _open_parent(parent: Path) -> int:
+    """Open the directory holding a write target, refusing a symlink in its place."""
+    try:
+        return os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise FileError("not_found", "no such file or directory") from exc
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise FileError("invalid_path", "path is a symlink that cannot be followed") from exc
+        raise FileError("invalid_path", f"path is not writable: {exc.strerror}") from exc
+
+
+def _replace_file(parent_fd: int, name: str, data: bytes, mode: int) -> os.stat_result:
+    """Atomically replace `name` inside the directory `parent_fd` with `data`.
+
+    The bytes go to a temporary file in the same directory (created exclusively, with the
+    original's permission bits), are flushed with `fsync` and renamed over `name`, so a reader
+    sees the old or the new file, never a partial one, and a failure leaves the original as it
+    was. The temporary file is removed on every failure. Returns the `fstat` of the new file.
+    """
+    tmp = b"." + os.fsencode(name)[:200] + b"." + secrets.token_hex(8).encode() + b".tmp"
+    tmp_fd = os.open(
+        tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent_fd
+    )
+    replaced = False
+    try:
+        try:
+            os.fchmod(tmp_fd, mode)
+            view = memoryview(data)
+            while view:
+                view = view[os.write(tmp_fd, view) :]
+            os.fsync(tmp_fd)
+            st = os.fstat(tmp_fd)
+        finally:
+            os.close(tmp_fd)
+        os.replace(tmp, os.fsencode(name), src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        replaced = True
+        return st
+    finally:
+        if not replaced:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp, dir_fd=parent_fd)
+
+
+def write_file(
+    workdir: str | None,
+    rel: str,
+    content: str,
+    expected: dict[str, Any] | None,
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Replace the content of one existing regular file of the workdir with UTF-8 `content` (a
+    string without lone surrogates, which the API route validates).
+
+    Order of checks: confinement, size cap (UTF-8 bytes, before anything is opened), then the
+    parent directory and the target are opened with `O_NOFOLLOW` and everything else comes from
+    those descriptors: only a regular file is written (a missing path is `not_found`, nothing is
+    created), and a given `expected` `{mtime, size}` must equal the `fstat` of the opened file
+    (`file_changed` otherwise). The check and the replace are not one atomic step. Returns
+    `{path, size, mtime}` of the new file.
+    """
+    root, resolved = _resolve(workdir, rel)
+    data = content.encode("utf-8")
+    if len(data) > max_bytes:
+        raise FileError("too_large", f"content is over the {max_bytes} byte limit")
+    if resolved == root:
+        raise FileError("not_a_file", "path is not a regular file")
+    parent_fd = _open_parent(resolved.parent)
+    try:
+        fd = _open_nofollow(resolved.name, dir_fd=parent_fd)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise FileError("not_a_file", "path is not a regular file")
+            if expected is not None and (
+                expected["mtime"] != _iso(st.st_mtime) or expected["size"] != st.st_size
+            ):
+                raise FileError("file_changed", "the file changed since it was read")
+            new = _replace_file(parent_fd, resolved.name, data, stat.S_IMODE(st.st_mode))
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise FileError("invalid_path", f"cannot write file: {exc.strerror}") from exc
+    finally:
+        os.close(parent_fd)
+    return {
+        "path": resolved.relative_to(root).as_posix(),
+        "size": new.st_size,
+        "mtime": _iso(new.st_mtime),
+    }
