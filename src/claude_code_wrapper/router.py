@@ -1532,15 +1532,17 @@ class SessionRouter(SessionListener):
             self._metrics.stall_suspected()
         self._emit("stall_suspected", {"turn_id": turn_id})
 
-    def on_turn_resumed(self, record: Any, restart: int) -> None:
+    def on_turn_resumed(self, record: Any, restart: int, cause: str = "restart") -> None:
         # The continue prompt carries this turn's marker, so its Stop completes the same record;
-        # the usage totals are not reset, so they span the crash.
+        # the usage totals are not reset, so they span a crash (cause `restart`). A session
+        # resumed after a shutdown (cause `resume`) starts its totals afresh with this router.
         self._last_marker = record.turn_id
         if self._commands_turn is record:
             self._commands_turn = None  # the crash aborted its commands
-        self._emit(
-            "turn_resumed", {"turn_id": record.turn_id, "restart": restart, "cause": "restart"}
-        )
+        data: dict[str, Any] = {"turn_id": record.turn_id, "cause": cause}
+        if cause == "restart":
+            data["restart"] = restart
+        self._emit("turn_resumed", data)
         self._emit_user_message(
             record.turn_id, "restart", self._cfg.sessions.restart_continue_prompt
         )

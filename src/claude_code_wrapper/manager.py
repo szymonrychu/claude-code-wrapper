@@ -7,7 +7,10 @@ Each session owns `<paths.sessions_root>/<session_id>/` (`session.json`, `config
 `create` prepares everything from config before claude starts, one small named step at a time;
 `session.json` records the running step, so a failure names it (`CreateFailed(step, message)`).
 `destroy` keeps every file unless `purge=True` (D19), and never deletes a mounted workdir.
-`resume` relaunches a stopped session with `--resume` in the same config dir and workdir.
+`resume` relaunches a stopped session with `--resume` in the same config dir and workdir. A turn
+still `running` in its turns.jsonl (a shutdown marked it `interrupted`, or a killed process left it)
+is handed to the fresh session, which continues it or fails it `service_shutdown` (D5); only
+`shutdown` stops sessions with cause `shutdown`, every other stop fails the turn `session_stopped`.
 
 `session.json` never holds a secret value: the per-session env override is stored without its
 secret fields, so a resume must resend them (D24). The session `callbackUrl` is persisted and is
@@ -69,6 +72,7 @@ from .session import (
     PUBLIC_STATES,
     Session,
     SessionSpec,
+    StopCause,
     TurnRejected,
     build_env,
     passthrough_names,
@@ -517,7 +521,7 @@ class SessionManager:
             self._count_created("failed")
             raise await self._fail(ctx, exc, "create_failed") from exc.cause
         except asyncio.CancelledError:
-            await asyncio.shield(self._abandon(ctx))
+            await asyncio.shield(self._abandon(ctx, cause=self._stop_cause()))
             raise
         finally:
             ctx.task = None
@@ -769,7 +773,9 @@ class SessionManager:
             sessions=self.cfg.sessions,
             limits=self.cfg.limits,
         )
-        ctx.session = Session(spec, ctx.router, turn_store=ctx.turns)
+        # A turn the previous process left running (D5): the resumed session continues it.
+        interrupted = ctx.turns.current if resume else None
+        ctx.session = Session(spec, ctx.router, turn_store=ctx.turns, resume_turn=interrupted)
 
     async def _step(self, ctx: _Active, name: str, fn: Callable[..., Any], *args: Any) -> Any:
         """Record `name` as the running step, run it; any failure becomes `_StepFailed`."""
@@ -799,10 +805,12 @@ class SessionManager:
         self._finish(ctx)
         return CreateFailed(exc.step, message)
 
-    async def _abandon(self, ctx: _Active, close_timeout: float = 0.0) -> None:
+    async def _abandon(
+        self, ctx: _Active, close_timeout: float = 0.0, *, cause: StopCause = "stop"
+    ) -> None:
         """A create/resume was cancelled, or a session outlived the shutdown bound: kill
         claude and record it (a failed or dead state is kept)."""
-        await self._teardown(ctx, 0, close_timeout=close_timeout)
+        await self._teardown(ctx, 0, close_timeout=close_timeout, cause=cause)
         if ctx.meta.get("state") in ("failed", "dead"):
             pass
         elif ctx.meta.get("claude_started"):
@@ -881,6 +889,7 @@ class SessionManager:
         hook_timeout: float,
         close_timeout: float | None = None,
         hook_input: dict[str, Any] | None = None,
+        cause: StopCause = "stop",
     ) -> asyncio.Task[None]:
         """Run the destroy as a tracked task (shutdown awaits, and past its bound cancels)."""
         ctx.phase = "closing"
@@ -891,6 +900,7 @@ class SessionManager:
                 hook_timeout=hook_timeout,
                 close_timeout=close_timeout,
                 hook_input=hook_input,
+                cause=cause,
             )
         )
 
@@ -902,9 +912,12 @@ class SessionManager:
         hook_timeout: float,
         close_timeout: float | None = None,
         hook_input: dict[str, Any] | None = None,
+        cause: StopCause = "stop",
     ) -> None:
         try:
-            await self._teardown(ctx, grace, close_timeout=close_timeout, emit_closed=False)
+            await self._teardown(
+                ctx, grace, close_timeout=close_timeout, emit_closed=False, cause=cause
+            )
             ctx.meta.update(state="stopped")
             self._save(ctx)
             loop = asyncio.get_running_loop()
@@ -941,9 +954,11 @@ class SessionManager:
         *,
         close_timeout: float | None = None,
         emit_closed: bool = True,
+        cause: StopCause = "stop",
     ) -> None:
         """Stop claude (if started), the session's shells and the router (its drain bounded
-        by `close_timeout`, else the router default); the slot is free afterwards."""
+        by `close_timeout`, else the router default); the slot is free afterwards. `cause`
+        `shutdown` leaves the running turn running for a resume (`Session.stop`)."""
         ctx.phase = "closing"
         shells = asyncio.ensure_future(
             self.terminals.close_session(ctx.session_id, min(grace, CLOSE_GRACE_SECONDS))
@@ -952,7 +967,7 @@ class SessionManager:
             task.cancel()
         if ctx.session is not None:
             try:
-                await ctx.session.stop(grace)
+                await ctx.session.stop(grace, cause=cause)
             except Exception:
                 log.exception("session %s: stopping claude failed", ctx.session_id)
             ctx.meta["transcript_path"] = ctx.session.transcript_path
@@ -1051,7 +1066,7 @@ class SessionManager:
         except _StepFailed as exc:
             raise await self._fail(ctx, exc, "resume_failed") from exc.cause
         except asyncio.CancelledError:
-            await asyncio.shield(self._abandon(ctx))
+            await asyncio.shield(self._abandon(ctx, cause=self._stop_cause()))
             raise
         finally:
             ctx.task = None
@@ -1149,7 +1164,8 @@ class SessionManager:
         The bound is split: claude stops (SIGKILL after 30% of it), the router drains (15%)
         and onDestroy runs (25%) inside the first 75%, destroys already in flight are
         hurried to the same grace, and creates are cancelled. Whatever is still running
-        then is cancelled and killed outright, and the dispatchers drain in the rest."""
+        then is cancelled and killed outright, and the dispatchers drain in the rest.
+        Sessions stop with cause `shutdown`: a running turn stays running (D5)."""
         self._closing = True
         total = self.cfg.limits.shutdown_timeout_seconds
         loop = asyncio.get_running_loop()
@@ -1174,6 +1190,7 @@ class SessionManager:
                     hook_timeout=min(self._hook_bound("onDestroy"), budget * SHUTDOWN_HOOK_SHARE),
                     close_timeout=budget * SHUTDOWN_CLOSE_SHARE,
                     hook_input=None,
+                    cause="shutdown",
                 )
                 continue
             if ctx.phase == "creating" and ctx.task is not None and not ctx.task.done():
@@ -1203,7 +1220,8 @@ class SessionManager:
             )
         close_timeout = budget * SHUTDOWN_KILL_CLOSE_SHARE
         await asyncio.gather(
-            *(self._abandon(ctx, close_timeout) for ctx in leftovers), return_exceptions=True
+            *(self._abandon(ctx, close_timeout, cause="shutdown") for ctx in leftovers),
+            return_exceptions=True,
         )
         await self.stop_peers(max(deadline - loop.time(), 0.0))
         remaining = max(deadline - loop.time(), 0.0)
@@ -1224,6 +1242,10 @@ class SessionManager:
             )
             override = None
         return effective_commands(self.cfg.sessions.commands, override)
+
+    def _stop_cause(self) -> StopCause:
+        """`shutdown` while the service shuts down, else `stop`."""
+        return "shutdown" if self._closing else "stop"
 
     def _check_open(self) -> None:
         if self._closing:

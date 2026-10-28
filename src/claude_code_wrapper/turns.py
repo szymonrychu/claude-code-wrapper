@@ -6,6 +6,9 @@ A turn is one prompt pasted into claude and everything until it ends. Its record
 leave a torn final line). A stopped session's store is opened read-only.
 
 `callback_url` serialises as `callbackUrl` everywhere (API dumps and the file), D20.
+
+A turn a service shutdown cut off stays `running` with `interrupted="shutdown"` (D5): the next
+process reads it back as `TurnStore.current`, and the resumed session continues or fails it.
 """
 
 from __future__ import annotations
@@ -27,6 +30,8 @@ log = logging.getLogger(__name__)
 Origin = Literal["client", "initial", "agent", "peer"]
 TurnState = Literal["running", "completed", "failed", "interrupted", "timeout"]
 ProbeState = Literal["pending", "delivered", "answered"]
+#: Why a `running` turn has no claude working on it: the service shut down under it.
+Interruption = Literal["shutdown"]
 
 TERMINAL_STATES: tuple[str, ...] = ("completed", "failed", "interrupted", "timeout")
 SUMMARY_FIELDS: tuple[str, ...] = (
@@ -95,6 +100,8 @@ class TurnRecord(BaseModel):
     usage: dict[str, Any] | None = None
     model_tokens: dict[str, Any] | None = None
     error: str | None = None
+    #: Set while the turn waits for its session's resume after a shutdown cut it off.
+    interrupted: Interruption | None = None
     callback_url: str | None = Field(default=None, alias="callbackUrl")
     started_at: str
     completed_at: str | None = None
