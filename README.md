@@ -355,7 +355,8 @@ Auth: bearer. Path parameter: `id`. Request body (optional): `{"env": {...}}`, a
 `claude.env` override applied over the persisted non-secret one. Secret overrides are never
 persisted, so a session created with them must have them resent here.
 
-Response `200`: the ready snapshot.
+Response `200`: the ready snapshot, or `busy` with `current_turn_id` while a turn a shutdown cut
+off is continued (see "Service shutdown during a turn" under `POST /v1/sessions/{id}/turns`).
 
 | Status | Code | When |
 |---|---|---|
@@ -423,6 +424,29 @@ relaunch fails to boot, or the relaunch is fresh (no transcript, so nothing to c
 submit across the crash; an interrupt, `stop` or `DELETE` during the relaunch ends the turn
 (`interrupted`, `timeout` or `session_stopped`) and nothing is pasted afterwards.
 
+Service shutdown during a turn: a graceful service shutdown (SIGTERM, SIGINT) stops claude but
+does not end the running turn. The turn stays `running` in `turns.jsonl` with the marker
+`"interrupted": "shutdown"`, and nothing reports it: no `turn_failed`, no `onTurnComplete`, no
+callback. A user stop (`DELETE`) is different: it ends the turn `failed` with `session_stopped`,
+and that turn is never continued. On resume (`POST /v1/sessions/{id}/resume`,
+or `sessions.resume_on_start` at service start) the fresh session adopts the session's running
+turn; a turn a killed service process left `running` (no marker) is adopted the same way.
+`sessions.resume_on_start` resumes every session the shutdown stopped with a marked turn, as
+well as the sessions a killed process left live. A `DELETE` of a stopped session whose turn
+is still `running` ends that turn `failed` with `session_stopped`, so neither resume path ever
+continues a turn a user stopped or deleted. With
+`sessions.restart_continue_prompt` set, once claude is ready the prompt is pasted with the same
+`<!-- ccw turn: <turn_id> -->` marker, a `turn_resumed` event with `cause: "resume"` is logged and
+the same turn completes on claude's next Stop (its `turn_completed`, hooks and callback as usual;
+`usage` counts only the leg after the resume). Without the prompt, or when claude does not boot,
+the turn ends `failed` with `service_shutdown` once claude is ready (or dead). The marker is
+cleared once the resumed session adopts the turn. `limits.turn_max_seconds` keeps measuring from
+the original submit, so a turn already over the limit ends `timeout` without a paste; an
+interrupt or `DELETE` before the paste ends the turn (`interrupted`, `session_stopped`), and a
+shutdown before it leaves the turn `running` with the marker again. A turn already being
+interrupted when the shutdown comes ends as the interrupt would have ended it. The event `seq`
+continues across the shutdown and the resume (the same `events.jsonl`).
+
 ### `GET /v1/sessions/{id}/turns`
 
 List the session's turns in start order.
@@ -463,6 +487,7 @@ Response `200`:
   "model_tokens": {"claude-sonnet-4-5": {"input_tokens": 120, "output_tokens": 48,
                    "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}},
   "error": null,
+  "interrupted": null,
   "callbackUrl": "http://orchestrator.internal/ccw/turns",
   "started_at": "2026-10-20T09:01:00.010+00:00",
   "completed_at": "2026-10-20T09:01:09.455+00:00",
@@ -476,7 +501,9 @@ Response `200`:
 
 Fields: `state` is `running`, `completed`, `failed`, `interrupted` or `timeout`; `final_text` is
 Claude's last assistant message (set on completed turns); `error` names why a turn failed
-(`claude_exited`, `session_stopped`, or the fatal pattern matched on screen); `usage` sums token
+(`claude_exited`, `session_stopped`, `service_shutdown`, or the fatal pattern matched on screen);
+`interrupted` is `"shutdown"` while a `running` turn waits for its session's resume after a
+service shutdown cut it off (else null, see "Service shutdown during a turn"); `usage` sums token
 counts across models, `model_tokens` breaks them down per model; `stall_suspected_since` is set
 while no activity has been seen for `sessions.turn_stall_seconds` (reported, never fatal);
 `tool_calls` counts tool results seen; `annotations` is the object hooks tagged the turn with
@@ -1247,7 +1274,7 @@ files written for the turn; empty otherwise).
 
 `origin` values: `client`, `initial`, `agent`, `peer` (a fresh turn; for `peer`, `text` is the
 framed peer message), `restart` (the `sessions.restart_continue_prompt` pasted after a claude
-restart), `command` (a slash command line such as `/compact`). The continuation pasted after
+restart, or in a session resumed after a shutdown cut its turn off), `command` (a slash command line such as `/compact`). The continuation pasted after
 queued commands ran (`turn_resumed` with `cause: "command"`) uses the turn's own origin and the
 continue prompt as `text`. The Stop-hook continuation (`turn_continued`) pastes nothing and emits
 no `user_message`.
@@ -1354,6 +1381,10 @@ session stays `busy` and the turn stays `running` until a later Stop completes t
 - `cause: "restart"`: a turn that was running when claude crashed is continued in the resumed
   relaunch with `sessions.restart_continue_prompt`. Also `restart` (the relaunch number, the
   session's `restarts` count). See "Crash during a turn" under `POST /v1/sessions/{id}/turns`.
+- `cause: "resume"`: a turn a service shutdown (or a killed service process) left `running` is
+  continued with `sessions.restart_continue_prompt` in the session resumed afterwards (the API
+  resume or `sessions.resume_on_start`). No other fields. See "Service shutdown during a turn"
+  under `POST /v1/sessions/{id}/turns`.
 - `cause: "command"`: the slash commands run at the turn's Stop (`turn_deferred` with
   `reason: "command"`) have finished. The continuation is `sessions.commands.continue_prompt`,
   a blank line and `Command results: <name> <state>[ <result or error>]; ...` (for example
@@ -3236,7 +3267,7 @@ sessions:
 | `sessions.resume_on_start` | boolean | `false` | - | Resume known sessions when the service starts instead of listing them as stopped. |
 | `sessions.defer_stop_on_background_tasks` | boolean | `false` | - | Keep the running turn open (`turn_deferred`) while a Stop reports non-empty `background_tasks`; a later Stop with none completes it. See [`onStop`](#onstop). |
 | `sessions.probe_alive_token` | string | `"CCW-ALIVE"` | - | Non-empty token a probe asks Claude to reply with; an assistant message containing it answers the probe, and the default probe text names it. |
-| `sessions.restart_continue_prompt` | string | `""` | - | Prompt pasted (with the same turn marker) into a resumed relaunch after claude crashed mid-turn, so the running turn continues instead of failing with `claude_exited` (a `turn_resumed` event); empty disables it. See "Crash during a turn" under `POST /v1/sessions/{id}/turns`. |
+| `sessions.restart_continue_prompt` | string | `""` | - | Prompt pasted (with the same turn marker) into a resumed relaunch after claude crashed mid-turn, so the running turn continues instead of failing with `claude_exited`, and into a session resumed after a service shutdown cut its turn off, so that turn continues instead of failing with `service_shutdown` (a `turn_resumed` event, `cause` `restart` or `resume`); empty disables both. See "Crash during a turn" and "Service shutdown during a turn" under `POST /v1/sessions/{id}/turns`. |
 | `sessions.exit_when_last_destroyed` | boolean | `false` | - | Exit 0 through the normal shutdown (hooks drained) when a DELETE or the idle reaper leaves no active session and one was created in this process; the triggering DELETE still returns its full body first. |
 | `sessions.exit_when_dead` | boolean | `false` | - | Exit 3 through the normal shutdown when a session reaches `dead`, after writing `session <id> dead: <last_fatal or "claude exited">` to `/dev/termination-log` when writable. |
 | `sessions.commands.agent` | list of string | `[]` | - | Slash commands the main agent may queue through the ccw MCP tool; any of `compact`, `context`, `mcp`, `reload-plugins`, `reload-skills`. Empty allows none. |

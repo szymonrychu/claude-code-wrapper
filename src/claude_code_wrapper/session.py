@@ -16,6 +16,13 @@ slash commands it ran at the turn's Stop (`hold_for_commands` marks that command
 claude sits at its prompt with no turn of its own: an interrupt or the time limit ends the turn at
 once, and a transcript interrupt line belongs to the command, not to the turn).
 
+Service shutdown (D5): `stop(cause="shutdown")` does not end the running turn; it stays `running`
+in turns.jsonl marked `interrupted="shutdown"`. A session resumed later is built with that record
+(`resume_turn`, also a turn a killed process left `running`) and holds it from the first boot;
+once claude is ready it is continued with the continue prompt and the same marker
+(`on_turn_resumed`, cause `resume`), or, with no prompt configured or a fresh launch, fails with
+`service_shutdown`. Every other `stop` fails the turn with `session_stopped`.
+
 Turns (D13): one at a time. `submit` reserves the slot and persists the record before the first
 byte is written, then pastes the prompt (with a `<!-- ccw turn: <id> -->` marker, because Stop
 payloads carry no turn id) and sends CR as a separate write. A turn ends exactly once, on the
@@ -44,7 +51,8 @@ import re
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal
 
 from .claude_env import SECRET_KEY_RE, ClaudeEnv
 from .config import BootConfig, BootDialog, LimitsConfig, SessionsConfig
@@ -80,6 +88,10 @@ DANGEROUS_FLAG = "--dangerously-skip-permissions"
 BASE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "USER", "SHELL", "TMPDIR")
 GATE_FAIL_MODES = ("allow", "deny")
 ESC = b"\x1b"
+#: Why a session stops: a user stop or delete (`stop`), or the service shutting down.
+StopCause = Literal["stop", "shutdown"]
+#: The error of a turn a shutdown cut off that the resumed session cannot continue.
+SERVICE_SHUTDOWN = "service_shutdown"
 
 
 def default_probe_text(token: str) -> str:
@@ -291,8 +303,9 @@ class SessionListener:
     def on_stall(self, turn_id: str) -> None:
         """The running turn has been quiet for `turn_stall_seconds`."""
 
-    def on_turn_resumed(self, record: Any, restart: int) -> None:
-        """A turn held across a crash was continued in the resumed relaunch number `restart`."""
+    def on_turn_resumed(self, record: Any, restart: int, cause: str = "restart") -> None:
+        """A held turn was continued: `cause` `restart` after the crash relaunch number
+        `restart`, `resume` in a session resumed after a shutdown cut the turn off."""
 
     def on_turn_end(self, record: Any) -> None:
         """A turn reached a terminal state."""
@@ -340,6 +353,15 @@ def _redactor_for(env: Mapping[str, str]) -> Redactor:
     return Redactor(value for name, value in env.items() if SECRET_KEY_RE.search(name))
 
 
+def _age_seconds(record: TurnRecord) -> float:
+    """Wall-clock seconds since the turn was submitted (0 for an unreadable `started_at`)."""
+    try:
+        started = datetime.fromisoformat(record.started_at).timestamp()
+    except ValueError:
+        return 0.0
+    return max(time.time() - started, 0.0)
+
+
 @dataclass
 class _PendingInterrupt:
     """An interrupt in flight for `record`; `final` is the state the turn ends in."""
@@ -357,6 +379,8 @@ class Session:
     `pty` is the current `PtyProcess`, `ring` the screen shared across relaunches, and
     `transcript_path` the conversation file (the router may replace it with the path a hook
     payload reports). `turn_store` (a `TurnStore`) receives every change of every turn record.
+    `resume_turn` is a `running` record of an earlier process (a shutdown or a kill cut it off):
+    the session holds it from the start and `start` continues or fails it.
     """
 
     def __init__(
@@ -366,6 +390,7 @@ class Session:
         *,
         turn_store: Any = None,
         clock: Callable[[], float] = time.monotonic,
+        resume_turn: TurnRecord | None = None,
     ) -> None:
         self.spec = spec
         self.listener = listener
@@ -407,6 +432,11 @@ class Session:
         self._turn_started = clock()
         self._activity_persisted = self._last_activity
         self._probes: dict[str, Probe] = {}
+        if resume_turn is not None:
+            # The slot is taken from the first boot; `start` continues or fails the turn.
+            resume_turn.interrupted = None
+            self._turn = self._held = resume_turn
+            self._turn_started = clock() - _age_seconds(resume_turn)
         listener.bind(self)
 
     # -- state and reporting ---------------------------------------------------------------
@@ -465,12 +495,34 @@ class Session:
     # -- launch and boot -------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Launch claude and return once it is idle at its prompt; raises `BootError`."""
+        """Launch claude and return once it is idle at its prompt; raises `BootError`.
+
+        A `resume_turn` is continued once claude is ready (cause `resume`) when the launch
+        resumed and `restart_continue_prompt` is set, else it fails with `service_shutdown`, as
+        it does when claude never boots. `turn_max_seconds` counts from its original submit.
+        """
         if self.started_at is not None:
             raise RuntimeError("Session.start() may be called only once")
         self.started_at = now_iso()
         self._set_state("booting")
-        await self._boot(resume=self.spec.resume or os.path.isfile(self.transcript_path))
+        adopted = self._held
+        if adopted is not None:
+            self._persist(adopted)  # held by this session now: the shutdown marker is cleared
+            self._arm_watch(adopted, _age_seconds(adopted))
+        try:
+            resumed = await self._boot(
+                resume=self.spec.resume or os.path.isfile(self.transcript_path)
+            )
+        except BootError as exc:
+            if exc.code != "stopped":  # a stop decided the held turn itself
+                self._fail_held(SERVICE_SHUTDOWN)
+            raise
+        if adopted is None or self._held is not adopted or self._stopping:
+            return
+        if resumed and self.spec.sessions.restart_continue_prompt:
+            await self._continue_held(adopted, cause="resume")
+        else:  # nothing to paste, or a fresh claude has no conversation to continue
+            self._end_turn(adopted, "failed", error=SERVICE_SHUTDOWN)
 
     async def _boot(self, *, resume: bool) -> bool:
         """Launch and wait for ready, relaunching once; returns whether the launch resumed.
@@ -665,20 +717,21 @@ class Session:
         if resumed and self._held is not None and not self._stopping:
             await self._continue_held(self._held)
 
-    def _fail_held(self) -> None:
+    def _fail_held(self, error: str = "claude_exited") -> None:
         record = self._held
         if record is not None:
-            self._end_turn(record, "failed", error="claude_exited", next_state=None)
+            self._end_turn(record, "failed", error=error, next_state=None)
 
-    async def _continue_held(self, record: TurnRecord) -> None:
+    async def _continue_held(self, record: TurnRecord, cause: str = "restart") -> None:
         """Retake the slot for the held turn and paste the continue prompt with its marker."""
         self._held = None
         self._set_state("busy")
-        self._notify("on_turn_resumed", record, self.restarts)
+        self._notify("on_turn_resumed", record, self.restarts, cause)
         log.info(
-            "session %s: turn %s continued after restart %d",
+            "session %s: turn %s continued (%s, restart %d)",
             self.spec.session_id,
             record.turn_id,
+            cause,
             self.restarts,
         )
         await self.continue_turn(record, self.spec.sessions.restart_continue_prompt)
@@ -717,14 +770,21 @@ class Session:
 
     # -- stop ------------------------------------------------------------------------------
 
-    async def stop(self, grace: float = 5.0) -> None:
-        """Terminate claude (SIGTERM, then SIGKILL after `grace`); nothing relaunches after."""
+    async def stop(self, grace: float = 5.0, *, cause: StopCause = "stop") -> None:
+        """Terminate claude (SIGTERM, then SIGKILL after `grace`); nothing relaunches after.
+
+        The running turn fails with `session_stopped`; on a service shutdown it stays running
+        for a later resume instead (`_interrupt_for_shutdown`).
+        """
         if self.state == "stopped":
             return
         self._stopping = True
         record = self._turn
         if record is not None:
-            self._end_turn(record, "failed", error="session_stopped", next_state=None)
+            if cause == "shutdown":
+                self._interrupt_for_shutdown(record)
+            else:
+                self._end_turn(record, "failed", error="session_stopped", next_state=None)
         self._set_state("stopping")
         if self.pty is not None:
             await self.pty.close(grace)
@@ -735,6 +795,29 @@ class Session:
         if self.pty is not None:  # a relaunch that raced the stop is closed too
             await self.pty.close(grace)
         self._set_state("stopped")
+
+    def _interrupt_for_shutdown(self, record: TurnRecord) -> None:
+        """Release the running turn without ending it: `running`, `interrupted="shutdown"`.
+
+        No `on_turn_end`, so no `turn_failed`, hook or callback; the resumed session continues
+        it. A turn already being interrupted (a client interrupt, `turn_max_seconds`) ends as
+        that interrupt would have ended it, and is never continued.
+        """
+        pending = self._interrupting
+        if pending is not None and pending.record is record:
+            self._end_turn(record, pending.final, next_state=None)
+            return
+        self._turn = self._held = self._commands_turn = None
+        watch, self._turn_watch = self._turn_watch, None
+        if watch is not None and watch is not asyncio.current_task():
+            watch.cancel()
+        record.interrupted = "shutdown"
+        log.info(
+            "session %s: turn %s left running for a resume (service shutdown)",
+            self.spec.session_id,
+            record.turn_id,
+        )
+        self._persist(record)
 
     # -- turns -----------------------------------------------------------------------------
 
@@ -832,19 +915,20 @@ class Session:
         self._persist(record)
         return True
 
-    def _arm_watch(self, record: TurnRecord) -> None:
+    def _arm_watch(self, record: TurnRecord, elapsed: float = 0.0) -> None:
         if self.spec.sessions.turn_stall_seconds > 0 or self.spec.limits.turn_max_seconds > 0:
-            self._turn_watch = self._track(asyncio.ensure_future(self._watch_turn(record)))
+            self._turn_watch = self._track(asyncio.ensure_future(self._watch_turn(record, elapsed)))
 
-    async def _watch_turn(self, record: TurnRecord) -> None:
+    async def _watch_turn(self, record: TurnRecord, elapsed: float = 0.0) -> None:
         """Report a quiet turn once per quiet period; end it as `timeout` at the hard limit.
 
         It keeps running while the turn is held across a crash, so both clocks measure from
         the original submit; a held turn at the limit just ends (there is no claude to ESC).
+        `elapsed` is how long the turn already ran before this session held it (a resume).
         """
         stall = self.spec.sessions.turn_stall_seconds
         limit = self.spec.limits.turn_max_seconds
-        started = self.clock()
+        started = self.clock() - elapsed
         while self._turn is record:
             now = self.clock()
             if limit > 0 and now - started >= limit:

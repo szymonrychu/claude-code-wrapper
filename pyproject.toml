@@ -1,6 +1,6 @@
 [project]
 name = "claude-code-wrapper"
-version = "0.3.0"
+version = "0.3.2"
 description = "HTTP microservice that runs long-lived interactive Claude Code sessions under a PTY"
 readme = "README.md"
 license = "MIT"
