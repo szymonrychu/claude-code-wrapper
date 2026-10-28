@@ -199,6 +199,61 @@ async def test_load_persisted_continues_interrupted_turn(world: World) -> None:
     await world.until(lambda: m2.get(sid)["state"] == "ready")
 
 
+async def test_load_persisted_continues_shut_down_turn(world: World) -> None:
+    # A graceful shutdown (a pod restart) left the session stopped with the marked turn.
+    cfg = config(world, resume_on_start=True)
+    sid, claude_sid, tid = await shut_down(world, cfg)
+    assert world.meta(sid)["state"] == "stopped"
+
+    m2 = world.manager(cfg)
+    await m2.load_persisted()
+    assert m2.active_ids() == [sid]
+    await world.until(lambda: m2.open_turns(sid).get(tid).state != "running")
+    done = m2.open_turns(sid).get(tid)
+    assert (done.state, done.final_text, done.interrupted) == ("completed", "part two", None)
+    assert [t.turn_id for t in turns_of(m2, sid)] == [tid]
+    assert of_type(world, sid, "turn_resumed") == [{"turn_id": tid, "cause": "resume"}]
+    assert continued(world, sid, claude_sid) == [f"{CONTINUE}\n\n<!-- ccw turn: {tid} -->"]
+    assert of_type(world, sid, "turn_failed") == []
+    await world.until(lambda: m2.get(sid)["state"] == "ready")
+
+
+async def test_load_persisted_skips_user_stopped_session(world: World) -> None:
+    cfg = config(world, resume_on_start=True)
+    m1, sid, _, record = await busy_session(world, cfg)
+    await m1.destroy(sid)
+    await m1.shutdown()
+
+    m2 = world.manager(cfg)
+    await m2.load_persisted()
+    assert m2.active_ids() == []
+    assert world.meta(sid)["state"] == "stopped"
+    assert stored(world, sid).get(record.turn_id).error == "session_stopped"
+    assert of_type(world, sid, "turn_resumed") == []
+
+
+async def test_delete_after_shutdown_ends_interrupted_turn(world: World) -> None:
+    cfg = config(world)
+    sid, claude_sid, tid = await shut_down(world, cfg)
+
+    # The user deletes the session the shutdown stopped: its turn ends, never to be continued.
+    m2 = world.manager(cfg)
+    await m2.load_persisted()
+    await m2.destroy(sid)
+    done = stored(world, sid).get(tid)
+    assert (done.state, done.error, done.interrupted) == ("failed", "session_stopped", None)
+    assert done.completed_at is not None
+    assert stored(world, sid).current is None
+
+    m3 = world.manager(config(world, resume_on_start=True))
+    await m3.load_persisted()
+    assert m3.active_ids() == []
+    resumed = await m3.resume(sid)
+    assert resumed["current_turn_id"] is None
+    assert of_type(world, sid, "turn_resumed") == []
+    assert continued(world, sid, claude_sid) == []
+
+
 async def test_resume_without_prompt_fails_interrupted_turn(world: World) -> None:
     cfg = config(world, prompt="")
     sid, claude_sid, tid = await shut_down(world, cfg)

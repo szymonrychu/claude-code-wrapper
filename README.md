@@ -430,7 +430,11 @@ does not end the running turn. The turn stays `running` in `turns.jsonl` with th
 callback. A user stop (`DELETE`) is different: it ends the turn `failed` with `session_stopped`,
 and that turn is never continued. On resume (`POST /v1/sessions/{id}/resume`,
 or `sessions.resume_on_start` at service start) the fresh session adopts the session's running
-turn; a turn a killed service process left `running` (no marker) is adopted the same way. With
+turn; a turn a killed service process left `running` (no marker) is adopted the same way.
+`sessions.resume_on_start` resumes every session the shutdown stopped with a marked turn, as
+well as the sessions a killed process left live. A `DELETE` of a stopped session whose turn
+is still `running` ends that turn `failed` with `session_stopped`, so neither resume path ever
+continues a turn a user stopped or deleted. With
 `sessions.restart_continue_prompt` set, once claude is ready the prompt is pasted with the same
 `<!-- ccw turn: <turn_id> -->` marker, a `turn_resumed` event with `cause: "resume"` is logged and
 the same turn completes on claude's next Stop (its `turn_completed`, hooks and callback as usual;

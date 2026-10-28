@@ -10,7 +10,9 @@ Each session owns `<paths.sessions_root>/<session_id>/` (`session.json`, `config
 `resume` relaunches a stopped session with `--resume` in the same config dir and workdir. A turn
 still `running` in its turns.jsonl (a shutdown marked it `interrupted`, or a killed process left it)
 is handed to the fresh session, which continues it or fails it `service_shutdown` (D5); only
-`shutdown` stops sessions with cause `shutdown`, every other stop fails the turn `session_stopped`.
+`shutdown` stops sessions with cause `shutdown`, every other stop fails the turn `session_stopped`,
+as does a delete of a stopped session whose turn an earlier process left running. With
+`sessions.resume_on_start`, `load_persisted` resumes the sessions a shutdown left with a turn.
 
 `session.json` never holds a secret value: the per-session env override is stored without its
 secret fields, so a resume must resend them (D24). The session `callbackUrl` is persisted and is
@@ -847,6 +849,8 @@ class SessionManager:
                     )
                 )
             outputs = ctx.hook_outputs
+        else:
+            self._end_left_turn(session_id)
         snapshot = self._persisted_snapshot(self._read_meta(session_id))
         snapshot["hook_outputs"] = list(outputs)
         if purge:
@@ -854,6 +858,19 @@ class SessionManager:
             snapshot["purged"] = True
         self._maybe_exit_when_empty()
         return snapshot
+
+    def _end_left_turn(self, session_id: str) -> None:
+        """A delete of a session that is not running: the turn an earlier process left
+        `running` (a shutdown or a kill cut it off) fails `session_stopped`, never continued."""
+        self._read_meta(session_id)  # an unknown session is not found
+        store = TurnStore(self._session_dir(session_id) / "turns.jsonl")
+        record = store.current
+        if record is None:
+            return
+        record.state, record.error, record.interrupted = "failed", "session_stopped", None
+        record.completed_at = now_iso()
+        store.put(record)
+        log.info("session %s: deleted, turn %s failed", session_id, record.turn_id)
 
     def _request_exit(self, code: int) -> None:
         if self._on_exit_request is not None and not self._closing:
@@ -1107,12 +1124,19 @@ class SessionManager:
     async def load_persisted(self) -> None:
         """After a service start: sessions persisted as live (creating, ready, busy) are
         stopped (their claude died with the old process), and resumed when
-        `sessions.resume_on_start`. A create cut short before claude took a turn has no
-        transcript, so its resume is refused as unavailable and it stays stopped."""
+        `sessions.resume_on_start`, as is a stopped session whose turn a graceful shutdown
+        left running (`interrupted="shutdown"`, D5); a user stop or delete ended its turn, so
+        such a session is never resumed here. A create cut short before claude took a turn has
+        no transcript, so its resume is refused as unavailable and it stays stopped."""
         to_resume: list[str] = []
         for meta in self._scan():
             session_id = meta["session_id"]
-            if session_id in self._active or meta.get("state") not in LIVE_STATES:
+            if session_id in self._active:
+                continue
+            if meta.get("state") == "stopped" and self._shutdown_left_turn(session_id):
+                to_resume.append(session_id)
+                continue
+            if meta.get("state") not in LIVE_STATES:
                 continue
             to_resume.append(session_id)
             meta.update(state="stopped", updated_at=now_iso())
@@ -1126,6 +1150,11 @@ class SessionManager:
                 except Exception:
                     log.exception("session %s: resume on start failed", session_id)
         self._ensure_reaper()
+
+    def _shutdown_left_turn(self, session_id: str) -> bool:
+        """Whether a graceful service shutdown left this session's turn running for a resume."""
+        current = TurnStore(self._session_dir(session_id) / "turns.jsonl", readonly=True).current
+        return current is not None and current.interrupted == "shutdown"
 
     def _ensure_reaper(self) -> None:
         idle = self.cfg.sessions.idle_timeout_seconds
