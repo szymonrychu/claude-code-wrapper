@@ -243,6 +243,8 @@ def parse_line(
     }
     if kind == "system":
         made = _system_events(obj, redactor)
+    elif kind == "attachment":
+        made = _attachment_events(obj.get("attachment"), redactor)
     elif kind not in ("user", "assistant") or not isinstance(message, dict):
         return []
     elif kind == "user":
@@ -252,6 +254,19 @@ def parse_line(
     else:
         made = _assistant_events(message, message.get("content"), redactor)
     return [cls(**kw, **flags) for cls, kw in made]
+
+
+def _attachment_events(attachment: Any, redactor: Redactor | None) -> list[_Made]:
+    """A `queued_command` attachment is a prompt Claude absorbed mid-turn: read it as a prompt.
+
+    Claude records the paste it takes while busy (for example after a background task wake) as
+    this line instead of a user line, and it carries the turn marker. Other attachment types
+    yield nothing.
+    """
+    if not isinstance(attachment, dict) or attachment.get("type") != "queued_command":
+        return []
+    prompt = attachment.get("prompt")
+    return _prompt_events(prompt, redactor) if isinstance(prompt, str) else []
 
 
 def _system_events(obj: dict, redactor: Redactor | None) -> list[_Made]:

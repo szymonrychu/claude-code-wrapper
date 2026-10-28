@@ -409,6 +409,37 @@ async def test_stale_or_foreign_stop_fires_no_on_stop(world: World):
     assert Gate.calls(world, sid) == []
 
 
+async def test_stop_ends_a_turn_whose_prompt_is_a_queued_command_attachment(world: World):
+    """An absorbed prompt (Claude took the paste mid-turn) is recorded as an attachment line."""
+    gate = Gate(world.tmp)
+    m, sid = await start(world, world.cfg(turn([{"sleep": 30}]), hooks={"onStop": [gate.action()]}))
+    router = m.router(sid)
+    session = router.session
+    record = await router.submit_turn("go")
+    transcript = Path(session.transcript_path)
+    await world.until(lambda: transcript.exists() and record.turn_id in transcript.read_text())
+    # The previous turn's marker is the last one seen; this turn's marker only arrives inside
+    # the queued_command attachment.
+    older = {"type": "user", "message": {"role": "user", "content": "x <!-- ccw turn: t0 -->"}}
+    absorbed = {
+        "type": "attachment",
+        "attachment": {
+            "type": "queued_command",
+            "prompt": f"go\n\n<!-- ccw turn: {record.turn_id} -->",
+            "commandMode": "prompt",
+        },
+    }
+    with open(session.transcript_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(older) + "\n" + json.dumps(absorbed) + "\n")
+    stop = {"session_id": router.info.claude_session_id}
+    assert (await router.handle_claude_hook("Stop", stop))["exit_code"] == 0
+
+    assert len(Gate.calls(world, sid)) == 1
+    assert record.state == "completed" and session.current_turn is None
+    assert session.state == "ready"
+    assert len(of_type(world, sid, "turn_completed")) == 1
+
+
 async def test_agent_origin_stop_unchanged(world: World):
     gate = Gate(world.tmp)
     scenario = turn(

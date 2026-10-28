@@ -146,6 +146,70 @@ def test_turn_marker_extracted():
     assert probe == [ProbeMarker(probe_id="p-1")]
 
 
+def queued_command(prompt: str, **attachment: object) -> str:
+    """A `queued_command` attachment line shaped like the real ones (an absorbed prompt)."""
+    body = {
+        "type": "queued_command",
+        "prompt": prompt,
+        "commandMode": "prompt",
+        "origin": {"kind": "human"},
+        "humanTurn": True,
+    }
+    return jl(
+        {
+            "type": "attachment",
+            "isSidechain": False,
+            "attachment": {**body, **attachment},
+            "timestamp": "2026-10-28T16:07:48.399Z",
+        }
+    )
+
+
+def test_queued_command_attachment_yields_the_user_prompt_event():
+    prompt = '<pasted_content id="1">\nhello\n</pasted_content>\n\n<!-- ccw turn: turn-0abc -->'
+    absorbed = parse_line(queued_command(prompt))
+    plain = parse_line(jl({"type": "user", "message": {"role": "user", "content": prompt}}))
+    assert absorbed == plain == [UserPrompt(text=prompt, turn_marker="turn-0abc")]
+    # The same classification as a user line: probes, interrupts and commands keep their kind.
+    probe = parse_line(queued_command("<!-- ccw probe: p-1 -->"))
+    assert probe == [ProbeMarker(probe_id="p-1")]
+    (sub,) = parse_line(queued_command("hi"), sidechain=True, agent_id="a1")
+    assert (sub.sidechain, sub.agent_id) == (True, "a1")
+    red = parse_line(
+        queued_command("key supersecret-value"), redactor=Redactor(["supersecret-value"])
+    )
+    assert "supersecret-value" not in red[0].text
+
+
+def test_queued_command_attachment_without_a_prompt_yields_nothing():
+    for attachment in ({}, {"prompt": None}, {"prompt": 5}, {"prompt": ["x"]}):
+        line = jl({"type": "attachment", "attachment": {"type": "queued_command", **attachment}})
+        assert parse_line(line) == []
+    assert parse_line(jl({"type": "attachment", "attachment": "queued_command"})) == []
+    assert parse_line(jl({"type": "attachment"})) == []
+
+
+def test_other_attachment_types_yield_nothing():
+    for kind in (
+        "task_reminder",
+        "diagnostics",
+        "hook_success",
+        "edited_text_file",
+        "command_permissions",
+    ):
+        line = jl(
+            {
+                "type": "attachment",
+                "attachment": {
+                    "type": kind,
+                    "prompt": "x <!-- ccw turn: turn-0abc -->",
+                    "content": "y",
+                },
+            }
+        )
+        assert parse_line(line) == []
+
+
 def test_text_redacted():
     red = Redactor(["supersecret-value"])
     line = jl(
