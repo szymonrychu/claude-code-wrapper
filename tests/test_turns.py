@@ -177,6 +177,7 @@ def test_turn_record_serializes_callback_url_camel_case(tmp_path: Path) -> None:
         "usage",
         "model_tokens",
         "error",
+        "interrupted",
         "callbackUrl",
         "started_at",
         "completed_at",
