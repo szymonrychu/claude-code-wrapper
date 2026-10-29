@@ -1,8 +1,9 @@
-"""Same-turn lifecycle of a slash command queued during a turn (design D4 steps 2, 4-7).
+"""Lifecycle of a slash command queued during a turn (design D4 steps 2, 4-7, D9).
 
-The command runs at the turn's Stop, after the relay answered claude, and the agent resumes in the
-same turn with the continue prompt, the results line and the same turn marker. Interrupt, crash
-and `turn_max_seconds` end the turn without a continuation.
+An agent command runs at the turn's Stop, after the relay answered claude, and the agent resumes
+in the same turn with the continue prompt, the results line and the same turn marker. A client
+command lets the turn complete and runs after it, on the idle session, with no continue prompt.
+Interrupt, crash and `turn_max_seconds` end the turn without a continuation.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ async def start(
 ) -> tuple[SessionManager, str, Any]:
     scenario = {"turns": turns if turns is not None else [GO, RESUMED], "commands": commands or {}}
     cmds = commands_cfg(
-        continue_prompt=CONTINUE, **({"timeout_seconds": timeouts} if timeouts else {})
+        continue_prompt=CONTINUE, agent=["*"], **({"timeout_seconds": timeouts} if timeouts else {})
     )
     cfg = world.cfg(
         scenario,
@@ -99,7 +100,7 @@ ORDER = (
 async def test_command_runs_at_stop_and_turn_resumes(world):
     m, sid, router = await start(world)
     turn = await router.submit_turn("go")
-    rec = router.request_command("compact", origin="client")
+    rec = router.request_command("compact", origin="agent")
     assert rec.turn_id == turn.turn_id and rec.state == "queued"
     done = await world.wait_turn(m, sid)
     assert done.turn_id == turn.turn_id and done.final_text == "part two"
@@ -116,6 +117,50 @@ async def test_command_runs_at_stop_and_turn_resumes(world):
     assert typed(world, sid)[2].startswith(CONTINUE)
     assert {i["state"] for i in inputs(world, sid)} == {"idle"}
     await world.until(lambda: router.session.state == "ready")
+
+
+async def test_client_only_commands_run_after_turn_completes_without_continue_prompt(world):
+    m, sid, router = await start(world)
+    turn = await router.submit_turn("go")
+    first = router.request_command("compact", origin="client")
+    second = router.request_command("reload-plugins", origin="client")
+    assert first.turn_id == turn.turn_id and second.turn_id == turn.turn_id
+    done = await world.wait_turn(m, sid)
+    await finished(world, first)
+    await finished(world, second)
+    assert done.turn_id == turn.turn_id and done.final_text == "part one"
+    assert (first.state, second.state) == ("completed", "completed")
+    seen = types(world, sid, "turn_started", "turn_deferred", "turn_resumed", "turn_completed")
+    assert seen == ["turn_started", "turn_completed"]
+    (completed,) = of_type(world, sid, "turn_completed")
+    assert completed["record"]["final_text"] == "part one"
+    order = types(world, sid, "turn_completed", "command_started", "command_completed")
+    assert order == [
+        "turn_completed",
+        "command_started",
+        "command_completed",
+        "command_started",
+        "command_completed",
+    ]
+    assert typed(world, sid)[1:] == ["/compact", "/reload-plugins"]
+    assert not [t for t in typed(world, sid) if t.startswith(CONTINUE)]
+    assert {i["state"] for i in inputs(world, sid)} == {"idle"}
+    assert [t.turn_id for t in turns_of(m, sid)] == [turn.turn_id]
+    await world.until(lambda: router.session.state == "ready")
+
+
+async def test_agent_commands_still_resume_same_turn(world):
+    m, sid, router = await start(world)
+    turn = await router.submit_turn("go")
+    rec = router.request_command("compact", origin="agent")
+    done = await world.wait_turn(m, sid)
+    assert done.turn_id == turn.turn_id and done.final_text == "part two"
+    assert rec.state == "completed"
+    assert types(world, sid, *ORDER) == list(ORDER)
+    assert typed(world, sid)[1] == "/compact" and typed(world, sid)[2].startswith(CONTINUE)
+    assert of_type(world, sid, "turn_resumed") == [
+        {"turn_id": turn.turn_id, "cause": "command", "commands": [rec.id]}
+    ]
 
 
 async def test_runner_starts_after_relay_answer(world):
@@ -152,7 +197,7 @@ async def test_onstop_block_keeps_command_queued(world):
     gate.reply(1, {"decision": "block", "reason": "check the tests"})
     m, sid, router = await start(world, hooks={"onStop": [gate.action()]})
     turn = await router.submit_turn("go")
-    rec = router.request_command("compact", origin="client")
+    rec = router.request_command("compact", origin="agent")
     await world.until(lambda: of_type(world, sid, "turn_continued"))
     done = await world.wait_turn(m, sid)
     assert done.turn_id == turn.turn_id and done.final_text == "part two"
@@ -179,7 +224,7 @@ async def test_background_defer_keeps_command_queued(world):
         world, [go, RESUMED], sessions={"defer_stop_on_background_tasks": True}
     )
     turn = await router.submit_turn("go")
-    rec = router.request_command("compact", origin="client")
+    rec = router.request_command("compact", origin="agent")
     await world.until(lambda: of_type(world, sid, "turn_deferred"))
     assert rec.state == "queued"
     await asyncio.sleep(0.6)  # the runner did not start at the deferred Stop
@@ -255,8 +300,8 @@ async def test_interrupt_cancels_queued_and_running(world):
     m, sid, router = await start(world, commands=HANG, sessions={"interrupt_settle_seconds": 5})
     sent = record_writes(router)
     turn = await router.submit_turn("go")
-    running = router.request_command("reload-skills", origin="client")
-    queued = router.request_command("context", origin="client")
+    running = router.request_command("reload-skills", origin="agent")
+    queued = router.request_command("context", origin="agent")
     await world.until(lambda: running.state == "running")
     began = time.monotonic()
     assert await router.interrupt() == turn.turn_id
@@ -292,8 +337,8 @@ async def test_crash_mid_command_follows_k12(world, prompt):
         sessions={"restart_continue_prompt": prompt},
     )
     turn = await router.submit_turn("go")
-    running = router.request_command("reload-skills", origin="client")
-    queued = router.request_command("context", origin="client")
+    running = router.request_command("reload-skills", origin="agent")
+    queued = router.request_command("context", origin="agent")
     await world.until(lambda: running.state == "running")
     os.kill(router.session.pty.pid, signal.SIGKILL)
     await finished(world, running)
@@ -321,8 +366,8 @@ async def test_turn_max_seconds_counts_through_command(world):
     )
     sent = record_writes(router)
     turn = await router.submit_turn("go")
-    running = router.request_command("reload-skills", origin="client")
-    queued = router.request_command("context", origin="client")
+    running = router.request_command("reload-skills", origin="agent")
+    queued = router.request_command("context", origin="agent")
     await world.until(lambda: running.state == "running")
     await world.until(lambda: turn.state != "running")
     assert turn.state == "timeout"
@@ -341,7 +386,7 @@ async def test_turn_max_seconds_counts_through_command(world):
 async def test_usage_accumulates_across_command(world):
     m, sid, router = await start(world)
     turn = await router.submit_turn("go")
-    router.request_command("compact", origin="client")
+    router.request_command("compact", origin="agent")
     done = await world.wait_turn(m, sid)
     assert done.turn_id == turn.turn_id
     # "part one" before the command, "part two" after it: one record sums both legs.
@@ -369,7 +414,7 @@ async def test_deferred_reason_and_resumed_cause(world):
     # A queued command: reason "command" and cause "command".
     m, sid, router = await start(world)
     turn = await router.submit_turn("go")
-    rec = router.request_command("compact", origin="client")
+    rec = router.request_command("compact", origin="agent")
     await world.wait_turn(m, sid)
     assert of_type(world, sid, "turn_deferred") == [
         {"turn_id": turn.turn_id, "reason": "command", "background_tasks": [], "commands": [rec.id]}

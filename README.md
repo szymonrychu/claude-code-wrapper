@@ -532,8 +532,8 @@ Errors: `401 unauthorized`, `404 not_found` (unknown session or turn).
 Queue an allowlisted Claude Code slash command, a name plus free-text args, without typing into the
 session. The command uses the same queue and lifecycle as the
 agent's `command` MCP tool, with origin `client`, so the session's `sessions.commands.client`
-allowlist applies. On an idle session it runs at once; during a turn it waits for that turn's Stop
-and the turn is then resumed.
+allowlist applies. On an idle session it runs at once; during a turn it waits for that turn to
+complete and then runs, before any new turn (see [Lifecycle](#lifecycle), item 2).
 
 Auth: bearer. Body (unknown fields are rejected):
 
@@ -1382,7 +1382,8 @@ and interrupt still apply to it.
 - `hook`: an `onStop` action answered `defer`; a later Stop that is allowed completes the turn.
 - `background_tasks`: `sessions.defer_stop_on_background_tasks` and the Stop reported running
   background tasks; a later Stop with none completes the turn.
-- `command`: the Stop was allowed while slash commands were queued. The commands listed in
+- `command`: the Stop was allowed while slash commands from the agent were queued (client-only
+  commands never defer a Stop: they run after the turn completed). The commands listed in
   `commands` run now (`command_started`, `command_completed` or `command_failed`), then the
   agent is resumed in the same turn (`turn_resumed` with `cause: "command"`) and the next Stop
   completes it. Queued commands stay queued through a `hook` or `background_tasks` deferral and
@@ -1408,7 +1409,7 @@ session stays `busy` and the turn stays `running` until a later Stop completes t
   continued with `sessions.restart_continue_prompt` in the session resumed afterwards (the API
   resume or `sessions.resume_on_start`). No other fields. See "Service shutdown during a turn"
   under `POST /v1/sessions/{id}/turns`.
-- `cause: "command"`: the slash commands run at the turn's Stop (`turn_deferred` with
+- `cause: "command"`: the agent's slash commands run at the turn's Stop (`turn_deferred` with
   `reason: "command"`) have finished. The continuation is `sessions.commands.continue_prompt`,
   a blank line and `Command results: <name> <state>[ <result or error>]; ...` (for example
   `Command results: compact completed ok; context failed timeout`). Also `commands` (the ids of
@@ -1883,11 +1884,12 @@ recorded as `invalid_decision`). A blocking action that fails (crash, timeout, b
 `on_error: deny` yields `block` with the failure reason; with `on_error: allow` it is an `allow`:
 
 - `allow`: the turn completes as usual (one `turn_completed`, one `onTurnComplete`, one callback);
-  its usage is summed over every leg of the turn. When slash commands are queued, an allowed Stop
-  is deferred instead (`turn_deferred` with `reason: "command"`): claude is answered allow, the
+  its usage is summed over every leg of the turn. When slash commands from the agent are queued, an
+  allowed Stop is deferred instead (`turn_deferred` with `reason: "command"`): claude is answered allow, the
   commands run once that answer is back with claude, and the turn resumes with the continue
-  prompt (`turn_resumed`); the continuation's Stop fires `onStop` again. Pending commands gate
-  the Stop this way even with no `onStop` action and no `defer_stop_on_background_tasks`.
+  prompt (`turn_resumed`); the continuation's Stop fires `onStop` again. Pending agent commands
+  gate the Stop this way even with no `onStop` action and no `defer_stop_on_background_tasks`.
+  Client commands queued during the turn do not defer it: the turn completes and they run after.
 - `block` with a `reason`: claude gets `{"decision": "block", "reason": R}` from the relay and
   keeps working on the same turn; the turn stays `running`, a `turn_continued` event is logged.
   Queued slash commands stay queued.
@@ -2275,14 +2277,20 @@ Progress is visible as the `command_queued`, `command_started`, `command_complet
 
 1. **Queued during a turn.** The command waits in the session's queue (the same name with the same
    args returns the existing record; other args queue a second one).
-2. **Runs at Stop.** When the turn reaches its Stop, ccw answers the Stop hook with allow, emits
-   [`turn_deferred`](#turn_deferred) with `reason: "command"`, waits for a quiet screen
-   (`quiet_seconds`), fires `onCommand` (a blocking deny fails the command as `vetoed`), types the
-   command and waits for its completion signal. Queued commands run one after another.
-3. **Same-turn resume.** When the queue is empty, the turn continues with
-   `sessions.commands.continue_prompt` plus a `Command results:` line
-   ([`turn_resumed`](#turn_resumed), `cause: "command"`). The turn record stays the same and its
-   usage keeps accumulating.
+2. **Client commands run after the turn.** When every queued command came from a client, the turn's
+   Stop completes it as usual ([`turn_completed`](#turn_completed) with the final text intact) and
+   the queued commands run right after, on the idle session, one after another: waits for a quiet
+   screen (`quiet_seconds`), fires `onCommand` (a blocking deny fails the command as `vetoed`),
+   types the command and waits for its completion signal. No continue prompt is typed and the turn
+   is not resumed. ccw takes the session's slot for them synchronously when the turn completes,
+   before `onTurnComplete` runs, so a `POST /turns` right after `turn_completed` gets `409 busy`
+   until the queued commands drained.
+3. **Agent commands resume the same turn.** When any queued command came from the agent, the Stop is
+   answered with allow instead, [`turn_deferred`](#turn_deferred) is emitted with
+   `reason: "command"` and all queued commands run (quiet screen, `onCommand`, typing, completion
+   wait) one after another. Then the turn continues with `sessions.commands.continue_prompt` plus a
+   `Command results:` line ([`turn_resumed`](#turn_resumed), `cause: "command"`). The turn record
+   stays the same and its usage keeps accumulating.
 4. **Idle sessions.** With no turn running the command runs at once and the session is `busy`
    meanwhile (turns get `409 busy`, the idle reaper skips it). There is no continuation.
 5. **Kept queued.** A blocking `onStop` hook wins: its block keeps the commands queued for the next

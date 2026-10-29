@@ -16,13 +16,21 @@ TOKEN = "tok-0123456789abcdef"
 H = {"Authorization": f"Bearer {TOKEN}"}
 
 
-async def boot(world: World, *, commands: dict | None = None, turns: list | None = None, **cmds):
+async def boot(
+    world: World,
+    *,
+    commands: dict | None = None,
+    turns: list | None = None,
+    hooks: dict | None = None,
+    **cmds,
+):
     scenario = {"commands": commands or {}}
     if turns is not None:
         scenario["turns"] = turns
     cfg = world.cfg(
         scenario,
         server={"auth_token": TOKEN},
+        hooks=hooks or {},
         sessions={"commands": commands_cfg(continue_prompt=CONTINUE, **cmds)},
     )
     m = world.manager(cfg)
@@ -190,7 +198,7 @@ async def test_commands_require_auth(world):
         ).status_code == 401
 
 
-async def test_client_command_during_turn_resumes_turn(world):
+async def test_client_command_during_turn_runs_after_turn_completes(world):
     m, sid, router, c = await boot(world, turns=[GO, RESUMED])
     async with c:
         turn = await router.submit_turn("go")
@@ -198,6 +206,28 @@ async def test_client_command_during_turn_resumes_turn(world):
         assert r.status_code == 202 and r.json()["state"] == "queued"
         assert r.json()["turn_id"] == turn.turn_id
         done = await world.wait_turn(m, sid)
-        assert done.turn_id == turn.turn_id and done.final_text == "part two"
-        got = (await c.get(f"/v1/sessions/{sid}/commands/{r.json()['id']}")).json()
+        assert done.turn_id == turn.turn_id and done.final_text == "part one"
+        got = await settled(c, f"/v1/sessions/{sid}/commands/{r.json()['id']}")
         assert got["state"] == "completed"
+        assert not [e for e in world.events(sid) if e["type"] == "turn_resumed"]
+
+
+async def test_turn_refused_until_queued_client_commands_drain(world):
+    slow = {"type": "command", "run": "sleep 2", "blocking": True, "timeout_seconds": 10}
+    m, sid, router, c = await boot(world, turns=[GO, RESUMED], hooks={"onTurnComplete": [slow]})
+    async with c:
+        await router.submit_turn("go")
+        r = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "compact"})
+        assert r.status_code == 202
+        await world.until(lambda: any(e["type"] == "turn_completed" for e in world.events(sid)))
+        # onTurnComplete is still running: the slot already belongs to the queued command.
+        busy = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "next"})
+        assert busy.status_code == 409 and busy.json()["error"]["code"] == "busy"
+        await settled(c, f"/v1/sessions/{sid}/commands/{r.json()['id']}")
+        await world.until(lambda: router.session.state == "ready")
+        ok = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "next"})
+        assert ok.status_code == 202
+        evs = [e for e in world.events(sid) if e["type"] != "tick"]
+        names = [e["type"] for e in evs]
+        gap = evs[names.index("turn_completed") : names.index("command_started")]
+        assert [e["data"]["state"] for e in gap if e["type"] == "session_state"] == ["busy"]

@@ -798,6 +798,9 @@ class SessionRouter(SessionListener):
             if self._metrics is not None:
                 self._metrics.turn_finished(record)
             event = self._emit_turn_event("turn_completed", record)
+            # The slot goes to the queued client commands (D9) before any await: onTurnComplete
+            # and the callback run after it, so a POST /turns cannot take the slot ahead of them.
+            self._start_idle_runner()
             await self._after_turn(record, event)
         return _allow()
 
@@ -809,8 +812,10 @@ class SessionRouter(SessionListener):
         ready), or the gate allowed it with nothing queued. A block sends claude back to work
         with the reason, a defer answers claude allow; either way the turn stays running and
         busy, its usage keeps accumulating and queued commands stay queued. Queued commands
-        after an allow: answer allow and run them once this answer is back with claude (D4.2);
-        the turn then resumes with the continue prompt.
+        after an allow: when one has origin `agent`, answer allow and run them once this answer
+        is back with claude (D4.2); the turn then resumes with the continue prompt. When every
+        one has origin `client` (D9) the Stop completes the turn as usual and the idle runner
+        runs them afterwards (`_on_stop` hands it the slot).
         """
         sessions = self._cfg.sessions
         if not (
@@ -854,7 +859,9 @@ class SessionRouter(SessionListener):
             reason = "hook" if outcome.decision == "defer" else "background_tasks"
             self._emit_deferred(record, reason, tasks, commands)
             return _allow()
-        if not commands or not session.hold_for_commands(record):
+        if all(r.origin == "client" for r in self.commands.pending()):
+            return None  # also with nothing queued: complete as today
+        if not session.hold_for_commands(record):
             return None
         self._commands_turn = record
         self._emit_deferred(record, "command", tasks, commands)
