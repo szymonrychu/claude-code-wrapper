@@ -61,6 +61,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -141,28 +142,67 @@ def public_state(state: str) -> str:
     return _PUBLIC.get(state, state)
 
 
+# Claude parses slash text with JavaScript `trim` and `search(/\s/)`, so the whitespace set is
+# exactly JS `\s`, spelled out here: Python's `str.isspace` and regex `\s` differ (they add
+# U+001C-001F and U+0085 and lack U+FEFF), so neither is used by the parser.
+_JS_WHITESPACE = frozenset(
+    chr(code)
+    for code in (
+        *range(0x09, 0x0E),
+        0x20,
+        0xA0,
+        0x1680,
+        *range(0x2000, 0x200B),
+        0x2028,
+        0x2029,
+        0x202F,
+        0x205F,
+        0x3000,
+        0xFEFF,
+    )
+)
+_JS_WHITESPACE_CHARS = "".join(sorted(_JS_WHITESPACE))
+_JS_WHITESPACE_CLASS = "".join(f"\\u{ord(char):04x}" for char in sorted(_JS_WHITESPACE))
+
 # A trailing agents-common run marker (`agents_common.runs.marker`, `<!-- agents-<kind>:<id> -->`)
 # as `runs.py:_post_once` posts it: `text\n\nmarker`.
-_RUN_MARKER = re.compile(r"\n\n<!-- agents-[^\s:]+:\S+ -->\s*\Z")
-_SLASH = re.compile(r"/([^ \t\n]*)(.*)", re.DOTALL)
+_RUN_MARKER = re.compile(
+    rf"\n\n<!-- agents-[^{_JS_WHITESPACE_CLASS}:]+:[^{_JS_WHITESPACE_CLASS}]+ -->"
+    rf"[{_JS_WHITESPACE_CLASS}]*\Z"
+)
+
+
+def _ignorable(char: str) -> bool:
+    """A control or format character (Unicode Cc or Cf) that is not JS whitespace."""
+    return char not in _JS_WHITESPACE and unicodedata.category(char) in ("Cc", "Cf")
 
 
 def slash_command(text: str) -> tuple[str, str] | None:
     """`(name, args)` when claude's own parser would run `text` as a slash command, else None.
 
-    Design D2, mirroring claude: a trailing run marker is dropped, then after leading whitespace
-    the text starts with "/"; the name runs up to the first space, tab or newline and the args
-    are the rest, stripped (newlines kept). An empty name is a command (claude answers "Commands
-    are in the form /command [args]"), and so is a name matching `COMMAND_NAME`, with no length
-    cap. Any other name (a path such as "/etc/hosts") is prose that claude sends to the model.
+    Design D2, mirroring claude 2.1.304 (`trim`, then a leading "/", the name up to the first
+    `\\s`, the args trimmed): a trailing run marker is dropped; leading JS whitespace and
+    invisible control or format characters (Cc, Cf: ESC, zero-width, bidi, NUL, DEL, C1) are
+    skipped, because the PTY paste drops ESC and claude ignores the rest; the text must then start
+    with "/". The name runs to the first JS whitespace character with the invisible characters
+    dropped from it, and the args are the rest stripped of JS whitespace only (newlines kept). An
+    empty name is a command (claude answers "Commands are in the form /command [args]"), and so
+    is a name matching `COMMAND_NAME`, with no length cap. Any other name (a path such as
+    "/etc/hosts") is prose that claude sends to the model.
     """
-    match = _SLASH.fullmatch(_RUN_MARKER.sub("", text).lstrip())
-    if match is None:
+    text = _RUN_MARKER.sub("", text)
+    start = 0
+    while start < len(text) and (text[start] in _JS_WHITESPACE or _ignorable(text[start])):
+        start += 1
+    if not text.startswith("/", start):
         return None
-    name, rest = match.groups()
+    end = start + 1
+    while end < len(text) and text[end] not in _JS_WHITESPACE:
+        end += 1
+    name = "".join(char for char in text[start + 1 : end] if not _ignorable(char))
     if name and not COMMAND_NAME.fullmatch(name):
         return None
-    return name, rest.strip()
+    return name, text[end:].strip(_JS_WHITESPACE_CHARS)
 
 
 class TurnRejected(Exception):
@@ -1434,8 +1474,11 @@ class Session:
 
         The probe is pending until the router sees its marker in the transcript
         (`probe_delivered`) and answered once assistant text with the alive token follows
-        (`probe_answered`, which records the answer text). Raises `TurnRejected` (booting, dead).
+        (`probe_answered`, which records the answer text). Raises `TurnRejected` (slash_command
+        first, for text claude would run as a command, then booting, dead); nothing is pasted.
         """
+        if text is not None and slash_command(text) is not None:
+            raise TurnRejected("slash_command")
         pty = self._writable_pty()
         probe = Probe(
             probe_id=new_probe_id(),
