@@ -128,6 +128,16 @@ Local slash commands
       (a progress footer such as "Esc to cancel"); "stdout" overrides the stdout text;
       "as_user": true writes the stdout entry as a user line; "hang": true writes nothing after
       the echo until ESC, then returns to idle.
+    any name but compact: "prompt": true makes it a prompt (project, skill or plugin) command, as
+      claude 2.1.304 runs /hello world (probe-slash/prompt-turn-2026-10-29): a user line
+      <command-message>NAME</command-message>\n<command-name>/NAME</command-name>\n
+      <command-args>ARGS</command-args> (no indent), then an isMeta user line whose content is one
+      text block with "body" (default "Run /NAME: $ARGUMENTS"; every $ARGUMENTS becomes ARGS),
+      then UserPromptSubmit with the typed line as prompt, then a normal turn: the steps of the
+      first scenario turn matching the typed line (default echo), the Stop cycle and the footer.
+    any name but compact: "prose": true makes claude send the typed line to the model as a plain
+      prompt with no echo, as claude 2.1.304 does for a bare name that exists on disk (/tmp,
+      probe-slash/signals-2026-10-29): the line runs exactly as a turn prompt does.
     any name but compact: "dialog": {"footer": "Esc to cancel", "dismiss_stdout": "NAME dialog
       dismissed", "escs": 1 | 2 | "never"} opens a dialog, as claude 2.1.304 does for /model,
       /config, /usage, /help (summaries/outA.txt, outC.txt): it prints the footer and writes
@@ -631,7 +641,8 @@ class Fake:
     def submit(self, text: str) -> None:
         self.record_input(text, "idle")
         m = COMMAND_RE.match(text.strip())
-        if m:
+        listed = self.scenario.get("commands") or {}
+        if m and not (listed.get(m.group(1)) or {}).get("prose"):
             self.run_command(m.group(1), (m.group(2) or "").strip())
         else:
             self.run_turn(text)
@@ -658,6 +669,9 @@ class Fake:
             self.unknown_command(name, args)
             return
         cfg = listed.get(name) or {}
+        if name != "compact" and cfg.get("prompt"):
+            self.prompt_command(name, args, cfg)
+            return
         if name != "compact" and "dialog" in cfg:
             self.dialog_command(name, args, cfg)
             return
@@ -795,10 +809,30 @@ class Fake:
         self.run_hooks("PreCompact", {"trigger": "auto", "custom_instructions": None})
         self.write_compaction("auto", int(spec.get("pre_tokens", 100000)), 5000, start)
 
+    def prompt_command(self, name: str, args: str, cfg: dict) -> None:
+        """A prompt command: its echo, the expanded body as an isMeta line, then a model turn."""
+        self.user_line(
+            f"<command-message>{name}</command-message>\n<command-name>/{name}</command-name>\n"
+            f"<command-args>{args}</command-args>"
+        )
+        body = cfg.get("body", f"Run /{name}: $ARGUMENTS").replace("$ARGUMENTS", args)
+        self.write_line(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": [{"type": "text", "text": body}]},
+                "isMeta": True,
+            }
+        )
+        self.model_turn(f"/{name} {args}".rstrip())
+
     def run_turn(self, prompt: str) -> None:
+        self.user_line(prompt)
+        self.model_turn(prompt)
+
+    def model_turn(self, prompt: str) -> None:
+        """UserPromptSubmit, the matching turn's steps, the Stop cycle and the footer."""
         self.user_prompts.append(prompt)
         turn = self.matching_turn(prompt)
-        self.user_line(prompt)
         self.run_hooks("UserPromptSubmit", {"prompt": prompt})
         self.out(f"\n> {prompt}\n")
         tokens = len(prompt.split())

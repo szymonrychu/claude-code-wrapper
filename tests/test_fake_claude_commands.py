@@ -467,3 +467,56 @@ def test_dialog_scenario(boot, env, work):  # noqa: F811
     rows = inputs(env)
     assert [r["text"] for r in rows if r["state"] == "idle"] == ["/usage", "/config", "/help"]
     assert [r["text"] for r in rows if r["state"] == "busy"] == ["typed into the dialog"]
+
+
+#: The echo of a prompt (project or plugin) command (claude 2.1.304, probe prompt-turn-2026-10-29):
+#: message first, plain newlines, no indent.
+def prompt_echo(name, args=""):
+    return (
+        f"<command-message>{name}</command-message>\n<command-name>/{name}</command-name>\n"
+        f"<command-args>{args}</command-args>"
+    )
+
+
+def test_prompt_command_scenario(boot, env, work, tmp_path):  # noqa: F811
+    """Real sample (probe-slash/prompt-turn-2026-10-29): `/hello world` writes the
+    `<command-message>` echo, an isMeta line with the expanded body, fires UserPromptSubmit with
+    the typed line, then runs a normal turn that ends with Stop."""
+    out = tmp_path / "h.out"
+    record(env["CLAUDE_CONFIG_DIR"], out)
+    p = boot(
+        {"hello": {"prompt": True, "body": "Say hello to $ARGUMENTS in one short sentence."}},
+        turns=[{"match": "^/hello", "steps": [{"text": "Hello, world!"}]}],
+    )
+    p.submit("/hello world", wait="Hello, world!")
+    p.wait_for("? for shortcuts", since=p.buf.rindex("Hello, world!"))
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert [x["type"] for x in lines] == ["user", "user", "assistant"]
+    echo, meta, reply = lines
+    assert echo["message"]["content"] == prompt_echo("hello", "world")
+    assert not echo.get("isMeta")
+    assert meta["isMeta"] is True
+    assert meta["message"]["content"] == [
+        {"type": "text", "text": "Say hello to world in one short sentence."}
+    ]
+    assert reply["message"]["content"] == [{"type": "text", "text": "Hello, world!"}]
+    pl = payloads(out)
+    assert events_of(out) == ["UserPromptSubmit", "Stop"]
+    assert pl[0]["prompt"] == "/hello world"
+    assert pl[1]["last_assistant_message"] == "Hello, world!"
+    assert [r["text"] for r in inputs(env)] == ["/hello world"]
+
+
+def test_prose_command_scenario(boot, env, work, tmp_path):  # noqa: F811
+    """Real sample (probe-slash/signals-2026-10-29, `/tmp`): a bare name that exists on disk is
+    sent to the model: a plain user prompt line, UserPromptSubmit, a turn, Stop; no echo."""
+    out = tmp_path / "h.out"
+    record(env["CLAUDE_CONFIG_DIR"], out)
+    p = boot({"tmp": {"prose": True}}, turns=[{"match": "^/tmp", "steps": [{"text": "a dir"}]}])
+    p.submit("/tmp", wait="a dir")
+    p.wait_for("? for shortcuts", since=p.buf.rindex("a dir"))
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert [x["type"] for x in lines] == ["user", "assistant"]
+    assert lines[0]["message"]["content"] == "/tmp"
+    assert events_of(out) == ["UserPromptSubmit", "Stop"]
+    assert payloads(out)[0]["prompt"] == "/tmp"
