@@ -24,11 +24,12 @@ from claude_code_wrapper.workdir import FileWriteError
 
 router = APIRouter()
 
-_REJECT_STATUS = {"busy": 409, "booting": 503, "dead": 503}
+_REJECT_STATUS = {"busy": 409, "booting": 503, "dead": 503, "slash_command": 422}
 _REJECT_TEXT = {
     "busy": "a turn is already running",
     "booting": "the session is still booting",
     "dead": "the session is not running",
+    "slash_command": "slash commands go to POST /v1/sessions/{id}/commands",
 }
 
 

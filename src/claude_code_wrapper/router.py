@@ -40,7 +40,7 @@ from .metrics import Metrics
 from .notes import NoteStore, render_block
 from .pty_proc import PtyClosed
 from .redact import Redactor
-from .session import Session, SessionListener, TurnRejected
+from .session import Session, SessionListener, TurnRejected, slash_command
 from .timeutil import now_iso
 from .transcript import (
     MAX_RESULT_CHARS,
@@ -874,6 +874,8 @@ class SessionRouter(SessionListener):
         origin: Origin = "client",
         metadata: Mapping[str, Any] | None = None,
     ) -> TurnRecord:
+        if slash_command(text) is not None:  # a slash line fires no hooks and writes no files
+            raise TurnRejected("slash_command")
         self.session.check_submittable()  # a doomed turn fires no hooks
         was_armed = self._ac_armed
         self._cancel_auto_compact()

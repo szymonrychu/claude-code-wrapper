@@ -25,7 +25,9 @@ once claude is ready it is continued with the continue prompt and the same marke
 
 Turns (D13): one at a time. `submit` reserves the slot and persists the record before the first
 byte is written, then pastes the prompt (with a `<!-- ccw turn: <id> -->` marker, because Stop
-payloads carry no turn id) and sends CR as a separate write. A turn ends exactly once, on the
+payloads carry no turn id) and sends CR as a separate write. Text claude's parser would run as a
+slash command (`slash_command`, design D2) is refused first, for every origin: claude runs no Stop
+for a command, so such a turn would never end. A turn ends exactly once, on the
 first of: a matching Stop (`complete`), an interrupt (resolved by the transcript interrupt line or
 a second ESC after `interrupt_settle_seconds`, since claude runs no Stop hook for an interrupted
 turn), a fatal pattern on screen, claude exiting (unless the turn is held for continuation, then
@@ -55,7 +57,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from .claude_env import SECRET_KEY_RE, ClaudeEnv
-from .config import BootConfig, BootDialog, LimitsConfig, SessionsConfig
+from .config import COMMAND_NAME, BootConfig, BootDialog, LimitsConfig, SessionsConfig
 from .pty_proc import PtyClosed, PtyProcess
 from .redact import Redactor
 from .ring import Ring, _squash, strip_ansi
@@ -127,8 +129,33 @@ def public_state(state: str) -> str:
     return _PUBLIC.get(state, state)
 
 
+# A trailing agents-common run marker (`agents_common.runs.marker`, `<!-- agents-<kind>:<id> -->`)
+# as `runs.py:_post_once` posts it: `text\n\nmarker`.
+_RUN_MARKER = re.compile(r"\n\n<!-- agents-[^\s:]+:\S+ -->\s*\Z")
+_SLASH = re.compile(r"/([^ \t\n]*)(.*)", re.DOTALL)
+
+
+def slash_command(text: str) -> tuple[str, str] | None:
+    """`(name, args)` when claude's own parser would run `text` as a slash command, else None.
+
+    Design D2, mirroring claude: a trailing run marker is dropped, then after leading whitespace
+    the text starts with "/"; the name runs up to the first space, tab or newline and the args
+    are the rest, stripped (newlines kept). An empty name is a command (claude answers "Commands
+    are in the form /command [args]"), and so is a name matching `COMMAND_NAME`, with no length
+    cap. Any other name (a path such as "/etc/hosts") is prose that claude sends to the model.
+    """
+    match = _SLASH.fullmatch(_RUN_MARKER.sub("", text).lstrip())
+    if match is None:
+        return None
+    name, rest = match.groups()
+    if name and not COMMAND_NAME.fullmatch(name):
+        return None
+    return name, rest.strip()
+
+
 class TurnRejected(Exception):
-    """A turn or probe cannot be written now. `reason`: busy, booting or dead."""
+    """A turn or probe cannot be written now. `reason`: busy, booting, dead, or slash_command
+    (the text is a slash command, which goes to the command queue, never typed as a turn)."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -861,9 +888,13 @@ class Session:
         """Start a turn: reserve the slot, persist the record, then paste and CR.
 
         `turn_id` is an id allocated earlier (the router names it in the onTurn payload).
-        Raises `TurnRejected` (booting, dead, busy). A claude that exits under the write fails
-        the turn with `claude_exited`; the record is returned either way.
+        Raises `TurnRejected` (slash_command, for any origin and before anything else, then
+        booting, dead, busy). A claude that exits under the write fails the turn with
+        `claude_exited`; the record is returned either way.
         """
+        if slash_command(text) is not None:
+            # claude would run it as a command: no Stop, so the turn would never end (design D3).
+            raise TurnRejected("slash_command")
         pty = self.check_submittable()
         now = now_iso()
         record = TurnRecord(

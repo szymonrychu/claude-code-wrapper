@@ -224,7 +224,7 @@ Request body (all fields optional):
 | `model` | string | overrides `claude.model` for this session |
 | `effort` | string | overrides `claude.effort` for this session |
 | `env` | object | partial `claude.env` override: typed fields (lowercased env var names, for example `anthropic_model`) plus `extra` (a map of uppercase names); `false` or `null` unsets a global value; `extra` merges key-wise |
-| `prompt` | string | initial prompt text, submitted as a turn with `origin: initial` after `onCreate` |
+| `prompt` | string | initial prompt text, submitted as a turn with `origin: initial` after `onCreate`; slash text runs as a client command instead (see `POST /v1/sessions/{id}/turns`) |
 | `template` | string | name of a configured prompt template to use as the initial prompt (instead of `prompt`) |
 | `variables` | object of string | values for the template's `{{name}}` placeholders |
 | `callbackUrl` | string | `http`/`https` URL that receives turn-terminal and question callbacks for this session (a turn's own `callbackUrl` wins) |
@@ -376,6 +376,20 @@ Submit a turn: paste the prompt into the TUI and return at once. Completion arri
 `turn_completed` or `turn_failed` events (and callbacks); poll `GET .../turns/{turn_id}` or follow
 the SSE stream.
 
+Slash text is refused, never typed: claude would run it as a command, which ends with no Stop,
+so the turn would never complete. The rule mirrors claude's own parser. A trailing agents-common
+run marker (`\n\n<!-- agents-<kind>:<id> -->`) is dropped first; then the text, after leading
+whitespace, starts with `/` and its name (up to the first space, tab or newline) is empty or
+matches `^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$` (no length cap). So `/reload-plugins`, `/tmp`, `/` and
+`/ is root` are refused, while path-like prose (`/workdir/foo is broken`, `/etc/hosts`, `//x`,
+`/notes.txt`) and a `/compact` mid-sentence are turns. Send slash commands to
+`POST /v1/sessions/{id}/commands`. The refusal comes before any `onTurn` hook fires or any
+`files` entry is written, for every origin (client, initial, peer). A slash initial prompt
+(`prompt`, `template` or `prompts.initial_prompt`) is queued as a client command
+(`sessions.commands.client`) instead of a turn; a refusal there (for example `not_allowed`, or
+`invalid_command` for an empty name) is reported as an `error` event of kind
+`initial_turn_rejected` and the session stays ready.
+
 Auth: bearer. Path parameter: `id`.
 
 Request body (exactly one of `text` and `template`):
@@ -406,6 +420,7 @@ Response `202`:
 | 404 | `not_found` | unknown session |
 | 409 | `busy` | a turn is already running |
 | 413 | `too_large` | prompt over `limits.max_prompt_bytes`, `metadata` over 16 KiB, or `files` over the per-file or count limits |
+| 422 | `slash_command` | the text is a slash command; send it to `POST /v1/sessions/{id}/commands` |
 | 422 | `invalid_request` | invalid body (including `metadata` that is not an object), or `unknown_template`, `unknown_variable`, `missing_variable` |
 | 503 | `booting` | the session is still booting |
 | 503 | `dead` | the session is stopped, failed or dead |
@@ -2569,6 +2584,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `rate_limited` | 429 | a peer sender over `peers.max_messages_per_minute`, or the peer nonce cache is full |
 | `notes_disabled` | 409 | `POST /v1/sessions/{id}/notes` while `notes.enabled` is false |
 | `invalid_command` | 422 | an empty or invalid command name, invalid `args`, or `--force` not allowed |
+| `slash_command` | 422 | a turn's text is a slash command (claude's parser would run it, so it is never typed as a turn); slash commands go to `POST /v1/sessions/{id}/commands` |
 | `command_queue_full` | 429 | the session already has the maximum of queued commands |
 | `too_many_sessions` | 429 | `sessions.max_sessions` reached |
 | `create_failed` | 500 | a create or resume step failed; the message names the step |
