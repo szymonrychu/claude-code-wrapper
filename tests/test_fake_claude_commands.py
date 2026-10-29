@@ -388,3 +388,82 @@ def test_compact_summary_quotes_prior_prompts(boot, env, work):  # noqa: F811
     assert "All user messages:" in text
     assert "ccw turn marker-A first" in text and "ccw turn marker-B second" in text
     assert text.index("marker-A") < text.index("marker-B")
+
+
+def test_dialog_scenario(boot, env, work):  # noqa: F811
+    """Real samples: summaries/outA.txt (/model and /config write their echo only after ESC,
+    /config needs two ESCs) and outC.txt (/usage: "Settings dialog dismissed")."""
+    p = boot(
+        {
+            "usage": {
+                "dialog": {
+                    "footer": "Esc to cancel",
+                    "escs": 1,
+                    "dismiss_stdout": "Settings dialog dismissed",
+                }
+            },
+            "config": {
+                "dialog": {
+                    "footer": "Esc to clear",
+                    "escs": 2,
+                    "dismiss_stdout": "Disabled auto-compact",
+                }
+            },
+            "help": {"dialog": {"footer": "Esc to cancel", "escs": "never"}},
+        }
+    )
+
+    def open_dialog(line, footer):
+        since = len(p.buf)
+        p.send(f"\x1b[200~{line}\x1b[201~".encode())
+        time.sleep(0.1)
+        p.send(b"\r")
+        p.wait_for(footer, since=since)
+        p.pump(0.3)
+        assert "? for shortcuts" not in p.buf[since:]
+
+    def esc_shows(text):
+        since = len(p.buf)
+        p.send(b"\x1b")
+        p.wait_for(text, since=since)
+        return since
+
+    def lines():
+        try:
+            return transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+        except IndexError:  # no transcript file yet
+            return []
+
+    open_dialog("/usage", "Esc to cancel")
+    assert lines() == []  # nothing is written while the dialog is open
+    since = esc_shows("Settings dialog dismissed")
+    p.wait_for("? for shortcuts", since=since)
+    assert [echo_of(x) for x in lines()[:1]] == [("system", cmd_content("usage"))]
+    assert lines()[1]["type"] == "system" and lines()[1]["subtype"] == "local_command"
+    assert lines()[1]["content"] == (
+        "<local-command-stdout>Settings dialog dismissed</local-command-stdout>"
+    )
+    assert len(lines()) == 2
+
+    open_dialog("/config", "Esc to clear")
+    esc_shows("Esc to clear")  # the first ESC leaves it open: the footer is repainted
+    p.pump(0.3)
+    assert len(lines()) == 2
+    esc_shows("Disabled auto-compact")
+    assert echo_of(lines()[2]) == ("system", cmd_content("config"))
+    assert (
+        lines()[3]["content"]
+        == "<local-command-stdout>Disabled auto-compact</local-command-stdout>"
+    )
+
+    open_dialog("/help", "Esc to cancel")
+    for _ in range(3):
+        esc_shows("Esc to cancel")  # never closes: the footer stays on screen
+    p.pump(0.3)
+    assert len(lines()) == 4
+    p.send(b"typed into the dialog")
+    p.pump(0.3)
+    assert [k["key"] for k in keys(env)] == ["esc"] * 6
+    rows = inputs(env)
+    assert [r["text"] for r in rows if r["state"] == "idle"] == ["/usage", "/config", "/help"]
+    assert [r["text"] for r in rows if r["state"] == "busy"] == ["typed into the dialog"]

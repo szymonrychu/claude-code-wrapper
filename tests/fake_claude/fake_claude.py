@@ -123,9 +123,18 @@ Local slash commands
       boundary and runs no PostCompact.
     any command: "echo": "user" | "system" overrides the echo style; "echo_name" is the name the
       echo carries (claude echoes the resolved alias: /cost echoes /usage); "delay_seconds" before
-      completing (ESC during it cancels); "stdout" overrides the stdout text; "as_user": true
-      writes the stdout entry as a user line; "hang": true writes nothing after the echo until
-      ESC, then returns to idle.
+      completing (ESC during it cancels); "print_every": seconds prints "  working" on the PTY
+      that often during the delay; "footer" is a text printed on the PTY right after the echo
+      (a progress footer such as "Esc to cancel"); "stdout" overrides the stdout text;
+      "as_user": true writes the stdout entry as a user line; "hang": true writes nothing after
+      the echo until ESC, then returns to idle.
+    any name but compact: "dialog": {"footer": "Esc to cancel", "dismiss_stdout": "NAME dialog
+      dismissed", "escs": 1 | 2 | "never"} opens a dialog, as claude 2.1.304 does for /model,
+      /config, /usage, /help (summaries/outA.txt, outC.txt): it prints the footer and writes
+      nothing to the transcript until the given number of ESCs arrived (each ESC that leaves it
+      open prints the footer again; "never" never closes), then writes the echo (a system line
+      unless "echo" says "user"), the stdout entry with dismiss_stdout, and the idle footer.
+      Other bytes typed meanwhile are recorded with state "busy" and dropped.
   Input log: every submitted line is appended to $CLAUDE_CONFIG_DIR/fake-inputs.jsonl as
   {"text", "state": "idle"|"busy", "ts"}. Bytes other than ESC arriving while a turn or command
   runs are recorded with state "busy" (and dropped), so tests can prove nothing typed into a
@@ -628,15 +637,20 @@ class Fake:
             self.run_turn(text)
 
     # ---- local slash commands
-    def wait_esc(self, seconds: float | None) -> bool:
-        """Wait up to `seconds` (None: forever); True when ESC arrived first."""
+    def wait_esc(self, seconds: float | None, print_every: float | None = None) -> bool:
+        """Wait up to `seconds` (None: forever); True when ESC arrived first. With
+        `print_every`, print a progress line that often meanwhile."""
         deadline = None if seconds is None else time.monotonic() + seconds
+        tick = None if not print_every else time.monotonic() + print_every
         while True:
             left = 0.1 if deadline is None else min(0.1, deadline - time.monotonic())
             if left <= 0:
                 return False
             if self.interrupted(left):
                 return True
+            if tick is not None and time.monotonic() >= tick:
+                self.out("  working\n")
+                tick += float(print_every or 0)
 
     def run_command(self, name: str, args: str) -> None:
         listed = self.scenario.get("commands") or {}
@@ -644,20 +658,45 @@ class Fake:
             self.unknown_command(name, args)
             return
         cfg = listed.get(name) or {}
+        if name != "compact" and "dialog" in cfg:
+            self.dialog_command(name, args, cfg)
+            return
+        self.write_echo(name, args, cfg)
+        if cfg.get("footer"):
+            self.out(f"\n{cfg['footer']}\n")
+        if name == "compact":
+            self.compact_command(args, cfg)
+        else:
+            self.stdout_command(name, args, cfg)
+        self.footer()
+
+    def write_echo(self, name: str, args: str, cfg: dict, style: str | None = None) -> None:
         shown = cfg.get("echo_name", name)
         echo = (
             f"<command-name>/{shown}</command-name>{ECHO_INDENT}"
             f"<command-message>{shown}</command-message>{ECHO_INDENT}"
             f"<command-args>{args}</command-args>"
         )
-        if cfg.get("echo", "system" if name in SYSTEM_ECHO else "user") == "system":
+        default = style or ("system" if name in SYSTEM_ECHO else "user")
+        if cfg.get("echo", default) == "system":
             self.write_line({"type": "system", "subtype": "local_command", "content": echo})
         else:
             self.user_line(echo)
-        if name == "compact":
-            self.compact_command(args, cfg)
-        else:
-            self.stdout_command(name, args, cfg)
+
+    def dialog_command(self, name: str, args: str, cfg: dict) -> None:
+        """A dialog: the footer, nothing written until enough ESCs, then echo and stdout."""
+        spec = cfg["dialog"]
+        footer = spec.get("footer", "Esc to cancel")
+        needed = spec.get("escs", 1)
+        self.out(f"\n{footer}\n")
+        got = 0
+        while needed == "never" or got < int(needed):
+            self.wait_esc(None)
+            got += 1
+            if needed == "never" or got < int(needed):
+                self.out(f"\n{footer}\n")  # still open: repainted
+        self.write_echo(name, args, cfg, style="system")
+        self.local_output("stdout", spec.get("dismiss_stdout", f"{name} dialog dismissed"))
         self.footer()
 
     def unknown_command(self, name: str, args: str) -> None:
@@ -685,7 +724,7 @@ class Fake:
         if cfg.get("hang"):
             self.wait_esc(None)
             return
-        if self.wait_esc(float(cfg.get("delay_seconds", 0))):
+        if self.wait_esc(float(cfg.get("delay_seconds", 0)), cfg.get("print_every")):
             return
         words = args.split()
         default = COMMAND_STDOUT.get(name, f"{name} done")
