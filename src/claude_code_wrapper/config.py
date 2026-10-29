@@ -483,6 +483,19 @@ COMMAND_WILDCARD = "*"
 #: Commands that end, replace or move the claude session or process, hand it to another
 #: controller, or change account identity or credentials (design D5). Aliases are listed by name
 #: from claude's own alias table; `sessions.commands.deny` matches them case-insensitively.
+#: The second block (user decision 2026-10-29, names checked against claude 2.1.304) holds the
+#: commands that install or reconfigure claude or its host (heapdump "Dump the JS heap to the
+#: Desktop", plugin/plugins/marketplace "Manage Claude Code plugins", install "Install Claude Code
+#: native build", import "Import config from another AI coding agent", daemon "Manage background
+#: services and routines", schedule/routines "Create and manage scheduled remote Claude Code
+#: agents", add-dir "Add a new working directory", install-github-app, install-slack-app,
+#: terminal-setup, ide "Manage IDE integrations", memory "Edit CLAUDE.md files and memory
+#: settings"), export or report from the agent's account (export "Export the current conversation
+#: to a file or clipboard", feedback and bug "Report a bug or share your conversation"), change
+#: account consent or billing (design-consent, design-revoke, extra-usage "Renamed to
+#: /usage-credits", usage-credits "Configure usage credits"), or hand the session to another
+#: client (desktop/app "Continue the current session in Claude Desktop", remote-env "Choose the
+#: default environment for cloud agents"). A create override only extends this list.
 DEFAULT_COMMAND_DENY: tuple[str, ...] = (
     "exit",
     "quit",
@@ -510,6 +523,31 @@ DEFAULT_COMMAND_DENY: tuple[str, ...] = (
     "setup-vertex",
     "web-setup",
     "design-login",
+    "heapdump",
+    "plugin",
+    "plugins",
+    "marketplace",
+    "install",
+    "import",
+    "daemon",
+    "schedule",
+    "routines",
+    "add-dir",
+    "export",
+    "install-github-app",
+    "install-slack-app",
+    "design-consent",
+    "design-revoke",
+    "desktop",
+    "app",
+    "remote-env",
+    "feedback",
+    "bug",
+    "extra-usage",
+    "usage-credits",
+    "terminal-setup",
+    "ide",
+    "memory",
 )
 DEFAULT_CONTINUE_PROMPT = (
     "The slash commands you queued have run. Continue the task you were working on."

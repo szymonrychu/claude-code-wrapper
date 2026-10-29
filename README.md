@@ -228,7 +228,7 @@ Request body (all fields optional):
 | `template` | string | name of a configured prompt template to use as the initial prompt (instead of `prompt`) |
 | `variables` | object of string | values for the template's `{{name}}` placeholders |
 | `callbackUrl` | string | `http`/`https` URL that receives turn-terminal and question callbacks for this session (a turn's own `callbackUrl` wins) |
-| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `deny`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`, `dialog_grace_seconds`, `dialog_patterns`; all optional, unset fields inherit, a set `deny` replaces the default list); command names outside the name pattern are rejected; stored with the session and reapplied on resume |
+| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `deny`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`, `dialog_grace_seconds`, `dialog_patterns`; all optional, unset fields inherit, a set `deny` only extends the effective list, it never replaces or empties it); command names outside the name pattern are rejected; stored with the session and reapplied on resume |
 
 When neither `prompt` nor `template` is given, `prompts.initial_prompt` (if configured) is used.
 Secret `env` overrides are never persisted; resend them on resume.
@@ -2374,11 +2374,13 @@ sessions:
 `agent` and `client` take command names or `*`. `sessions.commands.deny` is checked first, for
 both, and wins over either allowlist (`*` included): its default refuses the commands that end,
 replace or move the claude session or process, hand it to another controller, or change account
-identity or credentials (`exit`, `clear`, `resume`, `cd`, `login` and the rest, aliases such as
-`quit`, `reset`, `new` and `continue` listed by name), matched case-insensitively, with `403
+identity or credentials, and the commands that install, export, reconfigure or report from the
+agent's account (`exit`, `clear`, `resume`, `cd`, `login`, `plugin`, `install`, `export`, `memory`,
+`feedback`, `usage-credits` and the rest, aliases such as `quit`, `reset`, `new`, `continue`,
+`plugins` and `app` listed by name), matched case-insensitively, with `403
 command_denied`. The keys are in the [configuration reference](#configuration-reference).
-`POST /v1/sessions` accepts a per-session `commands` override; a `deny` there replaces the default
-list. Worked examples are in
+`POST /v1/sessions` accepts a per-session `commands` override; a `deny` there only extends the
+effective list (the configured list plus the override's names), it never replaces or empties it. Worked examples are in
 [Hook examples](#hook-examples) (tatara, magic-trainer) and the workbench example config.
 
 ### Idle auto-compact
@@ -3388,7 +3390,7 @@ sessions:
 | `sessions.exit_when_dead` | boolean | `false` | - | Exit 3 through the normal shutdown when a session reaches `dead`, after writing `session <id> dead: <last_fatal or "claude exited">` to `/dev/termination-log` when writable. |
 | `sessions.commands.agent` | list of string | `[]` | - | Slash commands the main agent may queue through the ccw MCP tool: names (matching `^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$`) or `*` for every name not in `deny`. Empty allows none. |
 | `sessions.commands.client` | list of string | `[]` | - | Slash commands API clients may queue: names (same pattern as `agent`) or `*` for every name not in `deny`. Empty allows none. |
-| `sessions.commands.deny` | list of string | `["exit", "quit", "clear", "reset", "new", "resume", "continue", "branch", "fork", "cd", "background", "bg", "teleport", "tp", "stop", "remote-control", "rc", "restart", "update", "login", "logout", "upgrade", "setup-bedrock", "setup-vertex", "web-setup", "design-login"]` | - | Slash commands refused for the agent and API clients (`403 command_denied`) before either allowlist is checked, even when an allowlist names them or holds `*`: they end, replace or move the claude session or process, hand it to another controller, or change account identity or credentials. Matched case-insensitively (`/EXIT`, `/Clear` are denied); aliases are listed by name. Names match the `agent` pattern (no `*`); a set value (config or create override) replaces the default list. |
+| `sessions.commands.deny` | list of string | `["exit", "quit", "clear", "reset", "new", "resume", "continue", "branch", "fork", "cd", "background", "bg", "teleport", "tp", "stop", "remote-control", "rc", "restart", "update", "login", "logout", "upgrade", "setup-bedrock", "setup-vertex", "web-setup", "design-login", "heapdump", "plugin", "plugins", "marketplace", "install", "import", "daemon", "schedule", "routines", "add-dir", "export", "install-github-app", "install-slack-app", "design-consent", "design-revoke", "desktop", "app", "remote-env", "feedback", "bug", "extra-usage", "usage-credits", "terminal-setup", "ide", "memory"]` | - | Slash commands refused for the agent and API clients (`403 command_denied`) before either allowlist is checked, even when an allowlist names them or holds `*`: they end, replace or move the claude session or process, hand it to another controller, change account identity or credentials, or install, export, reconfigure or report from the agent's account. Matched case-insensitively (`/EXIT`, `/Clear` are denied); aliases are listed by name. Names match the `agent` pattern (no `*`); a set `sessions.commands.deny` in the server config replaces the default list, while a `deny` in a `POST /v1/sessions` `commands` override only extends the effective list (case-insensitively), so no session can lift a default name. |
 | `sessions.commands.timeout_seconds` | map of number | `{"compact": 600, "default": 60}` | - | Seconds a command may run before it fails with `timeout`; keys are a command name (same pattern as `agent`) or `default`, values > 0. |
 | `sessions.commands.continue_prompt` | string | `"The slash commands you queued have run. Continue the task you were working on."` | - | Non-empty text that resumes the agent after its queued commands ran, followed by a blank line and the `Command results: ...` line (see [`turn_resumed`](#turn_resumed)). |
 | `sessions.commands.allow_force` | boolean | `false` | - | Allow `--force` among the args of `reload-plugins`. |

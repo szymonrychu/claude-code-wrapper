@@ -169,6 +169,20 @@ class CommandQueue:
 
 
 def effective_commands(base: CommandsConfig, override: CommandsOverride | None) -> CommandsConfig:
+    """The session's commands config: the override's set fields replace the base's, except `deny`.
+
+    A per-session `deny` only extends the base list (case-insensitively, base order kept, the
+    override's new names after it); it can never shorten or empty it.
+    """
     if override is None:
         return base
-    return base.model_copy(update=override.model_dump(exclude_none=True))
+    update = override.model_dump(exclude_none=True)
+    if "deny" in update:
+        deny = list(base.deny)
+        seen = {name.lower() for name in deny}
+        for name in update["deny"]:
+            if name.lower() not in seen:
+                seen.add(name.lower())
+                deny.append(name)
+        update["deny"] = deny
+    return base.model_copy(update=update)
