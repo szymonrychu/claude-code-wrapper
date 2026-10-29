@@ -10,10 +10,13 @@ import httpx
 import pytest
 from conftest import World, jsonl
 from fastapi.testclient import TestClient
+from test_metrics import sample
+from test_session_turns import Harness
 
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.manager import CreateSessionRequest, InvalidState, SessionNotFound
+from claude_code_wrapper.metrics import Metrics
 from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.router import TurnVetoed
 from claude_code_wrapper.session import TurnRejected
@@ -44,7 +47,7 @@ class StubSession:
 
 class StubRouter:
     def __init__(self) -> None:
-        self.session = StubSession()
+        self.session: Any = StubSession()
         self.calls: list[tuple] = []
         self.raise_on: Exception | None = None
         self.interrupted: str | None = None
@@ -211,6 +214,31 @@ def test_probe_endpoints(client: TestClient, stub: StubManager) -> None:
     assert client.get(f"/v1/sessions/{SID}/probe/nope").status_code == 404
     stub.router_obj.session.reject = "booting"
     assert client.post(f"/v1/sessions/{SID}/probe").status_code == 503
+
+
+async def test_probe_refuses_slash_text(
+    stub: StubManager, tmp_path: Path, fake_claude_bin: Path, scenario_file
+) -> None:
+    # The real Session.probe behind the route: the guard is the session's, not the stub's.
+    harness = Harness(tmp_path, fake_claude_bin, scenario_file)
+    session = await harness.start()
+    metrics = Metrics()
+    cfg = Config.model_validate({"server": {"auth_token": TOKEN}})
+    stub.router_obj.session = session
+    api = TestClient(create_app(stub, cfg, metrics), headers=H)
+    try:
+        for text in ("/exit", "\x1b/exit", "/exit now"):
+            r = api.post(f"/v1/sessions/{SID}/probe", json={"text": text})
+            assert r.status_code == 422, text
+            assert r.json()["error"]["code"] == "slash_command", text
+        assert harness.writes == []
+        assert sample(metrics, "ccw_probe_outcomes_total", outcome="rejected") == 3
+        r = api.post(f"/v1/sessions/{SID}/probe", json={"text": "is /exit a command?"})
+        assert r.status_code == 202 and r.json()["state"] == "pending"
+        assert harness.writes != []
+        assert sample(metrics, "ccw_probe_outcomes_total", outcome="sent") == 1
+    finally:
+        await session.stop(grace=1.0)
 
 
 def test_transcript_ndjson_redacted(client: TestClient, stub: StubManager) -> None:

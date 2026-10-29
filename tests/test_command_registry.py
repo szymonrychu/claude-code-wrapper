@@ -74,6 +74,34 @@ DENY = [
     "web-setup",
     "design-login",
 ]
+#: Added by the 2026-10-29 user decision; `app` is desktop's alias in claude 2.1.304.
+ADDED_DENY = [
+    "heapdump",
+    "plugin",
+    "plugins",
+    "marketplace",
+    "install",
+    "import",
+    "daemon",
+    "schedule",
+    "routines",
+    "add-dir",
+    "export",
+    "install-github-app",
+    "install-slack-app",
+    "design-consent",
+    "design-revoke",
+    "desktop",
+    "app",
+    "remote-env",
+    "feedback",
+    "bug",
+    "extra-usage",
+    "usage-credits",
+    "terminal-setup",
+    "ide",
+    "memory",
+]
 BAD_NAMES = ["rm -rf", "-x", "/clear", "notes.txt"]
 
 
@@ -135,16 +163,24 @@ def test_command_names_free_form_and_wildcard(tmp_path):
 
 
 def test_deny_list_default_and_override(tmp_path):
-    assert len(DENY) == 26
-    assert list(DEFAULT_COMMAND_DENY) == DENY
-    assert Config().sessions.commands.deny == DENY
-    assert CommandsConfig().deny == DENY
-    out = effective_commands(CommandsConfig(), CommandsOverride(deny=["exit"]))
-    assert out.deny == ["exit"]
-    assert code_of(CommandQueue(out.model_copy(update={"client": ["*"]})), "clear") != "denied"
-    assert effective_commands(CommandsConfig(), CommandsOverride(client=["*"])).deny == DENY
+    assert len(DENY) == 26 and len(ADDED_DENY) == 25
+    assert list(DEFAULT_COMMAND_DENY) == DENY + ADDED_DENY
+    assert len(DEFAULT_COMMAND_DENY) == 51
+    full = DENY + ADDED_DENY
+    assert Config().sessions.commands.deny == full
+    assert CommandsConfig().deny == full
+    # an override only extends: [] and ["exit"] leave every default name, ["foo"] adds foo
+    assert effective_commands(CommandsConfig(), CommandsOverride(deny=[])).deny == full
+    assert effective_commands(CommandsConfig(), CommandsOverride(deny=["exit"])).deny == full
+    assert effective_commands(CommandsConfig(), CommandsOverride(deny=["foo"])).deny == full + [
+        "foo"
+    ]
+    assert effective_commands(CommandsConfig(), CommandsOverride(client=["*"])).deny == full
     req = CreateSessionRequest.model_validate({"commands": {"deny": ["exit", "clear"]}})
     assert req.commands.deny == ["exit", "clear"]
+    for bad in ("*", "rm -rf"):
+        with pytest.raises(ValidationError, match="invalid command name"):
+            CreateSessionRequest.model_validate({"commands": {"deny": ["exit", bad]}})
     p = tmp_path / "c.yaml"
     p.write_text("sessions:\n  commands:\n    deny: [exit]\n")
     assert load_config(p).sessions.commands.deny == ["exit"]
@@ -153,6 +189,36 @@ def test_deny_list_default_and_override(tmp_path):
         with pytest.raises(ConfigError) as e:
             load_config(p)
         assert str(e.value).startswith("sessions.commands.deny.1: invalid command name")
+
+
+def test_deny_list_covers_user_extension():
+    q = CommandQueue(CommandsConfig(agent=["*"], client=["*"]))
+    for name in ADDED_DENY:
+        assert name in DEFAULT_COMMAND_DENY, name
+        for variant in (name, name.upper(), name.capitalize(), name.title()):
+            for origin in ("agent", "client"):
+                assert code_of(q, variant, origin) == "denied", (variant, origin)
+    assert q.pending() == []
+
+
+def test_create_override_only_extends_deny():
+    base = CommandsConfig(client=["*"])
+    for deny in ([], ["exit"], ["EXIT"]):
+        out = effective_commands(base, CommandsOverride(deny=deny))
+        q = CommandQueue(out)
+        assert code_of(q, "clear") == "denied" and code_of(q, "plugin") == "denied", deny
+        assert code_of(q, "compact") is None
+    assert effective_commands(base, CommandsOverride(deny=None)).deny == list(DEFAULT_COMMAND_DENY)
+    # new names are compared case-insensitively, base order kept, the override's new names after
+    out = effective_commands(base, CommandsOverride(deny=["FOO", "Clear", "foo", "bar"]))
+    assert out.deny == [*DEFAULT_COMMAND_DENY, "FOO", "bar"]
+    assert code_of(CommandQueue(out), "foo") == "denied"
+    # a base list that is not the default is extended the same way
+    small = CommandsConfig(client=["*"], deny=["exit"])
+    assert effective_commands(small, CommandsOverride(deny=["EXIT", "x"])).deny == ["exit", "x"]
+    req = CreateSessionRequest.model_validate({"commands": {"deny": []}})
+    assert req.commands.deny == []
+    assert effective_commands(base, req.commands).deny == list(DEFAULT_COMMAND_DENY)
 
 
 def test_deny_list_covers_aliases_and_session_moving_commands():

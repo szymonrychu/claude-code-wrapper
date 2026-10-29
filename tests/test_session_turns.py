@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import time
+import unicodedata
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -302,6 +303,17 @@ SLASH_COMMANDS = [
     ("/x a\nb", ("x", "a\nb")),
     ("/x\ta", ("x", "a")),
     ("/x\na", ("x", "a")),
+    # JS whitespace splits the name and an invisible character is dropped from it (F1).
+    ("/exit\u00a0x", ("exit", "x")),
+    ("/clear\x0bx", ("clear", "x")),
+    ("/login\rx", ("login", "x")),
+    ("\ufeff/login", ("login", "")),
+    ("/exit\u3000", ("exit", "")),
+    ("\x1b/exit", ("exit", "")),
+    ("/ex\x1bit", ("exit", "")),
+    ("/ex\u200bit", ("exit", "")),
+    ("\x1c/exit", ("exit", "")),
+    ("/exit\x1cx", ("exitx", "")),
 ]
 
 SLASH_EMPTY_NAME = [
@@ -316,6 +328,10 @@ SLASH_PROSE = [
     "//x",
     "/notes.txt",
     "see /compact",
+    "x /exit",
+    "x\u00a0/exit",
+    "/etc/hosts x",
+    "/etc/hosts\u00a0x",
     "",
 ]
 
@@ -351,6 +367,7 @@ async def test_slash_rule_matches_claude_parser(harness: Harness) -> None:
         f"/{LONG_NAME}",
         "/x a\nb",
         "/review-pr 12\n\n<!-- agents-webhook:42 -->",
+        "/exit now",
         *(text for text, _ in SLASH_COMMANDS + SLASH_EMPTY_NAME + SLASH_MARKED),
     ]
     for text in refused:
@@ -366,7 +383,16 @@ async def test_slash_rule_leaves_paths_and_prose(harness: Harness) -> None:
     for text in SLASH_PROSE + SLASH_MARKED_PROSE:
         assert slash_command(text) is None, text
     # Each is accepted as a turn: the slot is taken and the text is pasted with the turn marker.
-    for text in ["/workdir/foo is broken", "/etc/hosts", "//x", "/notes.txt", "see /compact"]:
+    typed = [
+        "/workdir/foo is broken",
+        "/etc/hosts",
+        "//x",
+        "/notes.txt",
+        "see /compact",
+        "x /exit",
+        "/etc/hosts x",
+    ]
+    for text in typed:
         harness.writes.clear()
         session = await harness.start()
         record = await session.submit(text)
@@ -374,6 +400,74 @@ async def test_slash_rule_leaves_paths_and_prose(harness: Harness) -> None:
         assert session.state == "busy" and session.current_turn is record
         assert harness.writes == [paste_bytes(text + marker(record.turn_id)), b"\r"]
         await session.stop(grace=1.0)
+
+
+# Exactly JS `\s` (the set claude's `trim` and `search(/\s/)` use), spelled out here on purpose.
+JS_WHITESPACE = {
+    *range(0x09, 0x0E),
+    0x20,
+    0xA0,
+    0x1680,
+    *range(0x2000, 0x200B),
+    0x2028,
+    0x2029,
+    0x202F,
+    0x205F,
+    0x3000,
+    0xFEFF,
+}
+
+
+def _ignorable(char: str) -> bool:
+    return ord(char) not in JS_WHITESPACE and unicodedata.category(char) in ("Cc", "Cf")
+
+
+async def test_slash_whitespace_set_is_js_whitespace() -> None:
+    for code in range(0x10000):
+        if 0xD800 <= code <= 0xDFFF:
+            continue
+        char = chr(code)
+        if code in JS_WHITESPACE:
+            assert slash_command(f"/a{char}b") == ("a", "b"), hex(code)
+            assert slash_command(f"/a {char}b{char}") == ("a", "b"), hex(code)
+            assert slash_command(f"{char}/a") == ("a", ""), hex(code)
+        else:
+            # Not whitespace: never ends the name, never stripped from the args.
+            args = slash_command(f"/a b{char}")
+            assert args is not None and args[0] == "a", hex(code)
+            assert args[1] == "b" + char, hex(code)
+            if _ignorable(char):
+                assert slash_command(f"/a{char}b") == ("ab", ""), hex(code)
+    # Python's isspace extras are not JS whitespace.
+    for char in ("\x1c", "\x1d", "\x1e", "\x1f", "\x85"):
+        assert slash_command(f"/a{char}b") == ("ab", "")
+        assert slash_command(f"/a x{char}") == ("a", "x" + char)
+    # U+FEFF is JS whitespace although Python's isspace lacks it.
+    assert slash_command("/a\ufeffb") == ("a", "b")
+
+
+async def test_no_whitespace_or_invisible_char_hides_a_slash_command() -> None:
+    checked = 0
+    for code in range(0x110000):
+        char = chr(code)
+        if unicodedata.category(char) not in ("Zs", "Zl", "Zp", "Cc", "Cf"):
+            continue
+        checked += 1
+        assert slash_command(f"{char}/exit") == ("exit", ""), hex(code)
+        expected = ("exit", "x") if code in JS_WHITESPACE else ("exitx", "")
+        assert slash_command(f"/exit{char}x") == expected, hex(code)
+    assert checked > 150
+
+
+async def test_submit_refuses_hidden_slash_text(harness: Harness) -> None:
+    session = await harness.start()
+    for char in ("\x1b", "\u200b", "\ufeff", "\u00a0", "\x00", "\x7f", "\x85"):
+        for text in (f"{char}/exit", f"/ex{char}it", f"/exit{char}x"):
+            with pytest.raises(TurnRejected) as exc:
+                await session.submit(text)
+            assert exc.value.reason == "slash_command", repr(text)
+    assert harness.writes == []
+    assert harness.store.list() == []
 
 
 async def test_submit_refuses_slash_text_for_every_origin(harness: Harness) -> None:
@@ -664,6 +758,18 @@ async def test_turn_max_seconds_times_out(harness: Harness) -> None:
 
 
 # ------------------------------------------------------------------ probe
+
+
+async def test_probe_refuses_slash_text(harness: Harness) -> None:
+    session = await harness.start()
+    for text in ("/exit", "\x1b/exit", "/exit now", "/ex\u200bit", "\ufeff/login", "/"):
+        with pytest.raises(TurnRejected) as exc:
+            await session.probe(text)
+        assert exc.value.reason == "slash_command", repr(text)
+    assert harness.writes == []
+    assert session.get_probe("probe-unknown") is None
+    prose = await session.probe("is /exit a command?")
+    assert prose.state == "pending" and harness.writes != []
 
 
 async def test_probe_delivered(harness: Harness) -> None:

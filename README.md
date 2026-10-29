@@ -228,7 +228,7 @@ Request body (all fields optional):
 | `template` | string | name of a configured prompt template to use as the initial prompt (instead of `prompt`) |
 | `variables` | object of string | values for the template's `{{name}}` placeholders |
 | `callbackUrl` | string | `http`/`https` URL that receives turn-terminal and question callbacks for this session (a turn's own `callbackUrl` wins) |
-| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `deny`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`, `dialog_grace_seconds`, `dialog_patterns`; all optional, unset fields inherit, a set `deny` replaces the default list); command names outside the name pattern are rejected; stored with the session and reapplied on resume |
+| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `deny`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`, `dialog_grace_seconds`, `dialog_patterns`; all optional, unset fields inherit, a set `deny` only extends the effective list, it never replaces or empties it); command names outside the name pattern are rejected; stored with the session and reapplied on resume |
 
 When neither `prompt` nor `template` is given, `prompts.initial_prompt` (if configured) is used.
 Secret `env` overrides are never persisted; resend them on resume.
@@ -377,12 +377,19 @@ Submit a turn: paste the prompt into the TUI and return at once. Completion arri
 the SSE stream.
 
 Slash text is refused, never typed: claude would run it as a command, which ends with no Stop,
-so the turn would never complete. The rule mirrors claude's own parser. A trailing agents-common
-run marker (`\n\n<!-- agents-<kind>:<id> -->`) is dropped first; then the text, after leading
-whitespace, starts with `/` and its name (up to the first space, tab or newline) is empty or
-matches `^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$` (no length cap). So `/reload-plugins`, `/tmp`, `/` and
-`/ is root` are refused, while path-like prose (`/workdir/foo is broken`, `/etc/hosts`, `//x`,
-`/notes.txt`) and a `/compact` mid-sentence are turns. Send slash commands to
+so the turn would never complete. The rule mirrors claude's own parser (`trim`, a leading `/`, the
+name up to the first `\s`). A trailing agents-common run marker
+(`\n\n<!-- agents-<kind>:<id> -->`) is dropped first. Whitespace is exactly JavaScript `\s`:
+U+0009 to U+000D, U+0020, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F,
+U+3000 and U+FEFF (not Python's: U+001C to U+001F and U+0085 are not whitespace). Leading
+whitespace and every other control or format character (Unicode categories Cc and Cf: ESC, NUL,
+DEL, C1 controls, zero-width and bidi characters) are skipped, and the text must then start with
+`/`. The name runs up to the first whitespace character with the Cc and Cf characters dropped from
+it (`/ex<ESC>it` and `/ex<U+200B>it` name `exit`), and it is empty or matches
+`^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$` (no length cap). The args are the rest, stripped of whitespace
+only. So `/reload-plugins`, `/exit<U+00A0>now`, `<U+FEFF>/login`, `/tmp`, `/` and `/ is root` are
+refused, while path-like prose (`/workdir/foo is broken`, `/etc/hosts`, `//x`, `/notes.txt`) and
+`/compact` or `x /exit` mid-sentence are turns. Send slash commands to
 `POST /v1/sessions/{id}/commands`. The refusal comes before any `onTurn` hook fires or any
 `files` entry is written, for every origin (client, initial, peer). A slash initial prompt
 (`prompt`, `template` or `prompts.initial_prompt`) is queued as a client command
@@ -420,7 +427,7 @@ Response `202`:
 | 404 | `not_found` | unknown session |
 | 409 | `busy` | a turn is already running |
 | 413 | `too_large` | prompt over `limits.max_prompt_bytes`, `metadata` over 16 KiB, or `files` over the per-file or count limits |
-| 422 | `slash_command` | the text is a slash command; send it to `POST /v1/sessions/{id}/commands` |
+| 422 | `slash_command` | the text is a slash command; send it to `POST /v1/sessions/{id}/commands` (the same code answers `POST /v1/sessions/{id}/probe`) |
 | 422 | `invalid_request` | invalid body (including `metadata` that is not an object), or `unknown_template`, `unknown_variable`, `missing_variable` |
 | 503 | `booting` | the session is still booting |
 | 503 | `dead` | the session is stopped, failed or dead |
@@ -615,11 +622,11 @@ Auth: bearer. Path parameter: `id`. Request body (optional):
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `text` | string | no | probe text; the default asks Claude to reply with the configured token and continue |
+| `text` | string | no | probe text; the default asks Claude to reply with the configured token and continue. Slash text is refused with the same rule as a turn (see [`POST /v1/sessions/{id}/turns`](#post-v1sessionsidturns)), since claude would run it as a command |
 
 Response `202`: `{"probe_id": "probe-1k9x2n7c1a5d", "state": "pending"}`.
 
-Errors: `401 unauthorized`, `404 not_found`, `503 booting`, `503 dead`.
+Errors: `401 unauthorized`, `404 not_found`, `422 slash_command` (the text is a slash command; nothing is pasted and the probe counts as `rejected`), `503 booting`, `503 dead`.
 
 ### `GET /v1/sessions/{id}/probe/{probe_id}`
 
@@ -2367,11 +2374,13 @@ sessions:
 `agent` and `client` take command names or `*`. `sessions.commands.deny` is checked first, for
 both, and wins over either allowlist (`*` included): its default refuses the commands that end,
 replace or move the claude session or process, hand it to another controller, or change account
-identity or credentials (`exit`, `clear`, `resume`, `cd`, `login` and the rest, aliases such as
-`quit`, `reset`, `new` and `continue` listed by name), matched case-insensitively, with `403
+identity or credentials, and the commands that install, export, reconfigure or report from the
+agent's account (`exit`, `clear`, `resume`, `cd`, `login`, `plugin`, `install`, `export`, `memory`,
+`feedback`, `usage-credits` and the rest, aliases such as `quit`, `reset`, `new`, `continue`,
+`plugins` and `app` listed by name), matched case-insensitively, with `403
 command_denied`. The keys are in the [configuration reference](#configuration-reference).
-`POST /v1/sessions` accepts a per-session `commands` override; a `deny` there replaces the default
-list. Worked examples are in
+`POST /v1/sessions` accepts a per-session `commands` override; a `deny` there only extends the
+effective list (the configured list plus the override's names), it never replaces or empties it. Worked examples are in
 [Hook examples](#hook-examples) (tatara, magic-trainer) and the workbench example config.
 
 ### Idle auto-compact
@@ -2660,7 +2669,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `rate_limited` | 429 | a peer sender over `peers.max_messages_per_minute`, or the peer nonce cache is full |
 | `notes_disabled` | 409 | `POST /v1/sessions/{id}/notes` while `notes.enabled` is false |
 | `invalid_command` | 422 | an empty or invalid command name, invalid `args`, or `--force` not allowed |
-| `slash_command` | 422 | a turn's text is a slash command (claude's parser would run it, so it is never typed as a turn); slash commands go to `POST /v1/sessions/{id}/commands` |
+| `slash_command` | 422 | a turn's or probe's text is a slash command (claude's parser would run it, so it is never typed as a turn or probe); slash commands go to `POST /v1/sessions/{id}/commands` |
 | `command_queue_full` | 429 | the session already has the maximum of queued commands |
 | `too_many_sessions` | 429 | `sessions.max_sessions` reached |
 | `create_failed` | 500 | a create or resume step failed; the message names the step |
@@ -3381,7 +3390,7 @@ sessions:
 | `sessions.exit_when_dead` | boolean | `false` | - | Exit 3 through the normal shutdown when a session reaches `dead`, after writing `session <id> dead: <last_fatal or "claude exited">` to `/dev/termination-log` when writable. |
 | `sessions.commands.agent` | list of string | `[]` | - | Slash commands the main agent may queue through the ccw MCP tool: names (matching `^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$`) or `*` for every name not in `deny`. Empty allows none. |
 | `sessions.commands.client` | list of string | `[]` | - | Slash commands API clients may queue: names (same pattern as `agent`) or `*` for every name not in `deny`. Empty allows none. |
-| `sessions.commands.deny` | list of string | `["exit", "quit", "clear", "reset", "new", "resume", "continue", "branch", "fork", "cd", "background", "bg", "teleport", "tp", "stop", "remote-control", "rc", "restart", "update", "login", "logout", "upgrade", "setup-bedrock", "setup-vertex", "web-setup", "design-login"]` | - | Slash commands refused for the agent and API clients (`403 command_denied`) before either allowlist is checked, even when an allowlist names them or holds `*`: they end, replace or move the claude session or process, hand it to another controller, or change account identity or credentials. Matched case-insensitively (`/EXIT`, `/Clear` are denied); aliases are listed by name. Names match the `agent` pattern (no `*`); a set value (config or create override) replaces the default list. |
+| `sessions.commands.deny` | list of string | `["exit", "quit", "clear", "reset", "new", "resume", "continue", "branch", "fork", "cd", "background", "bg", "teleport", "tp", "stop", "remote-control", "rc", "restart", "update", "login", "logout", "upgrade", "setup-bedrock", "setup-vertex", "web-setup", "design-login", "heapdump", "plugin", "plugins", "marketplace", "install", "import", "daemon", "schedule", "routines", "add-dir", "export", "install-github-app", "install-slack-app", "design-consent", "design-revoke", "desktop", "app", "remote-env", "feedback", "bug", "extra-usage", "usage-credits", "terminal-setup", "ide", "memory"]` | - | Slash commands refused for the agent and API clients (`403 command_denied`) before either allowlist is checked, even when an allowlist names them or holds `*`: they end, replace or move the claude session or process, hand it to another controller, change account identity or credentials, or install, export, reconfigure or report from the agent's account. Matched case-insensitively (`/EXIT`, `/Clear` are denied); aliases are listed by name. Names match the `agent` pattern (no `*`); a set `sessions.commands.deny` in the server config replaces the default list, while a `deny` in a `POST /v1/sessions` `commands` override only extends the effective list (case-insensitively), so no session can lift a default name. |
 | `sessions.commands.timeout_seconds` | map of number | `{"compact": 600, "default": 60}` | - | Seconds a command may run before it fails with `timeout`; keys are a command name (same pattern as `agent`) or `default`, values > 0. |
 | `sessions.commands.continue_prompt` | string | `"The slash commands you queued have run. Continue the task you were working on."` | - | Non-empty text that resumes the agent after its queued commands ran, followed by a blank line and the `Command results: ...` line (see [`turn_resumed`](#turn_resumed)). |
 | `sessions.commands.allow_force` | boolean | `false` | - | Allow `--force` among the args of `reload-plugins`. |

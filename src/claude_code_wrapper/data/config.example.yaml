@@ -175,7 +175,7 @@ sessions:
   # commands:
   #   agent: []                # command names the main agent may queue through the ccw MCP tool, or "*"
   #   client: []               # command names API clients may queue through the public commands endpoint, or "*"
-  #   deny: [exit, quit, clear, reset, new, resume, continue, branch, fork, cd, background, bg, teleport, tp, stop, remote-control, rc, restart, update, login, logout, upgrade, setup-bedrock, setup-vertex, web-setup, design-login]   # refused (403 command_denied) even when an allowlist holds "*"; case-insensitive; setting it replaces this list
+  #   deny: [exit, quit, clear, reset, new, resume, continue, branch, fork, cd, background, bg, teleport, tp, stop, remote-control, rc, restart, update, login, logout, upgrade, setup-bedrock, setup-vertex, web-setup, design-login, heapdump, plugin, plugins, marketplace, install, import, daemon, schedule, routines, add-dir, export, install-github-app, install-slack-app, design-consent, design-revoke, desktop, app, remote-env, feedback, bug, extra-usage, usage-credits, terminal-setup, ide, memory]   # refused (403 command_denied) even when an allowlist holds "*"; case-insensitive; setting it here replaces this list, a create override only extends it
   #   timeout_seconds: {compact: 600, default: 60}   # one deadline per command, counted from when it starts; fails with timeout
   #   continue_prompt: "The slash commands you queued have run. Continue the task you were working on."   # resumes the agent after its commands ran
   #   allow_force: false       # allow force on reload-plugins (typed as --force)
