@@ -23,7 +23,7 @@ ENTRY = {
     "alwaysLoad": True,
 }
 ALLOW = "mcp__ccw__command"
-SELF = {"name": "compact", "params": {"instructions": "keep the plan"}}
+SELF = {"name": "compact", "args": "keep the plan"}
 
 
 def seeded(tmp_path: Path, **kw) -> dict:

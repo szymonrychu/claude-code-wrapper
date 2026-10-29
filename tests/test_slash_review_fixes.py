@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
 import pytest
+from conftest import World
+from test_command_runner import finished, inputs, start, types
 
-from claude_code_wrapper.commands import (
-    BUILTIN_COMMANDS,
-    CommandRejected,
-    params_schema,
-    validate_params,
-)
+from claude_code_wrapper.commands import MAX_COMMAND_ARGS, CommandRejected, validate
+from claude_code_wrapper.pty_proc import paste_bytes
 
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text()
@@ -19,48 +16,19 @@ EXAMPLE = (ROOT / "src/claude_code_wrapper/data/config.example.yaml").read_text(
 
 
 @pytest.mark.parametrize(
-    "server", ["gh\n/compact", "gh\r/exit", "a b", "a;b", "--force", "x" * 65, "", "a b"]
+    "bad",
+    ["x\r/exit", "x\x85y", "x\x1by", "x\x1b[201~", "x\x00y", "a\u2028b", "a\u2029b", "a" * 20001],
 )
-def test_mcp_server_param_rejected(server):
+def test_args_reject_control_chars_and_length(bad):
     with pytest.raises(CommandRejected) as e:
-        validate_params("mcp", {"action": "reconnect", "server": server}, allow_force=False)
-    assert e.value.code == "invalid_params"
+        validate("compact", bad, allow_force=True)
+    assert e.value.code == "invalid_command"
 
 
-def test_mcp_server_param_accepted():
-    for ok in ("gh", "my.server_1:x-y", "a" * 64):
-        validate_params("mcp", {"action": "reconnect", "server": ok}, allow_force=False)
-
-
-def test_every_string_param_rejects_control_chars():
-    for name, spec in BUILTIN_COMMANDS.items():
-        for key, (kind, _d, _r) in spec.items():
-            if kind != "string":
-                continue
-            base = {"action": "reconnect"} if name == "mcp" else {}
-            with pytest.raises(CommandRejected):
-                validate_params(name, {**base, key: "a\n/exit"}, allow_force=False)
-            with pytest.raises(CommandRejected):
-                validate_params(name, {**base, key: "a" * 5000}, allow_force=False)
-
-
-def test_action_with_newline_rejected():
-    with pytest.raises(CommandRejected):
-        validate_params("mcp", {"action": "reconnect\n/exit"}, allow_force=False)
-
-
-def test_params_schema_is_flat():
-    s = params_schema(["compact", "mcp", "reload-plugins"])
-    json.dumps(s)
-    assert not {"oneOf", "anyOf", "allOf"} & set(s)
-    assert s["properties"]["name"]["enum"] == ["compact", "mcp", "reload-plugins"]
-    assert s["additionalProperties"] is False and s["required"] == ["name"]
-    p = s["properties"]["params"]
-    assert p["type"] == "object" and p["additionalProperties"] is False
-    assert set(p["properties"]) == {"instructions", "force", "action", "server"}
-    assert "compact" in p["properties"]["instructions"]["description"]
-    assert "mcp" in p["properties"]["server"]["description"]
-    assert set(params_schema(["compact"])["properties"]["params"]["properties"]) == {"instructions"}
+def test_args_keep_newlines_and_tabs():
+    assert validate("compact", "x\n/exit", allow_force=False) == "x\n/exit"
+    assert validate("mcp", "reconnect\tgh", allow_force=False) == "reconnect\tgh"
+    assert validate("compact", "a" * MAX_COMMAND_ARGS, allow_force=False) == "a" * 20000
 
 
 def test_readme_command_events_use_id():
@@ -82,39 +50,48 @@ def test_example_config_commands_client_comment():
     assert "/sessions/" not in line and "public commands endpoint" in line
 
 
-@pytest.mark.parametrize("bad", ["x\n/exit", "x\r/exit", "x y", "x\x85y", "x\x1by", "a" * 5000])
-def test_string_params_reject_control_chars_and_bad_server(bad):
-    with pytest.raises(CommandRejected):
-        validate_params("compact", {"instructions": bad}, allow_force=True)
-    with pytest.raises(CommandRejected):
-        validate_params("mcp", {"action": "reconnect", "server": bad}, allow_force=True)
-    for server in ("-x", "a b", "a/b", ""):
-        with pytest.raises(CommandRejected):
-            validate_params("mcp", {"action": "reconnect", "server": server}, allow_force=True)
+async def test_args_smuggling_never_typed(world: World):
+    m, sid, _ = await start(world)
+    router = m.router(sid)
+    writes: list[bytes] = []
+    pty = router.session.pty
+    write_locked = pty._write_locked
+
+    async def recording(data: bytes) -> None:
+        writes.append(bytes(data))
+        await write_locked(data)
+
+    pty._write_locked = recording
+    rec = router.request_command("compact", "keep\n/exit", origin="client")
+    await finished(world, rec)
+    assert rec.state == "completed" and rec.args == "keep\n/exit"
+    await world.until(lambda: router.session.state == "ready")
+    # one paste and one CR: the fake took one submitted line, and /exit never ran on its own
+    assert writes == [paste_bytes("/compact keep\n/exit"), b"\r"]
+    assert [i["text"] for i in inputs(world, sid)] == ["/compact keep\n/exit"]
+    assert router.session.state == "ready"
+    before = types(world, sid)
+    for bad in ("x\x1b[201~\r/exit", "x\x1b"):
+        with pytest.raises(CommandRejected) as e:
+            router.request_command("compact", bad, origin="client")
+        assert e.value.code == "invalid_command"
+    assert writes == [paste_bytes("/compact keep\n/exit"), b"\r"]
+    assert len(inputs(world, sid)) == 1 and types(world, sid) == before
+    assert router.commands.list() == [rec]
 
 
-def test_param_smuggling_never_typed():
-    from claude_code_wrapper.commands import CommandQueue
-    from claude_code_wrapper.config import CommandsConfig
+async def test_tool_schema_is_flat():
+    import test_mcp_server as t
 
-    q = CommandQueue(CommandsConfig(agent=list(BUILTIN_COMMANDS), client=list(BUILTIN_COMMANDS)))
-    attempts = [
-        ("compact", {"instructions": "ok\n/exit"}),
-        ("mcp", {"action": "reconnect", "server": "gh\n/compact"}),
-        ("mcp", {"action": "reconnect", "server": "gh --force"}),
-        ("reload-plugins", {"force": True}),
-    ]
-    for name, params in attempts:
-        with pytest.raises(CommandRejected):
-            q.request(name, params, origin="agent", turn_id="t1")
-    assert q.pending() == [] and q.list() == []
-
-
-def test_tool_schema_is_flat():
-    s = params_schema(list(BUILTIN_COMMANDS))
-    assert not {"oneOf", "anyOf", "allOf"} & set(s)
-    assert set(s["properties"]) == {"name", "params"}
-    assert s["properties"]["params"]["additionalProperties"] is False
+    for agent in (["compact", "mcp", "reload-plugins"], ["*"]):
+        async with t.client(t.FakeManager(agent)) as c:
+            r = await c.post("/internal/mcp", json=t.rpc("tools/list"), headers=t.H)
+        (tool,) = r.json()["result"]["tools"]
+        s = tool["inputSchema"]
+        assert not {"oneOf", "anyOf", "allOf"} & set(s)
+        assert set(s["properties"]) == {"name", "args"}
+        assert s["properties"]["args"]["type"] == "string"
+        assert s["additionalProperties"] is False and s["required"] == ["name"]
 
 
 async def test_unknown_top_level_argument_rejected():
@@ -128,5 +105,5 @@ async def test_unknown_top_level_argument_rejected():
             headers=t.H,
         )
     res = r.json()["result"]
-    assert res["isError"] is True and "params" in res["content"][0]["text"]
+    assert res["isError"] is True and "allowed: name, args" in res["content"][0]["text"]
     assert m.r.calls == []

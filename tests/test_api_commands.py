@@ -46,18 +46,35 @@ async def settled(client: httpx.AsyncClient, url: str) -> dict:
 async def test_post_command_returns_202_record(world):
     m, sid, router, c = await boot(world)
     async with c:
-        r = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "reload-plugins"})
+        url = f"/v1/sessions/{sid}/commands"
+        r = await c.post(url, json={"name": "mcp", "args": "reconnect github"})
         assert r.status_code == 202
         body = r.json()
-        assert body["origin"] == "client" and body["name"] == "reload-plugins"
-        assert body["args"] == {} and body["id"].startswith("cmd_")
+        assert body["origin"] == "client" and body["name"] == "mcp"
+        assert body["args"] == "reconnect github" and body["id"].startswith("cmd_")
         # idle session: it runs at once and the record read back shows the final state
-        final = await settled(c, f"/v1/sessions/{sid}/commands/{body['id']}")
-        assert final["state"] == "completed"
-        extra = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "compact", "x": 1})
+        final = await settled(c, f"{url}/{body['id']}")
+        assert final["state"] == "completed" and final["args"] == "reconnect github"
+        assert final["output"] == "Reconnected to github"
+        bare = await c.post(url, json={"name": "reload-plugins"})
+        assert bare.status_code == 202 and bare.json()["args"] == ""
+        await settled(c, f"{url}/{bare.json()['id']}")
+        extra = await c.post(url, json={"name": "compact", "x": 1})
         assert extra.status_code == 422 and extra.json()["error"]["code"] == "invalid_request"
-        bad = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "compact", "args": "x"})
-        assert bad.status_code == 422
+
+
+async def test_post_command_args_must_be_string(world):
+    m, sid, router, c = await boot(world, client=["*"])
+    async with c:
+        url = f"/v1/sessions/{sid}/commands"
+        for args in ({"instructions": "x"}, ["x"], 5, True, None):
+            r = await c.post(url, json={"name": "compact", "args": args})
+            assert r.status_code == 422, args
+            assert r.json()["error"]["code"] == "invalid_request", args
+        r = await c.post(url, json={"name": "", "args": "x"})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "invalid_command"
+        assert "/command [args]" in r.json()["error"]["message"]
+        assert router.commands.list() == []
 
 
 async def test_post_command_not_allowed_403(world):
@@ -91,12 +108,15 @@ async def test_post_command_bad_args_422(world):
     m, sid, router, c = await boot(world, client=["*"])
     async with c:
         for body in (
-            {"name": "compact", "args": {"nope": 1}},
-            {"name": "reload-plugins", "args": {"force": True}},
-            {"name": "nonsense"},
+            {"name": "compact", "args": "keep\x1b[201~\r/exit"},
+            {"name": "compact", "args": "x" * 20001},
+            {"name": "reload-plugins", "args": "--force"},
+            {"name": "notes.txt"},
+            {"name": "a/b", "args": "x"},
         ):
             r = await c.post(f"/v1/sessions/{sid}/commands", json=body)
             assert r.status_code == 422 and r.json()["error"]["code"] == "invalid_command"
+        assert router.commands.list() == []
 
 
 async def test_post_command_queue_full_429(world):
@@ -109,9 +129,7 @@ async def test_post_command_queue_full_429(world):
             assert (
                 await c.post(f"/v1/sessions/{sid}/commands", json={"name": n})
             ).status_code == 202
-        r = await c.post(
-            f"/v1/sessions/{sid}/commands", json={"name": "mcp", "args": {"action": "reconnect"}}
-        )
+        r = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "mcp", "args": "reconnect"})
         assert r.status_code == 429 and r.json()["error"]["code"] == "command_queue_full"
 
 

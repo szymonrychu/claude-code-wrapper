@@ -514,8 +514,8 @@ Errors: `401 unauthorized`, `404 not_found` (unknown session or turn).
 
 ### `POST /v1/sessions/{id}/commands`
 
-Queue an allowlisted Claude Code slash command (`compact`, `reload-plugins`, `reload-skills`, `mcp`,
-`context`) without typing into the session. The command uses the same queue and lifecycle as the
+Queue an allowlisted Claude Code slash command, a name plus free-text args, without typing into the
+session. The command uses the same queue and lifecycle as the
 agent's `command` MCP tool, with origin `client`, so the session's `sessions.commands.client`
 allowlist applies. On an idle session it runs at once; during a turn it waits for that turn's Stop
 and the turn is then resumed.
@@ -523,11 +523,15 @@ and the turn is then resumed.
 Auth: bearer. Body (unknown fields are rejected):
 
 ```json
-{"name": "compact", "args": {"instructions": "keep the API design decisions"}}
+{"name": "compact", "args": "keep the API design decisions"}
 ```
 
-`args` is an object (default `{}`); its keys depend on `name`. Queueing a name that is already
-queued returns the existing record.
+`name` is the command without the leading `/` (`^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$`); `args` is a string
+(default `""`), the text typed after the name, and may span lines and hold tabs (`\r\n` becomes
+`\n`, surrounding whitespace is stripped, at most 20000 characters, no other control character).
+The line `/name args` is typed as one bracketed paste and one CR, so a later line of `args` that
+starts with `/` stays part of the args. Queueing the same name with the same args while it is
+still queued returns the existing record; other args queue a second record.
 
 Response `202`: the command record.
 
@@ -535,7 +539,7 @@ Response `202`: the command record.
 {
   "id": "cmd_3f9a1c0b7d42",
   "name": "compact",
-  "args": {"instructions": "keep the API design decisions"},
+  "args": "keep the API design decisions",
   "origin": "client",
   "turn_id": "turn-1k9x2m0q4zw8",
   "state": "queued",
@@ -552,8 +556,9 @@ Response `202`: the command record.
 when it was queued (`null` when idle).
 
 Errors: `401 unauthorized`, `404 not_found` (unknown session), `403 command_denied` (in
-`sessions.commands.deny`, checked first), `403 command_not_allowed` (not in the client allowlist), `422 invalid_command` (unknown command, bad `args`, or `force` without
-`commands.allow_force`), `422 invalid_request` (bad body), `429 command_queue_full`, `409 dead`
+`sessions.commands.deny`, checked first), `403 command_not_allowed` (not in the client allowlist), `422 invalid_command` (an empty or invalid name, invalid `args`, or `--force` in the
+args of `reload-plugins` without `commands.allow_force`), `422 invalid_request` (bad body, including
+`args` that is not a string), `429 command_queue_full`, `409 dead`
 or `409 booting` (the session cannot take commands now).
 
 ### `GET /v1/sessions/{id}/commands`
@@ -1178,15 +1183,17 @@ Methods: `initialize` (echoes the client's `protocolVersion` when it is `2025-11
 `2025-06-18` or `2025-03-26`, else `2025-06-18`; returns `instructions`), `ping` (`{}`),
 `tools/list`, `tools/call`. Every other method, including `server/discover`, answers `-32601`.
 
-Tool `command`: `inputSchema` is `{name: enum of the session's agent allowlist, params?}` with
-`additionalProperties: false` (the allowlist is `sessions.commands.agent`, per-session override
-included). An empty allowlist lists no tools.
+Tool `command`: `inputSchema` is `{name, args?}` with `additionalProperties: false`: `name` is an
+enum of the session's agent allowlist (`sessions.commands.agent`, per-session override included),
+or a plain string when the allowlist holds `*`; `args` is a string. An empty allowlist lists no
+tools.
 
 Success (`isError: false`) text: `Queued <id>. It runs when you end this turn; end your turn now
 with a one-line status. You will be resumed automatically.`
 
-Errors: a rejected command (unknown params, not allowed, queue full, force not allowed, invalid
-state) returns `isError: true` with the reason; an empty allowlist returns `isError: true` "ccw
+Errors: a rejected command (invalid name or args, denied, not allowed, queue full, force not
+allowed, invalid state), an argument other than `name` and `args`, or `args` that is not a string
+returns `isError: true` with the reason; an empty allowlist returns `isError: true` "ccw
 commands are disabled for this session"; any other tool name answers JSON-RPC error `-32602`.
 
 Tools `peers` and `send_message` are listed and callable only with `peers.enabled` (otherwise they
@@ -1567,25 +1574,25 @@ data: {"seq":21,"ts":"2026-10-20T09:01:06.100Z","session_id":"ses_3f9a1c0b7d42",
 
 Emitted when a slash command is accepted into the session's command queue.
 
-`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args`, `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
+`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args` (string), `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
 
 ### `command_started`
 
 Emitted when the command is typed into Claude Code at an idle prompt.
 
-`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args`, `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
+`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args` (string), `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
 
 ### `command_completed`
 
 Emitted when the command finished successfully.
 
-`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args`, `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
+`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args` (string), `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
 
 ### `command_failed`
 
 Emitted when the command failed (including `vetoed` by an `onCommand` hook) or was cancelled.
 
-`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args`, `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
+`data`: `{record}`, the CommandRecord fields (`id`, `name`, `args` (string), `origin`, `state`, `turn_id`, `result`, `output`, `error` and the timestamps).
 
 ### `compacting`
 
@@ -1957,7 +1964,8 @@ Trigger: the router, when an interrupt request is accepted. Cannot veto. `data`:
 ### `onCommand`
 
 Trigger: a queued slash command is about to run. Awaited; can veto: a `deny` fails the command
-with error `vetoed`. `data`: `command_id`, `name`, `args`, `origin`, `turn_id`.
+with error `vetoed`. `data`: `command_id`, `name`, `args` (the string typed after the name), `origin`,
+`turn_id`.
 
 ### `onCommandComplete`
 
@@ -2182,8 +2190,8 @@ as `${VAR:-default}` and no secret lives in a file. Tests:
 
 ## Slash commands
 
-ccw can type allowlisted Claude Code slash commands (`/compact`, `/reload-plugins`, `/reload-skills`,
-`/mcp reconnect`, `/context`) into a session's PTY on behalf of the agent or of an API client, so a
+ccw can type allowlisted Claude Code slash commands with free-text args (`/compact keep the plan`,
+`/reload-plugins`, `/mcp reconnect github`, `/context`) into a session's PTY on behalf of the agent or of an API client, so a
 long-lived agent can manage its own context and pick up plugin changes without a human at the
 keyboard. Nothing is enabled until `sessions.commands.agent` or `sessions.commands.client` lists
 commands. `sessions.auto_compact` optionally compacts an idle session.
@@ -2205,20 +2213,17 @@ environment, so the token is never written to a file. An empty agent allowlist r
 is a config error while the allowlist is non-empty). See [`POST /internal/mcp`](#post-internalmcp)
 for the protocol.
 
-There is one tool, `command`, with input `{name, params?}`:
+There is one tool, `command`, with input `{name, args?}`, typed as `/name args`:
 
-| `name` | `params` | Typed |
+| Argument | Type | Meaning |
 |---|---|---|
-| `compact` | `instructions` (string, optional, one line, at most 2000 characters) | `/compact [instructions]` |
-| `reload-plugins` | `force` (boolean, optional; only honoured when `allow_force` is set) | `/reload-plugins [--force]` |
-| `reload-skills` | none | `/reload-skills` |
-| `mcp` | `action: "reconnect"` (required), `server` (string, optional, default all) | `/mcp reconnect <server or all>` |
-| `context` | none | `/context` |
+| `name` | string, required | the command without the leading `/`: an enum of the session's agent allowlist, or any name when the allowlist holds `*` |
+| `args` | string, optional | the text typed after the name, for example `keep the plan` for `compact`, `--force` for `reload-plugins`, `reconnect github` for `mcp`; may span lines, at most 20000 characters |
 
-`name` is limited to the session's agent allowlist; unknown params are rejected with a tool error
-naming the allowed ones. Success text: `Queued <id>. It runs when you end this turn; end your turn
+Success text: `Queued <id>. It runs when you end this turn; end your turn
 now with a one-line status. You will be resumed automatically.` Errors come back as `isError: true`
-tool results: not allowed, unknown params, queue full (4 pending), `force` without `allow_force`,
+tool results: invalid name or args, denied, not allowed, queue full (4 pending), `--force` in the
+args of `reload-plugins` without `allow_force`, an argument other than `name` and `args`,
 "ccw commands are disabled for this session" when the allowlist is empty. Only the main agent may
 call the tool: a call from a subagent or teammate is denied before it reaches ccw, and nothing is
 queued. The deny reason is `ccw tools are available to the main agent only; subagents and
@@ -2226,13 +2231,16 @@ teammates cannot call mcp__ccw__* tools.` and covers every `mcp__ccw__*` tool, i
 and `send_message` when `peers.enabled`. That restriction is enforced by the PreToolUse relay on `mcp__ccw__command`, not by the
 endpoint: a subagent's Bash can call `/internal/mcp` directly with the session token that is in
 claude's environment. It can only queue commands on the allowlist, which the trust model accepts.
-Every string param must be one line without control characters (at most 2000 characters), and
-`mcp` `server` must match `^[A-Za-z0-9_.:-]{1,64}$`; extra tool arguments beyond `name` and
-`params` are an error.
+`args` may hold newlines and tabs (`\r\n` becomes `\n`, surrounding whitespace is stripped) and is
+at most 20000 characters; any other control character (ESC included, so args cannot end the
+bracketed paste) and U+2028/U+2029 are refused as invalid. The line is typed as one paste and one
+CR, so a later line of `args` that starts with `/` is part of the args, never a command of its own.
 
 ### Commands endpoint
 
-Clients queue the same commands through the public API, limited by `sessions.commands.client`:
+Clients queue the same commands through the public API, limited by `sessions.commands.client`. The
+body is `{name, args}`: `args` is the same string as the tool's (default `""`), multi-line args up
+to 20000 characters included:
 
 - [`POST /v1/sessions/{id}/commands`](#post-v1sessionsidcommands) queues a command (`202` with the record).
 - [`GET /v1/sessions/{id}/commands`](#get-v1sessionsidcommands) lists the session's recent commands.
@@ -2240,7 +2248,7 @@ Clients queue the same commands through the public API, limited by `sessions.com
 
 ```bash
 curl -X POST -H "Authorization: Bearer $CCW_AUTH_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name": "compact", "args": {"instructions": "keep the API design decisions"}}' \
+  -d '{"name": "compact", "args": "keep the API design decisions"}' \
   http://localhost:8080/v1/sessions/$SESSION/commands
 ```
 
@@ -2249,8 +2257,8 @@ Progress is visible as the `command_queued`, `command_started`, `command_complet
 
 ### Lifecycle
 
-1. **Queued during a turn.** The command waits in the session's queue (a duplicate name returns the
-   existing record).
+1. **Queued during a turn.** The command waits in the session's queue (the same name with the same
+   args returns the existing record; other args queue a second one).
 2. **Runs at Stop.** When the turn reaches its Stop, ccw answers the Stop hook with allow, emits
    [`turn_deferred`](#turn_deferred) with `reason: "command"`, waits for a quiet screen
    (`quiet_seconds`), fires `onCommand` (a blocking deny fails the command as `vetoed`), types the
@@ -2280,7 +2288,7 @@ sessions:
     # deny: [exit, quit, clear, ...]       # default list: see the configuration reference
     timeout_seconds: {compact: 600, default: 60}
     continue_prompt: "The slash commands you queued have run. Continue the task you were working on."
-    allow_force: false                     # true lets reload-plugins take force
+    allow_force: false                     # true lets reload-plugins take --force
     quiet_seconds: 1.5
   auto_compact:
     idle_seconds: 1800
@@ -2300,8 +2308,8 @@ list. Worked examples are in
 
 ### Idle auto-compact
 
-`sessions.auto_compact.idle_seconds` greater than 0 queues one `/compact` (with `instructions`,
-when set) after a session stayed idle that long following a turn. It fires once per idle gap: the
+`sessions.auto_compact.idle_seconds` greater than 0 queues one `/compact` (with `instructions` as
+its args, when set) after a session stayed idle that long following a turn. It fires once per idle gap: the
 next turn end re-arms it. With `min_context_tokens` it is skipped while the last context is smaller.
 Its events and everything emitted while it runs do not count as activity, so it never keeps a
 session alive against `idle_timeout_seconds`; `idle_seconds` must be below `idle_timeout_seconds`
@@ -2312,9 +2320,10 @@ when both are set. Claude Code's own automatic and idle compaction is left as is
 
 - Session-replacing commands (`/clear`, `/resume`), dialog commands and skills are not supported;
   the five names above are the whole set.
-- ccw never adds `--force` by itself. `reload-plugins` takes `force` only when `allow_force` is
-  true; otherwise the call is rejected.
-- Compact instructions are one line without control characters, because they are typed into the PTY.
+- ccw never adds `--force` by itself. `--force` among the args of `reload-plugins` is accepted only
+  when `allow_force` is true; otherwise the call is rejected.
+- Args may span lines (at most 20000 characters) but hold no control character other than newline
+  and tab, because they are typed into the PTY in one bracketed paste.
 - At most 4 commands are queued per session.
 - Completion is detected, not assumed: for `compact` the `PostCompact` hook relay or the
   `compact_boundary` transcript entry (the known failure messages fail it); for the others the
@@ -2559,7 +2568,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `inbox_full` | 429 | the target session's peer inbox is at `peers.inbox_max` |
 | `rate_limited` | 429 | a peer sender over `peers.max_messages_per_minute`, or the peer nonce cache is full |
 | `notes_disabled` | 409 | `POST /v1/sessions/{id}/notes` while `notes.enabled` is false |
-| `invalid_command` | 422 | unknown command, invalid `args`, or `force` not allowed |
+| `invalid_command` | 422 | an empty or invalid command name, invalid `args`, or `--force` not allowed |
 | `command_queue_full` | 429 | the session already has the maximum of queued commands |
 | `too_many_sessions` | 429 | `sessions.max_sessions` reached |
 | `create_failed` | 500 | a create or resume step failed; the message names the step |
@@ -3283,7 +3292,7 @@ sessions:
 | `sessions.commands.deny` | list of string | `["exit", "quit", "clear", "reset", "new", "resume", "continue", "branch", "fork", "cd", "background", "bg", "teleport", "tp", "stop", "remote-control", "rc", "restart", "update", "login", "logout", "upgrade", "setup-bedrock", "setup-vertex", "web-setup", "design-login"]` | - | Slash commands refused for the agent and API clients (`403 command_denied`) before either allowlist is checked, even when an allowlist names them or holds `*`: they end, replace or move the claude session or process, hand it to another controller, or change account identity or credentials. Matched case-insensitively (`/EXIT`, `/Clear` are denied); aliases are listed by name. Names match the `agent` pattern (no `*`); a set value (config or create override) replaces the default list. |
 | `sessions.commands.timeout_seconds` | map of number | `{"compact": 600, "default": 60}` | - | Seconds a command may run before it fails with `timeout`; keys are a command name (same pattern as `agent`) or `default`, values > 0. |
 | `sessions.commands.continue_prompt` | string | `"The slash commands you queued have run. Continue the task you were working on."` | - | Non-empty text that resumes the agent after its queued commands ran, followed by a blank line and the `Command results: ...` line (see [`turn_resumed`](#turn_resumed)). |
-| `sessions.commands.allow_force` | boolean | `false` | - | Allow `force: true` on `reload-plugins` (typed as `--force`). |
+| `sessions.commands.allow_force` | boolean | `false` | - | Allow `--force` among the args of `reload-plugins`. |
 | `sessions.commands.quiet_seconds` | number | `1.5` | - | Seconds of PTY silence to wait for before typing a command, >= 0. |
 | `sessions.auto_compact.idle_seconds` | number | `0` | - | Run `/compact` after the session stayed idle this long following a turn; 0 is off. Must be below `idle_timeout_seconds` when both are set. |
 | `sessions.auto_compact.instructions` | string | `""` | - | One-line focus instructions passed to the automatic `/compact` (max 2000 characters, no control characters); empty sends none. |

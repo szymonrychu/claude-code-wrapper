@@ -1053,13 +1053,7 @@ class SessionRouter(SessionListener):
 
     # ------------------------------------------------------------------ slash commands
 
-    def request_command(
-        self,
-        name: str,
-        params: Mapping[str, Any] | None = None,
-        *,
-        origin: CommandOrigin,
-    ) -> CommandRecord:
+    def request_command(self, name: str, args: str = "", *, origin: CommandOrigin) -> CommandRecord:
         """Queue an allowlisted slash command; `CommandRejected` propagates unchanged.
 
         A new record emits `command_queued`; a coalesced duplicate returns the queued record and
@@ -1070,7 +1064,7 @@ class SessionRouter(SessionListener):
             raise CommandRejected("invalid_state", f"session is {self.session.state}")
         turn = self.session.current_turn
         record, new = self.commands.request(
-            name, params, origin=origin, turn_id=turn.turn_id if turn is not None else None
+            name, args, origin=origin, turn_id=turn.turn_id if turn is not None else None
         )
         if origin != "idle":  # accepted: a rejected request never started anything
             self._cancel_auto_compact()
@@ -1250,9 +1244,8 @@ class SessionRouter(SessionListener):
         if floor > 0 and (self._last_context is None or self._last_context < floor):
             log.debug("auto-compact skipped: context %s below %s tokens", self._last_context, floor)
             return
-        params = {"instructions": cfg.instructions} if cfg.instructions else {}
         try:
-            self.request_command("compact", params, origin="idle")
+            self.request_command("compact", cfg.instructions, origin="idle")
         except CommandRejected as exc:
             log.warning("auto-compact not queued: %s", exc)
 
@@ -1324,7 +1317,7 @@ class SessionRouter(SessionListener):
                 {
                     "command_id": record.id,
                     "name": record.name,
-                    "args": dict(record.args),
+                    "args": record.args,
                     "origin": record.origin,
                     "turn_id": record.turn_id,
                 },

@@ -10,7 +10,8 @@ import json
 from typing import Any, Protocol
 
 from claude_code_wrapper import __version__
-from claude_code_wrapper.commands import CommandRejected, params_schema
+from claude_code_wrapper.commands import MAX_COMMAND_ARGS, CommandRejected
+from claude_code_wrapper.config import COMMAND_WILDCARD
 from claude_code_wrapper.peer_client import PeerError
 
 SUPPORTED_PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26")
@@ -70,6 +71,32 @@ class PeerTools(Protocol):
     async def send(
         self, caller_session: str, to: str, message: str, notify_when_idle: bool
     ) -> str: ...
+
+
+def command_schema(allowed: list[str]) -> dict[str, Any]:
+    """Flat input schema `{name, args?}` of the `command` tool (no oneOf/anyOf/allOf).
+
+    `name` is an enum of the agent allowlist, or a plain string when it holds `*`.
+    """
+    name: dict[str, Any] = {
+        "type": "string",
+        "description": "the slash command to run, without the leading /",
+    }
+    if COMMAND_WILDCARD not in allowed:
+        name["enum"] = list(allowed)
+    return {
+        "type": "object",
+        "properties": {
+            "name": name,
+            "args": {
+                "type": "string",
+                "description": "the text typed after the command name; may span lines, at most "
+                f"{MAX_COMMAND_ARGS} characters; omit for none",
+            },
+        },
+        "required": ["name"],
+        "additionalProperties": False,
+    }
 
 
 def _invalid(detail: str) -> dict[str, Any]:
@@ -145,16 +172,16 @@ def _call(router: Any, params: Any) -> dict[str, Any] | None:
     args = params.get("arguments")
     if not isinstance(args, dict) or not isinstance(args.get("name"), str):
         return _tool_result("arguments must be an object with a string `name`", is_error=True)
-    extra = sorted(set(args) - {"name", "params"})
+    extra = sorted(set(args) - {"name", "args"})
     if extra:
         return _tool_result(
-            f"unknown arguments {', '.join(extra)}; allowed: name, params", is_error=True
+            f"unknown arguments {', '.join(extra)}; allowed: name, args", is_error=True
         )
-    cmd_params = args.get("params")
-    if cmd_params is not None and not isinstance(cmd_params, dict):
-        return _tool_result("`params` must be an object", is_error=True)
+    cmd_args = args.get("args", "")
+    if not isinstance(cmd_args, str):
+        return _tool_result("`args` must be a string", is_error=True)
     try:
-        record = router.request_command(args["name"], cmd_params, origin="agent")
+        record = router.request_command(args["name"], cmd_args, origin="agent")
     except CommandRejected as exc:
         return _tool_result(exc.message, is_error=True)
     return _tool_result(
@@ -194,7 +221,7 @@ async def handle_message(
                 {
                     "name": TOOL_NAME,
                     "description": TOOL_DESCRIPTION,
-                    "inputSchema": params_schema(allowed),
+                    "inputSchema": command_schema(allowed),
                 }
             ]
             if allowed

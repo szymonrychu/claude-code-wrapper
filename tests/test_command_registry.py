@@ -8,13 +8,12 @@ import pytest
 from pydantic import ValidationError
 
 from claude_code_wrapper.commands import (
-    BUILTIN_COMMANDS,
+    MAX_COMMAND_ARGS,
     CommandQueue,
     CommandRejected,
     effective_commands,
-    params_schema,
     render,
-    validate_params,
+    validate,
 )
 from claude_code_wrapper.config import (
     DEFAULT_COMMAND_DENY,
@@ -81,7 +80,7 @@ BAD_NAMES = ["rm -rf", "-x", "/clear", "notes.txt"]
 def code_of(q: CommandQueue, name: str, origin: str = "client") -> str | None:
     """The rejection code of queueing `name`, None when it was queued."""
     try:
-        q.request(name, {}, origin=origin, turn_id=None)
+        q.request(name, "", origin=origin, turn_id=None)
     except CommandRejected as exc:
         return exc.code
     return None
@@ -167,14 +166,15 @@ def test_deny_list_covers_aliases_and_session_moving_commands():
     for name in ("session", "remote"):
         assert name not in DEFAULT_COMMAND_DENY
         for origin in ("agent", "client"):
-            assert code_of(q, name, origin) not in ("denied", "not_allowed"), name
-    assert q.pending() == []
+            assert code_of(q, name, origin) is None, name
+    # only the free names queued, once each: the second origin coalesced
+    assert [r.name for r in q.pending()] == ["session", "remote"]
 
 
 def test_deny_is_case_insensitive():
     q = CommandQueue(CommandsConfig(agent=["*"], client=["*"]))
     for name in ("EXIT", "Clear", "Reset", "ReMoTe-CoNtRoL"):
-        e = rejected(q.request, name, {}, origin="client", turn_id=None)
+        e = rejected(q.request, name, "", origin="client", turn_id=None)
         assert e.code == "denied" and name in e.message
     upper = CommandQueue(CommandsConfig(client=["*"], deny=["EXIT"]))
     assert code_of(upper, "exit") == "denied"
@@ -188,12 +188,12 @@ def test_deny_checked_before_allowlist():
     assert code_of(star, "exit", "agent") == "denied"
     assert code_of(star, "clear", "client") == "denied"
     assert star.pending() == []
-    rec, new = star.request("context", {}, origin="client", turn_id=None)
+    rec, new = star.request("context", "", origin="client", turn_id=None)
     assert new and rec.name == "context"
-    rec, new = star.request("compact", {}, origin="agent", turn_id=None)
+    rec, new = star.request("compact", "", origin="agent", turn_id=None)
     assert new and rec.name == "compact"
-    # a free name passes deny and allowlist and reaches the registry
-    assert code_of(star, "model") == "unknown_command"
+    # a free name passes deny, allowlist and validation and is queued
+    assert code_of(star, "model") is None
     # a name outside the allowlist is still not_allowed; idle stays compact only
     assert code_of(CommandQueue(CommandsConfig(client=["compact"])), "context") == "not_allowed"
     assert code_of(star, "context", "idle") == "not_allowed"
@@ -209,84 +209,110 @@ def test_bounds_and_extra_forbid():
         CommandsConfig(nope=1)
 
 
-# ------------------------------------------------------------------ params
-def test_validate_params():
-    assert validate_params("compact", None, allow_force=False) == {}
-    assert validate_params("compact", {"instructions": "keep X"}, allow_force=False)
-    assert (
-        "takes no params"
-        in rejected(validate_params, "context", {"a": 1}, allow_force=False).message
-    )
-    e = rejected(validate_params, "compact", {"x": 1}, allow_force=False)
-    assert e.code == "invalid_params" and "instructions" in e.message
-    assert (
-        rejected(validate_params, "compact", {"instructions": 3}, allow_force=False).code
-        == "invalid_params"
-    )
-    assert (
-        rejected(validate_params, "reload-plugins", {"force": "y"}, allow_force=True).code
-        == "invalid_params"
-    )
-    assert (
-        rejected(validate_params, "reload-plugins", {"force": True}, allow_force=False).code
-        == "force_not_allowed"
-    )
-    assert validate_params("reload-plugins", {"force": True}, allow_force=True) == {"force": True}
-    assert validate_params("reload-plugins", {"force": False}, allow_force=False)
-    assert rejected(validate_params, "mcp", {}, allow_force=False).code == "invalid_params"
-    assert (
-        rejected(validate_params, "mcp", {"action": "list"}, allow_force=False).code
-        == "invalid_params"
-    )
-    for bad in ("a\nb", "a\x1bb", "a\rb", "x" * 2001):
-        assert (
-            rejected(validate_params, "compact", {"instructions": bad}, allow_force=False).code
-            == "invalid_params"
-        )
-    validate_params("compact", {"instructions": "x" * 2000}, allow_force=False)
+# ------------------------------------------------------------------ name and args
+def test_validate_name_and_args():
+    assert MAX_COMMAND_ARGS == 20000
+    for name in ("_x", "a" * 100, "workbench:x", "Model", "reload-plugins"):
+        assert validate(name, "", allow_force=False) == ""
+    assert validate("compact", "  keep\n\tthe plan\n  ", allow_force=False) == "keep\n\tthe plan"
+    assert validate("compact", "a\r\nb\r\n", allow_force=False) == "a\nb"
+    assert validate("compact", "x" * MAX_COMMAND_ARGS, allow_force=False) == "x" * 20000
+    for name in ("", "a.b", "a/b", "/clear", "-x", "a b", "notes.txt"):
+        e = rejected(validate, name, "", allow_force=False)
+        assert e.code == "invalid_command", name
+    assert "/command [args]" in rejected(validate, "", "x", allow_force=False).message
+    for args in (
+        "a\x1bb",
+        "a\x1b[201~\r/exit",
+        "a\u2028b",
+        "a\u2029b",
+        "a\rb",
+        "a\x00b",
+        "a\x7fb",
+        "a\x85b",
+        "x" * (MAX_COMMAND_ARGS + 1),
+    ):
+        e = rejected(validate, "compact", args, allow_force=True)
+        assert e.code == "invalid_command", repr(args[:12])
+    q = CommandQueue(CommandsConfig(client=["*"]))
+    rec, new = q.request("_x", "one\r\ntwo ", origin="client", turn_id=None)
+    assert new and rec.args == "one\ntwo"
+    assert rejected(q.request, "", "", origin="client", turn_id=None).code == "invalid_command"
+    assert rejected(q.request, "a.b", "", origin="client", turn_id=None).code == "invalid_command"
+    assert q.pending() == [rec]
 
 
-def test_render_command_lines():
-    assert render("compact", {}) == "/compact"
-    assert render("compact", {"instructions": "keep X"}) == "/compact keep X"
-    assert render("reload-plugins", {}) == "/reload-plugins"
-    assert render("reload-plugins", {"force": True}) == "/reload-plugins --force"
-    assert render("reload-skills", {}) == "/reload-skills"
-    assert render("mcp", {"action": "reconnect"}) == "/mcp reconnect all"
-    assert render("mcp", {"action": "reconnect", "server": "gh"}) == "/mcp reconnect gh"
-    assert render("context", {}) == "/context"
+def test_render_name_and_args():
+    assert render("compact") == "/compact"
+    assert render("compact", "") == "/compact"
+    assert render("compact", "keep X") == "/compact keep X"
+    assert render("mcp", "reconnect github") == "/mcp reconnect github"
+    assert render("reload-plugins", "--force") == "/reload-plugins --force"
+    assert render("compact", "keep\nthe plan") == "/compact keep\nthe plan"
+    assert render("_x", "a\n\tb") == "/_x a\n\tb"
 
 
-def test_params_schema_lists_allowed_commands():
-    s = params_schema(["compact", "mcp"])
-    assert s["properties"]["name"]["enum"] == ["compact", "mcp"]
-    assert "oneOf" not in s
-    json.dumps(s)
-    assert set(BUILTIN_COMMANDS) == set(ALL)
+def test_force_needs_allow_force():
+    for args in ("--force", "x --force", "a\n--force", "\t--force\t"):
+        e = rejected(validate, "reload-plugins", args, allow_force=False)
+        assert e.code == "force_not_allowed", args
+        assert "allow_force" in e.message
+        assert validate("reload-plugins", args, allow_force=True) == args.strip()
+    assert rejected(validate, "Reload-Plugins", "--force", allow_force=False).code == (
+        "force_not_allowed"
+    )
+    assert validate("reload-plugins", "--forced", allow_force=False) == "--forced"
+    assert validate("reload-plugins", "", allow_force=False) == ""
+    assert validate("compact", "--force", allow_force=False) == "--force"  # reload-plugins only
+    q = CommandQueue(cfg())
+    e = rejected(q.request, "reload-plugins", "--force", origin="agent", turn_id=None)
+    assert e.code == "force_not_allowed" and q.list() == []
+    rec, new = CommandQueue(cfg(allow_force=True)).request(
+        "reload-plugins", "--force", origin="agent", turn_id=None
+    )
+    assert new and rec.args == "--force"
+
+
+def test_coalesce_identical_name_and_args():
+    q = CommandQueue(CommandsConfig(agent=["*"], client=["*"]))
+    a, new = q.request("model", "a", origin="client", turn_id=None)
+    assert new and a.args == "a"
+    b, new = q.request("model", "b", origin="client", turn_id=None)
+    assert new and b is not a and b.args == "b"
+    again, new = q.request("model", " a\r\n", origin="agent", turn_id="t1")
+    assert again is a and not new and a.origin == "client"
+    bare, new = q.request("model", "", origin="client", turn_id=None)
+    assert new and bare not in (a, b)
+    assert [(r.name, r.args) for r in q.pending()] == [
+        ("model", "a"),
+        ("model", "b"),
+        ("model", ""),
+    ]
+    q.finish(a, "completed")
+    assert q.request("model", "a", origin="client", turn_id=None)[1]
 
 
 # ------------------------------------------------------------------ queue
 def test_queue_allowlist_per_origin():
     q = CommandQueue(CommandsConfig(agent=["compact"], client=["context"]))
-    assert rejected(q.request, "context", {}, origin="agent", turn_id="t").code == "not_allowed"
-    assert rejected(q.request, "compact", {}, origin="client", turn_id="t").code == "not_allowed"
-    assert q.request("context", {}, origin="client", turn_id=None)[1]
-    assert q.request("compact", {}, origin="idle", turn_id=None)[1]
-    assert rejected(q.request, "context", {}, origin="idle", turn_id=None).code == "not_allowed"
+    assert rejected(q.request, "context", "", origin="agent", turn_id="t").code == "not_allowed"
+    assert rejected(q.request, "compact", "", origin="client", turn_id="t").code == "not_allowed"
+    assert q.request("context", "", origin="client", turn_id=None)[1]
+    assert q.request("compact", "", origin="idle", turn_id=None)[1]
+    assert rejected(q.request, "context", "", origin="idle", turn_id=None).code == "not_allowed"
     assert CommandQueue(CommandsConfig()).cfg.agent == []
 
 
 def test_coalesce_cap_and_lifecycle():
     q = CommandQueue(cfg())
-    a, new = q.request("compact", {"instructions": "first"}, origin="agent", turn_id="t1")
+    a, new = q.request("compact", "first", origin="agent", turn_id="t1")
     assert new and a.id.startswith("cmd_") and a.state == "queued" and a.created_at
-    b, new = q.request("compact", {"instructions": "second"}, origin="client", turn_id="t1")
-    assert b is a and not new and a.args == {"instructions": "first"}
+    b, new = q.request("compact", "first", origin="client", turn_id="t1")
+    assert b is a and not new and a.args == "first"
     for n in ("reload-plugins", "reload-skills", "context"):
-        q.request(n, {}, origin="agent", turn_id="t1")
+        q.request(n, "", origin="agent", turn_id="t1")
     assert (
-        rejected(q.request, "mcp", {"action": "reconnect"}, origin="agent", turn_id="t1").code
-        == "queue_full"
+        rejected(q.request, "mcp", "reconnect", origin="agent", turn_id="t1").code == "queue_full"
     )
     assert q.next() is a and len(q.pending()) == 4
     q.start(a)
@@ -296,19 +322,19 @@ def test_coalesce_cap_and_lifecycle():
     q.finish(a, "failed", error="boom")
     assert a.state == "completed" and a.error is None
     # a finished name can be queued again
-    assert q.request("compact", {}, origin="agent", turn_id="t2")[1]
+    assert q.request("compact", "", origin="agent", turn_id="t2")[1]
 
 
 def test_cancel_queued_and_history_cap():
     q = CommandQueue(cfg())
-    r1, _ = q.request("compact", {}, origin="agent", turn_id="t1")
-    r2, _ = q.request("context", {}, origin="agent", turn_id="t2")
+    r1, _ = q.request("compact", "", origin="agent", turn_id="t1")
+    r2, _ = q.request("context", "", origin="agent", turn_id="t2")
     assert q.cancel_queued("t1") == [r1] and r1.state == "cancelled"
     assert r2.state == "queued"
     q.cancel_queued()
     assert r2.state == "cancelled"
     for _ in range(120):
-        r, _ = q.request("context", {}, origin="agent", turn_id=None)
+        r, _ = q.request("context", "", origin="agent", turn_id=None)
         q.finish(r, "completed")
     items = q.list()
     assert len(items) == 100 and items[-1] is r
@@ -331,47 +357,21 @@ def test_create_request_override_validates():
         CreateSessionRequest.model_validate({"commands": {"bogus": 1}})
 
 
-def test_unknown_param_rejected_naming_allowed():
-    e = rejected(validate_params, "compact", {"x": 1}, allow_force=False)
-    assert e.code == "invalid_params" and "instructions" in e.message
-    e = rejected(validate_params, "reload-plugins", {"bad": 1}, allow_force=True)
-    assert e.code == "invalid_params" and "force" in e.message
-    e = rejected(validate_params, "context", {"a": 1}, allow_force=False)
-    assert e.code == "invalid_params" and "takes no params" in e.message
-
-
-def test_force_and_instruction_limits():
-    assert (
-        rejected(validate_params, "reload-plugins", {"force": True}, allow_force=False).code
-        == "force_not_allowed"
-    )
-    assert validate_params("reload-plugins", {"force": True}, allow_force=True) == {"force": True}
-    for bad in ("a\nb", "a\rb", "a\x1bb", "x" * 2001):
-        assert (
-            rejected(validate_params, "compact", {"instructions": bad}, allow_force=False).code
-            == "invalid_params"
-        )
-    validate_params("compact", {"instructions": "x" * 2000}, allow_force=False)
-
-
 def test_duplicate_queued_returns_existing():
     q = CommandQueue(cfg())
-    a, new = q.request("compact", {"instructions": "first"}, origin="agent", turn_id="t1")
+    a, new = q.request("compact", "first", origin="agent", turn_id="t1")
     assert new
-    b, new = q.request("compact", {"instructions": "second"}, origin="client", turn_id="t1")
-    assert b is a and not new and a.args == {"instructions": "first"}
+    b, new = q.request("compact", "first", origin="client", turn_id="t1")
+    assert b is a and not new and a.args == "first"
     assert len(q.pending()) == 1
 
 
 def test_queue_cap_and_terminal_records():
     q = CommandQueue(cfg())
-    first, _ = q.request("compact", {}, origin="agent", turn_id="t")
+    first, _ = q.request("compact", "", origin="agent", turn_id="t")
     for n in ("reload-plugins", "reload-skills", "context"):
-        q.request(n, {}, origin="agent", turn_id="t")
-    assert (
-        rejected(q.request, "mcp", {"action": "reconnect"}, origin="agent", turn_id="t").code
-        == "queue_full"
-    )
+        q.request(n, "", origin="agent", turn_id="t")
+    assert rejected(q.request, "mcp", "reconnect", origin="agent", turn_id="t").code == "queue_full"
     q.start(first)
     q.finish(first, "completed", result="ok")
     q.finish(first, "failed", error="boom")

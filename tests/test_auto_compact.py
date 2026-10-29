@@ -93,7 +93,7 @@ async def test_auto_compact_fires_after_idle(world):
     await world.wait_turn(m, sid)
     await world.until(lambda: idle_completions(world, sid), what="auto compact completed")
     rec = idle_completions(world, sid)[0]["data"]["record"]
-    assert rec["name"] == "compact" and rec["args"] == {"instructions": "keep the plan"}
+    assert rec["name"] == "compact" and rec["args"] == "keep the plan"
 
 
 async def test_auto_compact_once_per_idle_gap(world):

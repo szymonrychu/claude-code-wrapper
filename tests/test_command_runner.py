@@ -17,6 +17,7 @@ from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.commands import CommandRejected
 from claude_code_wrapper.manager import CreateSessionRequest
 from claude_code_wrapper.metrics import Metrics
+from claude_code_wrapper.pty_proc import paste_bytes
 from claude_code_wrapper.session import TurnRejected
 
 ALL = ["compact", "reload-plugins", "reload-skills", "mcp", "context"]
@@ -69,7 +70,7 @@ TOKEN = "tok-0123456789abcdef"
 async def test_idle_compact_runs_and_completes(world):
     m, sid, metrics = await start(world)
     router = m.router(sid)
-    rec = router.request_command("compact", {"instructions": "keep the plan"}, origin="client")
+    rec = router.request_command("compact", "keep the plan", origin="client")
     assert rec.state == "queued" and rec.turn_id is None and rec.origin == "client"
     await finished(world, rec)
     assert rec.state == "completed" and rec.result == "ok" and rec.error is None
@@ -142,9 +143,7 @@ async def test_other_commands_complete_with_output(world):
     m, sid, _ = await start(world)
     router = m.router(sid)
     skills = router.request_command("reload-skills", origin="client")
-    mcp = router.request_command(
-        "mcp", {"action": "reconnect", "server": "github"}, origin="client"
-    )
+    mcp = router.request_command("mcp", "reconnect github", origin="client")
     context = router.request_command("context", origin="client")
     for rec in (skills, mcp, context):
         await finished(world, rec)
@@ -155,6 +154,28 @@ async def test_other_commands_complete_with_output(world):
     ]
     typed = [i["text"] for i in inputs(world, sid)]
     assert typed == ["/reload-skills", "/mcp reconnect github", "/context"]
+
+
+async def test_multiline_args_typed_as_one_paste(world):
+    m, sid, _ = await start(world)
+    router = m.router(sid)
+    writes: list[bytes] = []
+    pty = router.session.pty
+    write_locked = pty._write_locked
+
+    async def recording(data: bytes) -> None:
+        writes.append(bytes(data))
+        await write_locked(data)
+
+    pty._write_locked = recording
+    rec = router.request_command("compact", "keep\r\nthe plan\n", origin="client")
+    assert rec.args == "keep\nthe plan"
+    await finished(world, rec)
+    assert (rec.state, rec.result) == ("completed", "ok")
+    assert writes == [paste_bytes("/compact keep\nthe plan"), b"\r"]
+    assert [i["text"] for i in inputs(world, sid)] == ["/compact keep\nthe plan"]
+    (typed,) = [e for e in of_type(world, sid, "user_message") if e["origin"] == "command"]
+    assert typed["text"] == "/compact keep\nthe plan"
 
 
 async def test_stdout_entry_as_user_line_and_output_cut(world):
@@ -218,7 +239,7 @@ async def test_on_command_complete_fired_with_record(world, tmp_path):
         "onCommandComplete": [{"type": "command", "run": f"cat > {done}", "blocking": True}],
     }
     m, sid, _ = await start(world, hooks=hooks)
-    rec = m.router(sid).request_command("compact", {"instructions": "be brief"}, origin="agent")
+    rec = m.router(sid).request_command("compact", "be brief", origin="agent")
     await finished(world, rec)
     await world.until(lambda: done.exists() and done.read_text())
     payload = json.loads(seen.read_text())
@@ -226,13 +247,14 @@ async def test_on_command_complete_fired_with_record(world, tmp_path):
     assert payload["data"] == {
         "command_id": rec.id,
         "name": "compact",
-        "args": {"instructions": "be brief"},
+        "args": "be brief",
         "origin": "agent",
         "turn_id": None,
     }
     complete = json.loads(done.read_text())
     assert complete["event"] == "onCommandComplete"
     assert complete["data"] == rec.model_dump(mode="json")
+    assert complete["data"]["args"] == "be brief"
     assert complete["data"]["state"] == "completed" and complete["data"]["result"] == "ok"
     assert complete["data"]["finished_at"]
 
@@ -400,10 +422,10 @@ async def test_rejections_propagate_and_emit_nothing(world):
         router.request_command("compact", origin="agent")
     assert exc.value.code == "not_allowed"
     with pytest.raises(CommandRejected) as exc:
-        router.request_command("compact", {"bogus": 1}, origin="client")
-    assert exc.value.code == "invalid_params"
+        router.request_command("compact", "keep\x1b[201~", origin="client")
+    assert exc.value.code == "invalid_command"
     with pytest.raises(CommandRejected) as exc:
-        router.request_command("reload-plugins", {"force": True}, origin="client")
+        router.request_command("reload-plugins", "--force", origin="client")
     assert exc.value.code == "force_not_allowed"
     assert types(world, sid) == []
     assert router.session.state == "ready"
@@ -411,7 +433,7 @@ async def test_rejections_propagate_and_emit_nothing(world):
 
 async def test_force_allowed_is_typed(world):
     m, sid, _ = await start(world, allow_force=True)
-    rec = m.router(sid).request_command("reload-plugins", {"force": True}, origin="client")
+    rec = m.router(sid).request_command("reload-plugins", "--force", origin="client")
     await finished(world, rec)
     assert rec.state == "completed"
     assert [i["text"] for i in inputs(world, sid)] == ["/reload-plugins --force"]
@@ -469,8 +491,8 @@ async def u(tmp_path):
     await h.router.close()
 
 
-async def run(u: Any, name: str, params: dict | None = None) -> Any:
-    rec = u.router.request_command(name, params, origin="client")
+async def run(u: Any, name: str, args: str = "") -> Any:
+    rec = u.router.request_command(name, args, origin="client")
     await asyncio.wait_for(u.router.wait_runner_idle(), 5)
     return rec
 
