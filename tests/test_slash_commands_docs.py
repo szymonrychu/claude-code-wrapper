@@ -4,12 +4,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from claude_code_wrapper.config import load_config
+from claude_code_wrapper.config import (
+    DEFAULT_COMMAND_DENY,
+    DEFAULT_DIALOG_PATTERNS,
+    load_config,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text()
 EXAMPLES = ROOT / "src" / "claude_code_wrapper" / "data" / "examples"
-ALL_COMMANDS = ["compact", "reload-plugins", "reload-skills", "mcp", "context"]
 
 
 @pytest.fixture(autouse=True)
@@ -56,8 +59,43 @@ def test_readme_slash_commands_content():
         "sessions.auto_compact",
         "turn_max_seconds",
         "--force",
+        "sessions.commands.deny",
+        "command_denied",
+        "dialog_grace_seconds",
+        "dialog_patterns",
+        "dismissed",
+        "dialog_stuck",
+        "UserPromptSubmit",
+        "claude.boot.timeout_seconds",
     ):
         assert needle in body, needle
+    assert "the five names above are the whole set" not in README
+    assert "are not supported" not in body
+
+
+def test_readme_limits_describe_classes_and_bounds():
+    limits = _section("Limits", "###")
+    for needle in (
+        "any command name",
+        "`sessions.commands.deny`",
+        "`*`",
+        "dialog",
+        "`dismissed`",
+        "`dialog_stuck`",
+        "prompt",
+        "result `turn`",
+        "20000",
+        "`timeout_seconds`",
+        "1.5 s",
+        "`claude.boot.timeout_seconds`",
+        "twice",
+        "`sessions.max_restarts`",
+        "4 commands",
+        "`limits.turn_max_seconds`",
+    ):
+        assert needle in limits, needle
+    lifecycle = _section("Lifecycle", "###")
+    assert "twice" in lifecycle
 
 
 def test_hook_examples_mention_auto_compact():
@@ -89,6 +127,13 @@ def test_config_example_documents_command_keys():
     assert sessions["commands"]["continue_prompt"] == cfg.commands.continue_prompt
     assert sessions["commands"]["allow_force"] is cfg.commands.allow_force is False
     assert sessions["commands"]["quiet_seconds"] == cfg.commands.quiet_seconds
+    assert sessions["commands"]["deny"] == cfg.commands.deny == list(DEFAULT_COMMAND_DENY)
+    assert sessions["commands"]["dialog_grace_seconds"] == cfg.commands.dialog_grace_seconds == 2.0
+    assert (
+        sessions["commands"]["dialog_patterns"]
+        == cfg.commands.dialog_patterns
+        == list(DEFAULT_DIALOG_PATTERNS)
+    )
     assert sessions["auto_compact"] == {
         "idle_seconds": 0,
         "instructions": "",
@@ -99,7 +144,7 @@ def test_config_example_documents_command_keys():
 def test_workbench_example_enables_commands():
     cfg = load_config(EXAMPLES / "workbench.config.yaml").sessions
     assert cfg.commands.agent == ["compact", "reload-plugins"]
-    assert sorted(cfg.commands.client) == sorted(ALL_COMMANDS)
+    assert cfg.commands.client == ["*"]
     assert cfg.auto_compact.idle_seconds == 1800
     assert cfg.auto_compact.instructions
 

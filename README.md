@@ -2308,7 +2308,7 @@ Progress is visible as the `command_queued`, `command_started`, `command_complet
    fails the command `timeout` 1.5 s after the deadline. A command that only times out holds the
    session for at most `timeout_seconds` plus 1.5 s; with a dialog on screen the same holds, the
    check whether the dialog stayed open after the last ESC included, plus one claude relaunch
-   (at most `claude.boot.timeout_seconds`) when it did (item 9).
+   (about twice `claude.boot.timeout_seconds`, see item 9) when it did.
 8. **Dialogs.** Commands such as `/model`, `/config`, `/usage` or `/help` open a dialog and write
    nothing until it is closed. From the moment the line is typed ccw scans the screen for
    `dialog_patterns` (dialog footers such as "Esc to cancel"; compact is never scanned). With a
@@ -2326,8 +2326,9 @@ Progress is visible as the `command_queued`, `command_started`, `command_complet
    meanwhile, then `busy` again until the command is finished; a running turn whose commands
    these are stays running and is resumed as usual. The relaunch emits the usual
    [`session_state`](#session_state) restart event and [`onError`](#onerror) (`kind: "restart"`) but
-   does not count against `sessions.max_restarts`; it is bounded by `claude.boot.timeout_seconds`,
-   and a relaunch that fails leaves the session `dead`, as a crash would.
+   does not count against `sessions.max_restarts`. Booting tries the launch twice, each try up to
+   `claude.boot.timeout_seconds`, so a relaunch that fails holds the session for about twice that
+   (120 s by default) and then leaves it `dead`, as a crash would.
 10. **Prompt and skill commands run as real turns.** A project, skill or plugin command (for example
    `/init` or `/<plugin>:<command>`), or a name claude sends to the model as a prompt (a bare `/tmp`
    that exists on disk), makes claude fire `UserPromptSubmit` and run a model turn instead of
@@ -2385,19 +2386,41 @@ when both are set. Claude Code's own automatic and idle compaction is left as is
 
 ### Limits
 
-- Session-replacing commands (`/clear`, `/resume`), dialog commands and skills are not supported;
-  the five names above are the whole set.
+- What runs: any command name, with free-text args, from an allowlist that names it or holds `*`
+  (project, skill and plugin commands included), except the names in `sessions.commands.deny`. The
+  deny list is checked first and wins over `*`: `/exit`, `/clear`, `/resume`, `/cd`, `/login` and
+  the rest of the default list are refused with `403 command_denied`, under any alias or letter
+  case, because they would end, replace or move the claude session the service pins. Every other
+  name runs; claude itself answers a name it does not know ("Unknown command") and ccw fails that
+  command `unknown_command` at once, with no ESC.
+- Classes, detected while the command runs, never configured per name: a local command completes
+  with its output; a dialog command (for example `/model`, `/config`, `/usage`) is dismissed by ESC
+  after `dialog_grace_seconds` and completes with result `dismissed`, or fails `dialog_stuck` after
+  3 ESCs; a prompt command (a skill or plugin command, or a name claude sends to the model) is
+  promoted to a real turn and completes at once with result `turn` and the turn's `turn_id`
+  ([Lifecycle](#lifecycle) items 8 to 10). Slash text sent as a turn through
+  [`POST /v1/sessions/{id}/turns`](#post-v1sessionsidturns) is refused `422 slash_command`.
 - ccw never adds `--force` by itself. `--force` among the args of `reload-plugins` is accepted only
   when `allow_force` is true; otherwise the call is rejected.
 - Args may span lines (at most 20000 characters) but hold no control character other than newline
   and tab, because they are typed into the PTY in one bracketed paste.
-- At most 4 commands are queued per session.
+- At most 4 commands are queued per session (`429 command_queue_full`).
 - Completion is detected, not assumed: for `compact` the `PostCompact` hook relay or the
   `compact_boundary` transcript entry (the known failure messages fail it); for the others the
   command's local-command output in the transcript. A `reload-plugins` run that only reports it
-  needs `--force` completes with result `skipped_cache`, a dialog dismissed by ESC with result
-  `dismissed`. No signal within `timeout_seconds` fails the command `timeout` after the ESCs
-  described under [Lifecycle](#lifecycle).
+  needs `--force` completes with result `skipped_cache`.
+- Time bounds. One deadline per command, `timeout_seconds[name]` (`default` 60 s, `compact` 600 s;
+  operators may add names), spent by the quiet wait, typing, the completion wait and the dialog
+  leg together. At the deadline ccw sends ESC, a second one 1.5 s later only with a dialog footer
+  on screen, then fails the command `timeout`, so a command holds the session for at most
+  `timeout_seconds` plus 1.5 s (about 62 s by default). When a dialog stays open after
+  `dialog_stuck` or `timeout`, claude is relaunched before the session is released
+  (`--resume` of the same session id, not counted in `sessions.max_restarts`). Booting tries the
+  launch twice, each try up to `claude.boot.timeout_seconds`, so that relaunch holds the session
+  for about twice `claude.boot.timeout_seconds` (120 s by default) when it fails, and the session
+  is then `dead`. An unknown command completes on claude's informational line, typically under 1 s.
+  A promoted prompt command is a turn: `limits.turn_max_seconds` (0 = unbounded) and the interrupt
+  endpoint bound it, `sessions.turn_stall_seconds` only reports.
 
 ## Peer messaging
 
