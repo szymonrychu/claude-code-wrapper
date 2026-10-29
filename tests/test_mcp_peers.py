@@ -28,8 +28,8 @@ class FakeRouter:
         self.info = SimpleNamespace(session_id="s1")
         self.calls: list[Any] = []
 
-    def request_command(self, name: str, params: Any = None, *, origin: str) -> Any:
-        self.calls.append((name, params, origin))
+    def request_command(self, name: str, args: str = "", *, origin: str) -> Any:
+        self.calls.append((name, args, origin))
         return SimpleNamespace(id="cmd-1")
 
 
@@ -190,4 +190,4 @@ async def test_command_tool_unchanged() -> None:
         reply = await handle_message(router, _call("command", {"name": "compact"}), peers)
         assert reply["result"]["isError"] is False
         assert reply["result"]["content"][0]["text"].startswith("Queued cmd-1.")
-        assert router.calls == [("compact", None, "agent")]
+        assert router.calls == [("compact", "", "agent")]
