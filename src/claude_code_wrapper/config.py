@@ -514,6 +514,14 @@ DEFAULT_COMMAND_DENY: tuple[str, ...] = (
 DEFAULT_CONTINUE_PROMPT = (
     "The slash commands you queued have run. Continue the task you were working on."
 )
+#: Footers of claude's dialogs (design D7): a command that shows one is dismissed by ESC.
+DEFAULT_DIALOG_PATTERNS: tuple[str, ...] = (
+    "esc to cancel",
+    "esc to close",
+    "esc to clear",
+    "esc to exit",
+    "enter to confirm",
+)
 
 
 def _check_name(path: str, name: str, *, wildcard: bool) -> None:
@@ -543,6 +551,13 @@ def _check_command_timeouts(value: dict[str, float]) -> dict[str, float]:
     return value
 
 
+def _check_dialog_patterns(patterns: list[str]) -> list[str]:
+    for i, pattern in enumerate(patterns):
+        if not pattern.strip():
+            raise _at(str(i), "must not be blank")
+    return patterns
+
+
 class CommandsConfig(_Model):
     agent: list[str] = []
     client: list[str] = []
@@ -551,11 +566,14 @@ class CommandsConfig(_Model):
     continue_prompt: str = Field(DEFAULT_CONTINUE_PROMPT, min_length=1)
     allow_force: bool = False
     quiet_seconds: float = Field(1.5, ge=0)
+    dialog_grace_seconds: float = Field(2.0, ge=0)
+    dialog_patterns: list[str] = Field(default_factory=lambda: list(DEFAULT_DIALOG_PATTERNS))
 
     _agent = field_validator("agent")(_check_command_names)
     _client = field_validator("client")(_check_command_names)
     _deny = field_validator("deny")(_check_deny_names)
     _timeouts = field_validator("timeout_seconds")(_check_command_timeouts)
+    _dialogs = field_validator("dialog_patterns")(_check_dialog_patterns)
 
 
 class CommandsOverride(_Model):
@@ -568,6 +586,8 @@ class CommandsOverride(_Model):
     continue_prompt: str | None = Field(None, min_length=1)
     allow_force: bool | None = None
     quiet_seconds: float | None = Field(None, ge=0)
+    dialog_grace_seconds: float | None = Field(None, ge=0)
+    dialog_patterns: list[str] | None = None
 
     @field_validator("agent", "client")
     @classmethod
@@ -583,6 +603,11 @@ class CommandsOverride(_Model):
     @classmethod
     def _timeouts(cls, value: dict[str, float] | None) -> dict[str, float] | None:
         return None if value is None else _check_command_timeouts(value)
+
+    @field_validator("dialog_patterns")
+    @classmethod
+    def _dialogs(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else _check_dialog_patterns(value)
 
 
 #: A compact's focus instructions: one line, no control characters, at most this long.

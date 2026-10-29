@@ -106,6 +106,11 @@ RELOAD_FORCE_HINT = "--force to apply"
 #: Seconds a compact completed by the PostCompact relay waits for its transcript boundary, so
 #: `compacted` is emitted before `command_completed`.
 COMPACT_BOUNDARY_GRACE = 1.0
+#: Dialog leg (design D7): ESCs per command, the wait after each ESC, and how often the leg
+#: re-reads the screen while it waits for a completion signal.
+DIALOG_ESC_BUDGET = 3
+DIALOG_ESC_INTERVAL = 1.5
+DIALOG_POLL_SECONDS = 0.1
 
 
 def _compact_done(sig: Signal) -> bool:
@@ -117,6 +122,32 @@ def _compact_done(sig: Signal) -> bool:
 def _invoked_or_unknown(sig: Signal) -> bool:
     """Any echo (claude echoes the resolved alias, /cost echoes /usage) or an unknown name."""
     return sig.kind in ("command_invoked", "command_unknown")
+
+
+def _is_output(sig: Signal) -> bool:
+    return sig.kind == "command_output"
+
+
+def _left(deadline: float) -> float:
+    """Seconds until the monotonic `deadline`, never negative."""
+    return max(deadline - time.monotonic(), 0.0)
+
+
+def _command_result(
+    record: CommandRecord, sig: Signal, *, dismissed: bool
+) -> tuple[str, str | None, str | None, str | None]:
+    """The outcome a `command_output` signal gives a non-compact command."""
+    stdout = str(sig.data.get("stdout") or "")
+    stderr = str(sig.data.get("stderr") or "")
+    if not stdout and stderr:
+        return "failed", None, "command_error", stderr[:COMMAND_OUTPUT_CHARS]
+    if dismissed:
+        result = "dismissed"
+    elif record.name == "reload-plugins" and RELOAD_FORCE_HINT in stdout:
+        result = "skipped_cache"
+    else:
+        result = "ok"
+    return "completed", result, None, stdout[:COMMAND_OUTPUT_CHARS]
 
 
 def _output_text(sig: Signal) -> str:
@@ -256,6 +287,8 @@ class SessionRouter(SessionListener):
         self._abort: str | None = None
         #: The record the runner is working on, so an abort can fail it.
         self._current: CommandRecord | None = None
+        #: claude is being relaunched over an open dialog: its booting is not a crash.
+        self._dialog_restart = False
         #: The running turn whose Stop was answered while its slash commands run (D4).
         self._commands_turn: TurnRecord | None = None
         #: Idle auto-compact (D6): the pending timer, whether this idle gap may still fire, and
@@ -1290,7 +1323,7 @@ class SessionRouter(SessionListener):
         while (record := self.commands.next()) is not None:
             await self._run_command(record)
             done.append(record)
-            if record.error == "claude_exited":
+            if record.error == "claude_exited" or self.session.state not in ("ready", "busy"):
                 # Nothing more reaches claude: the exit path relaunches or ends the session.
                 started = time.monotonic()
                 for rest in self.commands.pending():
@@ -1306,13 +1339,19 @@ class SessionRouter(SessionListener):
         return float(timeouts.get(name, timeouts.get("default", 60)))
 
     async def _run_command(self, record: CommandRecord) -> None:
-        """D4 step 3: quiet screen, onCommand, type the line, wait for completion or timeout."""
+        """D4 step 3: quiet screen, onCommand, type the line, wait for completion or timeout.
+
+        One deadline (D7): `timeout_seconds[name]` from the runner taking the command, spent by
+        the quiet wait, onCommand, typing, the completion wait and the dialog leg together. A
+        dialog left open (`dialog_stuck`, or `timeout` with a footer still on screen) gets claude
+        relaunched before the record is finished and the slot released.
+        """
         session = self.session
-        timeout = self._command_timeout(record.name)
+        deadline = time.monotonic() + self._command_timeout(record.name)
         started = time.monotonic()
         self._current = record
         try:
-            if not await session.wait_quiet(self.commands_cfg.quiet_seconds, timeout):
+            if not await session.wait_quiet(self.commands_cfg.quiet_seconds, _left(deadline)):
                 await self._finish_command(
                     record, "failed", started, error="timeout", output="the screen never settled"
                 )
@@ -1341,40 +1380,64 @@ class SessionRouter(SessionListener):
             self._emit_command("command_started", record)
             mark = self.signals.mark()
             line = render(record.name, record.args)
+            # compact has its own leg: its progress footer is no dialog.
+            patterns = self.commands_cfg.dialog_patterns if record.name != "compact" else []
+            session.watch_dialogs(patterns, line)
             await session.send_command(line)
             self._emit_user_message(None, "command", line)
-            state, result, error, output = await self._await_completion(record, mark, timeout)
+            state, result, error, output = await self._await_completion(record, mark, deadline)
             if error == "timeout":
-                await session.send_escape()
+                await self._escape_at_timeout()
+            if error == "dialog_stuck" or (error == "timeout" and session.dialog_on_screen()):
+                await self._restart_for_dialog()
         except (PtyClosed, TurnRejected):
             state, result, error, output = "failed", None, "claude_exited", None
         except Exception as exc:  # noqa: BLE001 - one command never wedges the queue
             log.exception("command %s failed", record.id)
             self._report_error("command", f"/{record.name}: {type(exc).__name__}: {exc}")
             state, result, error, output = "failed", None, "internal_error", None
+        finally:
+            session.watch_dialogs(())
         await self._finish_command(
             record, state, started, result=result, error=error, output=output
         )
 
+    async def _escape_at_timeout(self) -> None:
+        """At the deadline: ESC, 1.5 s, and only with a dialog footer on screen a second ESC
+        and 1.5 s more, so `dialog_on_screen` then tells whether the dialog stayed open."""
+        session = self.session
+        await session.send_escape()
+        await asyncio.sleep(DIALOG_ESC_INTERVAL)
+        if session.dialog_on_screen():
+            await session.send_escape()
+            await asyncio.sleep(DIALOG_ESC_INTERVAL)
+
+    async def _restart_for_dialog(self) -> None:
+        """Relaunch claude over the dialog left open; its booting does not abort this runner."""
+        self._dialog_restart = True
+        try:
+            await self.session.restart_for_dialog()
+        finally:
+            self._dialog_restart = False
+
     async def _await_completion(
-        self, record: CommandRecord, mark: int, timeout: float
+        self, record: CommandRecord, mark: int, deadline: float
     ) -> tuple[str, str | None, str | None, str | None]:
-        """(state, result, error, output) from the signal bus, or a timeout failure.
+        """(state, result, error, output) from the signal bus by `deadline`, else a timeout.
 
         The first signal after `mark` wins: an echo of any name then its output completes (stderr
         only fails `command_error`); compact completes on PostCompact or its boundary and fails on
-        a failure text; an unknown name fails `unknown_command` at once.
+        a failure text; an unknown name fails `unknown_command` at once. Meanwhile the dialog leg
+        (D7, never for compact): a dialog footer on screen and `dialog_grace_seconds` without PTY
+        output send ESC; 1.5 s later, with the footer seen again and no output, ESC again, up to
+        `DIALOG_ESC_BUDGET` ESCs. Output after an ESC completes `dismissed`; none 1.5 s after the
+        last ESC fails `dialog_stuck`.
         """
-        deadline = time.monotonic() + timeout
-
-        def left() -> float:
-            return max(deadline - time.monotonic(), 0.0)
-
         if record.name == "compact":
             sig = await self.signals.wait(
                 lambda s: _compact_done(s) or s.kind == "command_unknown",
                 after=mark,
-                timeout=left(),
+                timeout=_left(deadline),
             )
             if sig is None:
                 return "failed", None, "timeout", None
@@ -1383,28 +1446,41 @@ class SessionRouter(SessionListener):
             if sig.kind == "command_output":
                 return "failed", None, "compact_failed", _output_text(sig)
             if sig.kind == "post_compact":
-                await self._await_compact_boundary(mark, min(left(), COMPACT_BOUNDARY_GRACE))
+                await self._await_compact_boundary(
+                    mark, min(_left(deadline), COMPACT_BOUNDARY_GRACE)
+                )
             return "completed", "ok", None, None
-        invoked = await self.signals.wait(_invoked_or_unknown, after=mark, timeout=left())
-        if invoked is None:
-            return "failed", None, "timeout", None
-        if invoked.kind == "command_unknown":
-            return "failed", None, "unknown_command", None
-        sig = await self.signals.wait(
-            lambda s: s.kind == "command_output", after=invoked.seq, timeout=left()
-        )
-        if sig is None:
-            return "failed", None, "timeout", None
-        stdout = str(sig.data.get("stdout") or "")
-        stderr = str(sig.data.get("stderr") or "")
-        if not stdout and stderr:
-            return "failed", None, "command_error", stderr[:COMMAND_OUTPUT_CHARS]
-        result = (
-            "skipped_cache"
-            if record.name == "reload-plugins" and RELOAD_FORCE_HINT in stdout
-            else "ok"
-        )
-        return "completed", result, None, stdout[:COMMAND_OUTPUT_CHARS]
+        session = self.session
+        grace = self.commands_cfg.dialog_grace_seconds
+        invoked: Signal | None = None
+        escapes = 0
+        escaped_at = 0.0
+        while (left := _left(deadline)) > 0:
+            sig = await self.signals.wait(
+                _invoked_or_unknown if invoked is None else _is_output,
+                after=mark if invoked is None else invoked.seq,
+                timeout=min(left, DIALOG_POLL_SECONDS),
+            )
+            if sig is not None and invoked is None:
+                if sig.kind == "command_unknown":
+                    return "failed", None, "unknown_command", None
+                invoked = sig
+            elif sig is not None:
+                return _command_result(record, sig, dismissed=escapes > 0)
+            elif not session.dialog_hits:
+                continue
+            elif not escapes:
+                if session.clock() - session.last_output >= grace:
+                    await session.send_escape()
+                    escapes, escaped_at = 1, time.monotonic()
+            elif time.monotonic() - escaped_at < DIALOG_ESC_INTERVAL:
+                continue
+            elif escapes >= DIALOG_ESC_BUDGET:
+                return "failed", None, "dialog_stuck", None
+            elif session.dialog_on_screen():
+                await session.send_escape()
+                escapes, escaped_at = escapes + 1, time.monotonic()
+        return "failed", None, "timeout", None
 
     async def _await_compact_boundary(self, mark: int, timeout: float) -> None:
         """Deliver the compaction's transcript boundary (so `compacted`) before completion.
@@ -1498,7 +1574,7 @@ class SessionRouter(SessionListener):
             {"state": state, "since": self.session.state_since or now_iso()},
         )
         internal = self.session.state
-        if internal in ("booting", "dead"):
+        if internal in ("booting", "dead") and not self._dialog_restart:
             self._abort_runner("claude_exited")
         elif internal in ("stopping", "stopped"):
             self._abort_runner("session_stopped")

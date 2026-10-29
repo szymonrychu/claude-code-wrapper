@@ -573,6 +573,22 @@ class CommandStub(StubSession):
     async def send_escape(self) -> None:
         self.escapes += 1
 
+    # The dialog surface (design D7): this stub never shows a dialog.
+    dialog_hits = 0
+    last_output = 0.0
+
+    def clock(self) -> float:
+        return time.monotonic()
+
+    def watch_dialogs(self, patterns: Any, typed: str = "") -> None:
+        pass
+
+    def dialog_on_screen(self) -> bool:
+        return False
+
+    async def restart_for_dialog(self) -> bool:
+        raise AssertionError("no dialog in this stub")
+
 
 @pytest.fixture
 async def u(tmp_path):

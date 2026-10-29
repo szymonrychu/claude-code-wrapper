@@ -228,7 +228,7 @@ Request body (all fields optional):
 | `template` | string | name of a configured prompt template to use as the initial prompt (instead of `prompt`) |
 | `variables` | object of string | values for the template's `{{name}}` placeholders |
 | `callbackUrl` | string | `http`/`https` URL that receives turn-terminal and question callbacks for this session (a turn's own `callbackUrl` wins) |
-| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `deny`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`; all optional, unset fields inherit, a set `deny` replaces the default list); command names outside the name pattern are rejected; stored with the session and reapplied on resume |
+| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `deny`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`, `dialog_grace_seconds`, `dialog_patterns`; all optional, unset fields inherit, a set `deny` replaces the default list); command names outside the name pattern are rejected; stored with the session and reapplied on resume |
 
 When neither `prompt` nor `template` is given, `prompts.initial_prompt` (if configured) is used.
 Secret `env` overrides are never persisted; resend them on resume.
@@ -2277,8 +2277,7 @@ Progress is visible as the `command_queued`, `command_started`, `command_complet
 2. **Runs at Stop.** When the turn reaches its Stop, ccw answers the Stop hook with allow, emits
    [`turn_deferred`](#turn_deferred) with `reason: "command"`, waits for a quiet screen
    (`quiet_seconds`), fires `onCommand` (a blocking deny fails the command as `vetoed`), types the
-   command and waits for its completion signal or `timeout_seconds`. Queued commands run one after
-   another.
+   command and waits for its completion signal. Queued commands run one after another.
 3. **Same-turn resume.** When the queue is empty, the turn continues with
    `sessions.commands.continue_prompt` plus a `Command results:` line
    ([`turn_resumed`](#turn_resumed), `cause: "command"`). The turn record stays the same and its
@@ -2292,6 +2291,31 @@ Progress is visible as the `command_queued`, `command_started`, `command_complet
    claude crash fails the running command `claude_exited` and the usual restart rules decide the
    turn. `limits.turn_max_seconds` keeps counting while commands run, so a long compact can end the
    turn.
+7. **One deadline.** `timeout_seconds[name]` (`default` 60 s, `compact` 600 s) counts from the
+   moment the runner takes the command and is spent by the quiet wait, `onCommand`, typing, the
+   completion wait and the dialog leg together; a screen that never settles fails `timeout` at that
+   deadline. At the deadline ccw sends ESC, waits 1.5 s and sends a second ESC only when a dialog
+   footer is on screen, then fails the command `timeout`. A command that only times out holds the
+   session for at most `timeout_seconds` plus 1.5 s.
+8. **Dialogs.** Commands such as `/model`, `/config`, `/usage` or `/help` open a dialog and write
+   nothing until it is closed. From the moment the line is typed ccw scans the screen for
+   `dialog_patterns` (dialog footers such as "Esc to cancel"; compact is never scanned). With a
+   footer on screen and no completion signal, it waits `dialog_grace_seconds` (restarted by any
+   screen output, so a slow command that keeps printing is left alone) for a late signal, then
+   sends ESC. When 1.5 s later claude has written no output and a footer was seen again since that
+   ESC, it sends another, at most 3 ESCs and never two within 1 s (a double ESC at an empty prompt
+   opens claude's rewind menu). Output after an ESC completes the command with result `dismissed`
+   and claude's own message as `output` (for example "Settings dialog dismissed"); no output 1.5 s
+   after the third ESC fails it `dialog_stuck`. All of it happens inside the deadline.
+9. **A dialog left open.** When a command fails `dialog_stuck`, or `timeout` with a dialog footer
+   still on screen after the last ESC, ccw relaunches claude before it finishes the command and
+   releases the session, with `--resume` of the same claude session id, so the next turn or
+   command is typed into a fresh prompt and never into the dialog. The session is `booting`
+   meanwhile, then `busy` again until the command is finished; a running turn whose commands
+   these are stays running and is resumed as usual. The relaunch emits the usual
+   [`session_state`](#session_state) restart event and [`onError`](#onerror) (`kind: "restart"`) but
+   does not count against `sessions.max_restarts`; it is bounded by `claude.boot.timeout_seconds`,
+   and a relaunch that fails leaves the session `dead`, as a crash would.
 
 ### Configuration
 
@@ -2305,6 +2329,8 @@ sessions:
     continue_prompt: "The slash commands you queued have run. Continue the task you were working on."
     allow_force: false                     # true lets reload-plugins take --force
     quiet_seconds: 1.5
+    dialog_grace_seconds: 2.0
+    dialog_patterns: ["esc to cancel", "esc to close", "esc to clear", "esc to exit", "enter to confirm"]
   auto_compact:
     idle_seconds: 1800
     instructions: "keep the current plan, open decisions and file paths"
@@ -2343,8 +2369,9 @@ when both are set. Claude Code's own automatic and idle compaction is left as is
 - Completion is detected, not assumed: for `compact` the `PostCompact` hook relay or the
   `compact_boundary` transcript entry (the known failure messages fail it); for the others the
   command's local-command output in the transcript. A `reload-plugins` run that only reports it
-  needs `--force` completes with result `skipped_cache`. No signal within `timeout_seconds` sends
-  ESC once and fails the command `timeout`.
+  needs `--force` completes with result `skipped_cache`, a dialog dismissed by ESC with result
+  `dismissed`. No signal within `timeout_seconds` fails the command `timeout` after the ESCs
+  described under [Lifecycle](#lifecycle).
 
 ## Peer messaging
 
@@ -3310,6 +3337,8 @@ sessions:
 | `sessions.commands.continue_prompt` | string | `"The slash commands you queued have run. Continue the task you were working on."` | - | Non-empty text that resumes the agent after its queued commands ran, followed by a blank line and the `Command results: ...` line (see [`turn_resumed`](#turn_resumed)). |
 | `sessions.commands.allow_force` | boolean | `false` | - | Allow `--force` among the args of `reload-plugins`. |
 | `sessions.commands.quiet_seconds` | number | `1.5` | - | Seconds of PTY silence to wait for before typing a command, >= 0. |
+| `sessions.commands.dialog_grace_seconds` | number | `2.0` | - | Seconds without PTY output, after a dialog footer appeared and no completion signal came, before a command's dialog is dismissed with ESC, >= 0. See [Lifecycle](#lifecycle). |
+| `sessions.commands.dialog_patterns` | list of string | `["esc to cancel", "esc to close", "esc to clear", "esc to exit", "enter to confirm"]` | - | Dialog footers looked for on screen while a command other than `compact` runs, matched ignoring case, whitespace and escapes; none blank. Empty disables dialog dismissal. |
 | `sessions.auto_compact.idle_seconds` | number | `0` | - | Run `/compact` after the session stayed idle this long following a turn; 0 is off. Must be below `idle_timeout_seconds` when both are set. |
 | `sessions.auto_compact.instructions` | string | `""` | - | One-line focus instructions passed to the automatic `/compact` (max 2000 characters, no control characters); empty sends none. |
 | `sessions.auto_compact.min_context_tokens` | integer | `0` | - | Skip the automatic compact while the last main-chain context (input + cache read + cache creation tokens) is below this many tokens, >= 0; 0 compacts whatever the size. |

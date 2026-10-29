@@ -7,10 +7,14 @@ call the session ready on a ready marker or output quiescence, never before `min
 (a submit while the TUI is still painting exits claude). A boot that never gets there is
 relaunched once; a crash after boot is relaunched within `max_restarts`, with `--resume` only
 when the transcript exists (resuming a conversation that was never written exits claude at once
-and burns the budget). With `sessions.restart_continue_prompt` set, a turn running when claude
-crashes is held (still `running`) across the relaunch; a resumed relaunch is sent the continue
-prompt with the same turn marker and the turn goes on (`on_turn_resumed`). The ring is emptied
-before every relaunch so the old screen cannot satisfy the new boot's dialog or marker checks.
+and burns the budget). `restart_for_dialog` takes the same relaunch path for a dialog a slash
+command left open (design D7): it spends no `max_restarts`, and the slot (the command run, or the
+turn whose commands run) is retaken busy once claude is back, so nothing is typed into the dialog
+and nothing else takes the session in between. With `sessions.restart_continue_prompt` set, a
+turn running when claude crashes is held (still `running`) across the relaunch; a resumed
+relaunch is sent the continue prompt with the same turn marker and the turn goes on
+(`on_turn_resumed`). The ring is emptied before every relaunch so the old screen cannot satisfy
+the new boot's dialog or marker checks.
 `continue_turn` is that paste for any caller: the router also uses it to resume a turn after the
 slash commands it ran at the turn's Stop (`hold_for_commands` marks that command phase, in which
 claude sits at its prompt with no turn of its own: an interrupt or the time limit ends the turn at
@@ -37,7 +41,10 @@ record and calls `on_turn_end`. A quiet turn is only reported (`on_stall`), neve
 silence is not a stall.
 
 The screen is never the source of turn results; it is read only for boot, fatal patterns and
-debug tails, and every tail that leaves this module is redacted.
+debug tails, and every tail that leaves this module is redacted. A slash command run also reads
+it for dialog footers (`watch_dialogs`): `dialog_on_screen` is a footer seen since the last ESC,
+and `send_escape` never sends two ESCs within `ESC_SPACING_SECONDS` (a double ESC at an empty
+prompt opens claude's rewind menu).
 """
 
 from __future__ import annotations
@@ -94,6 +101,8 @@ ESC = b"\x1b"
 StopCause = Literal["stop", "shutdown"]
 #: The error of a turn a shutdown cut off that the resumed session cannot continue.
 SERVICE_SHUTDOWN = "service_shutdown"
+#: Minimum gap between two ESCs: a double ESC at an empty prompt opens the rewind menu.
+ESC_SPACING_SECONDS = 1.0
 
 
 def default_probe_text(token: str) -> str:
@@ -436,6 +445,13 @@ class Session:
         self.boot_error: BootError | None = None
         self._redactor = _redactor_for(spec.env)
         self._scanner = FatalScanner(spec.boot.fatal_patterns)
+        #: Dialog footers of the slash command being run (`watch_dialogs`); none otherwise.
+        self._dialogs = FatalScanner(())
+        self._dialog_hits = 0
+        self._hits_at_escape = 0
+        self._last_escape = float("-inf")
+        #: Set while `restart_for_dialog` closes claude, so its exit takes the dialog relaunch.
+        self._dialog_restart = False
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._exited = asyncio.Event()
         self._public: str | None = None
@@ -551,11 +567,13 @@ class Session:
         else:  # nothing to paste, or a fresh claude has no conversation to continue
             self._end_turn(adopted, "failed", error=SERVICE_SHUTDOWN)
 
-    async def _boot(self, *, resume: bool) -> bool:
+    async def _boot(self, *, resume: bool, slot: bool | None = None) -> bool:
         """Launch and wait for ready, relaunching once; returns whether the launch resumed.
 
         The first launch resumes when `resume`; the relaunch only when the transcript
         exists. Two failed boots in a row leave the session dead and raise `BootError`.
+        `slot` is set for a dialog relaunch: whether a command run held the slot. Then claude
+        that is ready goes back to busy for the command run or the running turn, never ready.
         """
         code, tail = "", ""
         for attempt in range(2):
@@ -579,7 +597,11 @@ class Session:
             code = await self._boot_wait(self.pty)
             if code == "ready":
                 self.ready_at = now_iso()
-                self._set_state("ready")
+                if slot is not None and (slot or self._turn is not None):
+                    self._command_active = slot
+                    self._set_state("busy")
+                else:
+                    self._set_state("ready")
                 log.info("session %s: claude ready pid=%s", self.spec.session_id, self.pty.pid)
                 return resume
             if code == "stopped":
@@ -602,6 +624,7 @@ class Session:
         pty = PtyProcess()
         pty.ring = self.ring  # one screen across relaunches; reset() empties it in between
         self._scanner.reset()
+        self._dialogs.reset()
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._exited = asyncio.Event()
         self.pty = pty
@@ -671,6 +694,7 @@ class Session:
             return
         self.last_output = self.clock()
         self._notify("on_output", text)
+        self._dialog_hits += len(self._dialogs.feed(text))
         for pattern in self._scanner.feed(text):
             self.last_fatal = pattern
             log.warning("session %s: fatal pattern %r on screen", self.spec.session_id, pattern)
@@ -686,6 +710,15 @@ class Session:
             return
         self._exited.set()  # a booting claude: the boot wait sees this
         if self._stopping or self.state not in ("ready", "busy"):
+            return
+        if self._dialog_restart:
+            self._dialog_restart = False
+            log.warning("session %s: relaunching claude over an open dialog", self.spec.session_id)
+            slot = self._command_active  # read before booting clears it
+            self.ring.reset()
+            self._set_state("booting")
+            self._recovery = asyncio.ensure_future(self._recover(pty, code, slot=slot))
+            self._track(self._recovery)
             return
         self._commands_turn = None  # a held turn continues with the restart prompt
         record = self._turn
@@ -713,12 +746,18 @@ class Session:
         self._recovery = asyncio.ensure_future(self._recover(pty, code))
         self._track(self._recovery)
 
-    async def _recover(self, old: PtyProcess, code: int) -> None:
-        """claude exited on its own after boot: relaunch within the budget, else dead."""
+    async def _recover(self, old: PtyProcess, code: int, *, slot: bool | None = None) -> None:
+        """claude exited on its own after boot: relaunch within the budget, else dead.
+
+        `slot` is set for a dialog relaunch (`restart_for_dialog`): no budget is spent, and the
+        turn whose commands run fails `claude_exited` when claude does not come back resumed.
+        """
         await old.close(DEAD_CLOSE_GRACE)
         if self._stopping:
             return
-        if self.restarts >= self.spec.max_restarts:
+        if slot is not None:
+            self._held = self._turn  # failed below unless the relaunch resumes
+        elif self.restarts >= self.spec.max_restarts:
             log.error(
                 "session %s: restart budget (%d) exhausted",
                 self.spec.session_id,
@@ -728,11 +767,12 @@ class Session:
             self._set_state("dead")
             self._notify("on_exit", code)
             return
-        self.restarts += 1
+        else:
+            self.restarts += 1
         self.ring.reset()
         self._set_state("booting")
         try:
-            resumed = await self._boot(resume=os.path.isfile(self.transcript_path))
+            resumed = await self._boot(resume=os.path.isfile(self.transcript_path), slot=slot)
         except BootError as exc:
             if exc.code != "stopped":  # a stop ended the held turn itself
                 self._fail_held()
@@ -740,6 +780,8 @@ class Session:
             return
         if not resumed:
             self._fail_held()  # a fresh claude has no conversation to continue
+        if slot is not None:
+            self._held = None  # the router goes on with the turn's commands
         self._notify("on_restart", self.restarts, resumed)
         if resumed and self._held is not None and not self._stopping:
             await self._continue_held(self._held)
@@ -1187,8 +1229,53 @@ class Session:
             self.last_input = self.clock()
 
     async def send_escape(self) -> None:
-        """One ESC, for a slash command that did not finish in time."""
-        await self._send_key(ESC)
+        """One ESC for a slash command (a dialog, a timeout, an interrupt), never within
+        `ESC_SPACING_SECONDS` of the previous ESC; nothing while claude is not live."""
+        wait = self._last_escape + ESC_SPACING_SECONDS - self.clock()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        if self.state in ("ready", "busy"):
+            await self._send_key(ESC)
+
+    def watch_dialogs(self, patterns: Iterable[str], typed: str = "") -> None:
+        """Scan the PTY output from now on for these dialog footers (none: stop scanning).
+
+        A pattern the typed line itself holds is left out: the line is echoed on screen.
+        """
+        line = _squash(typed)
+        self._dialogs = FatalScanner(p for p in patterns if not line or _squash(p) not in line)
+        self._dialog_hits = self._hits_at_escape = 0
+
+    @property
+    def dialog_hits(self) -> int:
+        """Dialog footers seen since `watch_dialogs`."""
+        return self._dialog_hits
+
+    def dialog_on_screen(self) -> bool:
+        """A dialog footer was seen since the last ESC (or since `watch_dialogs`)."""
+        return self._dialog_hits > self._hits_at_escape
+
+    async def restart_for_dialog(self) -> bool:
+        """Relaunch claude because a dialog stayed open; True once claude is back.
+
+        The crash path (`_on_exit`, `_recover`) relaunches it, with `--resume` of the same
+        claude session id when the transcript exists, and `on_restart` is notified. `restarts`
+        is unchanged, and the slot stays taken: the session is `booting` meanwhile, then `busy`
+        again for the command run or the turn whose commands run. A relaunch that fails leaves
+        the session dead, as a crash would.
+        """
+        pty = self.pty
+        if pty is None or self._stopping or self.state not in ("ready", "busy"):
+            return False
+        self._dialog_restart = True
+        try:
+            await pty.close(DEAD_CLOSE_GRACE)
+        finally:
+            self._dialog_restart = False
+        recovery = self._recovery
+        if recovery is not None and not recovery.done():
+            await asyncio.shield(recovery)
+        return self.state in ("ready", "busy")
 
     @property
     def commands_turn(self) -> TurnRecord | None:
@@ -1271,6 +1358,9 @@ class Session:
         with contextlib.suppress(PtyClosed):  # the exit path ends the turn
             await pty.write(key)
         self.last_input = self.clock()
+        if key == ESC:
+            self._last_escape = self.last_input
+            self._hits_at_escape = self._dialog_hits
 
     def on_interrupted(self) -> None:
         """The transcript shows an interrupt: end the running turn (pending or unprompted)."""
