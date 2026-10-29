@@ -10,7 +10,12 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 SignalKind = Literal[
-    "pre_compact", "post_compact", "compact_boundary", "command_invoked", "command_output"
+    "pre_compact",
+    "post_compact",
+    "compact_boundary",
+    "command_invoked",
+    "command_output",
+    "command_unknown",
 ]
 HISTORY = 64
 
