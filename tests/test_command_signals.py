@@ -14,7 +14,12 @@ from claude_code_wrapper.config import Config
 from claude_code_wrapper.hook_relay import CLAUDE_HOOK_EVENTS
 from claude_code_wrapper.internal_api import create_internal_app
 from claude_code_wrapper.metrics import Metrics
-from claude_code_wrapper.transcript import CommandInvoked, CommandOutput, CompactBoundary
+from claude_code_wrapper.transcript import (
+    CommandInvoked,
+    CommandOutput,
+    CommandUnknown,
+    CompactBoundary,
+)
 
 
 @pytest.fixture
@@ -121,6 +126,15 @@ async def test_command_entries_publish_main_chain_only(h):
     assert inv.data == {"name": "compact", "args": "x"}
     assert out.data == {"stdout": "out", "stderr": "err"}
     assert h.events("compacted") == []
+
+
+async def test_unknown_command_publishes_signal(h):
+    await h.router._on_transcript_events(
+        [CommandUnknown(name="side", sidechain=True), CommandUnknown(name="nonexistent")]
+    )
+    assert h.router.signals.mark() == 1
+    sig = await h.router.signals.wait(lambda s: s.kind == "command_unknown", after=0, timeout=0.1)
+    assert sig is not None and sig.data == {"name": "nonexistent"}
 
 
 def _boundary_data(trigger="auto"):

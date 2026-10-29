@@ -88,11 +88,17 @@ Scenario schema
 Local slash commands
   Submitted text (stripped) starting with "/" plus a name is a command, not a turn: no
   UserPromptSubmit, no Stop, no assistant line; the idle footer follows. Known names: compact,
-  reload-plugins, reload-skills, mcp, context. An unknown "/name" prints "Unknown command: /name"
-  and returns to idle with no transcript line. Every known command first writes a user line whose
-  string content is
-    <command-name>/NAME</command-name>\n<command-message>NAME</command-message>\n
-    <command-args>ARGS</command-args>          (ARGS = rest of the line, stripped; may be empty)
+  reload-plugins, reload-skills, mcp, context, plus every name listed under scenario "commands".
+  An unknown "/name [ARGS]" (claude 2.1.304) writes a system line {"subtype": "informational",
+  "content": "Unknown command: /name"}, or "Unknown command: /name. Did you mean /other?" when the
+  top-level scenario key "suggest" maps name to other, then, only when ARGS is not empty, a
+  second informational line "Args from unknown skill: ARGS"; it prints the first text and
+  returns to idle. Every known command first writes its echo, whose string content is
+    <command-name>/NAME</command-name>\n<12 spaces><command-message>NAME</command-message>\n
+    <12 spaces><command-args>ARGS</command-args>   (ARGS = rest of the line, stripped; may be empty)
+  as a user line (echo "user": compact, reload-plugins, reload-skills, mcp and scenario-listed
+  names) or as a system line of subtype local_command (echo "system": context, as claude does
+  for /context and its dialog commands).
   /compact [instructions]: PreCompact hooks run with {trigger: "manual", custom_instructions:
     ARGS or null}; a block (exit 2 or stdout {"decision": "block"}) ends it as "canceled". Then a
     system line {"subtype": "compact_boundary", "content": "Conversation compacted",
@@ -101,11 +107,13 @@ Local slash commands
     continued from a previous conversation" and holds "All user messages:" followed by every earlier
     user prompt of this process verbatim (turn markers included), then PostCompact hooks with
     {trigger, compact_summary}, then "Compacted" on the PTY and the idle footer.
-  /reload-plugins [--force], /reload-skills, /context, /mcp ARGS: write one stdout entry
-    <local-command-stdout>STDOUT</local-command-stdout> as a system line (subtype local_command),
-    or as a user line when the scenario sets as_user. Default STDOUT: "Reloaded: 0 plugins, 0
-    skills, 0 agents, 0 hooks, 0 MCP servers", "Reloaded skills", "Context usage: 0 tokens",
-    "Reconnected to all MCP servers" ("/mcp reconnect NAME" -> "Reconnected to NAME").
+  Every other known command (/reload-plugins [--force], /reload-skills, /context, /mcp ARGS, a
+    scenario-listed name): writes one stdout entry
+    <local-command-stdout>STDOUT</local-command-stdout> as a system line (subtype
+    local_command), or as a user line when the scenario sets as_user.
+    Default STDOUT: "Reloaded: 0 plugins, 0 skills, 0 agents, 0 hooks, 0 MCP servers", "Reloaded
+    skills", "Context usage: 0 tokens", "Reconnected to all MCP servers" ("/mcp reconnect NAME" ->
+    "Reconnected to NAME"), "NAME done" for a scenario-listed name.
   Scenario key (top level) "commands": {"<name>": {...}}:
     compact: "outcome" ok (default) | canceled ("Compaction canceled.") | not_enough ("Not enough
       messages to compact.") | error ("Error compacting conversation") | hang (nothing until ESC,
@@ -113,13 +121,18 @@ Local slash commands
       "pre_tokens"/"post_tokens" set the boundary token counts. A failure outcome writes a system
       local_command line <local-command-stderr>MSG</local-command-stderr>, prints MSG, writes no
       boundary and runs no PostCompact.
-    any command: "delay_seconds" before completing (ESC during it cancels); "stdout" overrides the
-      stdout text; "as_user": true writes the stdout entry as a user line; "hang": true writes
-      nothing until ESC, then returns to idle.
+    any command: "echo": "user" | "system" overrides the echo style; "echo_name" is the name the
+      echo carries (claude echoes the resolved alias: /cost echoes /usage); "delay_seconds" before
+      completing (ESC during it cancels); "stdout" overrides the stdout text; "as_user": true
+      writes the stdout entry as a user line; "hang": true writes nothing after the echo until
+      ESC, then returns to idle.
   Input log: every submitted line is appended to $CLAUDE_CONFIG_DIR/fake-inputs.jsonl as
   {"text", "state": "idle"|"busy", "ts"}. Bytes other than ESC arriving while a turn or command
   runs are recorded with state "busy" (and dropped), so tests can prove nothing typed into a
   running turn.
+  Key log: every lone ESC the fake receives, at idle or while a turn or command runs, is
+  appended to $CLAUDE_CONFIG_DIR/fake-keys.jsonl as {"key": "esc", "ts"}, never to
+  fake-inputs.jsonl, so tests can count and space ESCs.
 
 Print mode
   `-p`/`--print` takes the prompt from the argument or stdin, needs no TTY and runs no hooks.
@@ -185,6 +198,10 @@ def substitute_step(step: dict, groups: dict[str, str]) -> dict:
 
 
 COMMANDS = ("compact", "reload-plugins", "reload-skills", "mcp", "context")
+#: Echo style of a known command without a scenario "echo" (claude 2.1.304 transcripts).
+SYSTEM_ECHO = ("context",)
+#: claude indents the message and args lines of a command echo by 12 spaces.
+ECHO_INDENT = "\n" + " " * 12
 COMMAND_STDOUT = {
     "reload-plugins": "Reloaded: 0 plugins, 0 skills, 0 agents, 0 hooks, 0 MCP servers",
     "reload-skills": "Reloaded skills",
@@ -551,6 +568,8 @@ class Fake:
                             in_paste, paste, pasted, typed = False, b"", False, b""
                             self.submit(text.rstrip("\n"))
                             data = b""
+                    elif ch == b"\x1b" and not data.startswith(b"["):
+                        self.record_key("esc")
                     elif not pasted:
                         typed += ch
 
@@ -567,12 +586,19 @@ class Fake:
         with open(os.path.join(config_dir(), "fake-inputs.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({"text": text, "state": state, "ts": now()}) + "\n")
 
+    def record_key(self, key: str) -> None:
+        with open(os.path.join(config_dir(), "fake-keys.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"key": key, "ts": now()}) + "\n")
+
     def interrupted(self, timeout: float = 0.0) -> bool:
         data = self.read(timeout)
-        if data is not None and data != b"\x1b":
+        if data == b"\x1b":
+            self.record_key("esc")
+            return True
+        if data is not None:
             text = data.replace(PASTE_START, b"").replace(PASTE_END, b"")
             self.record_input(text.decode(errors="replace"), "busy")
-        return data == b"\x1b"
+        return False
 
     def do_interrupt(self) -> None:
         self.user_line([{"type": "text", "text": INTERRUPT_TEXT}])
@@ -613,20 +639,39 @@ class Fake:
                 return True
 
     def run_command(self, name: str, args: str) -> None:
-        if name not in COMMANDS:
-            self.out(f"\nUnknown command: /{name}\n")
-            self.footer()
+        listed = self.scenario.get("commands") or {}
+        if name not in COMMANDS and name not in listed:
+            self.unknown_command(name, args)
             return
-        self.user_line(
-            f"<command-name>/{name}</command-name>\n<command-message>{name}</command-message>\n"
+        cfg = listed.get(name) or {}
+        shown = cfg.get("echo_name", name)
+        echo = (
+            f"<command-name>/{shown}</command-name>{ECHO_INDENT}"
+            f"<command-message>{shown}</command-message>{ECHO_INDENT}"
             f"<command-args>{args}</command-args>"
         )
-        cfg = (self.scenario.get("commands") or {}).get(name) or {}
+        if cfg.get("echo", "system" if name in SYSTEM_ECHO else "user") == "system":
+            self.write_line({"type": "system", "subtype": "local_command", "content": echo})
+        else:
+            self.user_line(echo)
         if name == "compact":
             self.compact_command(args, cfg)
         else:
             self.stdout_command(name, args, cfg)
         self.footer()
+
+    def unknown_command(self, name: str, args: str) -> None:
+        """claude's answer to an unknown name: informational system lines, no hook, no turn."""
+        other = (self.scenario.get("suggest") or {}).get(name)
+        text = f"Unknown command: /{name}" + (f". Did you mean /{other}?" if other else "")
+        self.informational(text)
+        if args:
+            self.informational(f"Args from unknown skill: {args}")
+        self.out(f"\n{text}\n")
+        self.footer()
+
+    def informational(self, text: str) -> None:
+        self.write_line({"type": "system", "subtype": "informational", "content": text})
 
     def local_output(self, kind: str, text: str, as_user: bool = False) -> None:
         content = f"<local-command-{kind}>{text}</local-command-{kind}>"
@@ -643,7 +688,7 @@ class Fake:
         if self.wait_esc(float(cfg.get("delay_seconds", 0))):
             return
         words = args.split()
-        default = COMMAND_STDOUT[name]
+        default = COMMAND_STDOUT.get(name, f"{name} done")
         if name == "mcp" and words[:1] == ["reconnect"] and words[1:2] not in ([], ["all"]):
             default = f"Reconnected to {words[1]}"
         self.local_output("stdout", cfg.get("stdout", default), bool(cfg.get("as_user")))

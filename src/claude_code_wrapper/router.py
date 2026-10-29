@@ -23,7 +23,7 @@ import json
 import logging
 import sys
 import time
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Coroutine, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -48,6 +48,7 @@ from .transcript import (
     AssistantText,
     CommandInvoked,
     CommandOutput,
+    CommandUnknown,
     CompactBoundary,
     Interrupted,
     ProbeMarker,
@@ -113,8 +114,9 @@ def _compact_done(sig: Signal) -> bool:
     return sig.kind == "command_output" and any(f in _output_text(sig) for f in COMPACT_FAILURES)
 
 
-def _invoked(name: str) -> Callable[[Signal], bool]:
-    return lambda sig: sig.kind == "command_invoked" and sig.data.get("name") == name
+def _invoked_or_unknown(sig: Signal) -> bool:
+    """Any echo (claude echoes the resolved alias, /cost echoes /usage) or an unknown name."""
+    return sig.kind in ("command_invoked", "command_unknown")
 
 
 def _output_text(sig: Signal) -> str:
@@ -1023,6 +1025,9 @@ class SessionRouter(SessionListener):
                     self.signals.publish(
                         "command_output", {"stdout": ev.stdout, "stderr": ev.stderr}
                     )
+            elif isinstance(ev, CommandUnknown):
+                if not ev.sidechain:
+                    self.signals.publish("command_unknown", {"name": ev.name})
             elif isinstance(ev, UserPrompt):
                 if ev.turn_marker:
                     self._last_marker = ev.turn_marker
@@ -1354,24 +1359,37 @@ class SessionRouter(SessionListener):
     async def _await_completion(
         self, record: CommandRecord, mark: int, timeout: float
     ) -> tuple[str, str | None, str | None, str | None]:
-        """(state, result, error, output) from the signal bus, or a timeout failure."""
+        """(state, result, error, output) from the signal bus, or a timeout failure.
+
+        The first signal after `mark` wins: an echo of any name then its output completes (stderr
+        only fails `command_error`); compact completes on PostCompact or its boundary and fails on
+        a failure text; an unknown name fails `unknown_command` at once.
+        """
         deadline = time.monotonic() + timeout
 
         def left() -> float:
             return max(deadline - time.monotonic(), 0.0)
 
         if record.name == "compact":
-            sig = await self.signals.wait(_compact_done, after=mark, timeout=left())
+            sig = await self.signals.wait(
+                lambda s: _compact_done(s) or s.kind == "command_unknown",
+                after=mark,
+                timeout=left(),
+            )
             if sig is None:
                 return "failed", None, "timeout", None
+            if sig.kind == "command_unknown":
+                return "failed", None, "unknown_command", None
             if sig.kind == "command_output":
                 return "failed", None, "compact_failed", _output_text(sig)
             if sig.kind == "post_compact":
                 await self._await_compact_boundary(mark, min(left(), COMPACT_BOUNDARY_GRACE))
             return "completed", "ok", None, None
-        invoked = await self.signals.wait(_invoked(record.name), after=mark, timeout=left())
+        invoked = await self.signals.wait(_invoked_or_unknown, after=mark, timeout=left())
         if invoked is None:
             return "failed", None, "timeout", None
+        if invoked.kind == "command_unknown":
+            return "failed", None, "unknown_command", None
         sig = await self.signals.wait(
             lambda s: s.kind == "command_output", after=invoked.seq, timeout=left()
         )

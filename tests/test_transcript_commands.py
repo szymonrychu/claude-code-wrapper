@@ -7,6 +7,7 @@ from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.transcript import (
     CommandInvoked,
     CommandOutput,
+    CommandUnknown,
     CompactBoundary,
     TranscriptTailer,
     UserPrompt,
@@ -19,6 +20,59 @@ LINES = FIXTURE.read_text().splitlines()
 
 def test_command_echo_is_command_invoked():
     assert parse_line(LINES[0]) == [CommandInvoked(name="compact", args="keep the plan")]
+
+
+#: The real echo body (claude 2.1.304): name, message and args on lines indented 12 spaces.
+INDENT = "\n" + " " * 12
+
+
+def real_echo(name, args=""):
+    return (
+        f"<command-name>/{name}</command-name>{INDENT}<command-message>{name}</command-message>"
+        f"{INDENT}<command-args>{args}</command-args>"
+    )
+
+
+def test_real_user_echo_is_command_invoked():
+    line = json.dumps({"type": "user", "message": {"content": real_echo("reload-plugins")}})
+    assert parse_line(line) == [CommandInvoked(name="reload-plugins", args="")]
+
+
+def test_system_command_echo_is_command_invoked():
+    """claude writes the echo of /context and of every dialog command as a system line."""
+    for name, args in (("context", ""), ("usage", ""), ("model", "opus")):
+        line = json.dumps(
+            {"type": "system", "subtype": "local_command", "content": real_echo(name, args)}
+        )
+        assert parse_line(line) == [CommandInvoked(name=name, args=args)]
+    stdout = json.dumps(
+        {
+            "type": "system",
+            "subtype": "local_command",
+            "content": "<local-command-stdout>Settings dialog dismissed</local-command-stdout>",
+        }
+    )
+    assert parse_line(stdout) == [CommandOutput(stdout="Settings dialog dismissed", stderr="")]
+
+
+def informational(content):
+    return json.dumps({"type": "system", "subtype": "informational", "content": content})
+
+
+def test_informational_unknown_command():
+    """Real sample: summaries/outC.txt lines 15-16 of the probe-slash scratchpad."""
+    assert parse_line(informational("Unknown command: /nonexistent")) == [
+        CommandUnknown(name="nonexistent")
+    ]
+    assert parse_line(informational("Args from unknown skill: some args")) == []
+    assert parse_line(informational("Auto mode is now the default")) == []
+    events = parse_line(informational("Unknown command: /x"), sidechain=True, agent_id="a1")
+    assert events == [CommandUnknown(name="x", sidechain=True, agent_id="a1")]
+
+
+def test_informational_unknown_command_with_suggestion():
+    line = informational("Unknown command: /comapct. Did you mean /compact?")
+    assert parse_line(line) == [CommandUnknown(name="comapct")]
 
 
 def test_command_without_args_has_empty_args():

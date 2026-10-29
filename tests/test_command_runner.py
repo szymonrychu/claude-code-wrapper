@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,11 @@ async def start(
 
 def inputs(world: World, sid: str) -> list[dict]:
     return jsonl(world.session_dir(sid) / "config" / "fake-inputs.jsonl")
+
+
+def keys(world: World, sid: str) -> list[dict]:
+    """ESC keys the fake received (design D16), kept apart from the typed lines."""
+    return jsonl(world.session_dir(sid) / "config" / "fake-keys.jsonl")
 
 
 def types(world: World, sid: str, prefix: str = "command_") -> list[str]:
@@ -439,6 +445,95 @@ async def test_force_allowed_is_typed(world):
     assert [i["text"] for i in inputs(world, sid)] == ["/reload-plugins --force"]
 
 
+#: The real /reload-plugins stdout (probe 2026-10-29, claude 2.1.304), U+00B7 separators.
+REAL_RELOAD = (
+    "Reloaded: 0 plugins \u00b7 0 skills \u00b7 6 agents \u00b7 0 hooks \u00b7 "
+    "0 plugin MCP servers \u00b7 0 plugin LSP servers"
+)
+#: Long enough that a command failing on its timeout instead of its signal shows.
+SLOW = {"compact": 30, "default": 30}
+
+
+async def test_reload_plugins_from_client_completes_and_frees_slot(world):
+    """G3 regression pin: the reported /reload-plugins from a client completes, the slot frees."""
+    cfg = world.cfg(
+        {"commands": {"reload-plugins": {"stdout": REAL_RELOAD}}},
+        server={"auth_token": TOKEN},
+        sessions={"commands": commands_cfg(client=["*"], timeout_seconds=SLOW)},
+    )
+    m = world.manager(cfg)
+    sid = (await m.create(CreateSessionRequest()))["session_id"]
+    app = create_app(m, cfg)
+    transport = httpx.ASGITransport(app=app)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://t", headers=headers) as c:
+        r = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "reload-plugins"})
+        assert r.status_code == 202
+        url = f"/v1/sessions/{sid}/commands/{r.json()['id']}"
+        deadline = time.monotonic() + 5
+        while (rec := (await c.get(url)).json())["state"] in ("queued", "running"):
+            assert time.monotonic() < deadline, f"command still {rec['state']} after 5 s"
+            await asyncio.sleep(0.1)
+        assert (rec["state"], rec["result"], rec["output"]) == ("completed", "ok", REAL_RELOAD)
+        assert rec["output"].startswith("Reloaded: ")
+        assert types(world, sid) == ["command_queued", "command_started", "command_completed"]
+        deadline = time.monotonic() + 5
+        while (
+            t := await c.post(f"/v1/sessions/{sid}/turns", json={"text": "hello"})
+        ).status_code != 202:
+            assert t.status_code == 409 and time.monotonic() < deadline, t.text
+            await asyncio.sleep(0.1)
+    assert [i["text"] for i in inputs(world, sid)][:1] == ["/reload-plugins"]
+    assert keys(world, sid) == []
+
+
+async def test_context_with_system_echo_completes(world):
+    m, sid, _ = await start(
+        world, {"commands": {"context": {"echo": "system"}}}, timeout_seconds=SLOW
+    )
+    rec = m.router(sid).request_command("context", origin="client")
+    await finished(world, rec, timeout=5)
+    assert (rec.state, rec.result, rec.output) == ("completed", "ok", "Context usage: 0 tokens")
+
+
+async def unknown_fails_fast(world: World, scenario: dict | None, name: str, args: str) -> None:
+    m, sid, _ = await start(world, scenario, client=["*"], timeout_seconds=SLOW)
+    router = m.router(sid)
+    begun = time.monotonic()
+    rec = router.request_command(name, args, origin="client")
+    await finished(world, rec, timeout=5)
+    assert time.monotonic() - begun < 5
+    assert (rec.state, rec.result, rec.error) == ("failed", None, "unknown_command")
+    assert types(world, sid) == ["command_queued", "command_started", "command_failed"]
+    (failed,) = of_type(world, sid, "command_failed")
+    assert failed["record"]["error"] == "unknown_command"
+    await world.until(lambda: router.session.state == "ready", 5)
+    await asyncio.sleep(0.3)  # an ESC sent after the failure would have reached the fake by now
+    assert keys(world, sid) == []
+    line = f"/{name} {args}".rstrip()
+    assert inputs(world, sid) == [
+        {"text": line, "state": "idle", "ts": inputs(world, sid)[0]["ts"]}
+    ]
+
+
+async def test_unknown_command_fails_fast_without_esc(world):
+    """Real sample: summaries/outC.txt:15-16, `/nonexistent some args`."""
+    await unknown_fails_fast(world, None, "nonexistent", "some args")
+
+
+async def test_unknown_command_with_suggestion_fails_fast(world):
+    await unknown_fails_fast(world, {"suggest": {"comapct": "compact"}}, "comapct", "")
+
+
+async def test_alias_echo_completes(world):
+    """Real sample: summaries/outC.txt:32, /cost echoes /usage as a system line."""
+    cost = {"echo": "system", "echo_name": "usage", "stdout": "Total cost: $0.0000"}
+    m, sid, _ = await start(world, {"commands": {"cost": cost}}, client=["*"], timeout_seconds=SLOW)
+    rec = m.router(sid).request_command("cost", origin="client")
+    await finished(world, rec, timeout=5)
+    assert (rec.state, rec.result, rec.output) == ("completed", "ok", "Total cost: $0.0000")
+
+
 # ---------------------------------------------------------------- unit: scripted session
 
 
@@ -511,13 +606,38 @@ async def test_stderr_only_output_is_command_error(u):
 async def test_output_before_its_echo_is_not_the_result(u):
     u.session.script["/context"] = [
         ("command_output", {"stdout": "stale", "stderr": ""}),
-        ("command_invoked", {"name": "reload-skills", "args": ""}),
-        ("command_output", {"stdout": "other", "stderr": ""}),
         ("command_invoked", {"name": "context", "args": ""}),
         ("command_output", {"stdout": "Context usage: 1 tokens", "stderr": ""}),
     ]
     rec = await run(u, "context")
     assert (rec.state, rec.output) == ("completed", "Context usage: 1 tokens")
+
+
+async def test_any_echo_after_the_mark_completes(u):
+    """claude echoes the resolved alias (/cost echoes /usage): the typed name is not matched."""
+    u.router.commands_cfg.client = ["*"]
+    u.session.script["/cost"] = [
+        ("command_invoked", {"name": "usage", "args": ""}),
+        ("command_output", {"stdout": "Total cost: $0.0000", "stderr": ""}),
+    ]
+    rec = await run(u, "cost")
+    assert (rec.state, rec.output) == ("completed", "Total cost: $0.0000")
+
+
+@pytest.mark.parametrize("name", ["nonexistent", "compact"])
+async def test_unknown_signal_fails_at_once_without_esc(u, name):
+    u.router.commands_cfg.client = ["*"]
+    u.session.script[f"/{name}"] = [("command_unknown", {"name": name})]
+    begun = time.monotonic()
+    rec = await run(u, name)
+    assert time.monotonic() - begun < 1
+    assert (rec.state, rec.result, rec.error, rec.output) == (
+        "failed",
+        None,
+        "unknown_command",
+        None,
+    )
+    assert u.session.escapes == 0 and u.session.state == "ready"
 
 
 async def test_compact_ignores_auto_trigger_and_signals_before_mark(u):
