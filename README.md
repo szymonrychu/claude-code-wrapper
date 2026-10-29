@@ -568,7 +568,8 @@ Response `202`: the command record.
 ```
 
 `state` is `queued`, `running`, `completed`, `failed` or `cancelled`; `turn_id` is the turn running
-when it was queued (`null` when idle).
+when it was queued (`null` when idle), and for a command completed with result `turn` the turn it
+runs as (see [Lifecycle](#lifecycle), item 10).
 
 Errors: `401 unauthorized`, `404 not_found` (unknown session), `403 command_denied` (in
 `sessions.commands.deny`, checked first), `403 command_not_allowed` (not in the client allowlist), `422 invalid_command` (an empty or invalid name, invalid `args`, or `--force` in the
@@ -2319,6 +2320,20 @@ Progress is visible as the `command_queued`, `command_started`, `command_complet
    [`session_state`](#session_state) restart event and [`onError`](#onerror) (`kind: "restart"`) but
    does not count against `sessions.max_restarts`; it is bounded by `claude.boot.timeout_seconds`,
    and a relaunch that fails leaves the session `dead`, as a crash would.
+10. **Prompt and skill commands run as real turns.** A project, skill or plugin command (for example
+   `/init` or `/<plugin>:<command>`), or a name claude sends to the model as a prompt (a bare `/tmp`
+   that exists on disk), makes claude fire `UserPromptSubmit` and run a model turn instead of
+   writing command output. On that signal the command completes at once with result `turn` and the
+   turn's `turn_id`, and the turn ends like any turn: at its Stop
+   ([`turn_completed`](#turn_completed) with its `final_text`), on
+   [`POST /v1/sessions/{id}/interrupt`](#post-v1sessionsidinterrupt), or at
+   `limits.turn_max_seconds`; the session is `ready` again after it. On an idle session it is a new
+   turn record (origin `client` for a client command, `agent` otherwise) with its own
+   [`user_message`](#user_message) and [`turn_started`](#turn_started), and the session stays
+   `busy` from the command to that turn's end. A command run at a turn's Stop (item 2) instead
+   continues that same turn: no new record, no continue prompt, the turn's own id as `turn_id`,
+   and an interrupt sends ESC as for any running turn. Either way the runner stops there: commands
+   still queued wait for the Stop of the turn the command runs as.
 
 ### Configuration
 

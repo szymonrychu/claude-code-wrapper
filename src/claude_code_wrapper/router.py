@@ -125,13 +125,15 @@ def _compact_done(sig: Signal) -> bool:
     return sig.kind == "command_output" and any(f in _output_text(sig) for f in COMPACT_FAILURES)
 
 
-def _invoked_or_unknown(sig: Signal) -> bool:
-    """Any echo (claude echoes the resolved alias, /cost echoes /usage) or an unknown name."""
-    return sig.kind in ("command_invoked", "command_unknown")
+def _first_signal(sig: Signal) -> bool:
+    """Any echo (claude echoes the resolved alias, /cost echoes /usage), an unknown name, or the
+    prompt of a command claude sent to the model with no echo (`/tmp`, D8)."""
+    return sig.kind in ("command_invoked", "command_unknown", "prompt_submitted")
 
 
-def _is_output(sig: Signal) -> bool:
-    return sig.kind == "command_output"
+def _output_or_prompt(sig: Signal) -> bool:
+    """The echoed command's output, or its prompt: a prompt command runs a model turn (D8)."""
+    return sig.kind in ("command_output", "prompt_submitted")
 
 
 def _left(deadline: float) -> float:
@@ -651,6 +653,12 @@ class SessionRouter(SessionListener):
     async def _on_user_prompt_submit(
         self, event_name: str, payload: Mapping[str, Any]
     ) -> RelayResponse:
+        current = self._current
+        if current is not None and current.state == "running":
+            # claude sent the typed command to the model: the runner promotes it to a turn (D8).
+            self.signals.publish(
+                "prompt_submitted", {"prompt": _str_or_none(payload.get("prompt"))}
+            )
         return self._with_notes(event_name, payload, None)
 
     def _with_notes(
@@ -1190,6 +1198,8 @@ class SessionRouter(SessionListener):
         session = self.session
         if done and done[-1].error == "claude_exited":
             return  # claude died under a command: K12 decides the turn
+        if done and done[-1].result == "turn":
+            return  # the turn goes on as the prompt command's turn (D8): no continue prompt
         # Typed at a quiet prompt, like a command; a screen that never settles still gets it
         # (claude queues input typed while it responds) rather than leaving the turn hanging.
         quiet = self.commands_cfg.quiet_seconds
@@ -1324,11 +1334,17 @@ class SessionRouter(SessionListener):
             log.exception("command %s: finishing as %s failed", record.id, state)
 
     async def _run_queue(self) -> list[CommandRecord]:
-        """Run every queued command in order, one at a time; the records run."""
+        """Run every queued command in order, one at a time; the records run.
+
+        A command promoted to a turn (D8) stops the run: the commands still queued wait for
+        that turn's Stop.
+        """
         done: list[CommandRecord] = []
         while (record := self.commands.next()) is not None:
             await self._run_command(record)
             done.append(record)
+            if record.result == "turn":
+                break
             if record.error == "claude_exited" or self.session.state not in ("ready", "busy"):
                 # Nothing more reaches claude: the exit path relaunches or ends the session.
                 started = time.monotonic()
@@ -1392,6 +1408,8 @@ class SessionRouter(SessionListener):
             await session.send_command(line)
             self._emit_user_message(None, "command", line)
             state, result, error, output = await self._await_completion(record, mark, deadline)
+            if result == "turn":
+                self._promote(record, line)
             if error == "timeout":
                 await self._escape_at_timeout(deadline)
             if error == "dialog_stuck" or (error == "timeout" and session.dialog_on_screen()):
@@ -1407,6 +1425,32 @@ class SessionRouter(SessionListener):
         await self._finish_command(
             record, state, started, result=result, error=error, output=output
         )
+
+    def _promote(self, record: CommandRecord, line: str) -> None:
+        """claude sent the typed command `line` to the model (D8): `record` names its turn.
+
+        Same-turn path (the runner works for a held turn): that turn continues as the command's
+        turn, its hold released through the session, and no continue prompt follows. Idle path:
+        a running turn is adopted on the slot the command run holds (origin `client` for a
+        client command, else `agent`), with its `user_message` and `turn_started`. Either way
+        the turn's Stop carries no marker of its own, so `_last_marker` names the turn.
+        """
+        session = self.session
+        held = self._commands_turn
+        if held is not None and held is session.current_turn:
+            self._commands_turn = None
+            session.release_commands_hold(held)
+            turn = held
+        else:
+            origin: Origin = "client" if record.origin == "client" else "agent"
+            turn = session.adopt_turn(line, origin=origin)
+            self._usage.reset()
+            self._emit_user_message(turn.turn_id, turn.origin, line)
+            self._emit(
+                "turn_started", {"turn_id": turn.turn_id, "origin": turn.origin, "text": line}
+            )
+        self._last_marker = turn.turn_id
+        record.turn_id = turn.turn_id
 
     async def _escape_at_timeout(self, deadline: float) -> None:
         """At the deadline: ESC; within the 1.5 s that follow, a second ESC only with a dialog
@@ -1440,7 +1484,9 @@ class SessionRouter(SessionListener):
 
         The first signal after `mark` wins: an echo of any name then its output completes (stderr
         only fails `command_error`); compact completes on PostCompact or its boundary and fails on
-        a failure text; an unknown name fails `unknown_command` at once. Meanwhile the dialog leg
+        a failure text; an unknown name fails `unknown_command` at once. A prompt signal, after an
+        echo or with none, completes with result `turn` at once: claude runs the command as a
+        model turn, which the caller promotes (D8). Meanwhile the dialog leg
         (D7, never for compact): a dialog footer on screen and `dialog_grace_seconds` without PTY
         output send ESC; 1.5 s later, with the footer seen again and no output, ESC again, up to
         `DIALOG_ESC_BUDGET` ESCs. Output after an ESC completes `dismissed`; none 1.5 s after the
@@ -1470,10 +1516,12 @@ class SessionRouter(SessionListener):
         escaped_at = 0.0
         while (left := _left(deadline)) > 0:
             sig = await self.signals.wait(
-                _invoked_or_unknown if invoked is None else _is_output,
+                _first_signal if invoked is None else _output_or_prompt,
                 after=mark if invoked is None else invoked.seq,
                 timeout=min(left, DIALOG_POLL_SECONDS),
             )
+            if sig is not None and sig.kind == "prompt_submitted":
+                return "completed", "turn", None, None
             if sig is not None and invoked is None:
                 if sig.kind == "command_unknown":
                     return "failed", None, "unknown_command", None

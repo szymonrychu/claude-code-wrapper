@@ -18,7 +18,10 @@ the new boot's dialog or marker checks.
 `continue_turn` is that paste for any caller: the router also uses it to resume a turn after the
 slash commands it ran at the turn's Stop (`hold_for_commands` marks that command phase, in which
 claude sits at its prompt with no turn of its own: an interrupt or the time limit ends the turn at
-once, and a transcript interrupt line belongs to the command, not to the turn).
+once, and a transcript interrupt line belongs to the command, not to the turn). A slash command
+claude runs as a model turn (a prompt command, design D8) becomes a turn with no paste of its own:
+`adopt_turn` turns an idle session's command slot into a running turn, and
+`release_commands_hold` ends the command phase of a held turn that continues as that model turn.
 
 Service shutdown (D5): `stop(cause="shutdown")` does not end the running turn; it stays `running`
 in turns.jsonl marked `interrupted="shutdown"`. A session resumed later is built with that record
@@ -1191,6 +1194,39 @@ class Session:
         self._set_state("busy")
         return True
 
+    def adopt_turn(self, text: str, *, origin: Origin) -> TurnRecord:
+        """The slash command line `text` the runner typed made claude run a model turn (D8).
+
+        A running record is created and persisted, and the turn watch armed, while the slot
+        `begin_command` took stays held: the session stays busy and no `session_state` is
+        emitted. The slot passes from the command run to the turn, so `end_command` leaves busy
+        to it, and the turn ends like any turn (Stop, interrupt, `turn_max_seconds`). Raises
+        `TurnRejected` (booting, dead, or busy when no command run holds the slot).
+        """
+        self._writable_pty()
+        if self._turn is not None or not self._command_active or self.state != "busy":
+            raise TurnRejected("busy")
+        now = now_iso()
+        record = TurnRecord(
+            turn_id=new_turn_id(),
+            session_id=self.spec.session_id,
+            origin=origin,
+            state="running",
+            text=text,
+            started_at=now,
+            last_activity_at=now,
+        )
+        self._command_active = False
+        self._turn = record
+        self._turn_started = self.clock()
+        self._last_activity = self._activity_persisted = self.clock()
+        self._persist(record)
+        self._arm_watch(record)
+        log.info(
+            "session %s: command turn %s adopted (%s)", self.spec.session_id, record.turn_id, origin
+        )
+        return record
+
     def end_command(self) -> None:
         """Release the slot `begin_command` took; busy -> ready when no turn took over."""
         if not self._command_active:
@@ -1291,7 +1327,8 @@ class Session:
         """Mark the command phase of the running turn `record` (its Stop was answered allow).
 
         The turn stays running and the session busy; claude is at its prompt with no turn of
-        its own until `continue_turn`. Meanwhile an interrupt or `turn_max_seconds` ends the
+        its own until `continue_turn` (or `release_commands_hold`, when a prompt command made
+        claude run a model turn). Meanwhile an interrupt or `turn_max_seconds` ends the
         turn at once (no ESC from here: the router ESCs the command it is running), and a
         transcript interrupt line is the command's. False unless `record` is the running turn.
         """
@@ -1299,6 +1336,16 @@ class Session:
             return False
         self._commands_turn = record
         return True
+
+    def release_commands_hold(self, record: TurnRecord) -> None:
+        """End the command phase of `record` with no continue prompt (design D8).
+
+        A prompt command typed in that phase made claude run a model turn, and `record`
+        continues as that turn: from here an interrupt sends ESC like any running turn and a
+        transcript interrupt line is the turn's. No-op unless `record` is held for commands.
+        """
+        if self._commands_turn is record:
+            self._commands_turn = None
 
     # -- interrupt -------------------------------------------------------------------------
 
