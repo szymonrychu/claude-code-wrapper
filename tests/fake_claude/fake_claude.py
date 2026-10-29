@@ -88,11 +88,17 @@ Scenario schema
 Local slash commands
   Submitted text (stripped) starting with "/" plus a name is a command, not a turn: no
   UserPromptSubmit, no Stop, no assistant line; the idle footer follows. Known names: compact,
-  reload-plugins, reload-skills, mcp, context. An unknown "/name" prints "Unknown command: /name"
-  and returns to idle with no transcript line. Every known command first writes a user line whose
-  string content is
-    <command-name>/NAME</command-name>\n<command-message>NAME</command-message>\n
-    <command-args>ARGS</command-args>          (ARGS = rest of the line, stripped; may be empty)
+  reload-plugins, reload-skills, mcp, context, plus every name listed under scenario "commands".
+  An unknown "/name [ARGS]" (claude 2.1.304) writes a system line {"subtype": "informational",
+  "content": "Unknown command: /name"}, or "Unknown command: /name. Did you mean /other?" when the
+  top-level scenario key "suggest" maps name to other, then, only when ARGS is not empty, a
+  second informational line "Args from unknown skill: ARGS"; it prints the first text and
+  returns to idle. Every known command first writes its echo, whose string content is
+    <command-name>/NAME</command-name>\n<12 spaces><command-message>NAME</command-message>\n
+    <12 spaces><command-args>ARGS</command-args>   (ARGS = rest of the line, stripped; may be empty)
+  as a user line (echo "user": compact, reload-plugins, reload-skills, mcp and scenario-listed
+  names) or as a system line of subtype local_command (echo "system": context, as claude does
+  for /context and its dialog commands).
   /compact [instructions]: PreCompact hooks run with {trigger: "manual", custom_instructions:
     ARGS or null}; a block (exit 2 or stdout {"decision": "block"}) ends it as "canceled". Then a
     system line {"subtype": "compact_boundary", "content": "Conversation compacted",
@@ -101,11 +107,13 @@ Local slash commands
     continued from a previous conversation" and holds "All user messages:" followed by every earlier
     user prompt of this process verbatim (turn markers included), then PostCompact hooks with
     {trigger, compact_summary}, then "Compacted" on the PTY and the idle footer.
-  /reload-plugins [--force], /reload-skills, /context, /mcp ARGS: write one stdout entry
-    <local-command-stdout>STDOUT</local-command-stdout> as a system line (subtype local_command),
-    or as a user line when the scenario sets as_user. Default STDOUT: "Reloaded: 0 plugins, 0
-    skills, 0 agents, 0 hooks, 0 MCP servers", "Reloaded skills", "Context usage: 0 tokens",
-    "Reconnected to all MCP servers" ("/mcp reconnect NAME" -> "Reconnected to NAME").
+  Every other known command (/reload-plugins [--force], /reload-skills, /context, /mcp ARGS, a
+    scenario-listed name): writes one stdout entry
+    <local-command-stdout>STDOUT</local-command-stdout> as a system line (subtype
+    local_command), or as a user line when the scenario sets as_user.
+    Default STDOUT: "Reloaded: 0 plugins, 0 skills, 0 agents, 0 hooks, 0 MCP servers", "Reloaded
+    skills", "Context usage: 0 tokens", "Reconnected to all MCP servers" ("/mcp reconnect NAME" ->
+    "Reconnected to NAME"), "NAME done" for a scenario-listed name.
   Scenario key (top level) "commands": {"<name>": {...}}:
     compact: "outcome" ok (default) | canceled ("Compaction canceled.") | not_enough ("Not enough
       messages to compact.") | error ("Error compacting conversation") | hang (nothing until ESC,
@@ -113,13 +121,37 @@ Local slash commands
       "pre_tokens"/"post_tokens" set the boundary token counts. A failure outcome writes a system
       local_command line <local-command-stderr>MSG</local-command-stderr>, prints MSG, writes no
       boundary and runs no PostCompact.
-    any command: "delay_seconds" before completing (ESC during it cancels); "stdout" overrides the
-      stdout text; "as_user": true writes the stdout entry as a user line; "hang": true writes
-      nothing until ESC, then returns to idle.
+    any command: "echo": "user" | "system" overrides the echo style; "echo_name" is the name the
+      echo carries (claude echoes the resolved alias: /cost echoes /usage); "delay_seconds" before
+      completing (ESC during it cancels); "print_every": seconds prints "  working" on the PTY
+      that often during the delay; "footer" is a text printed on the PTY right after the echo
+      (a progress footer such as "Esc to cancel"); "stdout" overrides the stdout text;
+      "as_user": true writes the stdout entry as a user line; "hang": true writes nothing after
+      the echo until ESC, then returns to idle.
+    any name but compact: "prompt": true makes it a prompt (project, skill or plugin) command, as
+      claude 2.1.304 runs /hello world (probe-slash/prompt-turn-2026-10-29): a user line
+      <command-message>NAME</command-message>\n<command-name>/NAME</command-name>\n
+      <command-args>ARGS</command-args> (no indent), then an isMeta user line whose content is one
+      text block with "body" (default "Run /NAME: $ARGUMENTS"; every $ARGUMENTS becomes ARGS),
+      then UserPromptSubmit with the typed line as prompt, then a normal turn: the steps of the
+      first scenario turn matching the typed line (default echo), the Stop cycle and the footer.
+    any name but compact: "prose": true makes claude send the typed line to the model as a plain
+      prompt with no echo, as claude 2.1.304 does for a bare name that exists on disk (/tmp,
+      probe-slash/signals-2026-10-29): the line runs exactly as a turn prompt does.
+    any name but compact: "dialog": {"footer": "Esc to cancel", "dismiss_stdout": "NAME dialog
+      dismissed", "escs": 1 | 2 | "never"} opens a dialog, as claude 2.1.304 does for /model,
+      /config, /usage, /help (summaries/outA.txt, outC.txt): it prints the footer and writes
+      nothing to the transcript until the given number of ESCs arrived (each ESC that leaves it
+      open prints the footer again; "never" never closes), then writes the echo (a system line
+      unless "echo" says "user"), the stdout entry with dismiss_stdout, and the idle footer.
+      Other bytes typed meanwhile are recorded with state "busy" and dropped.
   Input log: every submitted line is appended to $CLAUDE_CONFIG_DIR/fake-inputs.jsonl as
   {"text", "state": "idle"|"busy", "ts"}. Bytes other than ESC arriving while a turn or command
   runs are recorded with state "busy" (and dropped), so tests can prove nothing typed into a
   running turn.
+  Key log: every lone ESC the fake receives, at idle or while a turn or command runs, is
+  appended to $CLAUDE_CONFIG_DIR/fake-keys.jsonl as {"key": "esc", "ts"}, never to
+  fake-inputs.jsonl, so tests can count and space ESCs.
 
 Print mode
   `-p`/`--print` takes the prompt from the argument or stdin, needs no TTY and runs no hooks.
@@ -185,6 +217,10 @@ def substitute_step(step: dict, groups: dict[str, str]) -> dict:
 
 
 COMMANDS = ("compact", "reload-plugins", "reload-skills", "mcp", "context")
+#: Echo style of a known command without a scenario "echo" (claude 2.1.304 transcripts).
+SYSTEM_ECHO = ("context",)
+#: claude indents the message and args lines of a command echo by 12 spaces.
+ECHO_INDENT = "\n" + " " * 12
 COMMAND_STDOUT = {
     "reload-plugins": "Reloaded: 0 plugins, 0 skills, 0 agents, 0 hooks, 0 MCP servers",
     "reload-skills": "Reloaded skills",
@@ -551,6 +587,8 @@ class Fake:
                             in_paste, paste, pasted, typed = False, b"", False, b""
                             self.submit(text.rstrip("\n"))
                             data = b""
+                    elif ch == b"\x1b" and not data.startswith(b"["):
+                        self.record_key("esc")
                     elif not pasted:
                         typed += ch
 
@@ -567,12 +605,19 @@ class Fake:
         with open(os.path.join(config_dir(), "fake-inputs.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({"text": text, "state": state, "ts": now()}) + "\n")
 
+    def record_key(self, key: str) -> None:
+        with open(os.path.join(config_dir(), "fake-keys.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"key": key, "ts": now()}) + "\n")
+
     def interrupted(self, timeout: float = 0.0) -> bool:
         data = self.read(timeout)
-        if data is not None and data != b"\x1b":
+        if data == b"\x1b":
+            self.record_key("esc")
+            return True
+        if data is not None:
             text = data.replace(PASTE_START, b"").replace(PASTE_END, b"")
             self.record_input(text.decode(errors="replace"), "busy")
-        return data == b"\x1b"
+        return False
 
     def do_interrupt(self) -> None:
         self.user_line([{"type": "text", "text": INTERRUPT_TEXT}])
@@ -596,37 +641,90 @@ class Fake:
     def submit(self, text: str) -> None:
         self.record_input(text, "idle")
         m = COMMAND_RE.match(text.strip())
-        if m:
+        listed = self.scenario.get("commands") or {}
+        if m and not (listed.get(m.group(1)) or {}).get("prose"):
             self.run_command(m.group(1), (m.group(2) or "").strip())
         else:
             self.run_turn(text)
 
     # ---- local slash commands
-    def wait_esc(self, seconds: float | None) -> bool:
-        """Wait up to `seconds` (None: forever); True when ESC arrived first."""
+    def wait_esc(self, seconds: float | None, print_every: float | None = None) -> bool:
+        """Wait up to `seconds` (None: forever); True when ESC arrived first. With
+        `print_every`, print a progress line that often meanwhile."""
         deadline = None if seconds is None else time.monotonic() + seconds
+        tick = None if not print_every else time.monotonic() + print_every
         while True:
             left = 0.1 if deadline is None else min(0.1, deadline - time.monotonic())
             if left <= 0:
                 return False
             if self.interrupted(left):
                 return True
+            if tick is not None and time.monotonic() >= tick:
+                self.out("  working\n")
+                tick += float(print_every or 0)
 
     def run_command(self, name: str, args: str) -> None:
-        if name not in COMMANDS:
-            self.out(f"\nUnknown command: /{name}\n")
-            self.footer()
+        listed = self.scenario.get("commands") or {}
+        if name not in COMMANDS and name not in listed:
+            self.unknown_command(name, args)
             return
-        self.user_line(
-            f"<command-name>/{name}</command-name>\n<command-message>{name}</command-message>\n"
-            f"<command-args>{args}</command-args>"
-        )
-        cfg = (self.scenario.get("commands") or {}).get(name) or {}
+        cfg = listed.get(name) or {}
+        if name != "compact" and cfg.get("prompt"):
+            self.prompt_command(name, args, cfg)
+            return
+        if name != "compact" and "dialog" in cfg:
+            self.dialog_command(name, args, cfg)
+            return
+        self.write_echo(name, args, cfg)
+        if cfg.get("footer"):
+            self.out(f"\n{cfg['footer']}\n")
         if name == "compact":
             self.compact_command(args, cfg)
         else:
             self.stdout_command(name, args, cfg)
         self.footer()
+
+    def write_echo(self, name: str, args: str, cfg: dict, style: str | None = None) -> None:
+        shown = cfg.get("echo_name", name)
+        echo = (
+            f"<command-name>/{shown}</command-name>{ECHO_INDENT}"
+            f"<command-message>{shown}</command-message>{ECHO_INDENT}"
+            f"<command-args>{args}</command-args>"
+        )
+        default = style or ("system" if name in SYSTEM_ECHO else "user")
+        if cfg.get("echo", default) == "system":
+            self.write_line({"type": "system", "subtype": "local_command", "content": echo})
+        else:
+            self.user_line(echo)
+
+    def dialog_command(self, name: str, args: str, cfg: dict) -> None:
+        """A dialog: the footer, nothing written until enough ESCs, then echo and stdout."""
+        spec = cfg["dialog"]
+        footer = spec.get("footer", "Esc to cancel")
+        needed = spec.get("escs", 1)
+        self.out(f"\n{footer}\n")
+        got = 0
+        while needed == "never" or got < int(needed):
+            self.wait_esc(None)
+            got += 1
+            if needed == "never" or got < int(needed):
+                self.out(f"\n{footer}\n")  # still open: repainted
+        self.write_echo(name, args, cfg, style="system")
+        self.local_output("stdout", spec.get("dismiss_stdout", f"{name} dialog dismissed"))
+        self.footer()
+
+    def unknown_command(self, name: str, args: str) -> None:
+        """claude's answer to an unknown name: informational system lines, no hook, no turn."""
+        other = (self.scenario.get("suggest") or {}).get(name)
+        text = f"Unknown command: /{name}" + (f". Did you mean /{other}?" if other else "")
+        self.informational(text)
+        if args:
+            self.informational(f"Args from unknown skill: {args}")
+        self.out(f"\n{text}\n")
+        self.footer()
+
+    def informational(self, text: str) -> None:
+        self.write_line({"type": "system", "subtype": "informational", "content": text})
 
     def local_output(self, kind: str, text: str, as_user: bool = False) -> None:
         content = f"<local-command-{kind}>{text}</local-command-{kind}>"
@@ -640,10 +738,10 @@ class Fake:
         if cfg.get("hang"):
             self.wait_esc(None)
             return
-        if self.wait_esc(float(cfg.get("delay_seconds", 0))):
+        if self.wait_esc(float(cfg.get("delay_seconds", 0)), cfg.get("print_every")):
             return
         words = args.split()
-        default = COMMAND_STDOUT[name]
+        default = COMMAND_STDOUT.get(name, f"{name} done")
         if name == "mcp" and words[:1] == ["reconnect"] and words[1:2] not in ([], ["all"]):
             default = f"Reconnected to {words[1]}"
         self.local_output("stdout", cfg.get("stdout", default), bool(cfg.get("as_user")))
@@ -711,10 +809,30 @@ class Fake:
         self.run_hooks("PreCompact", {"trigger": "auto", "custom_instructions": None})
         self.write_compaction("auto", int(spec.get("pre_tokens", 100000)), 5000, start)
 
+    def prompt_command(self, name: str, args: str, cfg: dict) -> None:
+        """A prompt command: its echo, the expanded body as an isMeta line, then a model turn."""
+        self.user_line(
+            f"<command-message>{name}</command-message>\n<command-name>/{name}</command-name>\n"
+            f"<command-args>{args}</command-args>"
+        )
+        body = cfg.get("body", f"Run /{name}: $ARGUMENTS").replace("$ARGUMENTS", args)
+        self.write_line(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": [{"type": "text", "text": body}]},
+                "isMeta": True,
+            }
+        )
+        self.model_turn(f"/{name} {args}".rstrip())
+
     def run_turn(self, prompt: str) -> None:
+        self.user_line(prompt)
+        self.model_turn(prompt)
+
+    def model_turn(self, prompt: str) -> None:
+        """UserPromptSubmit, the matching turn's steps, the Stop cycle and the footer."""
         self.user_prompts.append(prompt)
         turn = self.matching_turn(prompt)
-        self.user_line(prompt)
         self.run_hooks("UserPromptSubmit", {"prompt": prompt})
         self.out(f"\n> {prompt}\n")
         tokens = len(prompt.split())

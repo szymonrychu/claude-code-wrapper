@@ -476,49 +476,104 @@ class HooksConfig(_Model):
         return getattr(self, event)
 
 
-BUILTIN_COMMAND_NAMES: tuple[str, ...] = (
-    "compact",
-    "context",
-    "mcp",
-    "reload-plugins",
-    "reload-skills",
+#: A slash command name as Claude Code parses it (design D2): full match, no length cap.
+COMMAND_NAME = re.compile(r"[a-zA-Z0-9_][a-zA-Z0-9:_-]*")
+#: An allowlist entry that admits every name the deny list does not refuse.
+COMMAND_WILDCARD = "*"
+#: Commands that end, replace or move the claude session or process, hand it to another
+#: controller, or change account identity or credentials (design D5). Aliases are listed by name
+#: from claude's own alias table; `sessions.commands.deny` matches them case-insensitively.
+DEFAULT_COMMAND_DENY: tuple[str, ...] = (
+    "exit",
+    "quit",
+    "clear",
+    "reset",
+    "new",
+    "resume",
+    "continue",
+    "branch",
+    "fork",
+    "cd",
+    "background",
+    "bg",
+    "teleport",
+    "tp",
+    "stop",
+    "remote-control",
+    "rc",
+    "restart",
+    "update",
+    "login",
+    "logout",
+    "upgrade",
+    "setup-bedrock",
+    "setup-vertex",
+    "web-setup",
+    "design-login",
 )
 DEFAULT_CONTINUE_PROMPT = (
     "The slash commands you queued have run. Continue the task you were working on."
 )
+#: Footers of claude's dialogs (design D7): a command that shows one is dismissed by ESC.
+DEFAULT_DIALOG_PATTERNS: tuple[str, ...] = (
+    "esc to cancel",
+    "esc to close",
+    "esc to clear",
+    "esc to exit",
+    "enter to confirm",
+)
+
+
+def _check_name(path: str, name: str, *, wildcard: bool) -> None:
+    if (wildcard and name == COMMAND_WILDCARD) or COMMAND_NAME.fullmatch(name):
+        return
+    allowed = f" or be {COMMAND_WILDCARD!r}" if wildcard else ""
+    raise _at(path, f"invalid command name {name!r}; must match {COMMAND_NAME.pattern}{allowed}")
 
 
 def _check_command_names(names: list[str]) -> list[str]:
     for i, name in enumerate(names):
-        if name not in BUILTIN_COMMAND_NAMES:
-            raise _at(
-                str(i),
-                f"unknown command {name!r}; allowed: {', '.join(BUILTIN_COMMAND_NAMES)}",
-            )
+        _check_name(str(i), name, wildcard=True)
+    return names
+
+
+def _check_deny_names(names: list[str]) -> list[str]:
+    for i, name in enumerate(names):
+        _check_name(str(i), name, wildcard=False)
     return names
 
 
 def _check_command_timeouts(value: dict[str, float]) -> dict[str, float]:
     for key, seconds in value.items():
-        if key != "default" and key not in BUILTIN_COMMAND_NAMES:
-            allowed = ", ".join((*BUILTIN_COMMAND_NAMES, "default"))
-            raise _at(key, f"unknown command {key!r}; allowed: {allowed}")
+        _check_name(key, key, wildcard=False)
         if seconds <= 0:
             raise _at(key, "must be greater than 0")
     return value
 
 
+def _check_dialog_patterns(patterns: list[str]) -> list[str]:
+    for i, pattern in enumerate(patterns):
+        if not pattern.strip():
+            raise _at(str(i), "must not be blank")
+    return patterns
+
+
 class CommandsConfig(_Model):
     agent: list[str] = []
     client: list[str] = []
+    deny: list[str] = Field(default_factory=lambda: list(DEFAULT_COMMAND_DENY))
     timeout_seconds: dict[str, float] = {"compact": 600, "default": 60}
     continue_prompt: str = Field(DEFAULT_CONTINUE_PROMPT, min_length=1)
     allow_force: bool = False
     quiet_seconds: float = Field(1.5, ge=0)
+    dialog_grace_seconds: float = Field(2.0, ge=0)
+    dialog_patterns: list[str] = Field(default_factory=lambda: list(DEFAULT_DIALOG_PATTERNS))
 
     _agent = field_validator("agent")(_check_command_names)
     _client = field_validator("client")(_check_command_names)
+    _deny = field_validator("deny")(_check_deny_names)
     _timeouts = field_validator("timeout_seconds")(_check_command_timeouts)
+    _dialogs = field_validator("dialog_patterns")(_check_dialog_patterns)
 
 
 class CommandsOverride(_Model):
@@ -526,20 +581,33 @@ class CommandsOverride(_Model):
 
     agent: list[str] | None = None
     client: list[str] | None = None
+    deny: list[str] | None = None
     timeout_seconds: dict[str, float] | None = None
     continue_prompt: str | None = Field(None, min_length=1)
     allow_force: bool | None = None
     quiet_seconds: float | None = Field(None, ge=0)
+    dialog_grace_seconds: float | None = Field(None, ge=0)
+    dialog_patterns: list[str] | None = None
 
     @field_validator("agent", "client")
     @classmethod
     def _names(cls, value: list[str] | None) -> list[str] | None:
         return None if value is None else _check_command_names(value)
 
+    @field_validator("deny")
+    @classmethod
+    def _deny(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else _check_deny_names(value)
+
     @field_validator("timeout_seconds")
     @classmethod
     def _timeouts(cls, value: dict[str, float] | None) -> dict[str, float] | None:
         return None if value is None else _check_command_timeouts(value)
+
+    @field_validator("dialog_patterns")
+    @classmethod
+    def _dialogs(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else _check_dialog_patterns(value)
 
 
 #: A compact's focus instructions: one line, no control characters, at most this long.

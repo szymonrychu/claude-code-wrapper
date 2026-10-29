@@ -556,7 +556,7 @@ async def test_idle_compact_races_pop(world):
     item = msg(1, "after compact")
     inbox.put(item)
     await world.until(started.exists, what="onTurn hook holding the attempt")
-    record = router.request_command("compact", {}, origin="idle")
+    record = router.request_command("compact", origin="idle")
     assert router.session.command_active  # the idle compact took the slot
     go.touch()
     await world.until(lambda: record.state == "running", what="compact running")

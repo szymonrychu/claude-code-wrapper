@@ -49,10 +49,11 @@ sessions:
   ask_user_question: forward
   idle_timeout_seconds: 0     # long-lived sessions
   turn_stall_seconds: 3600
-  # The agent may compact and reload plugins itself; API clients may queue all five commands.
+  # The agent may compact and reload plugins itself; API clients may queue any command except
+  # the deny list (sessions.commands.deny, which refuses /exit, /clear, /resume and the like).
   commands:
     agent: [compact, reload-plugins]
-    client: [compact, reload-plugins, reload-skills, mcp, context]
+    client: ["*"]
   auto_compact:
     idle_seconds: 1800
     instructions: "keep the current plan, open decisions and file paths in play"

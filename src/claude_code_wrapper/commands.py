@@ -1,46 +1,28 @@
-"""Slash command registry and the per-session queue (design D3). Nothing here runs a command."""
+"""Slash command validation and the per-session queue (design D3, D4). Nothing here runs one."""
 
 from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel
 
 from claude_code_wrapper.config import (
-    BUILTIN_COMMAND_NAMES,
-    INSTRUCTIONS_CONTROL,
-    MAX_INSTRUCTIONS,
+    COMMAND_NAME,
+    COMMAND_WILDCARD,
     CommandsConfig,
     CommandsOverride,
 )
 from claude_code_wrapper.turns import now_iso
 
-#: no leading hyphen, so a server name can never be read as a flag
-SERVER_NAME = re.compile(r"[A-Za-z0-9_.:][A-Za-z0-9_.:-]{0,63}")
 MAX_QUEUED = 4
 MAX_KEPT = 100
-
-#: name -> {param: (json type, description, required)}
-BUILTIN_COMMANDS: dict[str, dict[str, tuple[str, str, bool]]] = {
-    "compact": {
-        "instructions": (
-            "string",
-            "optional one-line focus instructions for the summary (max 2000 characters)",
-            False,
-        )
-    },
-    "reload-plugins": {"force": ("boolean", "apply even when the cache is unchanged", False)},
-    "reload-skills": {},
-    "mcp": {
-        "action": ("string", "must be 'reconnect'", True),
-        "server": ("string", "server name; default all servers", False),
-    },
-    "context": {},
-}
-assert tuple(sorted(BUILTIN_COMMANDS)) == tuple(sorted(BUILTIN_COMMAND_NAMES))
+#: Characters of a command's args (D2): webhook prompt templates render issue bodies.
+MAX_COMMAND_ARGS = 20000
+#: Control characters args may not hold: all but newline and tab, so args cannot end the
+#: bracketed paste they are typed in (ESC) or submit early (CR); plus the Unicode line breaks.
+ARGS_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]")
 
 Origin = Literal["agent", "client", "idle"]
 State = Literal["queued", "running", "completed", "failed", "cancelled"]
@@ -54,99 +36,42 @@ class CommandRejected(Exception):
         self.message = message
 
 
-def validate_params(name: str, params: Mapping[str, Any] | None, *, allow_force: bool) -> dict:
-    spec = BUILTIN_COMMANDS.get(name)
-    if spec is None:
+def validate(name: str, args: str, *, allow_force: bool) -> str:
+    """The normalised, stripped args of `/name args`; `CommandRejected` when it may not run."""
+    if not name:
         raise CommandRejected(
-            "unknown_command",
-            f"unknown command {name!r}; allowed: {', '.join(BUILTIN_COMMAND_NAMES)}",
+            "invalid_command", "the command name is empty; commands are in the form /command [args]"
         )
-    if params is None:
-        params = {}
-    if not isinstance(params, Mapping):
-        raise CommandRejected("invalid_params", "params must be an object")
-    unknown = sorted(set(params) - set(spec))
-    if unknown:
-        allowed = f"allowed: {', '.join(spec)}" if spec else "it takes no params"
+    if not COMMAND_NAME.fullmatch(name):
         raise CommandRejected(
-            "invalid_params", f"/{name}: unknown params {', '.join(unknown)}; {allowed}"
+            "invalid_command", f"invalid command name {name!r}; must match {COMMAND_NAME.pattern}"
         )
-    for key, (kind, _desc, required) in spec.items():
-        if key not in params:
-            if required:
-                raise CommandRejected("invalid_params", f"/{name}: {key} is required")
-            continue
-        value = params[key]
-        if not isinstance(value, str if kind == "string" else bool):
-            raise CommandRejected("invalid_params", f"/{name}: {key} must be a {kind}")
-    out = dict(params)
-    for key, (kind, _desc, _req) in spec.items():
-        text = out.get(key)
-        if kind != "string" or text is None:
-            continue
-        if INSTRUCTIONS_CONTROL.search(text):
-            raise CommandRejected(
-                "invalid_params",
-                f"/{name}: {key} must be one line without control characters",
-            )
-        if len(text) > MAX_INSTRUCTIONS:
-            raise CommandRejected(
-                "invalid_params", f"/{name}: {key} exceeds {MAX_INSTRUCTIONS} characters"
-            )
-    if name == "mcp" and "server" in out and not SERVER_NAME.fullmatch(out["server"]):
-        raise CommandRejected("invalid_params", "/mcp: server must match ^[A-Za-z0-9_.:-]{1,64}$")
-    if name == "mcp" and out["action"] != "reconnect":
-        raise CommandRejected("invalid_params", "/mcp: action must be 'reconnect'")
-    if name == "reload-plugins" and out.get("force") and not allow_force:
+    text = args.replace("\r\n", "\n")
+    if ARGS_CONTROL.search(text):
+        raise CommandRejected(
+            "invalid_command",
+            f"/{name}: args must not hold control characters other than newline and tab",
+        )
+    text = text.strip()
+    if len(text) > MAX_COMMAND_ARGS:
+        raise CommandRejected(
+            "invalid_command", f"/{name}: args exceed {MAX_COMMAND_ARGS} characters"
+        )
+    if name.lower() == "reload-plugins" and "--force" in text.split() and not allow_force:
         raise CommandRejected(
             "force_not_allowed", "/reload-plugins --force is not allowed (commands.allow_force)"
         )
-    return out
+    return text
 
 
-def render(name: str, params: Mapping[str, Any] | None = None) -> str:
-    params = params or {}
-    if name == "compact":
-        text = str(params.get("instructions") or "").strip()
-        return f"/compact {text}" if text else "/compact"
-    if name == "reload-plugins":
-        return "/reload-plugins --force" if params.get("force") else "/reload-plugins"
-    if name == "mcp":
-        return f"/mcp reconnect {params.get('server') or 'all'}"
-    return f"/{name}"
-
-
-def params_schema(names: list[str] | tuple[str, ...]) -> dict:
-    """Flat JSON schema of the MCP tool input `{name, params?}` (no oneOf/anyOf/allOf)."""
-    names = [n for n in names if n in BUILTIN_COMMANDS]
-    props: dict[str, Any] = {}
-    for n in names:
-        for key, (kind, desc, required) in BUILTIN_COMMANDS[n].items():
-            note = f"/{n}: {desc}" + (" (required)" if required else "")
-            if key in props:
-                props[key]["description"] += f"; {note}"
-            else:
-                props[key] = {"type": kind, "description": note}
-    return {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "enum": names, "description": "the slash command to run"},
-            "params": {
-                "type": "object",
-                "description": "parameters of the chosen command; omit when it takes none",
-                "properties": props,
-                "additionalProperties": False,
-            },
-        },
-        "required": ["name"],
-        "additionalProperties": False,
-    }
+def render(name: str, args: str = "") -> str:
+    return f"/{name} {args}".rstrip()
 
 
 class CommandRecord(BaseModel):
     id: str
     name: str
-    args: dict[str, Any] = {}
+    args: str = ""
     origin: Origin
     turn_id: str | None = None
     state: State = "queued"
@@ -164,23 +89,27 @@ class CommandQueue:
         self._records: list[CommandRecord] = []
 
     def request(
-        self, name: str, params: Mapping[str, Any] | None, *, origin: Origin, turn_id: str | None
+        self, name: str, args: str, *, origin: Origin, turn_id: str | None
     ) -> tuple[CommandRecord, bool]:
         if origin == "idle":
             allowed = ["compact"]
-        elif origin == "agent":
-            allowed = self.cfg.agent
         else:
-            allowed = self.cfg.client
-        if name not in allowed:
+            if name.lower() in {d.lower() for d in self.cfg.deny}:
+                raise CommandRejected(
+                    "denied",
+                    f"/{name} is denied (sessions.commands.deny): it would end, replace or move "
+                    "the session or change its account or credentials",
+                )
+            allowed = self.cfg.agent if origin == "agent" else self.cfg.client
+        if name not in allowed and COMMAND_WILDCARD not in allowed:
             raise CommandRejected(
                 "not_allowed",
                 f"/{name} is not allowed for {origin}; allowed: {', '.join(allowed) or 'none'}",
             )
-        args = validate_params(name, params, allow_force=self.cfg.allow_force)
+        args = validate(name, args, allow_force=self.cfg.allow_force)
         queued = self.pending()
         for rec in queued:
-            if rec.name == name:
+            if (rec.name, rec.args) == (name, args):
                 return rec, False
         if len(queued) >= MAX_QUEUED:
             raise CommandRejected("queue_full", f"{MAX_QUEUED} commands are already queued")

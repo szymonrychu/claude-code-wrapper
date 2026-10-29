@@ -6,12 +6,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
+from conftest import World, jsonl
 from fastapi.testclient import TestClient
 
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.config import Config
-from claude_code_wrapper.manager import InvalidState, SessionNotFound
+from claude_code_wrapper.manager import CreateSessionRequest, InvalidState, SessionNotFound
 from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.router import TurnVetoed
 from claude_code_wrapper.session import TurnRejected
@@ -254,3 +256,57 @@ def test_submit_vetoed_403(client: TestClient, stub: StubManager) -> None:
     stub.router_obj.raise_on = TurnVetoed("not now")
     r = post(client, {"text": "a"})
     assert r.status_code == 403 and r.json()["error"]["code"] == "vetoed"
+
+
+# ------------------------------------------------------------------ slash guard (design D3)
+
+
+async def _live_app(world: World, **sections: Any) -> tuple[Any, str, httpx.AsyncClient]:
+    """A real manager over the fake claude, one ready session, and an API client for it."""
+    cfg = world.cfg(server={"auth_token": TOKEN}, **sections)
+    m = world.manager(cfg)
+    sid = (await m.create(CreateSessionRequest()))["session_id"]
+    transport = httpx.ASGITransport(app=create_app(m, cfg))
+    return m, sid, httpx.AsyncClient(transport=transport, base_url="http://t", headers=H)
+
+
+async def test_slash_text_turn_is_refused_not_typed(world: World) -> None:
+    m, sid, c = await _live_app(world)
+    inputs = world.session_dir(sid) / "config" / "fake-inputs.jsonl"
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "/reload-plugins"})
+        assert r.status_code == 422
+        assert r.json()["error"] == {
+            "code": "slash_command",
+            "message": "slash commands go to POST /v1/sessions/{id}/commands",
+        }
+        assert jsonl(inputs) == []  # nothing was typed
+        assert m.get(sid)["state"] == "ready"
+        assert m.open_turns(sid).list() == []
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "hello"})
+        assert r.status_code == 202
+    await world.wait_turn(m, sid)
+    assert [i["text"] for i in jsonl(inputs)][0].startswith("hello")
+
+
+async def test_slash_turn_fires_no_on_turn(world: World, tmp_path: Path) -> None:
+    on_turn = tmp_path / "on_turn.jsonl"
+    hook = {"type": "command", "run": f"cat >> '{on_turn}'; echo >> '{on_turn}'"}
+    m, sid, c = await _live_app(world, hooks={"onTurn": [hook]})
+    workdir = Path(m.get(sid)["workdir"])
+    async with c:
+        r = await c.post(
+            f"/v1/sessions/{sid}/turns", json={"text": "/compact", "files": {"a.txt": "x"}}
+        )
+        assert r.status_code == 422 and r.json()["error"]["code"] == "slash_command"
+        assert not (workdir / "a.txt").exists()  # no turn file written
+        # A prose turn after it fires onTurn once, for itself only.
+        r = await c.post(
+            f"/v1/sessions/{sid}/turns", json={"text": "hello", "files": {"b.txt": "y"}}
+        )
+        assert r.status_code == 202
+    await world.until(lambda: jsonl(on_turn), what="the prose turn's onTurn")
+    await world.wait_turn(m, sid)
+    assert [e["data"]["text"] for e in jsonl(on_turn)] == ["hello"]
+    assert (workdir / "b.txt").read_text() == "y"
+    assert not (workdir / "a.txt").exists()

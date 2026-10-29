@@ -54,11 +54,32 @@ def inputs(e):
     return [json.loads(x) for x in f.read_text().splitlines()]
 
 
+def keys(e):
+    return jsonl_of(Path(e["CLAUDE_CONFIG_DIR"]) / "fake-keys.jsonl")
+
+
+def jsonl_of(f):
+    return [json.loads(x) for x in f.read_text().splitlines()] if f.exists() else []
+
+
+#: The real echo body (claude 2.1.304 transcripts in the probe-slash scratchpad): name,
+#: message and args, the last two on lines indented 12 spaces.
+INDENT = "\n" + " " * 12
+
+
 def cmd_content(name, args=""):
     return (
-        f"<command-name>/{name}</command-name>\n<command-message>{name}</command-message>\n"
-        f"<command-args>{args}</command-args>"
+        f"<command-name>/{name}</command-name>{INDENT}<command-message>{name}</command-message>"
+        f"{INDENT}<command-args>{args}</command-args>"
     )
+
+
+def echo_of(line):
+    """(style, content) of an echo line: a user line's string content or a system line's."""
+    if line["type"] == "system":
+        assert line["subtype"] == "local_command"
+        return "system", line["content"]
+    return "user", line["message"]["content"]
 
 
 def test_compact_writes_boundary_and_post_compact(boot, env, work, tmp_path):  # noqa: F811
@@ -186,23 +207,23 @@ RELOAD = "Reloaded: 0 plugins, 0 skills, 0 agents, 0 hooks, 0 MCP servers"
 
 
 @pytest.mark.parametrize(
-    ("line", "default"),
+    ("line", "default", "style"),
     [
-        ("/reload-plugins", RELOAD),
-        ("/reload-plugins --force", RELOAD),
-        ("/reload-skills", "Reloaded skills"),
-        ("/context", "Context usage: 0 tokens"),
-        ("/mcp reconnect all", "Reconnected to all MCP servers"),
-        ("/mcp", "Reconnected to all MCP servers"),
-        ("/mcp reconnect ccw", "Reconnected to ccw"),
+        ("/reload-plugins", RELOAD, "user"),
+        ("/reload-plugins --force", RELOAD, "user"),
+        ("/reload-skills", "Reloaded skills", "user"),
+        ("/context", "Context usage: 0 tokens", "system"),
+        ("/mcp reconnect all", "Reconnected to all MCP servers", "user"),
+        ("/mcp", "Reconnected to all MCP servers", "user"),
+        ("/mcp reconnect ccw", "Reconnected to ccw", "user"),
     ],
 )
-def test_other_commands_write_local_stdout(boot, env, work, line, default):  # noqa: F811
+def test_other_commands_write_local_stdout(boot, env, work, line, default, style):  # noqa: F811
     p = boot()
     p.submit(line, wait=default)
     lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
     name, _, args = line[1:].partition(" ")
-    assert lines[0]["message"]["content"] == cmd_content(name, args)
+    assert echo_of(lines[0]) == (style, cmd_content(name, args))
     assert lines[1]["type"] == "system" and lines[1]["subtype"] == "local_command"
     assert lines[1]["content"] == f"<local-command-stdout>{default}</local-command-stdout>"
     assert len(lines) == 2
@@ -231,12 +252,84 @@ def test_reload_hang_until_esc(boot, env, work):  # noqa: F811
     assert len(transcript_lines(env["CLAUDE_CONFIG_DIR"], work)) == 1
 
 
-def test_unknown_command(boot, env):  # noqa: F811
+def informational(lines):
+    out = []
+    for x in lines:
+        assert x["type"] == "system" and x["subtype"] == "informational", x
+        out.append(x["content"])
+    return out
+
+
+def test_unknown_command(boot, env, work, tmp_path):  # noqa: F811
+    """Real sample: summaries/outC.txt:15-16; the binary adds ". Did you mean /y?" for a near miss
+    and the "Args from unknown skill" line only when args were typed."""
+    out = tmp_path / "h.out"
+    record(env["CLAUDE_CONFIG_DIR"], out)
     p = boot()
-    p.submit("/frobnicate now", wait="Unknown command: /frobnicate")
+    p.submit("/nonexistent some args", wait="Unknown command: /nonexistent")
     p.pump(0.3)
-    projects = Path(env["CLAUDE_CONFIG_DIR"]) / "projects"
-    assert not list(projects.glob("*/*.jsonl"))
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert informational(lines) == [
+        "Unknown command: /nonexistent",
+        "Args from unknown skill: some args",
+    ]
+    p.submit("/frobnicate", wait="Unknown command: /frobnicate")
+    p.pump(0.3)
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert informational(lines[2:]) == ["Unknown command: /frobnicate"]
+    assert events_of(out) == []
+
+
+def test_unknown_command_suggestion_form(spawn, scenario_file, env, work):  # noqa: F811
+    sc = {"boot": {"bypass_dialog": False}, "suggest": {"comapct": "compact"}}
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(scenario_file(sc)))
+    p.wait_for("? for shortcuts")
+    p.submit("/comapct", wait="Did you mean /compact?")
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert informational(lines) == ["Unknown command: /comapct. Did you mean /compact?"]
+
+
+def test_scenario_listed_name_is_known(boot, env, work):  # noqa: F811
+    p = boot({"model": {"stdout": "Set model to opus"}})
+    p.submit("/model opus", wait="Set model to opus")
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert echo_of(lines[0]) == ("user", cmd_content("model", "opus"))
+    assert lines[1]["content"] == "<local-command-stdout>Set model to opus</local-command-stdout>"
+    assert len(lines) == 2
+
+
+def test_echo_styles_and_key_log(boot, env, work):  # noqa: F811
+    """Real samples: /context and dialog commands echo as system lines, /reload-plugins and /exit
+    as user lines; /cost echoes /usage. ESC keys go to fake-keys.jsonl, never fake-inputs.jsonl."""
+    cost = {"echo": "system", "echo_name": "usage", "stdout": "Total cost: $0.0000"}
+    p = boot({"cost": cost, "reload-skills": {"echo": "system", "hang": True}})
+    p.submit("/reload-plugins", wait=RELOAD)
+    p.submit("/context", wait="Context usage")
+    p.submit("/cost", wait="Total cost")
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    echoes = [echo_of(x) for x in lines if "<command-name>" in json.dumps(x)]
+    assert echoes == [
+        ("user", cmd_content("reload-plugins")),
+        ("system", cmd_content("context")),
+        ("system", cmd_content("usage")),
+    ]
+    assert keys(env) == []
+    since = len(p.buf)
+    p.send(b"\x1b")  # at idle
+    p.pump(0.3)
+    p.send(b"\x1b[200~/reload-skills\x1b[201~")
+    time.sleep(0.1)
+    p.send(b"\r")
+    p.pump(0.3)
+    p.send(b"\x1b")  # releases the hung command
+    p.wait_for("? for shortcuts", since=since)
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert echo_of(lines[-1]) == ("system", cmd_content("reload-skills"))
+    got = keys(env)
+    assert [k["key"] for k in got] == ["esc", "esc"] and all("ts" in k for k in got)
+    rows = inputs(env)
+    assert [r["text"] for r in rows] == ["/reload-plugins", "/context", "/cost", "/reload-skills"]
+    assert {r["state"] for r in rows} == {"idle"}
 
 
 def test_input_while_busy_recorded(boot, env):  # noqa: F811
@@ -295,3 +388,135 @@ def test_compact_summary_quotes_prior_prompts(boot, env, work):  # noqa: F811
     assert "All user messages:" in text
     assert "ccw turn marker-A first" in text and "ccw turn marker-B second" in text
     assert text.index("marker-A") < text.index("marker-B")
+
+
+def test_dialog_scenario(boot, env, work):  # noqa: F811
+    """Real samples: summaries/outA.txt (/model and /config write their echo only after ESC,
+    /config needs two ESCs) and outC.txt (/usage: "Settings dialog dismissed")."""
+    p = boot(
+        {
+            "usage": {
+                "dialog": {
+                    "footer": "Esc to cancel",
+                    "escs": 1,
+                    "dismiss_stdout": "Settings dialog dismissed",
+                }
+            },
+            "config": {
+                "dialog": {
+                    "footer": "Esc to clear",
+                    "escs": 2,
+                    "dismiss_stdout": "Disabled auto-compact",
+                }
+            },
+            "help": {"dialog": {"footer": "Esc to cancel", "escs": "never"}},
+        }
+    )
+
+    def open_dialog(line, footer):
+        since = len(p.buf)
+        p.send(f"\x1b[200~{line}\x1b[201~".encode())
+        time.sleep(0.1)
+        p.send(b"\r")
+        p.wait_for(footer, since=since)
+        p.pump(0.3)
+        assert "? for shortcuts" not in p.buf[since:]
+
+    def esc_shows(text):
+        since = len(p.buf)
+        p.send(b"\x1b")
+        p.wait_for(text, since=since)
+        return since
+
+    def lines():
+        try:
+            return transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+        except IndexError:  # no transcript file yet
+            return []
+
+    open_dialog("/usage", "Esc to cancel")
+    assert lines() == []  # nothing is written while the dialog is open
+    since = esc_shows("Settings dialog dismissed")
+    p.wait_for("? for shortcuts", since=since)
+    assert [echo_of(x) for x in lines()[:1]] == [("system", cmd_content("usage"))]
+    assert lines()[1]["type"] == "system" and lines()[1]["subtype"] == "local_command"
+    assert lines()[1]["content"] == (
+        "<local-command-stdout>Settings dialog dismissed</local-command-stdout>"
+    )
+    assert len(lines()) == 2
+
+    open_dialog("/config", "Esc to clear")
+    esc_shows("Esc to clear")  # the first ESC leaves it open: the footer is repainted
+    p.pump(0.3)
+    assert len(lines()) == 2
+    esc_shows("Disabled auto-compact")
+    assert echo_of(lines()[2]) == ("system", cmd_content("config"))
+    assert (
+        lines()[3]["content"]
+        == "<local-command-stdout>Disabled auto-compact</local-command-stdout>"
+    )
+
+    open_dialog("/help", "Esc to cancel")
+    for _ in range(3):
+        esc_shows("Esc to cancel")  # never closes: the footer stays on screen
+    p.pump(0.3)
+    assert len(lines()) == 4
+    p.send(b"typed into the dialog")
+    p.pump(0.3)
+    assert [k["key"] for k in keys(env)] == ["esc"] * 6
+    rows = inputs(env)
+    assert [r["text"] for r in rows if r["state"] == "idle"] == ["/usage", "/config", "/help"]
+    assert [r["text"] for r in rows if r["state"] == "busy"] == ["typed into the dialog"]
+
+
+#: The echo of a prompt (project or plugin) command (claude 2.1.304, probe prompt-turn-2026-10-29):
+#: message first, plain newlines, no indent.
+def prompt_echo(name, args=""):
+    return (
+        f"<command-message>{name}</command-message>\n<command-name>/{name}</command-name>\n"
+        f"<command-args>{args}</command-args>"
+    )
+
+
+def test_prompt_command_scenario(boot, env, work, tmp_path):  # noqa: F811
+    """Real sample (probe-slash/prompt-turn-2026-10-29): `/hello world` writes the
+    `<command-message>` echo, an isMeta line with the expanded body, fires UserPromptSubmit with
+    the typed line, then runs a normal turn that ends with Stop."""
+    out = tmp_path / "h.out"
+    record(env["CLAUDE_CONFIG_DIR"], out)
+    p = boot(
+        {"hello": {"prompt": True, "body": "Say hello to $ARGUMENTS in one short sentence."}},
+        turns=[{"match": "^/hello", "steps": [{"text": "Hello, world!"}]}],
+    )
+    p.submit("/hello world", wait="Hello, world!")
+    p.wait_for("? for shortcuts", since=p.buf.rindex("Hello, world!"))
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert [x["type"] for x in lines] == ["user", "user", "assistant"]
+    echo, meta, reply = lines
+    assert echo["message"]["content"] == prompt_echo("hello", "world")
+    assert not echo.get("isMeta")
+    assert meta["isMeta"] is True
+    assert meta["message"]["content"] == [
+        {"type": "text", "text": "Say hello to world in one short sentence."}
+    ]
+    assert reply["message"]["content"] == [{"type": "text", "text": "Hello, world!"}]
+    pl = payloads(out)
+    assert events_of(out) == ["UserPromptSubmit", "Stop"]
+    assert pl[0]["prompt"] == "/hello world"
+    assert pl[1]["last_assistant_message"] == "Hello, world!"
+    assert [r["text"] for r in inputs(env)] == ["/hello world"]
+
+
+def test_prose_command_scenario(boot, env, work, tmp_path):  # noqa: F811
+    """Real sample (probe-slash/signals-2026-10-29, `/tmp`): a bare name that exists on disk is
+    sent to the model: a plain user prompt line, UserPromptSubmit, a turn, Stop; no echo."""
+    out = tmp_path / "h.out"
+    record(env["CLAUDE_CONFIG_DIR"], out)
+    p = boot({"tmp": {"prose": True}}, turns=[{"match": "^/tmp", "steps": [{"text": "a dir"}]}])
+    p.submit("/tmp", wait="a dir")
+    p.wait_for("? for shortcuts", since=p.buf.rindex("a dir"))
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert [x["type"] for x in lines] == ["user", "assistant"]
+    assert lines[0]["message"]["content"] == "/tmp"
+    assert events_of(out) == ["UserPromptSubmit", "Stop"]
+    assert payloads(out)[0]["prompt"] == "/tmp"

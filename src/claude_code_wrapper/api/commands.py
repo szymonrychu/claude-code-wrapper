@@ -16,9 +16,9 @@ router = APIRouter()
 
 #: CommandRejected.code -> (status, envelope code)
 _REJECT = {
+    "denied": (403, "command_denied"),
     "not_allowed": (403, "command_not_allowed"),
-    "unknown_command": (422, "invalid_command"),
-    "invalid_params": (422, "invalid_command"),
+    "invalid_command": (422, "invalid_command"),
     "force_not_allowed": (422, "invalid_command"),
     "queue_full": (429, "command_queue_full"),
 }
@@ -30,7 +30,7 @@ class CommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    args: dict[str, Any] = {}
+    args: str = ""
 
 
 def _live(request: Request, session_id: str):

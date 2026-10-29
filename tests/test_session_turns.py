@@ -31,6 +31,7 @@ from claude_code_wrapper.session import (
     SessionSpec,
     TurnRejected,
     build_env,
+    slash_command,
 )
 from claude_code_wrapper.turns import TurnRecord, TurnStore
 
@@ -282,6 +283,112 @@ async def test_submit_booting_and_dead_rejected(harness: Harness, tmp_path: Path
         await session.submit("after stop")
     assert exc.value.reason == "dead"
     assert harness.store.list() == []
+
+
+# ------------------------------------------------------------------ slash guard (design D2, D3)
+
+# The same case table as agents-orchestrator tests/test_slash.py, case for case, so the
+# orchestrator's classifier and this turn guard cannot drift.
+LONG_NAME = "a" * 100
+
+SLASH_COMMANDS = [
+    ("/reload-plugins", ("reload-plugins", "")),
+    ("  /compact keep the plan", ("compact", "keep the plan")),
+    ("/workbench:start-development x", ("workbench:start-development", "x")),
+    ("/model sonnet", ("model", "sonnet")),
+    ("/_x", ("_x", "")),
+    ("/tmp", ("tmp", "")),
+    (f"/{LONG_NAME}", (LONG_NAME, "")),
+    ("/x a\nb", ("x", "a\nb")),
+    ("/x\ta", ("x", "a")),
+    ("/x\na", ("x", "a")),
+]
+
+SLASH_EMPTY_NAME = [
+    ("/", ("", "")),
+    ("/ is root", ("", "is root")),
+]
+
+SLASH_PROSE = [
+    "please compact the session",
+    "/workdir/foo is broken",
+    "/etc/hosts",
+    "//x",
+    "/notes.txt",
+    "see /compact",
+    "",
+]
+
+SLASH_MARKED = [
+    ("/review-pr 12\n\n<!-- agents-webhook:42 -->", ("review-pr", "12")),
+    ("/compact\n\n<!-- agents-schedule:7 -->", ("compact", "")),
+    (
+        "/x <!-- agents-webhook:42 --> keep",
+        ("x", "<!-- agents-webhook:42 --> keep"),
+    ),
+    (
+        "/x <!-- agents-webhook:42 -->\n\nmore",
+        ("x", "<!-- agents-webhook:42 -->\n\nmore"),
+    ),
+]
+
+SLASH_MARKED_PROSE = [
+    "/etc/hosts\n\n<!-- agents-webhook:42 -->",
+    "hello\n\n<!-- agents-matrix:abc-1 -->",
+]
+
+
+async def test_slash_rule_matches_claude_parser(harness: Harness) -> None:
+    for text, expected in SLASH_COMMANDS + SLASH_EMPTY_NAME + SLASH_MARKED:
+        assert slash_command(text) == expected, text
+    session = await harness.start()
+    # Every text claude's parser would run as a command is refused, never typed as a turn.
+    refused = [
+        "/",
+        "/ is root",
+        "/_x",
+        "/tmp",
+        f"/{LONG_NAME}",
+        "/x a\nb",
+        "/review-pr 12\n\n<!-- agents-webhook:42 -->",
+        *(text for text, _ in SLASH_COMMANDS + SLASH_EMPTY_NAME + SLASH_MARKED),
+    ]
+    for text in refused:
+        with pytest.raises(TurnRejected) as exc:
+            await session.submit(text)
+        assert exc.value.reason == "slash_command", text
+        assert session.state == "ready" and session.current_turn is None
+    assert harness.writes == []
+    assert harness.store.list() == []
+
+
+async def test_slash_rule_leaves_paths_and_prose(harness: Harness) -> None:
+    for text in SLASH_PROSE + SLASH_MARKED_PROSE:
+        assert slash_command(text) is None, text
+    # Each is accepted as a turn: the slot is taken and the text is pasted with the turn marker.
+    for text in ["/workdir/foo is broken", "/etc/hosts", "//x", "/notes.txt", "see /compact"]:
+        harness.writes.clear()
+        session = await harness.start()
+        record = await session.submit(text)
+        assert record.state == "running" and record.text == text
+        assert session.state == "busy" and session.current_turn is record
+        assert harness.writes == [paste_bytes(text + marker(record.turn_id)), b"\r"]
+        await session.stop(grace=1.0)
+
+
+async def test_submit_refuses_slash_text_for_every_origin(harness: Harness) -> None:
+    session = await harness.start()
+    for origin in ("client", "peer", "initial", "agent"):
+        with pytest.raises(TurnRejected) as exc:
+            await session.submit("/reload-plugins", origin=origin)
+        assert exc.value.reason == "slash_command", origin
+        assert session.state == "ready" and session.current_turn is None
+    assert harness.writes == []  # nothing reached the PTY
+    assert harness.store.list() == []
+    # The session still takes a prose turn.
+    record = await session.submit("hello after the refusals")
+    assert session.current_turn is record
+    assert harness.writes[0] == paste_bytes("hello after the refusals" + marker(record.turn_id))
 
 
 # ------------------------------------------------------------------ Stop

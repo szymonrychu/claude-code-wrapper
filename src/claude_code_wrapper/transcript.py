@@ -37,6 +37,8 @@ _PROBE_MARKER = re.compile(r"<!--\s*ccw probe:\s*(\S+?)\s*-->")
 _COMMAND_PREFIXES = ("<command-name>", "<command-message>")
 _OUTPUT_PREFIXES = ("<local-command-stdout>", "<local-command-stderr>")
 _NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
+#: claude's informational answer to an unknown slash name, with the suggestion for a near miss.
+_UNKNOWN_COMMAND = re.compile(r"Unknown command: /(\S+?)(?:\. Did you mean /\S+\?)?")
 
 
 def transcript_path(
@@ -128,6 +130,13 @@ class CommandOutput(_Event):
 
 
 @dataclass
+class CommandUnknown(_Event):
+    """A `system` / `informational` "Unknown command: /x" entry: claude ran nothing."""
+
+    name: str
+
+
+@dataclass
 class CompactBoundary(_Event):
     """A `system` / `compact_boundary` entry: the conversation was compacted."""
 
@@ -148,6 +157,7 @@ Event = (
     | ProbeMarker
     | CommandInvoked
     | CommandOutput
+    | CommandUnknown
     | CompactBoundary
 )
 OnEvents = Callable[[list[Event]], Awaitable[None] | None]
@@ -284,7 +294,13 @@ def _system_events(obj: dict, redactor: Redactor | None) -> list[_Made]:
         }
         return [(CompactBoundary, kw)]
     body = text if isinstance(text, str) else ""
-    if subtype == "local_command" or body.lstrip().startswith("<local-command-"):
+    head = body.lstrip()
+    if subtype == "informational":
+        unknown = _UNKNOWN_COMMAND.fullmatch(body.strip())
+        return [(CommandUnknown, {"name": unknown.group(1)})] if unknown else []
+    if subtype == "local_command" and head.startswith(_COMMAND_PREFIXES):
+        return [_command_invoked(head, redactor)]
+    if subtype == "local_command" or head.startswith("<local-command-"):
         return [_command_output(body, redactor)]
     return []
 

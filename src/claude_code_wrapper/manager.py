@@ -50,7 +50,7 @@ from .bootstrap import (
 )
 from .bootstrap.settings import relay_timeouts, render_settings
 from .claude_env import SECRET_KEY_RE, ClaudeEnv
-from .commands import effective_commands
+from .commands import CommandRejected, effective_commands
 from .config import CommandsConfig, CommandsOverride, Config, InitialPromptTemplate
 from .events import EventLog
 from .hooks import (
@@ -78,6 +78,7 @@ from .session import (
     TurnRejected,
     build_env,
     passthrough_names,
+    slash_command,
 )
 from .terminals import CLOSE_GRACE_SECONDS, SessionNotActive, ShellTarget, TerminalRegistry
 from .tooling import install_workdir, mise_env
@@ -555,10 +556,17 @@ class SessionManager:
         return configured or None
 
     async def _initial_turn(self, ctx: _Active, text: str) -> None:
+        """Submit the initial prompt; a slash prompt runs as a client command instead (D3)."""
         assert ctx.router is not None
+        message = None
         try:
-            await ctx.router.submit_turn(text, origin="initial")
+            if (command := slash_command(text)) is not None:
+                ctx.router.request_command(*command, origin="client")
+            else:
+                await ctx.router.submit_turn(text, origin="initial")
             return
+        except CommandRejected as exc:
+            reason, message = exc.code, exc.message
         except (TurnVetoed, TurnRejected) as exc:
             reason = exc.reason
         except Exception as exc:  # noqa: BLE001 - reported as an event, the session stays up
@@ -570,7 +578,7 @@ class SessionManager:
             {
                 "kind": "initial_turn_rejected",
                 "reason": reason,
-                "message": f"initial turn rejected: {reason}",
+                "message": f"initial turn rejected: {message or reason}",
             },
         )
 

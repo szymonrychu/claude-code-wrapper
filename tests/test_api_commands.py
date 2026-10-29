@@ -16,13 +16,21 @@ TOKEN = "tok-0123456789abcdef"
 H = {"Authorization": f"Bearer {TOKEN}"}
 
 
-async def boot(world: World, *, commands: dict | None = None, turns: list | None = None, **cmds):
+async def boot(
+    world: World,
+    *,
+    commands: dict | None = None,
+    turns: list | None = None,
+    hooks: dict | None = None,
+    **cmds,
+):
     scenario = {"commands": commands or {}}
     if turns is not None:
         scenario["turns"] = turns
     cfg = world.cfg(
         scenario,
         server={"auth_token": TOKEN},
+        hooks=hooks or {},
         sessions={"commands": commands_cfg(continue_prompt=CONTINUE, **cmds)},
     )
     m = world.manager(cfg)
@@ -46,18 +54,35 @@ async def settled(client: httpx.AsyncClient, url: str) -> dict:
 async def test_post_command_returns_202_record(world):
     m, sid, router, c = await boot(world)
     async with c:
-        r = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "reload-plugins"})
+        url = f"/v1/sessions/{sid}/commands"
+        r = await c.post(url, json={"name": "mcp", "args": "reconnect github"})
         assert r.status_code == 202
         body = r.json()
-        assert body["origin"] == "client" and body["name"] == "reload-plugins"
-        assert body["args"] == {} and body["id"].startswith("cmd_")
+        assert body["origin"] == "client" and body["name"] == "mcp"
+        assert body["args"] == "reconnect github" and body["id"].startswith("cmd_")
         # idle session: it runs at once and the record read back shows the final state
-        final = await settled(c, f"/v1/sessions/{sid}/commands/{body['id']}")
-        assert final["state"] == "completed"
-        extra = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "compact", "x": 1})
+        final = await settled(c, f"{url}/{body['id']}")
+        assert final["state"] == "completed" and final["args"] == "reconnect github"
+        assert final["output"] == "Reconnected to github"
+        bare = await c.post(url, json={"name": "reload-plugins"})
+        assert bare.status_code == 202 and bare.json()["args"] == ""
+        await settled(c, f"{url}/{bare.json()['id']}")
+        extra = await c.post(url, json={"name": "compact", "x": 1})
         assert extra.status_code == 422 and extra.json()["error"]["code"] == "invalid_request"
-        bad = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "compact", "args": "x"})
-        assert bad.status_code == 422
+
+
+async def test_post_command_args_must_be_string(world):
+    m, sid, router, c = await boot(world, client=["*"])
+    async with c:
+        url = f"/v1/sessions/{sid}/commands"
+        for args in ({"instructions": "x"}, ["x"], 5, True, None):
+            r = await c.post(url, json={"name": "compact", "args": args})
+            assert r.status_code == 422, args
+            assert r.json()["error"]["code"] == "invalid_request", args
+        r = await c.post(url, json={"name": "", "args": "x"})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "invalid_command"
+        assert "/command [args]" in r.json()["error"]["message"]
+        assert router.commands.list() == []
 
 
 async def test_post_command_not_allowed_403(world):
@@ -67,16 +92,39 @@ async def test_post_command_not_allowed_403(world):
         assert r.status_code == 403 and r.json()["error"]["code"] == "command_not_allowed"
 
 
+async def test_denied_command_403(world):
+    m, sid, router, c = await boot(world, client=["*"])
+    async with c:
+        for name in ("exit", "Reset"):
+            r = await c.post(f"/v1/sessions/{sid}/commands", json={"name": name})
+            assert r.status_code == 403 and r.json()["error"]["code"] == "command_denied", name
+        assert router.commands.list() == []
+        assert (await c.get(f"/v1/sessions/{sid}/commands")).json()["commands"] == []
+        assert not [e for e in world.events(sid) if e["type"].startswith("command_")]
+
+
+async def test_wildcard_client_allowlist(world):
+    m, sid, router, c = await boot(world, client=["*"])
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "context"})
+        assert r.status_code == 202 and r.json()["name"] == "context"
+        final = await settled(c, f"/v1/sessions/{sid}/commands/{r.json()['id']}")
+        assert final["state"] == "completed"
+
+
 async def test_post_command_bad_args_422(world):
-    m, sid, router, c = await boot(world)
+    m, sid, router, c = await boot(world, client=["*"])
     async with c:
         for body in (
-            {"name": "compact", "args": {"nope": 1}},
-            {"name": "reload-plugins", "args": {"force": True}},
-            {"name": "nonsense"},
+            {"name": "compact", "args": "keep\x1b[201~\r/exit"},
+            {"name": "compact", "args": "x" * 20001},
+            {"name": "reload-plugins", "args": "--force"},
+            {"name": "notes.txt"},
+            {"name": "a/b", "args": "x"},
         ):
             r = await c.post(f"/v1/sessions/{sid}/commands", json=body)
             assert r.status_code == 422 and r.json()["error"]["code"] == "invalid_command"
+        assert router.commands.list() == []
 
 
 async def test_post_command_queue_full_429(world):
@@ -89,9 +137,7 @@ async def test_post_command_queue_full_429(world):
             assert (
                 await c.post(f"/v1/sessions/{sid}/commands", json={"name": n})
             ).status_code == 202
-        r = await c.post(
-            f"/v1/sessions/{sid}/commands", json={"name": "mcp", "args": {"action": "reconnect"}}
-        )
+        r = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "mcp", "args": "reconnect"})
         assert r.status_code == 429 and r.json()["error"]["code"] == "command_queue_full"
 
 
@@ -152,7 +198,7 @@ async def test_commands_require_auth(world):
         ).status_code == 401
 
 
-async def test_client_command_during_turn_resumes_turn(world):
+async def test_client_command_during_turn_runs_after_turn_completes(world):
     m, sid, router, c = await boot(world, turns=[GO, RESUMED])
     async with c:
         turn = await router.submit_turn("go")
@@ -160,6 +206,28 @@ async def test_client_command_during_turn_resumes_turn(world):
         assert r.status_code == 202 and r.json()["state"] == "queued"
         assert r.json()["turn_id"] == turn.turn_id
         done = await world.wait_turn(m, sid)
-        assert done.turn_id == turn.turn_id and done.final_text == "part two"
-        got = (await c.get(f"/v1/sessions/{sid}/commands/{r.json()['id']}")).json()
+        assert done.turn_id == turn.turn_id and done.final_text == "part one"
+        got = await settled(c, f"/v1/sessions/{sid}/commands/{r.json()['id']}")
         assert got["state"] == "completed"
+        assert not [e for e in world.events(sid) if e["type"] == "turn_resumed"]
+
+
+async def test_turn_refused_until_queued_client_commands_drain(world):
+    slow = {"type": "command", "run": "sleep 2", "blocking": True, "timeout_seconds": 10}
+    m, sid, router, c = await boot(world, turns=[GO, RESUMED], hooks={"onTurnComplete": [slow]})
+    async with c:
+        await router.submit_turn("go")
+        r = await c.post(f"/v1/sessions/{sid}/commands", json={"name": "compact"})
+        assert r.status_code == 202
+        await world.until(lambda: any(e["type"] == "turn_completed" for e in world.events(sid)))
+        # onTurnComplete is still running: the slot already belongs to the queued command.
+        busy = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "next"})
+        assert busy.status_code == 409 and busy.json()["error"]["code"] == "busy"
+        await settled(c, f"/v1/sessions/{sid}/commands/{r.json()['id']}")
+        await world.until(lambda: router.session.state == "ready")
+        ok = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "next"})
+        assert ok.status_code == 202
+        evs = [e for e in world.events(sid) if e["type"] != "tick"]
+        names = [e["type"] for e in evs]
+        gap = evs[names.index("turn_completed") : names.index("command_started")]
+        assert [e["data"]["state"] for e in gap if e["type"] == "session_state"] == ["busy"]

@@ -347,6 +347,52 @@ async def test_initial_turn_veto_keeps_session_ready(world: World) -> None:
     assert turns_of(m, sid) == []
 
 
+def initial_rejections(world: World, sid: str) -> list[dict]:
+    return [
+        e["data"]
+        for e in world.events(sid)
+        if e["type"] == "error" and e["data"].get("kind") == "initial_turn_rejected"
+    ]
+
+
+def fake_inputs(world: World, sid: str) -> list[str]:
+    return [i["text"] for i in jsonl(world.session_dir(sid) / "config" / "fake-inputs.jsonl")]
+
+
+async def test_initial_slash_prompt_runs_as_command(world: World) -> None:
+    commands = {"client": ["*"], "quiet_seconds": 0.2}
+    m = world.manager(world.cfg(sessions={"commands": commands}))
+    sid = (await m.create(CreateSessionRequest(prompt="/reload-plugins")))["session_id"]
+    router = m.router(sid)
+    await world.until(lambda: router.commands.list(), what="the initial command record")
+    (rec,) = router.commands.list()
+    assert (rec.name, rec.args, rec.origin, rec.turn_id) == ("reload-plugins", "", "client", None)
+    await world.until(lambda: rec.state == "completed", what="the initial command completing")
+    await world.until(lambda: m.get(sid)["state"] == "ready", what="the session back to ready")
+    assert turns_of(m, sid) == []
+    assert fake_inputs(world, sid) == ["/reload-plugins"]
+    assert initial_rejections(world, sid) == []
+
+
+@pytest.mark.parametrize(
+    ("client", "prompt", "reason"),
+    [([], "/reload-plugins", "not_allowed"), (["*"], "/ is root", "invalid_command")],
+)
+async def test_initial_slash_prompt_refused_is_reported(
+    world: World, client: list[str], prompt: str, reason: str
+) -> None:
+    m = world.manager(world.cfg(sessions={"commands": {"client": client}}))
+    sid = (await m.create(CreateSessionRequest(prompt=prompt)))["session_id"]
+    await world.until(lambda: initial_rejections(world, sid), what="initial_turn_rejected")
+    (rejected,) = initial_rejections(world, sid)
+    assert rejected["reason"] == reason
+    assert rejected["message"].startswith("initial turn rejected: ")
+    assert m.get(sid)["state"] == "ready"
+    assert m.router(sid).commands.list() == []
+    assert turns_of(m, sid) == []
+    assert fake_inputs(world, sid) == []
+
+
 # ------------------------------------------------------------------ env
 
 

@@ -171,13 +171,17 @@ sessions:
   defer_stop_on_background_tasks: false  # hold a turn open while its Stop lists background tasks
   probe_alive_token: CCW-ALIVE  # token a probe asks Claude to reply with
   # Slash commands (README "Slash commands"). Both allowlists are empty by default, so nothing is queueable.
+  # Any command name runs once allowed, except the names in deny; "*" in an allowlist allows every other name.
   # commands:
-  #   agent: []                # commands the main agent may queue through the ccw MCP tool (compact, reload-plugins, reload-skills, mcp, context)
-  #   client: []               # commands API clients may queue through the public commands endpoint
-  #   timeout_seconds: {compact: 600, default: 60}   # seconds a command may run before it fails with timeout
+  #   agent: []                # command names the main agent may queue through the ccw MCP tool, or "*"
+  #   client: []               # command names API clients may queue through the public commands endpoint, or "*"
+  #   deny: [exit, quit, clear, reset, new, resume, continue, branch, fork, cd, background, bg, teleport, tp, stop, remote-control, rc, restart, update, login, logout, upgrade, setup-bedrock, setup-vertex, web-setup, design-login]   # refused (403 command_denied) even when an allowlist holds "*"; case-insensitive; setting it replaces this list
+  #   timeout_seconds: {compact: 600, default: 60}   # one deadline per command, counted from when it starts; fails with timeout
   #   continue_prompt: "The slash commands you queued have run. Continue the task you were working on."   # resumes the agent after its commands ran
   #   allow_force: false       # allow force on reload-plugins (typed as --force)
   #   quiet_seconds: 1.5       # PTY silence to wait for before typing a command
+  #   dialog_grace_seconds: 2.0   # after a dialog footer shows and no result came, wait this long (restarted by any output), then dismiss it with ESC
+  #   dialog_patterns: ["esc to cancel", "esc to close", "esc to clear", "esc to exit", "enter to confirm"]   # dialog footers, matched ignoring case; empty disables dismissal
   # Idle auto-compact: queue one /compact after the session stayed idle (README "Idle auto-compact").
   # auto_compact:
   #   idle_seconds: 0          # idle time after a turn before compacting (0 = off; must be below idle_timeout_seconds)

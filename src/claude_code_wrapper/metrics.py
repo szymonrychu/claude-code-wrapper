@@ -9,7 +9,6 @@ from typing import Any
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from prometheus_client import generate_latest as _generate_latest
 
-from .config import BUILTIN_COMMAND_NAMES
 from .turns import TurnRecord
 
 MAX_TOOL_LABELS = 50
@@ -17,6 +16,8 @@ OTHER_TOOL = "other"
 PEER_KINDS = ("message", "notice")
 PEER_OPS = ("join", "heartbeat", "leave", "inbound_heartbeat")
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+#: Command names with their own metric label; every other name counts as `other` (design D15).
+METRIC_COMMAND_NAMES = ("compact", "context", "mcp", "reload-plugins", "reload-skills")
 
 _TOKEN_KINDS = {
     "input_tokens": "input",
@@ -190,7 +191,7 @@ class Metrics:
 
     def command_finished(self, command: str, origin: str, result: str, seconds: float) -> None:
         """`result` is the final state: completed, failed or cancelled."""
-        name = command if command in BUILTIN_COMMAND_NAMES else "other"
+        name = command if command in METRIC_COMMAND_NAMES else "other"
         self._commands.labels(name, origin, result).inc()
         self._command_duration.labels(name).observe(max(0.0, seconds))
 

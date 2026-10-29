@@ -7,14 +7,21 @@ call the session ready on a ready marker or output quiescence, never before `min
 (a submit while the TUI is still painting exits claude). A boot that never gets there is
 relaunched once; a crash after boot is relaunched within `max_restarts`, with `--resume` only
 when the transcript exists (resuming a conversation that was never written exits claude at once
-and burns the budget). With `sessions.restart_continue_prompt` set, a turn running when claude
-crashes is held (still `running`) across the relaunch; a resumed relaunch is sent the continue
-prompt with the same turn marker and the turn goes on (`on_turn_resumed`). The ring is emptied
-before every relaunch so the old screen cannot satisfy the new boot's dialog or marker checks.
+and burns the budget). `restart_for_dialog` takes the same relaunch path for a dialog a slash
+command left open (design D7): it spends no `max_restarts`, and the slot (the command run, or the
+turn whose commands run) is retaken busy once claude is back, so nothing is typed into the dialog
+and nothing else takes the session in between. With `sessions.restart_continue_prompt` set, a
+turn running when claude crashes is held (still `running`) across the relaunch; a resumed
+relaunch is sent the continue prompt with the same turn marker and the turn goes on
+(`on_turn_resumed`). The ring is emptied before every relaunch so the old screen cannot satisfy
+the new boot's dialog or marker checks.
 `continue_turn` is that paste for any caller: the router also uses it to resume a turn after the
 slash commands it ran at the turn's Stop (`hold_for_commands` marks that command phase, in which
 claude sits at its prompt with no turn of its own: an interrupt or the time limit ends the turn at
-once, and a transcript interrupt line belongs to the command, not to the turn).
+once, and a transcript interrupt line belongs to the command, not to the turn). A slash command
+claude runs as a model turn (a prompt command, design D8) becomes a turn with no paste of its own:
+`adopt_turn` turns an idle session's command slot into a running turn, and
+`release_commands_hold` ends the command phase of a held turn that continues as that model turn.
 
 Service shutdown (D5): `stop(cause="shutdown")` does not end the running turn; it stays `running`
 in turns.jsonl marked `interrupted="shutdown"`. A session resumed later is built with that record
@@ -25,7 +32,9 @@ once claude is ready it is continued with the continue prompt and the same marke
 
 Turns (D13): one at a time. `submit` reserves the slot and persists the record before the first
 byte is written, then pastes the prompt (with a `<!-- ccw turn: <id> -->` marker, because Stop
-payloads carry no turn id) and sends CR as a separate write. A turn ends exactly once, on the
+payloads carry no turn id) and sends CR as a separate write. Text claude's parser would run as a
+slash command (`slash_command`, design D2) is refused first, for every origin: claude runs no Stop
+for a command, so such a turn would never end. A turn ends exactly once, on the
 first of: a matching Stop (`complete`), an interrupt (resolved by the transcript interrupt line or
 a second ESC after `interrupt_settle_seconds`, since claude runs no Stop hook for an interrupted
 turn), a fatal pattern on screen, claude exiting (unless the turn is held for continuation, then
@@ -35,7 +44,10 @@ record and calls `on_turn_end`. A quiet turn is only reported (`on_stall`), neve
 silence is not a stall.
 
 The screen is never the source of turn results; it is read only for boot, fatal patterns and
-debug tails, and every tail that leaves this module is redacted.
+debug tails, and every tail that leaves this module is redacted. A slash command run also reads
+it for dialog footers (`watch_dialogs`): `dialog_on_screen` is a footer seen since the last ESC,
+and `send_escape` never sends two ESCs within `ESC_SPACING_SECONDS` (a double ESC at an empty
+prompt opens claude's rewind menu).
 """
 
 from __future__ import annotations
@@ -55,7 +67,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from .claude_env import SECRET_KEY_RE, ClaudeEnv
-from .config import BootConfig, BootDialog, LimitsConfig, SessionsConfig
+from .config import COMMAND_NAME, BootConfig, BootDialog, LimitsConfig, SessionsConfig
 from .pty_proc import PtyClosed, PtyProcess
 from .redact import Redactor
 from .ring import Ring, _squash, strip_ansi
@@ -92,6 +104,8 @@ ESC = b"\x1b"
 StopCause = Literal["stop", "shutdown"]
 #: The error of a turn a shutdown cut off that the resumed session cannot continue.
 SERVICE_SHUTDOWN = "service_shutdown"
+#: Minimum gap between two ESCs: a double ESC at an empty prompt opens the rewind menu.
+ESC_SPACING_SECONDS = 1.0
 
 
 def default_probe_text(token: str) -> str:
@@ -127,8 +141,33 @@ def public_state(state: str) -> str:
     return _PUBLIC.get(state, state)
 
 
+# A trailing agents-common run marker (`agents_common.runs.marker`, `<!-- agents-<kind>:<id> -->`)
+# as `runs.py:_post_once` posts it: `text\n\nmarker`.
+_RUN_MARKER = re.compile(r"\n\n<!-- agents-[^\s:]+:\S+ -->\s*\Z")
+_SLASH = re.compile(r"/([^ \t\n]*)(.*)", re.DOTALL)
+
+
+def slash_command(text: str) -> tuple[str, str] | None:
+    """`(name, args)` when claude's own parser would run `text` as a slash command, else None.
+
+    Design D2, mirroring claude: a trailing run marker is dropped, then after leading whitespace
+    the text starts with "/"; the name runs up to the first space, tab or newline and the args
+    are the rest, stripped (newlines kept). An empty name is a command (claude answers "Commands
+    are in the form /command [args]"), and so is a name matching `COMMAND_NAME`, with no length
+    cap. Any other name (a path such as "/etc/hosts") is prose that claude sends to the model.
+    """
+    match = _SLASH.fullmatch(_RUN_MARKER.sub("", text).lstrip())
+    if match is None:
+        return None
+    name, rest = match.groups()
+    if name and not COMMAND_NAME.fullmatch(name):
+        return None
+    return name, rest.strip()
+
+
 class TurnRejected(Exception):
-    """A turn or probe cannot be written now. `reason`: busy, booting or dead."""
+    """A turn or probe cannot be written now. `reason`: busy, booting, dead, or slash_command
+    (the text is a slash command, which goes to the command queue, never typed as a turn)."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -409,6 +448,13 @@ class Session:
         self.boot_error: BootError | None = None
         self._redactor = _redactor_for(spec.env)
         self._scanner = FatalScanner(spec.boot.fatal_patterns)
+        #: Dialog footers of the slash command being run (`watch_dialogs`); none otherwise.
+        self._dialogs = FatalScanner(())
+        self._dialog_hits = 0
+        self._hits_at_escape = 0
+        self._last_escape = float("-inf")
+        #: Set while `restart_for_dialog` closes claude, so its exit takes the dialog relaunch.
+        self._dialog_restart = False
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._exited = asyncio.Event()
         self._public: str | None = None
@@ -524,11 +570,13 @@ class Session:
         else:  # nothing to paste, or a fresh claude has no conversation to continue
             self._end_turn(adopted, "failed", error=SERVICE_SHUTDOWN)
 
-    async def _boot(self, *, resume: bool) -> bool:
+    async def _boot(self, *, resume: bool, slot: bool | None = None) -> bool:
         """Launch and wait for ready, relaunching once; returns whether the launch resumed.
 
         The first launch resumes when `resume`; the relaunch only when the transcript
         exists. Two failed boots in a row leave the session dead and raise `BootError`.
+        `slot` is set for a dialog relaunch: whether a command run held the slot. Then claude
+        that is ready goes back to busy for the command run or the running turn, never ready.
         """
         code, tail = "", ""
         for attempt in range(2):
@@ -552,7 +600,11 @@ class Session:
             code = await self._boot_wait(self.pty)
             if code == "ready":
                 self.ready_at = now_iso()
-                self._set_state("ready")
+                if slot is not None and (slot or self._turn is not None):
+                    self._command_active = slot
+                    self._set_state("busy")
+                else:
+                    self._set_state("ready")
                 log.info("session %s: claude ready pid=%s", self.spec.session_id, self.pty.pid)
                 return resume
             if code == "stopped":
@@ -575,6 +627,7 @@ class Session:
         pty = PtyProcess()
         pty.ring = self.ring  # one screen across relaunches; reset() empties it in between
         self._scanner.reset()
+        self._dialogs.reset()
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._exited = asyncio.Event()
         self.pty = pty
@@ -644,6 +697,7 @@ class Session:
             return
         self.last_output = self.clock()
         self._notify("on_output", text)
+        self._dialog_hits += len(self._dialogs.feed(text))
         for pattern in self._scanner.feed(text):
             self.last_fatal = pattern
             log.warning("session %s: fatal pattern %r on screen", self.spec.session_id, pattern)
@@ -659,6 +713,15 @@ class Session:
             return
         self._exited.set()  # a booting claude: the boot wait sees this
         if self._stopping or self.state not in ("ready", "busy"):
+            return
+        if self._dialog_restart:
+            self._dialog_restart = False
+            log.warning("session %s: relaunching claude over an open dialog", self.spec.session_id)
+            slot = self._command_active  # read before booting clears it
+            self.ring.reset()
+            self._set_state("booting")
+            self._recovery = asyncio.ensure_future(self._recover(pty, code, slot=slot))
+            self._track(self._recovery)
             return
         self._commands_turn = None  # a held turn continues with the restart prompt
         record = self._turn
@@ -686,12 +749,18 @@ class Session:
         self._recovery = asyncio.ensure_future(self._recover(pty, code))
         self._track(self._recovery)
 
-    async def _recover(self, old: PtyProcess, code: int) -> None:
-        """claude exited on its own after boot: relaunch within the budget, else dead."""
+    async def _recover(self, old: PtyProcess, code: int, *, slot: bool | None = None) -> None:
+        """claude exited on its own after boot: relaunch within the budget, else dead.
+
+        `slot` is set for a dialog relaunch (`restart_for_dialog`): no budget is spent, and the
+        turn whose commands run fails `claude_exited` when claude does not come back resumed.
+        """
         await old.close(DEAD_CLOSE_GRACE)
         if self._stopping:
             return
-        if self.restarts >= self.spec.max_restarts:
+        if slot is not None:
+            self._held = self._turn  # failed below unless the relaunch resumes
+        elif self.restarts >= self.spec.max_restarts:
             log.error(
                 "session %s: restart budget (%d) exhausted",
                 self.spec.session_id,
@@ -701,11 +770,12 @@ class Session:
             self._set_state("dead")
             self._notify("on_exit", code)
             return
-        self.restarts += 1
+        else:
+            self.restarts += 1
         self.ring.reset()
         self._set_state("booting")
         try:
-            resumed = await self._boot(resume=os.path.isfile(self.transcript_path))
+            resumed = await self._boot(resume=os.path.isfile(self.transcript_path), slot=slot)
         except BootError as exc:
             if exc.code != "stopped":  # a stop ended the held turn itself
                 self._fail_held()
@@ -713,6 +783,8 @@ class Session:
             return
         if not resumed:
             self._fail_held()  # a fresh claude has no conversation to continue
+        if slot is not None:
+            self._held = None  # the router goes on with the turn's commands
         self._notify("on_restart", self.restarts, resumed)
         if resumed and self._held is not None and not self._stopping:
             await self._continue_held(self._held)
@@ -861,9 +933,13 @@ class Session:
         """Start a turn: reserve the slot, persist the record, then paste and CR.
 
         `turn_id` is an id allocated earlier (the router names it in the onTurn payload).
-        Raises `TurnRejected` (booting, dead, busy). A claude that exits under the write fails
-        the turn with `claude_exited`; the record is returned either way.
+        Raises `TurnRejected` (slash_command, for any origin and before anything else, then
+        booting, dead, busy). A claude that exits under the write fails the turn with
+        `claude_exited`; the record is returned either way.
         """
+        if slash_command(text) is not None:
+            # claude would run it as a command: no Stop, so the turn would never end (design D3).
+            raise TurnRejected("slash_command")
         pty = self.check_submittable()
         now = now_iso()
         record = TurnRecord(
@@ -1118,6 +1194,39 @@ class Session:
         self._set_state("busy")
         return True
 
+    def adopt_turn(self, text: str, *, origin: Origin) -> TurnRecord:
+        """The slash command line `text` the runner typed made claude run a model turn (D8).
+
+        A running record is created and persisted, and the turn watch armed, while the slot
+        `begin_command` took stays held: the session stays busy and no `session_state` is
+        emitted. The slot passes from the command run to the turn, so `end_command` leaves busy
+        to it, and the turn ends like any turn (Stop, interrupt, `turn_max_seconds`). Raises
+        `TurnRejected` (booting, dead, or busy when no command run holds the slot).
+        """
+        self._writable_pty()
+        if self._turn is not None or not self._command_active or self.state != "busy":
+            raise TurnRejected("busy")
+        now = now_iso()
+        record = TurnRecord(
+            turn_id=new_turn_id(),
+            session_id=self.spec.session_id,
+            origin=origin,
+            state="running",
+            text=text,
+            started_at=now,
+            last_activity_at=now,
+        )
+        self._command_active = False
+        self._turn = record
+        self._turn_started = self.clock()
+        self._last_activity = self._activity_persisted = self.clock()
+        self._persist(record)
+        self._arm_watch(record)
+        log.info(
+            "session %s: command turn %s adopted (%s)", self.spec.session_id, record.turn_id, origin
+        )
+        return record
+
     def end_command(self) -> None:
         """Release the slot `begin_command` took; busy -> ready when no turn took over."""
         if not self._command_active:
@@ -1156,8 +1265,58 @@ class Session:
             self.last_input = self.clock()
 
     async def send_escape(self) -> None:
-        """One ESC, for a slash command that did not finish in time."""
-        await self._send_key(ESC)
+        """One ESC for a slash command (a dialog, a timeout, an interrupt), never within
+        `ESC_SPACING_SECONDS` of the previous ESC; nothing while claude is not live."""
+        wait = self._last_escape + ESC_SPACING_SECONDS - self.clock()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        if self.state in ("ready", "busy"):
+            await self._send_key(ESC)
+
+    def watch_dialogs(self, patterns: Iterable[str], typed: str = "") -> None:
+        """Scan the PTY output from now on for these dialog footers (none: stop scanning).
+
+        A pattern the typed line itself holds is left out: the line is echoed on screen.
+        """
+        line = _squash(typed)
+        self._dialogs = FatalScanner(p for p in patterns if not line or _squash(p) not in line)
+        self._dialog_hits = self._hits_at_escape = 0
+
+    @property
+    def last_escape(self) -> float:
+        """`clock()` time of the last ESC written (-inf before any)."""
+        return self._last_escape
+
+    @property
+    def dialog_hits(self) -> int:
+        """Dialog footers seen since `watch_dialogs`."""
+        return self._dialog_hits
+
+    def dialog_on_screen(self) -> bool:
+        """A dialog footer was seen since the last ESC (or since `watch_dialogs`)."""
+        return self._dialog_hits > self._hits_at_escape
+
+    async def restart_for_dialog(self) -> bool:
+        """Relaunch claude because a dialog stayed open; True once claude is back.
+
+        The crash path (`_on_exit`, `_recover`) relaunches it, with `--resume` of the same
+        claude session id when the transcript exists, and `on_restart` is notified. `restarts`
+        is unchanged, and the slot stays taken: the session is `booting` meanwhile, then `busy`
+        again for the command run or the turn whose commands run. A relaunch that fails leaves
+        the session dead, as a crash would.
+        """
+        pty = self.pty
+        if pty is None or self._stopping or self.state not in ("ready", "busy"):
+            return False
+        self._dialog_restart = True
+        try:
+            await pty.close(DEAD_CLOSE_GRACE)
+        finally:
+            self._dialog_restart = False
+        recovery = self._recovery
+        if recovery is not None and not recovery.done():
+            await asyncio.shield(recovery)
+        return self.state in ("ready", "busy")
 
     @property
     def commands_turn(self) -> TurnRecord | None:
@@ -1168,7 +1327,8 @@ class Session:
         """Mark the command phase of the running turn `record` (its Stop was answered allow).
 
         The turn stays running and the session busy; claude is at its prompt with no turn of
-        its own until `continue_turn`. Meanwhile an interrupt or `turn_max_seconds` ends the
+        its own until `continue_turn` (or `release_commands_hold`, when a prompt command made
+        claude run a model turn). Meanwhile an interrupt or `turn_max_seconds` ends the
         turn at once (no ESC from here: the router ESCs the command it is running), and a
         transcript interrupt line is the command's. False unless `record` is the running turn.
         """
@@ -1176,6 +1336,16 @@ class Session:
             return False
         self._commands_turn = record
         return True
+
+    def release_commands_hold(self, record: TurnRecord) -> None:
+        """End the command phase of `record` with no continue prompt (design D8).
+
+        A prompt command typed in that phase made claude run a model turn, and `record`
+        continues as that turn: from here an interrupt sends ESC like any running turn and a
+        transcript interrupt line is the turn's. No-op unless `record` is held for commands.
+        """
+        if self._commands_turn is record:
+            self._commands_turn = None
 
     # -- interrupt -------------------------------------------------------------------------
 
@@ -1240,6 +1410,9 @@ class Session:
         with contextlib.suppress(PtyClosed):  # the exit path ends the turn
             await pty.write(key)
         self.last_input = self.clock()
+        if key == ESC:
+            self._last_escape = self.last_input
+            self._hits_at_escape = self._dialog_hits
 
     def on_interrupted(self) -> None:
         """The transcript shows an interrupt: end the running turn (pending or unprompted)."""

@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from claude_code_wrapper import __version__
-from claude_code_wrapper.commands import CommandRejected, params_schema
+from claude_code_wrapper.commands import CommandRejected
 from claude_code_wrapper.config import CommandsConfig
 from claude_code_wrapper.internal_api import create_internal_app
 from claude_code_wrapper.manager import InvalidState
@@ -22,10 +22,10 @@ class FakeRouter:
         self.calls: list[tuple[str, Any, str]] = []
         self.reject: CommandRejected | None = None
 
-    def request_command(self, name: str, params: Any = None, *, origin: str) -> Any:
+    def request_command(self, name: str, args: str = "", *, origin: str) -> Any:
         if self.reject is not None:
             raise self.reject
-        self.calls.append((name, params, origin))
+        self.calls.append((name, args, origin))
         return SimpleNamespace(id="cmd-1")
 
 
@@ -119,13 +119,29 @@ async def test_notification_returns_202_and_ping(mgr: FakeManager) -> None:
     assert r.json()["result"] == {}
 
 
-async def test_tools_list_enum_from_agent_allowlist(mgr: FakeManager) -> None:
+async def tools_list(mgr: FakeManager) -> list[dict[str, Any]]:
     async with client(mgr) as c:
         r = await c.post("/internal/mcp", json=rpc("tools/list"), headers=H)
-    tools = r.json()["result"]["tools"]
+    return r.json()["result"]["tools"]
+
+
+async def test_tools_list_schema_name_and_args(mgr: FakeManager) -> None:
+    tools = await tools_list(mgr)
     assert [t["name"] for t in tools] == ["command"]
     assert tools[0]["description"]
-    assert tools[0]["inputSchema"] == params_schema(["compact", "reload-plugins"])
+    schema = tools[0]["inputSchema"]
+    assert set(schema) == {"type", "properties", "required", "additionalProperties"}
+    assert schema["type"] == "object" and schema["required"] == ["name"]
+    assert schema["additionalProperties"] is False
+    name, args = schema["properties"]["name"], schema["properties"]["args"]
+    assert set(schema["properties"]) == {"name", "args"}
+    assert name["type"] == "string" and name["enum"] == ["compact", "reload-plugins"]
+    assert args["type"] == "string" and "20000" in args["description"]
+    for agent in (["*"], ["compact", "*"]):
+        (tool,) = await tools_list(FakeManager(agent))
+        props = tool["inputSchema"]["properties"]
+        assert props["name"]["type"] == "string" and "enum" not in props["name"], agent
+        assert props["args"] == args
 
 
 async def call(c: httpx.AsyncClient, name: str, args: Any) -> dict[str, Any]:
@@ -137,7 +153,7 @@ async def call(c: httpx.AsyncClient, name: str, args: Any) -> dict[str, Any]:
 
 async def test_tools_call_queues_command(mgr: FakeManager) -> None:
     async with client(mgr) as c:
-        body = await call(c, "command", {"name": "compact", "params": {"instructions": "x"}})
+        body = await call(c, "command", {"name": "compact", "args": "keep\nthe plan"})
     res = body["result"]
     assert res["isError"] is False
     assert res["content"] == [
@@ -147,7 +163,11 @@ async def test_tools_call_queues_command(mgr: FakeManager) -> None:
             "one-line status. You will be resumed automatically.",
         }
     ]
-    assert mgr.r.calls == [("compact", {"instructions": "x"}, "agent")]
+    assert mgr.r.calls == [("compact", "keep\nthe plan", "agent")]
+    async with client(mgr) as c:
+        body = await call(c, "command", {"name": "reload-plugins"})
+        assert body["result"]["isError"] is False
+    assert mgr.r.calls[1] == ("reload-plugins", "", "agent")
     async with client(mgr) as c:
         body = await call(c, "other", {})
     assert body["error"]["code"] == -32602
@@ -155,12 +175,21 @@ async def test_tools_call_queues_command(mgr: FakeManager) -> None:
 
 async def test_tools_call_rejections_are_tool_errors(mgr: FakeManager) -> None:
     async with client(mgr) as c:
-        for args in (None, [], {}, {"name": 3}, {"name": "compact", "params": 5}):
+        for args in (
+            None,
+            [],
+            {},
+            {"name": 3},
+            {"name": "compact", "params": 5},
+            {"name": "compact", "args": 5},
+            {"name": "compact", "args": {"instructions": "x"}},
+            {"name": "compact", "args": None},
+        ):
             body = await call(c, "command", args)
             assert body["result"]["isError"] is True, args
         assert mgr.r.calls == []
         for code, msg, name in (
-            ("unknown_params", "unknown params; allowed: instructions", "compact"),
+            ("invalid_command", "/compact: args exceed 20000 characters", "compact"),
             ("not_allowed", "/cost is not allowed for agent; allowed: compact", "cost"),
             ("queue_full", "queue is full", "compact"),
         ):
@@ -194,5 +223,5 @@ async def test_extra_argument_keys_are_an_error_and_queue_nothing(mgr: FakeManag
         )
     res = r.json()["result"]
     assert res["isError"] is True
-    assert "name" in res["content"][0]["text"] and "params" in res["content"][0]["text"]
+    assert res["content"][0]["text"] == "unknown arguments force; allowed: name, args"
     assert mgr.r.calls == []
