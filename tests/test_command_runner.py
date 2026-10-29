@@ -16,6 +16,7 @@ from test_router import Harness, StubSession
 
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.commands import CommandRejected
+from claude_code_wrapper.config import DEFAULT_COMMAND_DENY
 from claude_code_wrapper.manager import CreateSessionRequest
 from claude_code_wrapper.metrics import Metrics
 from claude_code_wrapper.pty_proc import paste_bytes
@@ -24,8 +25,14 @@ from claude_code_wrapper.session import TurnRejected
 ALL = ["compact", "reload-plugins", "reload-skills", "mcp", "context"]
 
 
+#: The runner and API tests drive `mcp` (reconnect args) and `config` (a two-ESC dialog) on the fake
+#: claude; both are in the default deny list since 0.4.2, so these tests lift just those two names.
+RUNNABLE_DENY = [n for n in DEFAULT_COMMAND_DENY if n not in ("mcp", "config")]
+
+
 def commands_cfg(**kw: Any) -> dict[str, Any]:
     return {
+        "deny": RUNNABLE_DENY,
         "client": ALL,
         "agent": ["compact", "reload-plugins"],
         "quiet_seconds": 0.2,

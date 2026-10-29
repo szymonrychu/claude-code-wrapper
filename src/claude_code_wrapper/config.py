@@ -495,7 +495,12 @@ COMMAND_WILDCARD = "*"
 #: account consent or billing (design-consent, design-revoke, extra-usage "Renamed to
 #: /usage-credits", usage-credits "Configure usage credits"), or hand the session to another
 #: client (desktop/app "Continue the current session in Claude Desktop", remote-env "Choose the
-#: default environment for cloud agents"). A create override only extends this list.
+#: default environment for cloud agents"). The third block (0.4.2, names checked against claude
+#: 2.1.304) holds the commands that reach the agent account's cloud features (privacy-settings,
+#: ultraplan, ultrareview, autofix-pr, cloud-plugins, session with its alias remote) and the
+#: commands that rewrite the session's tool and permission settings (mcp, permissions with its
+#: alias allowed-tools, config with its alias settings, hooks). A create override only extends
+#: this list.
 DEFAULT_COMMAND_DENY: tuple[str, ...] = (
     "exit",
     "quit",
@@ -548,6 +553,19 @@ DEFAULT_COMMAND_DENY: tuple[str, ...] = (
     "terminal-setup",
     "ide",
     "memory",
+    "privacy-settings",
+    "ultraplan",
+    "ultrareview",
+    "autofix-pr",
+    "cloud-plugins",
+    "session",
+    "remote",
+    "mcp",
+    "permissions",
+    "allowed-tools",
+    "config",
+    "settings",
+    "hooks",
 )
 DEFAULT_CONTINUE_PROMPT = (
     "The slash commands you queued have run. Continue the task you were working on."

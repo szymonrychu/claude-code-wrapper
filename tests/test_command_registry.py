@@ -25,7 +25,7 @@ from claude_code_wrapper.config import (
 )
 from claude_code_wrapper.manager import CreateSessionRequest
 
-ALL = ["compact", "reload-plugins", "reload-skills", "mcp", "context"]
+ALL = ["compact", "reload-plugins", "reload-skills", "status", "context"]
 
 
 def cfg(**kw) -> CommandsConfig:
@@ -102,6 +102,25 @@ ADDED_DENY = [
     "ide",
     "memory",
 ]
+#: Added in 0.4.2: commands that reach the agent account's cloud features (privacy-settings,
+#: ultraplan, ultrareview, autofix-pr, cloud-plugins, session and its alias remote) or rewrite the
+#: session's tool and permission settings (mcp, permissions and allowed-tools, config and
+#: settings, hooks).
+ACCOUNT_SETTINGS_DENY = [
+    "privacy-settings",
+    "ultraplan",
+    "ultrareview",
+    "autofix-pr",
+    "cloud-plugins",
+    "session",
+    "remote",
+    "mcp",
+    "permissions",
+    "allowed-tools",
+    "config",
+    "settings",
+    "hooks",
+]
 BAD_NAMES = ["rm -rf", "-x", "/clear", "notes.txt"]
 
 
@@ -164,9 +183,10 @@ def test_command_names_free_form_and_wildcard(tmp_path):
 
 def test_deny_list_default_and_override(tmp_path):
     assert len(DENY) == 26 and len(ADDED_DENY) == 25
-    assert list(DEFAULT_COMMAND_DENY) == DENY + ADDED_DENY
-    assert len(DEFAULT_COMMAND_DENY) == 51
-    full = DENY + ADDED_DENY
+    assert len(ACCOUNT_SETTINGS_DENY) == 13
+    full = DENY + ADDED_DENY + ACCOUNT_SETTINGS_DENY
+    assert list(DEFAULT_COMMAND_DENY) == full
+    assert len(DEFAULT_COMMAND_DENY) == len(set(full)) == 64
     assert Config().sessions.commands.deny == full
     assert CommandsConfig().deny == full
     # an override only extends: [] and ["exit"] leave every default name, ["foo"] adds foo
@@ -194,6 +214,16 @@ def test_deny_list_default_and_override(tmp_path):
 def test_deny_list_covers_user_extension():
     q = CommandQueue(CommandsConfig(agent=["*"], client=["*"]))
     for name in ADDED_DENY:
+        assert name in DEFAULT_COMMAND_DENY, name
+        for variant in (name, name.upper(), name.capitalize(), name.title()):
+            for origin in ("agent", "client"):
+                assert code_of(q, variant, origin) == "denied", (variant, origin)
+    assert q.pending() == []
+
+
+def test_deny_list_covers_account_and_settings():
+    q = CommandQueue(CommandsConfig(agent=["*"], client=["*"]))
+    for name in ACCOUNT_SETTINGS_DENY:
         assert name in DEFAULT_COMMAND_DENY, name
         for variant in (name, name.upper(), name.capitalize(), name.title()):
             for origin in ("agent", "client"):
@@ -229,12 +259,12 @@ def test_deny_list_covers_aliases_and_session_moving_commands():
         assert name in DEFAULT_COMMAND_DENY, name
         for origin in ("agent", "client"):
             assert code_of(q, name, origin) == "denied", (name, origin)
-    for name in ("session", "remote"):
+    for name in ("status", "cost"):
         assert name not in DEFAULT_COMMAND_DENY
         for origin in ("agent", "client"):
             assert code_of(q, name, origin) is None, name
     # only the free names queued, once each: the second origin coalesced
-    assert [r.name for r in q.pending()] == ["session", "remote"]
+    assert [r.name for r in q.pending()] == ["status", "cost"]
 
 
 def test_deny_is_case_insensitive():
@@ -377,9 +407,7 @@ def test_coalesce_cap_and_lifecycle():
     assert b is a and not new and a.args == "first"
     for n in ("reload-plugins", "reload-skills", "context"):
         q.request(n, "", origin="agent", turn_id="t1")
-    assert (
-        rejected(q.request, "mcp", "reconnect", origin="agent", turn_id="t1").code == "queue_full"
-    )
+    assert rejected(q.request, "status", "", origin="agent", turn_id="t1").code == "queue_full"
     assert q.next() is a and len(q.pending()) == 4
     q.start(a)
     assert a.state == "running" and a.started_at and q.next() is not a
@@ -437,7 +465,7 @@ def test_queue_cap_and_terminal_records():
     first, _ = q.request("compact", "", origin="agent", turn_id="t")
     for n in ("reload-plugins", "reload-skills", "context"):
         q.request(n, "", origin="agent", turn_id="t")
-    assert rejected(q.request, "mcp", "reconnect", origin="agent", turn_id="t").code == "queue_full"
+    assert rejected(q.request, "status", "", origin="agent", turn_id="t").code == "queue_full"
     q.start(first)
     q.finish(first, "completed", result="ok")
     q.finish(first, "failed", error="boom")
