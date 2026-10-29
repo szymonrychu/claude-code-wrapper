@@ -75,7 +75,7 @@ async def test_restart_continue_origin_and_text(world: World) -> None:
 async def test_command_continuation_paste(world: World) -> None:
     m, sid, router = await start_resume(world)
     turn = await router.submit_turn("go")
-    router.request_command("compact", origin="client")
+    router.request_command("compact", origin="agent")
     await world.wait_turn(m, sid)
     msgs = [e["data"] for e in of_type(world, sid, "user_message")]
     # The compact line itself is a command paste; the continuation follows with the turn's origin.
