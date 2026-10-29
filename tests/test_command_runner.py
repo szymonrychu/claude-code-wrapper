@@ -576,6 +576,7 @@ class CommandStub(StubSession):
     # The dialog surface (design D7): this stub never shows a dialog.
     dialog_hits = 0
     last_output = 0.0
+    last_escape = float("-inf")
 
     def clock(self) -> float:
         return time.monotonic()

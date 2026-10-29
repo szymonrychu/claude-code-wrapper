@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -168,8 +169,67 @@ async def test_timeout_second_escape_only_with_dialog(world):
     assert (shown.state, shown.error) == ("failed", "timeout")
     got = keys(world, sid)[1:]
     assert len(got) == 2  # the dialog stayed on screen after the first ESC
-    assert gaps(got)[0] >= 1.5
+    assert gaps(got)[0] >= 1.0
     assert ts(got[0]) - taken >= 1.0  # the deadline's ESC, not the dialog leg's (grace 2 s)
+
+
+async def test_timeout_with_dialog_holds_slot_timeout_plus_one_and_a_half(world):
+    # A dialog that closes on its second ESC, past the deadline: no relaunch, so the whole slot
+    # hold is the deadline plus 1.5 s, the check after the second ESC included.
+    scenario = {"commands": {"help": dialog(2)}}
+    m, sid, _ = await start(
+        world, scenario, client=["*"], timeout_seconds={"compact": 30, "default": 30, "help": 1.0}
+    )
+    router = m.router(sid)
+    taken = time.time()
+    rec = router.request_command("help", origin="client")
+    await finished(world, rec, timeout=15)
+    assert (rec.state, rec.error) == ("failed", "timeout")
+    assert rec.finished_at is not None
+    held = datetime.fromisoformat(rec.finished_at).timestamp() - taken
+    assert held <= 1.0 + 1.5 + 0.3, f"slot held {held:.2f}s past the runner taking the command"
+    got = keys(world, sid)
+    assert len(got) == 2  # the footer was repainted after the deadline's ESC
+    assert gaps(got)[0] >= 1.0
+    assert ts(got[0]) - taken >= 1.0  # the deadline's ESC, not the dialog leg's (grace 2 s)
+    assert len(world.interactive_argvs()) == 1  # closed after the last ESC: no relaunch
+    await world.until(lambda: router.session.state == "ready", 5)
+
+
+async def test_failed_dialog_relaunch_leaves_session_dead(world):
+    # The crash path's outcome: the relaunch over the open dialog never boots, so the session
+    # ends dead and, as under a crash, the command fails claude_exited, the queued one is
+    # cancelled, the slot is released and claude's exit is reported.
+    cfg = world.cfg(
+        {"commands": {"help": dialog("never")}},
+        sessions={
+            "commands": commands_cfg(client=["*"], timeout_seconds=SLOW, dialog_grace_seconds=0.3)
+        },
+    )
+    m = world.manager(cfg)
+    sid = (await m.create(CreateSessionRequest()))["session_id"]
+    router = m.router(sid)
+    scenario = Path(cfg.claude.env.extra["FAKE_CLAUDE_SCENARIO"])
+    scenario.write_text("not json: every relaunch exits at once")
+    rec = router.request_command("help", origin="client")
+    queued = router.request_command("context", origin="client")
+    await finished(world, rec, timeout=30)
+    await finished(world, queued, timeout=10)
+    assert (rec.state, rec.error) == ("failed", "claude_exited")
+    assert queued.state == "cancelled"
+    await world.until(lambda: m.get(sid)["state"] == "dead", 10)
+    assert len(world.interactive_argvs()) >= 2  # the relaunch was tried
+    await world.until(lambda: not router.runner_active, 5)
+    assert not router.session.command_active
+    await world.until(lambda: not m.active_ids(), 5)  # a dead session holds no slot
+    assert router.session.restarts == 0
+    assert [e["kind"] for e in of_type(world, sid, "error")] == ["exited"]
+    events = world.events(sid)
+    dead = next(
+        e["seq"] for e in events if e["type"] == "session_state" and e["data"]["state"] == "dead"
+    )
+    failed = next(e["seq"] for e in events if e["type"] == "command_failed")
+    assert dead < failed  # the relaunch was tried before the command was finished
 
 
 async def test_one_deadline_covers_quiet_wait_and_completion(tmp_path):

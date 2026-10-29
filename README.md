@@ -2294,9 +2294,12 @@ Progress is visible as the `command_queued`, `command_started`, `command_complet
 7. **One deadline.** `timeout_seconds[name]` (`default` 60 s, `compact` 600 s) counts from the
    moment the runner takes the command and is spent by the quiet wait, `onCommand`, typing, the
    completion wait and the dialog leg together; a screen that never settles fails `timeout` at that
-   deadline. At the deadline ccw sends ESC, waits 1.5 s and sends a second ESC only when a dialog
-   footer is on screen, then fails the command `timeout`. A command that only times out holds the
-   session for at most `timeout_seconds` plus 1.5 s.
+   deadline. At the deadline ccw sends ESC; within the 1.5 s that follow it sends a second ESC
+   only when a dialog footer was seen again since the first (1 s after it, the ESC spacing), then
+   fails the command `timeout` 1.5 s after the deadline. A command that only times out holds the
+   session for at most `timeout_seconds` plus 1.5 s; with a dialog on screen the same holds, the
+   check whether the dialog stayed open after the last ESC included, plus one claude relaunch
+   (at most `claude.boot.timeout_seconds`) when it did (item 9).
 8. **Dialogs.** Commands such as `/model`, `/config`, `/usage` or `/help` open a dialog and write
    nothing until it is closed. From the moment the line is typed ccw scans the screen for
    `dialog_patterns` (dialog footers such as "Esc to cancel"; compact is never scanned). With a

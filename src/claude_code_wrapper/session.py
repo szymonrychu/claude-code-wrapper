@@ -1247,6 +1247,11 @@ class Session:
         self._dialog_hits = self._hits_at_escape = 0
 
     @property
+    def last_escape(self) -> float:
+        """`clock()` time of the last ESC written (-inf before any)."""
+        return self._last_escape
+
+    @property
     def dialog_hits(self) -> int:
         """Dialog footers seen since `watch_dialogs`."""
         return self._dialog_hits

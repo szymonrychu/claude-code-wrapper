@@ -40,7 +40,13 @@ from .metrics import Metrics
 from .notes import NoteStore, render_block
 from .pty_proc import PtyClosed
 from .redact import Redactor
-from .session import Session, SessionListener, TurnRejected, slash_command
+from .session import (
+    ESC_SPACING_SECONDS,
+    Session,
+    SessionListener,
+    TurnRejected,
+    slash_command,
+)
 from .timeutil import now_iso
 from .transcript import (
     MAX_RESULT_CHARS,
@@ -1387,7 +1393,7 @@ class SessionRouter(SessionListener):
             self._emit_user_message(None, "command", line)
             state, result, error, output = await self._await_completion(record, mark, deadline)
             if error == "timeout":
-                await self._escape_at_timeout()
+                await self._escape_at_timeout(deadline)
             if error == "dialog_stuck" or (error == "timeout" and session.dialog_on_screen()):
                 await self._restart_for_dialog()
         except (PtyClosed, TurnRejected):
@@ -1402,18 +1408,25 @@ class SessionRouter(SessionListener):
             record, state, started, result=result, error=error, output=output
         )
 
-    async def _escape_at_timeout(self) -> None:
-        """At the deadline: ESC, 1.5 s, and only with a dialog footer on screen a second ESC
-        and 1.5 s more, so `dialog_on_screen` then tells whether the dialog stayed open."""
+    async def _escape_at_timeout(self, deadline: float) -> None:
+        """At the deadline: ESC; within the 1.5 s that follow, a second ESC only with a dialog
+        footer seen since the first, as soon as the ESC spacing allows. Returns at deadline +
+        1.5 s, when `dialog_on_screen` tells whether the dialog stayed open after the last ESC.
+
+        A dialog-leg ESC sent less than `ESC_SPACING_SECONDS` before the deadline stands in for
+        the first one, so the spacing never pushes the two ESCs past the 1.5 s.
+        """
         session = self.session
-        await session.send_escape()
-        await asyncio.sleep(DIALOG_ESC_INTERVAL)
+        if session.clock() - session.last_escape >= ESC_SPACING_SECONDS:
+            await session.send_escape()
+        await asyncio.sleep(max(session.last_escape + ESC_SPACING_SECONDS - session.clock(), 0.0))
         if session.dialog_on_screen():
             await session.send_escape()
-            await asyncio.sleep(DIALOG_ESC_INTERVAL)
+        await asyncio.sleep(_left(deadline + DIALOG_ESC_INTERVAL))
 
     async def _restart_for_dialog(self) -> None:
-        """Relaunch claude over the dialog left open; its booting does not abort this runner."""
+        """Relaunch claude over the dialog left open; its booting does not abort this runner,
+        a failed relaunch (dead) does, as a crash would."""
         self._dialog_restart = True
         try:
             await self.session.restart_for_dialog()
@@ -1574,7 +1587,7 @@ class SessionRouter(SessionListener):
             {"state": state, "since": self.session.state_since or now_iso()},
         )
         internal = self.session.state
-        if internal in ("booting", "dead") and not self._dialog_restart:
+        if internal == "dead" or (internal == "booting" and not self._dialog_restart):
             self._abort_runner("claude_exited")
         elif internal in ("stopping", "stopped"):
             self._abort_runner("session_stopped")
