@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -26,6 +27,7 @@ from claude_code_wrapper.api.turns import LANES, TurnRequest
 from claude_code_wrapper.manager import CreateSessionRequest, InvalidState
 from claude_code_wrapper.pty_proc import paste_bytes
 from claude_code_wrapper.session import ESC_SPACING_SECONDS, TurnRejected
+from claude_code_wrapper.transcript import UserPrompt, parse_line
 
 
 def post(client: TestClient, body: dict[str, Any]):  # noqa: F811
@@ -357,3 +359,105 @@ async def test_dialog_closed_by_escape_and_own_echo_ignored(harness: Harness) ->
     await session.submit("q: what does Esc to cancel mean?")
     await wait_until(lambda: session.ring.contains("Esc to cancel"))
     assert not session.dialog_open()
+
+
+# ------------------------------------------------------------------ C5: turn accounting
+
+FIXTURES = Path(__file__).parent / "fixtures" / "transcripts"
+
+
+def test_fixture_mid_turn_queued_message_is_a_marked_prompt() -> None:
+    events = [
+        ev
+        for line in (FIXTURES / "queued_message.jsonl").read_text().splitlines()
+        for ev in parse_line(line)
+    ]
+    prompts = [ev for ev in events if isinstance(ev, UserPrompt)]
+    assert [(p.turn_marker, p.message_id) for p in prompts] == [
+        ("turn-1kq0lanes001", None),
+        (None, "msg-1kq0lanes002"),  # absorbed mid-turn: no turn marker, the message id
+    ]
+    assert "also count them" in prompts[1].text
+
+
+QUEUE = {
+    "queue_input": True,
+    "turns": [
+        {
+            "match": "slow",
+            "steps": [
+                {"sleep": 1.5},
+                {"tool": "Bash", "input": {"command": "ls"}},
+                {"text": "done"},
+            ],
+        },
+        {"match": "late", "steps": [{"text": "working"}, {"sleep": 1.5}]},
+        {"match": "steer", "steps": [{"text": "steered"}]},
+    ],
+}
+
+
+async def test_mid_turn_message_is_delivered_into_the_running_turn(world: World) -> None:
+    m, sid, c = await _lane_app(world, QUEUE)
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "slow one", "lane": "idle"})
+        running = r.json()["turn_id"]
+        r = await c.post(
+            f"/v1/sessions/{sid}/turns", json={"text": "steer this", "message_id": "m-1"}
+        )
+        assert r.status_code == 202 and r.json()["queued"] is True
+        assert r.json()["message_id"] == "m-1"  # round-trips
+    await world.until(lambda: m.open_turns(sid).get(running).state != "running")
+    turns = m.open_turns(sid).list()
+    assert [(t.turn_id, t.state, t.final_text) for t in turns] == [(running, "completed", "done")]
+    events = world.events(sid)
+    delivered = [e["data"] for e in events if e["type"] == "prompt_delivered"]
+    assert delivered == [
+        {"message_id": "m-1", "lane": "regular", "turn_id": running, "new_turn": False}
+    ]
+    assert [e["type"] for e in events].count("turn_completed") == 1  # one Stop, one turn
+    queued_at = [e["type"] for e in events].index("prompt_queued")
+    assert queued_at < [e["type"] for e in events].index("prompt_delivered")
+    assert m.router(sid).session.state == "ready"
+
+
+async def test_message_absorbed_after_the_stop_becomes_a_new_turn(world: World) -> None:
+    m, sid, c = await _lane_app(world, QUEUE)
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "late one", "lane": "idle"})
+        first = r.json()["turn_id"]
+        await world.until(lambda: m.router(sid).session.ring.contains("working"))
+        r = await c.post(
+            f"/v1/sessions/{sid}/turns",
+            json={"text": "steer it", "callbackUrl": f"{world.url}/cb"},
+        )
+        assert r.status_code == 202 and r.json()["queued"] is True
+        message_id = r.json()["message_id"]
+    await world.until(lambda: len(m.open_turns(sid).list()) == 2, what="the adopted turn")
+    await world.wait_turn(m, sid)
+    await world.until(lambda: m.router(sid).session.state == "ready")
+    first_rec, second = m.open_turns(sid).list()
+    assert first_rec.turn_id == first and first_rec.state == "completed"
+    assert second.state == "completed" and second.final_text == "steered"
+    assert second.origin == "client" and second.text == "steer it"
+    assert second.callback_url == f"{world.url}/cb"
+    events = world.events(sid)
+    delivered = [e["data"] for e in events if e["type"] == "prompt_delivered"]
+    assert delivered == [
+        {"message_id": message_id, "lane": "regular", "turn_id": second.turn_id, "new_turn": True}
+    ]
+    started = [e["data"]["turn_id"] for e in events if e["type"] == "turn_started"]
+    assert started == [first, second.turn_id]
+    completed = [e["data"]["record"]["turn_id"] for e in events if e["type"] == "turn_completed"]
+    assert completed == [first, second.turn_id]  # each turn exactly once
+    await world.until(lambda: world.callbacks, what="the adopted turn's callback")
+    assert world.callbacks[-1]["data"]["record"]["turn_id"] == second.turn_id
+
+
+async def test_unknown_message_marker_is_a_plain_prompt(world: World) -> None:
+    m, sid, c = await _lane_app(world, {})
+    router = m.router(sid)
+    await router._on_transcript_events([UserPrompt(text="x", message_id="msg-nope")])
+    assert router.session.state == "ready" and router.session.current_turn is None
+    assert "prompt_delivered" not in [e["type"] for e in world.events(sid)]
+    await c.aclose()

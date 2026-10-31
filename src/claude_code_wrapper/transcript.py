@@ -34,6 +34,8 @@ INTERRUPT_PREFIX = "[Request interrupted by user"
 
 _TURN_MARKER = re.compile(r"<!--\s*ccw turn:\s*(\S+?)\s*-->")
 _PROBE_MARKER = re.compile(r"<!--\s*ccw probe:\s*(\S+?)\s*-->")
+#: A message typed into a running turn (a regular or priority lane delivery, `queue_prompt`).
+_MESSAGE_MARKER = re.compile(r"<!--\s*ccw message:\s*(\S+?)\s*-->")
 _COMMAND_PREFIXES = ("<command-name>", "<command-message>")
 _OUTPUT_PREFIXES = ("<local-command-stdout>", "<local-command-stderr>")
 _NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
@@ -64,6 +66,8 @@ class _Event:
 class UserPrompt(_Event):
     text: str
     turn_marker: str | None = None
+    #: The id of a message typed into a running turn (`<!-- ccw message: <id> -->`).
+    message_id: str | None = None
 
 
 @dataclass
@@ -222,10 +226,15 @@ def _prompt_events(text: str, redactor: Redactor | None) -> list[_Made]:
     if probe:
         return [(ProbeMarker, {"probe_id": probe.group(1)})]
     turn = _TURN_MARKER.search(text)
+    message = _MESSAGE_MARKER.search(text)
     return [
         (
             UserPrompt,
-            {"text": _redact(redactor, text), "turn_marker": turn.group(1) if turn else None},
+            {
+                "text": _redact(redactor, text),
+                "turn_marker": turn.group(1) if turn else None,
+                "message_id": message.group(1) if message else None,
+            },
         )
     ]
 

@@ -458,6 +458,8 @@ class QueuedMessage:
     queued_at: str
     callback_url: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: The turn the model read it in, once its marker reached the transcript.
+    delivered_turn_id: str | None = None
 
 
 @dataclass
@@ -1149,6 +1151,51 @@ class Session:
 
     def queued_message(self, message_id: str) -> QueuedMessage | None:
         return self._queued.get(message_id)
+
+    def deliver_message(self, message_id: str) -> tuple[QueuedMessage, bool] | None:
+        """The message's marker reached the transcript: `(message, new_turn)`, else None.
+
+        Read while its turn (or any turn) runs, the model took it within that turn. Read on a
+        ready session, claude ran it as a turn of its own after the turn it was typed into
+        ended: that becomes a new running turn here (`new_turn` True; origin, text, callback
+        and metadata from the message), so the next Stop completes it. None for an unknown or
+        already delivered id, or when claude is not live or a command run holds the slot.
+        """
+        message = self._queued.get(message_id)
+        if message is None or message.delivered_turn_id is not None:
+            return None
+        record = self._turn
+        if self.state == "busy" and record is not None:
+            message.delivered_turn_id = record.turn_id
+            return message, False
+        if self.state != "ready" or record is not None or self._command_active:
+            return None
+        now = now_iso()
+        record = TurnRecord(
+            turn_id=new_turn_id(),
+            session_id=self.spec.session_id,
+            origin=message.origin,
+            state="running",
+            text=message.text,
+            callback_url=message.callback_url,
+            started_at=now,
+            last_activity_at=now,
+            metadata=dict(message.metadata),
+        )
+        self._turn = record
+        self._turn_started = self.clock()
+        self._last_activity = self._activity_persisted = self.clock()
+        self._set_state("busy")
+        self._persist(record)
+        self._arm_watch(record)
+        message.delivered_turn_id = record.turn_id
+        log.info(
+            "session %s: message %s runs as turn %s",
+            self.spec.session_id,
+            message.message_id,
+            record.turn_id,
+        )
+        return message, True
 
     def _with_marker(self, text: str, record: TurnRecord) -> str:
         if not self.spec.sessions.turn_marker:

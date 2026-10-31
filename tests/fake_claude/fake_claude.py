@@ -145,6 +145,13 @@ Local slash commands
       open prints the footer again; "never" never closes), then writes the echo (a system line
       unless "echo" says "user"), the stdout entry with dismiss_stdout, and the idle footer.
       Other bytes typed meanwhile are recorded with state "busy" and dropped.
+  Scenario key (top level) "queue_input": true makes the fake queue input typed while a turn
+  runs, as claude 2.1.304 does (Enter while busy queues): a bracketed paste followed by a CR in a
+  later read is queued (logged with state "queued") instead of dropped, and a "sleep" step keeps
+  sleeping through it. At the start of the next step the fake writes each queued text as an
+  attachment line {"type": "attachment", "attachment": {"type": "queued_command", "prompt": T}}
+  (the model reads it within the same turn, so no extra Stop). Texts still queued when the turn
+  ends (Stop, an interrupt or a raw print) are sent next, each as a normal turn of its own.
   Input log: every submitted line is appended to $CLAUDE_CONFIG_DIR/fake-inputs.jsonl as
   {"text", "state": "idle"|"busy", "ts"}. Bytes other than ESC arriving while a turn or command
   runs are recorded with state "busy" (and dropped), so tests can prove nothing typed into a
@@ -378,6 +385,9 @@ class Fake:
         self.last_text = ""
         self.background: list[tuple[float, str, list]] = []
         self.pending_input = b""
+        #: Bytes typed during a turn (queue_input) and the texts queued from them.
+        self.busy_input = b""
+        self.queued: list[str] = []
         self.user_prompts: list[str] = []
 
     @staticmethod
@@ -615,9 +625,52 @@ class Fake:
             self.record_key("esc")
             return True
         if data is not None:
-            text = data.replace(PASTE_START, b"").replace(PASTE_END, b"")
-            self.record_input(text.decode(errors="replace"), "busy")
+            if self.scenario.get("queue_input"):
+                self.queue_busy(data)
+            else:
+                text = data.replace(PASTE_START, b"").replace(PASTE_END, b"")
+                self.record_input(text.decode(errors="replace"), "busy")
         return False
+
+    def queue_busy(self, data: bytes) -> None:
+        """Queue each complete paste whose CR came in a later read (queue_input)."""
+        self.busy_input += data
+        while True:
+            start = self.busy_input.find(PASTE_START)
+            end = self.busy_input.find(PASTE_END, max(start, 0))
+            if start < 0 or end < 0:
+                return
+            rest = self.busy_input[end + len(PASTE_END) :]
+            cr = rest.find(b"\r")
+            if cr < 0:
+                return
+            text = self.busy_input[start + len(PASTE_START) : end].decode(errors="replace")
+            self.busy_input = rest[cr + 1 :]
+            self.queued.append(text)
+            self.record_input(text, "queued")
+
+    def sleep_step(self, seconds: float) -> bool:
+        """Sleep `seconds`; True when ESC arrived. Without queue_input any input ends it."""
+        if not self.scenario.get("queue_input"):
+            return self.interrupted(seconds)
+        deadline = time.monotonic() + seconds
+        while (left := deadline - time.monotonic()) > 0:
+            if self.interrupted(left):
+                return True
+        return False
+
+    def absorb_queued(self) -> None:
+        """Hand the queued texts to the running turn as queued_command attachments."""
+        while self.queued:
+            text = self.queued.pop(0)
+            self.write_line(
+                {"type": "attachment", "attachment": {"type": "queued_command", "prompt": text}}
+            )
+
+    def send_queued(self) -> None:
+        """The turn ended with texts still queued: each goes out as a turn of its own."""
+        while self.queued:
+            self.run_turn(self.queued.pop(0))
 
     def do_interrupt(self) -> None:
         self.user_line([{"type": "text", "text": INTERRUPT_TEXT}])
@@ -839,9 +892,11 @@ class Fake:
         self.last_text = ""
         bg: list[dict] = []
         if not self.run_steps(turn.get("steps", []), tokens, bg, turn):
+            self.send_queued()
             return
         self.stop_cycle(turn.get("on_block"), turn.get("stop") or {})
         self.footer()
+        self.send_queued()
         for b in bg:
             self.background.append(
                 (
@@ -857,6 +912,7 @@ class Fake:
             if self.interrupted():
                 self.do_interrupt()
                 return False
+            self.absorb_queued()
             if "text" in step:
                 self.assistant_line({"type": "text", "text": step["text"]}, tokens)
                 self.last_text = step["text"]
@@ -872,7 +928,7 @@ class Fake:
             elif "subagent" in step:
                 self.subagent_step(step["subagent"])
             elif "sleep" in step:
-                if self.interrupted(float(step["sleep"])):
+                if self.sleep_step(float(step["sleep"])):
                     self.do_interrupt()
                     return False
             elif "print" in step:

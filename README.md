@@ -467,6 +467,16 @@ Delivery lanes (`lane`):
   open claude's rewind menu), so two priority deliveries in a row wait for each other. A slash
   command run or a turn's command phase is never interrupted this way: `409 busy`.
 
+Turn accounting for a typed message: claude records it as a `queued_command` attachment line (or
+a user line) holding the `<!-- ccw message: <message_id> -->` marker. When that line is read while
+a turn runs, the model took the message within that turn: a `prompt_delivered` event with
+`new_turn: false` is logged and the turn still ends on its single Stop. When it is read on a ready
+session, the turn it was typed into ended first and claude ran the message as a turn of its own:
+that becomes a new `running` turn (origin, text, `callbackUrl` and `metadata` of the message;
+`turn_started`, then `prompt_delivered` with `new_turn: true`), completed by claude's next Stop
+like any turn. `onTurn` does not fire again for it. A marker read twice, or for an unknown id,
+changes nothing.
+
 While a dialog is open in claude (a permission prompt, an `AskUserQuestion` question), typing
 would pick an answer and an ESC would decline it, so `regular` and `priority` deliveries are
 refused with `409 dialog_open` and nothing is written. A dialog counts as open from the moment
@@ -1484,6 +1494,20 @@ Emitted when a `regular` or `priority` delivery typed a message into the running
 ```
 event: prompt_queued
 data: {"seq":15,"ts":"2026-10-20T09:02:11.000Z","session_id":"ses_3f9a1c0b7d42","type":"prompt_queued","data":{"message_id":"msg-1k9x2m0q5aa1","lane":"regular","turn_id":"turn-1k9x2m0q4zw8","origin":"client"}}
+```
+
+### `prompt_delivered`
+
+Emitted when the marker of a message typed into a running turn (`prompt_queued`) reaches the
+transcript, once per message (see "Delivery lanes" under `POST /v1/sessions/{id}/turns`).
+
+`data`: `message_id`, `lane`, `turn_id` (the turn that reads it), `new_turn` (false: the model
+took it within the running turn; true: claude ran it after that turn ended, as the new turn
+`turn_id`, which a `turn_started` event announced just before).
+
+```
+event: prompt_delivered
+data: {"seq":16,"ts":"2026-10-20T09:02:13.000Z","session_id":"ses_3f9a1c0b7d42","type":"prompt_delivered","data":{"message_id":"msg-1k9x2m0q5aa1","lane":"regular","turn_id":"turn-1k9x2m0q4zw8","new_turn":false}}
 ```
 
 ### `assistant_text`

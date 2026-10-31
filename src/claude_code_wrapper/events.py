@@ -28,6 +28,7 @@ EVENT_TYPES: list[str] = [
     "turn_deferred",
     "turn_resumed",
     "prompt_queued",
+    "prompt_delivered",
     "assistant_text",
     "thinking",
     "usage",

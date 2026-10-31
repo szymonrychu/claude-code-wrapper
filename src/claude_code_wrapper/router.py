@@ -1225,10 +1225,40 @@ class SessionRouter(SessionListener):
             elif isinstance(ev, UserPrompt):
                 if ev.turn_marker:
                     self._last_marker = ev.turn_marker
+                if ev.message_id and not ev.sidechain:
+                    self._message_delivered(ev.message_id)
             elif isinstance(ev, ProbeMarker):
                 probe = self.session.probe_delivered(ev.probe_id)
                 if probe is not None and self._metrics is not None:
                     self._metrics.probe_outcome("delivered")
+
+    def _message_delivered(self, message_id: str) -> None:
+        """A queued message reached the model: in the running turn, or as a new turn."""
+        session = self.session
+        found = session.deliver_message(message_id)
+        if found is None:
+            return
+        message, new_turn = found
+        turn_id = message.delivered_turn_id
+        if new_turn:
+            record = session.current_turn
+            assert record is not None
+            self._last_marker = record.turn_id  # its Stop carries no marker of its own
+            self._usage.reset()
+            self._cancel_auto_compact()
+            self._emit(
+                "turn_started",
+                {"turn_id": record.turn_id, "origin": record.origin, "text": record.text},
+            )
+        self._emit(
+            "prompt_delivered",
+            {
+                "message_id": message.message_id,
+                "lane": message.lane,
+                "turn_id": turn_id,
+                "new_turn": new_turn,
+            },
+        )
 
     async def _on_assistant_text(self, ev: AssistantText) -> None:
         self._emit(
