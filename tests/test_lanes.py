@@ -613,3 +613,34 @@ async def test_priority_accounts_the_flushed_queue_as_its_own_turn(world: World)
     assert delivered == [
         {"message_id": steer_id, "lane": "regular", "turn_id": flushed.turn_id, "new_turn": True}
     ]
+
+
+async def test_priority_keeps_the_slot_between_interrupt_and_submit(world: World) -> None:
+    # onInterrupt holds the priority delivery after the running turn ended; a turn submitted in
+    # that window must not take the slot the priority message is about to use.
+    hook = {"type": "command", "run": "sleep 1", "blocking": True}
+    scenario = {
+        "turns": [
+            {"match": "slow", "steps": [{"sleep": 30}]},
+            {"match": "urgent|sneak", "steps": [{"text": "ok"}]},
+        ]
+    }
+    m, sid, c = await _lane_app(world, scenario, hooks={"onInterrupt": [hook]})
+    router = m.router(sid)
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "slow one", "lane": "idle"})
+        slow = r.json()["turn_id"]
+        await world.until(lambda: router.session.state == "busy")
+        url = f"/v1/sessions/{sid}/turns"
+        priority = asyncio.ensure_future(c.post(url, json={"text": "urgent", "lane": "priority"}))
+        await world.until(lambda: m.open_turns(sid).get(slow).state == "interrupted")
+        assert router.session.state == "ready"  # the slot is free, but reserved
+        sneak = await c.post(url, json={"text": "sneak", "lane": "idle"})
+        assert sneak.status_code == 409 and sneak.json()["error"]["code"] == "busy"
+        sneak = await c.post(url, json={"text": "sneak"})
+        assert sneak.status_code == 409 and sneak.json()["error"]["code"] == "busy"
+        r = await priority
+        assert r.status_code == 202 and r.json()["queued"] is False
+    await world.wait_turn(m, sid)
+    assert [t.text for t in m.open_turns(sid).list()] == ["slow one", "urgent"]
+    assert not router.session.reserved

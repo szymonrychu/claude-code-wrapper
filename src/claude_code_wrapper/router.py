@@ -953,7 +953,8 @@ class SessionRouter(SessionListener):
         ran (a priority delivery vets before it interrupts), so onTurn is not fired again."""
         if slash_command(text) is not None:  # a slash line fires no hooks and writes no files
             raise TurnRejected("slash_command")
-        self.session.check_submittable()  # a doomed turn fires no hooks
+        # a doomed turn fires no hooks; a vetted (priority) turn holds the reserved slot
+        self.session.check_submittable(reserved=vetted is not None)
         was_armed = self._ac_armed
         self._cancel_auto_compact()
         try:
@@ -978,7 +979,7 @@ class SessionRouter(SessionListener):
         else:
             turn_id, outcome = vetted
         # No await from this check through safe_write_files to submit's slot reservation.
-        self.session.check_submittable()
+        self.session.check_submittable(reserved=vetted is not None)
         if files:
             safe_write_files(
                 self.info.workdir,
@@ -997,6 +998,7 @@ class SessionRouter(SessionListener):
             turn_id=turn_id,
             annotations=annotations,
             metadata=dict(metadata or {}),
+            reserved=vetted is not None,
         )
         self._usage.reset()
         self._emit_user_message(record.turn_id, record.origin, text, list((files or {}).keys()))
@@ -1079,13 +1081,18 @@ class SessionRouter(SessionListener):
         outcome = await self._vet(
             text, kw["files"], kw["origin"], kw["metadata"], turn_id, lane="priority"
         )
-        running = self.session.current_turn
-        while running is not None:
-            self.session.check_queueable()
-            pending = self.session.undelivered(running.turn_id)
-            await self.interrupt(spaced=True)
-            running = await self._flushed_turn(running, pending)
-        return await self.submit_turn(text, **kw, vetted=(turn_id, outcome))
+        session = self.session
+        running = session.current_turn
+        if running is None:  # it ended while onTurn ran
+            return await self.submit_turn(text, **kw, vetted=(turn_id, outcome))
+        session.check_queueable()
+        with session.reserve():  # the slot the interrupt frees stays this message's
+            while running is not None:
+                session.check_queueable()
+                pending = session.undelivered(running.turn_id)
+                await self.interrupt(spaced=True)
+                running = await self._flushed_turn(running, pending)
+            return await self.submit_turn(text, **kw, vetted=(turn_id, outcome))
 
     async def _flushed_turn(
         self, interrupted: TurnRecord, pending: list[QueuedMessage]

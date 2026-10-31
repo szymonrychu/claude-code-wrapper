@@ -62,7 +62,7 @@ import os
 import re
 import time
 import unicodedata
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
@@ -549,6 +549,8 @@ class Session:
         self._activity_persisted = self._last_activity
         self._probes: dict[str, Probe] = {}
         self._queued: dict[str, QueuedMessage] = {}
+        #: The slot is held for a priority delivery (`reserve`).
+        self._reserved = False
         if resume_turn is not None:
             # The slot is taken from the first boot; `start` continues or fails the turn.
             resume_turn.interrupted = None
@@ -990,12 +992,33 @@ class Session:
             raise TurnRejected("dead")
         return self.pty
 
-    def check_submittable(self) -> PtyProcess:
-        """Raise `TurnRejected(booting|dead|busy)` if a turn cannot start now (no side effects)."""
+    def check_submittable(self, *, reserved: bool = False) -> PtyProcess:
+        """Raise `TurnRejected(booting|dead|busy)` if a turn cannot start now (no side effects).
+
+        While the slot is reserved (`reserve`) only the holder (`reserved=True`) may start one.
+        """
         pty = self._writable_pty()
-        if self.state == "busy" or self._turn is not None:
+        if self.state == "busy" or self._turn is not None or (self._reserved and not reserved):
             raise TurnRejected("busy")
         return pty
+
+    @property
+    def reserved(self) -> bool:
+        return self._reserved
+
+    @contextlib.contextmanager
+    def reserve(self) -> Iterator[None]:
+        """Hold the turn slot across an interrupt and the next submit (a priority delivery).
+
+        Meanwhile other turns (`check_submittable`) and slash command runs (`begin_command`)
+        are refused busy, so nothing takes the slot the interrupt freed. A turn claude starts by
+        itself (`deliver_message`) is still accounted.
+        """
+        self._reserved = True
+        try:
+            yield
+        finally:
+            self._reserved = False
 
     async def submit(
         self,
@@ -1006,6 +1029,7 @@ class Session:
         turn_id: str | None = None,
         annotations: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        reserved: bool = False,
     ) -> TurnRecord:
         """Start a turn: reserve the slot, persist the record, then paste and CR.
 
@@ -1017,7 +1041,7 @@ class Session:
         if slash_command(text) is not None:
             # claude would run it as a command: no Stop, so the turn would never end (design D3).
             raise TurnRejected("slash_command")
-        pty = self.check_submittable()
+        pty = self.check_submittable(reserved=reserved)
         now = now_iso()
         record = TurnRecord(
             turn_id=turn_id or new_turn_id(),
@@ -1418,6 +1442,8 @@ class Session:
         the session. False, and nothing changes, unless the session is ready with no turn.
         """
         if self.state != "ready" or self._turn is not None or self._command_active:
+            return False
+        if self._reserved:
             return False
         self._command_active = True
         self._set_state("busy")

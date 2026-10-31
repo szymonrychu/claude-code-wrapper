@@ -75,7 +75,7 @@ class StubSession:
         self.calls.append(("complete", payload, usage, model_tokens, marker_turn_id))
         return self.complete_result
 
-    def check_submittable(self):
+    def check_submittable(self, *, reserved=False):
         if self.reject:
             raise TurnRejected(self.reject)
 
@@ -99,6 +99,7 @@ class StubSession:
         turn_id=None,
         annotations=None,
         metadata=None,
+        reserved=False,
     ):
         if self.reject:
             raise TurnRejected(self.reject)
