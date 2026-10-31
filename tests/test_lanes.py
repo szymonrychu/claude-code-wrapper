@@ -235,15 +235,24 @@ async def test_priority_interrupts_then_starts_a_turn(world: World) -> None:
 async def test_two_priority_sends_space_their_escs(world: World) -> None:
     m, sid, c = await _lane_app(world, PRIORITY)
     keys = world.session_dir(sid) / "config" / "fake-keys.jsonl"
+    session = m.router(sid).session
+    escs: list[float] = []  # when the wrapper wrote each ESC (the fake's read time can lag)
+    original = session.pty._write_locked
+
+    async def spy(data: bytes) -> None:
+        if data == b"\x1b":
+            escs.append(time.monotonic())
+        await original(data)
+
+    setattr(session.pty, "_write_locked", spy)  # noqa: B010 - instance-level spy
     async with c:
         await c.post(f"/v1/sessions/{sid}/turns", json={"text": "slow one", "lane": "idle"})
-        await world.until(lambda: m.router(sid).session.state == "busy")
+        await world.until(lambda: session.state == "busy")
         for text in ("first", "second"):
             r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": text, "lane": "priority"})
             assert r.status_code == 202 and r.json()["queued"] is False
     await world.until(lambda: len(jsonl(keys)) >= 2)
-    stamps = [_ts(k["ts"]) for k in jsonl(keys)]
-    assert len(stamps) == 2 and stamps[1] - stamps[0] >= ESC_SPACING_SECONDS - 0.05
+    assert len(escs) == 2 and escs[1] - escs[0] >= ESC_SPACING_SECONDS
     states = [t.state for t in m.open_turns(sid).list()]
     assert states == ["interrupted", "interrupted", "running"]
 
