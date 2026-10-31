@@ -60,8 +60,11 @@ Scenario schema
                          $CLAUDE_CONFIG_DIR/fake-mcp.jsonl gets one line per step:
                          {url, headers, requests, responses} (expanded url and header values,
                          so a test can prove env expansion happened in the fake)
-    {"subagent": {"id", "type", "text"}}  -> <project dir>/<session id>/subagents/
-                                             agent-<id>.jsonl, isSidechain true
+    {"subagent": {"id", "type", "text", "tool_use_id", "description"}}
+                         -> <project dir>/<session id>/subagents/agent-<id>.jsonl (isSidechain
+                         true) and, before SubagentStart, agent-<id>.meta.json {agentType,
+                         description, toolUseId} as claude writes it (toolUseId: the parent's
+                         Task tool_use id; tool_use_id, else a generated id)
     {"sleep": seconds}   ESC during it writes "[Request interrupted by user]" and
                          returns to idle without a Stop hook
     {"print": s}         raw PTY output, then idle without Stop
@@ -1147,6 +1150,14 @@ class Fake:
     def subagent_step(self, sub: dict) -> None:
         aid, atype = sub["id"], sub.get("type", "general-purpose")
         path = os.path.join(self.proj_dir, self.session_id, "subagents", f"agent-{aid}.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        meta = {
+            "agentType": atype,
+            "description": sub.get("description", "subagent task"),
+            "toolUseId": sub.get("tool_use_id") or "toolu_" + uuid.uuid4().hex[:24],
+        }
+        with open(path[: -len(".jsonl")] + ".meta.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f)
         self.run_hooks("SubagentStart", {"agent_id": aid, "agent_type": atype})
         self.user_line("subagent task", path, sidechain=True)
         self.assistant_line({"type": "text", "text": sub.get("text", "")}, 0, path, True)

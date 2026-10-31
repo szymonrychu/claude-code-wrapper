@@ -1628,18 +1628,23 @@ data: {"seq":14,"ts":"2026-10-20T09:01:08.000Z","session_id":"ses_3f9a1c0b7d42",
 
 Emitted from the SubagentStart relay.
 
-`data`: `agent_id`, `agent_type`.
+`data`: `agent_id`, `agent_type`, `parent_tool_use_id`: the id of the main agent's `Task`/`Agent`
+`tool_use` that started the subagent (match it with `tool_call.data.tool_use_id`), read from the
+`toolUseId` of the `agent-<agent_id>.meta.json` file claude writes beside the subagent transcript
+(`<session transcript dir>/<claude session id>/subagents/`); null when that file is missing or
+unreadable.
 
 ```
 event: subagent_started
-data: {"seq":16,"ts":"2026-10-20T09:01:10.000Z","session_id":"ses_3f9a1c0b7d42","type":"subagent_started","data":{"agent_id":"agent-1","agent_type":"Explore"}}
+data: {"seq":16,"ts":"2026-10-20T09:01:10.000Z","session_id":"ses_3f9a1c0b7d42","type":"subagent_started","data":{"agent_id":"agent-1","agent_type":"Explore","parent_tool_use_id":"toolu_01L1douhGrKCtucQYEnEdowj"}}
 ```
 
 ### `subagent_stopped`
 
 Emitted from the SubagentStop relay.
 
-`data`: `agent_id`, `agent_type`, `last_assistant_message` (when Claude supplied it).
+`data`: `agent_id`, `agent_type`, `parent_tool_use_id` (as for `subagent_started`),
+`last_assistant_message` (when Claude supplied it).
 
 ```
 event: subagent_stopped
@@ -2084,12 +2089,13 @@ Trigger: PostToolUse and PostToolUseFailure. Supports `matcher`. Cannot veto; a 
 
 ### `onSubagentStart`
 
-Trigger: SubagentStart. Awaited when blocking; cannot veto. `data`: `agent_id`, `agent_type`.
+Trigger: SubagentStart. Awaited when blocking; cannot veto. `data`: `agent_id`, `agent_type`,
+`parent_tool_use_id` (see the `subagent_started` event).
 
 ### `onSubagentStop`
 
 Trigger: SubagentStop. Awaited when blocking; cannot veto. `data`: `agent_id`, `agent_type`,
-`last_assistant_message` (when provided).
+`parent_tool_use_id`, `last_assistant_message` (when provided).
 
 ### `onInterrupt`
 

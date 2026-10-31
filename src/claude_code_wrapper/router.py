@@ -21,6 +21,7 @@ import contextlib
 import fnmatch
 import json
 import logging
+import re
 import sys
 import time
 from collections.abc import Coroutine, Mapping
@@ -81,6 +82,8 @@ if TYPE_CHECKING:
     from .peer_inbox import PeerInbox
 
 log = logging.getLogger(__name__)
+#: A subagent id as claude names its files (`agent-<id>.jsonl`): no path separators.
+_AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 #: How often a priority delivery re-checks for the turn claude starts for its flushed queue.
 PRIORITY_FLUSH_POLL = 0.05
 
@@ -182,6 +185,25 @@ def _abort_reason(record: TurnRecord) -> str:
     if record.error in ("claude_exited", "session_stopped"):
         return record.error
     return "turn_failed"
+
+
+def subagent_meta_path(transcript_path: str | Path, agent_id: str) -> Path:
+    """`<session transcript without .jsonl>/subagents/agent-<id>.meta.json` (claude writes it
+    beside the subagent's own transcript)."""
+    return Path(transcript_path).with_suffix("") / "subagents" / f"agent-{agent_id}.meta.json"
+
+
+def _parent_tool_use_id(transcript_path: str | Path, agent_id: Any) -> str | None:
+    """`toolUseId` of the subagent's meta file: the parent's Task/Agent tool_use id, or None
+    (no such file yet, unreadable, or an agent id that is not a plain name)."""
+    if not isinstance(agent_id, str) or not _AGENT_ID.fullmatch(agent_id):
+        return None
+    try:
+        meta = json.loads(subagent_meta_path(transcript_path, agent_id).read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = meta.get("toolUseId") if isinstance(meta, dict) else None
+    return value if isinstance(value, str) else None
 
 
 class TurnVetoed(Exception):
@@ -916,6 +938,7 @@ class SessionRouter(SessionListener):
         data: dict[str, Any] = {
             "agent_id": payload.get("agent_id"),
             "agent_type": payload.get("agent_type"),
+            "parent_tool_use_id": _parent_tool_use_id(self.session.transcript_path, agent_id),
         }
         if not started and isinstance(payload.get("last_assistant_message"), str):
             data["last_assistant_message"] = payload["last_assistant_message"]
