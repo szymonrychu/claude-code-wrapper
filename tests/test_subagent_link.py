@@ -7,13 +7,15 @@ transcripts). The router emits it as `data.parent_tool_use_id`.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
 
 from conftest import World
-from test_router import Harness
+from test_router import Harness, wait_until
 
+from claude_code_wrapper import router as router_mod
 from claude_code_wrapper.manager import CreateSessionRequest
 from claude_code_wrapper.router import subagent_meta_path
 
@@ -85,3 +87,47 @@ async def test_fake_claude_subagent_links_to_its_task_call(world: World) -> None
     session_dir = Path(m.router(sid).session.transcript_path).with_suffix("")
     meta = json.loads((session_dir / "subagents" / f"agent-{AGENT}.meta.json").read_text())
     assert meta["toolUseId"] == TOOL_USE
+
+
+async def test_meta_written_after_start_emits_a_link_event(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(router_mod, "SUBAGENT_LINK_POLL_SECONDS", 0.02)
+    h = Harness(tmp_path)
+    await h.router.handle_claude_hook("SubagentStart", {"agent_id": AGENT, "agent_type": "x"})
+    (started,) = h.events("subagent_started")
+    assert started.data["parent_tool_use_id"] is None
+    assert h.events("subagent_linked") == []
+    meta = subagent_meta_path(h.transcript, AGENT)
+    meta.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / f"agent-{AGENT}.meta.json", meta)
+    await wait_until(lambda: h.events("subagent_linked"))
+    (linked,) = h.events("subagent_linked")
+    assert linked.data == {"agent_id": AGENT, "parent_tool_use_id": TOOL_USE}
+    await h.router.close()
+
+
+async def test_link_wait_is_bounded_and_skipped_when_known(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(router_mod, "SUBAGENT_LINK_POLL_SECONDS", 0.02)
+    monkeypatch.setattr(router_mod, "SUBAGENT_LINK_WAIT_SECONDS", 0.1)
+    h = Harness(tmp_path)
+    await h.router.handle_claude_hook("SubagentStart", {"agent_id": "never", "agent_type": "x"})
+    meta = subagent_meta_path(h.transcript, AGENT)
+    meta.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / f"agent-{AGENT}.meta.json", meta)
+    await h.router.handle_claude_hook("SubagentStart", {"agent_id": AGENT, "agent_type": "x"})
+    await asyncio.sleep(0.3)
+    assert h.events("subagent_linked") == []  # "never" gave up; AGENT was linked at start
+    await h.router.close()
+
+
+async def test_link_wait_ends_with_the_subagent(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(router_mod, "SUBAGENT_LINK_POLL_SECONDS", 0.02)
+    h = Harness(tmp_path)
+    await h.router.handle_claude_hook("SubagentStart", {"agent_id": AGENT, "agent_type": "x"})
+    await h.router.handle_claude_hook("SubagentStop", {"agent_id": AGENT, "agent_type": "x"})
+    meta = subagent_meta_path(h.transcript, AGENT)
+    meta.parent.mkdir(parents=True)
+    shutil.copy(FIXTURES / f"agent-{AGENT}.meta.json", meta)
+    await asyncio.sleep(0.2)
+    assert h.events("subagent_linked") == []
+    await asyncio.wait_for(h.router.drain(), 1.0)  # the wait is not a drained task
+    await h.router.close()

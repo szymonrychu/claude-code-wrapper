@@ -39,6 +39,7 @@ EVENT_TYPES: list[str] = [
     "question",
     "subagent_started",
     "subagent_stopped",
+    "subagent_linked",
     "interrupted",
     "stall_suspected",
     "probe",

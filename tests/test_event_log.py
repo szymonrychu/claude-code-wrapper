@@ -29,6 +29,7 @@ def test_event_types_exact():
         "question",
         "subagent_started",
         "subagent_stopped",
+        "subagent_linked",
         "interrupted",
         "stall_suspected",
         "probe",

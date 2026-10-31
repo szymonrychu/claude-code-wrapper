@@ -84,6 +84,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 #: A subagent id as claude names its files (`agent-<id>.jsonl`): no path separators.
 _AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+#: How long, and how often, a subagent whose meta file was not there at SubagentStart is
+#: re-checked for it (`subagent_linked`).
+SUBAGENT_LINK_WAIT_SECONDS = 10.0
+SUBAGENT_LINK_POLL_SECONDS = 0.1
 #: How often a priority delivery re-checks for the turn claude starts for its flushed queue.
 PRIORITY_FLUSH_POLL = 0.05
 
@@ -324,6 +328,8 @@ class SessionRouter(SessionListener):
         self._watcher: SubagentWatcher | None = None
         self._tasks: list[asyncio.Task[Any]] = []
         self._background: set[asyncio.Task[Any]] = set()
+        #: agent_id -> the wait for a late subagent meta file (`_await_link`); not drained.
+        self._link_waits: dict[str, asyncio.Task[None]] = {}
         self._dropping_history = False
         self._tick_tasks: list[asyncio.Task[Any]] = []
         self._tick_runs: set[asyncio.Task[Any]] = set()
@@ -943,8 +949,26 @@ class SessionRouter(SessionListener):
         if not started and isinstance(payload.get("last_assistant_message"), str):
             data["last_assistant_message"] = payload["last_assistant_message"]
         self._emit("subagent_started" if started else "subagent_stopped", data)
+        if isinstance(agent_id, str):
+            if started and data["parent_tool_use_id"] is None and not self._closed:
+                self._link_waits[agent_id] = asyncio.ensure_future(self._await_link(agent_id))
+            elif not started and (wait := self._link_waits.pop(agent_id, None)) is not None:
+                wait.cancel()  # the stopped event carries whatever the file says now
         await self._fire("onSubagentStart" if started else "onSubagentStop", data)
         return _allow()
+
+    async def _await_link(self, agent_id: str) -> None:
+        """claude wrote the subagent's meta file after SubagentStart: once it appears (within
+        `SUBAGENT_LINK_WAIT_SECONDS`), emit `subagent_linked` with its parent tool_use id."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SUBAGENT_LINK_WAIT_SECONDS
+        while loop.time() < deadline:
+            await asyncio.sleep(SUBAGENT_LINK_POLL_SECONDS)
+            parent = _parent_tool_use_id(self.session.transcript_path, agent_id)
+            if parent is not None:
+                self._emit("subagent_linked", {"agent_id": agent_id, "parent_tool_use_id": parent})
+                break
+        self._link_waits.pop(agent_id, None)
 
     # ------------------------------------------------------------------ turns
 
@@ -2007,10 +2031,11 @@ class SessionRouter(SessionListener):
             self._tailer.stop()
         if self._watcher is not None:
             self._watcher.stop()
-        for task in self._tasks:
+        for task in [*self._tasks, *self._link_waits.values()]:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        await asyncio.gather(*self._tasks, *self._link_waits.values(), return_exceptions=True)
         self._tasks.clear()
+        self._link_waits.clear()
         runs = list(self._tick_runs)
         for task in [*self._tick_tasks, *runs]:
             task.cancel()

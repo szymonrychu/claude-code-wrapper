@@ -1632,7 +1632,8 @@ Emitted from the SubagentStart relay.
 `tool_use` that started the subagent (match it with `tool_call.data.tool_use_id`), read from the
 `toolUseId` of the `agent-<agent_id>.meta.json` file claude writes beside the subagent transcript
 (`<session transcript dir>/<claude session id>/subagents/`); null when that file is missing or
-unreadable.
+unreadable. When it is null because the file was not there yet, a `subagent_linked` event follows
+once it appears (re-checked for up to 10 s); take the first non-null value of the two.
 
 ```
 event: subagent_started
@@ -1649,6 +1650,19 @@ Emitted from the SubagentStop relay.
 ```
 event: subagent_stopped
 data: {"seq":17,"ts":"2026-10-20T09:01:20.000Z","session_id":"ses_3f9a1c0b7d42","type":"subagent_stopped","data":{"agent_id":"agent-1","agent_type":"Explore","last_assistant_message":"Done."}}
+```
+
+### `subagent_linked`
+
+Emitted when a subagent's meta file appears after its `subagent_started` carried a null
+`parent_tool_use_id` (claude wrote the file after the SubagentStart hook). At most once per
+subagent, within 10 s of the start.
+
+`data`: `agent_id`, `parent_tool_use_id`.
+
+```
+event: subagent_linked
+data: {"seq":17,"ts":"2026-10-20T09:01:10.300Z","session_id":"ses_3f9a1c0b7d42","type":"subagent_linked","data":{"agent_id":"agent-1","parent_tool_use_id":"toolu_01L1douhGrKCtucQYEnEdowj"}}
 ```
 
 ### `interrupted`
