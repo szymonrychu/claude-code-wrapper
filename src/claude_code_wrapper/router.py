@@ -81,6 +81,8 @@ if TYPE_CHECKING:
     from .peer_inbox import PeerInbox
 
 log = logging.getLogger(__name__)
+#: How often a priority delivery re-checks for the turn claude starts for its flushed queue.
+PRIORITY_FLUSH_POLL = 0.05
 
 CCW_TOOL_PREFIX = "mcp__ccw__"
 MAIN_AGENT_ONLY_DENY_REASON = (
@@ -1077,10 +1079,42 @@ class SessionRouter(SessionListener):
         outcome = await self._vet(
             text, kw["files"], kw["origin"], kw["metadata"], turn_id, lane="priority"
         )
-        if self.session.current_turn is not None:
+        running = self.session.current_turn
+        while running is not None:
             self.session.check_queueable()
+            pending = self.session.undelivered(running.turn_id)
             await self.interrupt(spaced=True)
+            running = await self._flushed_turn(running, pending)
         return await self.submit_turn(text, **kw, vetted=(turn_id, outcome))
+
+    async def _flushed_turn(
+        self, interrupted: TurnRecord, pending: list[QueuedMessage]
+    ) -> TurnRecord | None:
+        """The turn claude starts for `pending`, the messages that were still queued in
+        `interrupted` when it was interrupted, or None.
+
+        After an ESC claude sends its queued messages next, as a turn of its own; their marker
+        makes it a running turn here (`_message_delivered`). Waits up to
+        `interrupt_settle_seconds` for that, so the priority message is not typed into it.
+        """
+        session = self.session
+        if not pending:
+            return None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._cfg.sessions.interrupt_settle_seconds
+        while loop.time() < deadline:
+            delivered = [m.delivered_turn_id for m in pending if m.delivered_turn_id]
+            record = session.current_turn
+            if delivered and record is not None and record.turn_id in delivered:
+                return record
+            await asyncio.sleep(PRIORITY_FLUSH_POLL)
+        log.warning(
+            "session %s: messages %s queued in %s never reached the transcript after the interrupt",
+            self.info.session_id,
+            [m.message_id for m in pending],
+            interrupted.turn_id,
+        )
+        return None
 
     async def _queue_prompt(
         self,

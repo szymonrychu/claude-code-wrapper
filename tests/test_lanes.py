@@ -573,3 +573,43 @@ async def test_send_message_tool_takes_a_lane() -> None:
     assert reply["result"]["content"][0]["text"].startswith("invalid arguments")
     assert "lane" in reply["result"]["content"][0]["text"]
     assert len(peers.lanes) == 3
+
+
+# ------------------------------------------------------------------ review fixes
+
+FLUSH = {
+    "queue_input": True,
+    "turns": [
+        {"match": "slow|steer", "steps": [{"sleep": 30}]},
+        {"match": "urgent", "steps": [{"text": "on it"}]},
+    ],
+}
+
+
+async def test_priority_accounts_the_flushed_queue_as_its_own_turn(world: World) -> None:
+    # ESC makes claude send the still-queued regular message as a turn of its own: that turn is
+    # adopted and interrupted in turn, and only then does the priority message start its turn.
+    m, sid, c = await _lane_app(world, FLUSH, sessions={"interrupt_settle_seconds": 3})
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "slow one", "lane": "idle"})
+        slow = r.json()["turn_id"]
+        await world.until(lambda: m.router(sid).session.state == "busy")
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "steer x"})
+        assert r.json()["queued"] is True
+        steer_id = r.json()["message_id"]
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "urgent", "lane": "priority"})
+        assert r.status_code == 202, " ".join(e["type"] for e in world.events(sid))
+        assert r.json()["queued"] is False
+        urgent = r.json()["turn_id"]
+    await world.until(lambda: m.open_turns(sid).get(urgent).state == "completed")
+    turns = m.open_turns(sid).list()
+    assert [t.turn_id for t in turns][0] == slow and turns[-1].turn_id == urgent
+    assert len(turns) == 3
+    flushed = turns[1]
+    assert flushed.text == "steer x" and flushed.origin == "client"
+    assert [t.state for t in turns] == ["interrupted", "interrupted", "completed"]
+    assert turns[2].final_text == "on it"
+    delivered = [e["data"] for e in world.events(sid) if e["type"] == "prompt_delivered"]
+    assert delivered == [
+        {"message_id": steer_id, "lane": "regular", "turn_id": flushed.turn_id, "new_turn": True}
+    ]

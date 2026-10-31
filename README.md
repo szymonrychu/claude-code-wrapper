@@ -462,7 +462,11 @@ Delivery lanes (`lane`):
   the running turn is interrupted as by `POST /v1/sessions/{id}/interrupt` (one ESC, up to
   `sessions.interrupt_settle_seconds` for claude's interrupt line, else a second ESC; the turn
   ends `interrupted` with an `interrupted` event and `onInterrupt`), and then the message starts a
-  new turn (`queued: false`, the new turn's id). Every ESC of a priority delivery is a write of its
+  new turn (`queued: false`, the new turn's id). Messages a `regular` delivery typed into the
+  interrupted turn and claude had not read yet are sent by claude right after the ESC, as a
+  turn of its own: the wrapper waits up to `sessions.interrupt_settle_seconds` for their
+  marker, accounts that turn as theirs (`prompt_delivered` with `new_turn: true`), interrupts it
+  the same way, and only then starts the priority turn. Every ESC of a priority delivery is a write of its
   own and keeps at least 1 s from the previous ESC (two ESCs close together at an empty prompt
   open claude's rewind menu), so two priority deliveries in a row wait for each other. A slash
   command run or a turn's command phase is never interrupted this way: `409 busy`.

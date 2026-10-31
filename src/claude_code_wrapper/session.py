@@ -1152,6 +1152,12 @@ class Session:
     def queued_message(self, message_id: str) -> QueuedMessage | None:
         return self._queued.get(message_id)
 
+    def undelivered(self, turn_id: str) -> list[QueuedMessage]:
+        """Messages typed into the turn `turn_id` whose marker has not been read yet."""
+        return [
+            m for m in self._queued.values() if m.turn_id == turn_id and m.delivered_turn_id is None
+        ]
+
     def deliver_message(self, message_id: str) -> tuple[QueuedMessage, bool] | None:
         """The message's marker reached the transcript: `(message, new_turn)`, else None.
 
