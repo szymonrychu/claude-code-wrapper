@@ -1135,7 +1135,7 @@ class SessionRouter(SessionListener):
         session.check_queueable()
         with session.reserve():  # the slot the interrupt frees stays this message's
             while running is not None:
-                session.check_queueable()
+                session.check_queueable(reserved=True)
                 pending = session.undelivered(running.turn_id)
                 await self.interrupt(spaced=True)
                 running = await self._flushed_turn(running, pending)

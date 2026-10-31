@@ -1108,12 +1108,14 @@ class Session:
         if self.dialog_open():
             raise TurnRejected("dialog_open")
 
-    def check_queueable(self) -> PtyProcess:
+    def check_queueable(self, *, reserved: bool = False) -> PtyProcess:
         """The PTY a message may be typed into: a live claude running a turn of its own.
 
         Raises `TurnRejected` booting or dead, then dialog_open, else busy when no turn runs
         or a slash command run, its command phase or a crash relaunch holds the slot (typing
-        then would reach a command line or a dialog, not the model). No side effects.
+        then would reach a command line or a dialog, not the model), or a priority delivery is
+        interrupting the turn (`reserve`; only the holder passes `reserved=True`). No side
+        effects.
         """
         pty = self._writable_pty()
         self.check_no_dialog()
@@ -1124,6 +1126,7 @@ class Session:
             or self._command_active
             or self._commands_turn is not None
             or self._held is record
+            or (self._reserved and not reserved)
         ):
             raise TurnRejected("busy")
         return pty

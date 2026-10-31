@@ -696,3 +696,29 @@ async def test_prompt_dropped_event_and_peer_outcome(world: World) -> None:
     assert ev["reason"] == "session_stopped" and ev["lane"] == "regular"
     await world.until(lambda: outcomes, what="the dropped outcome")
     assert outcomes == [(item.msg_id, "dropped")]
+
+
+async def test_nothing_is_typed_into_a_turn_a_priority_delivery_interrupts(world: World) -> None:
+    # The ESC brings no interrupt line, so the turn stays running for the settle time; a regular
+    # message then must not be typed into it (it would miss the priority's flushed-queue wait).
+    scenario = {
+        "turns": [
+            {"match": "wedge", "steps": [{"print": "working...\n"}]},
+            {"match": "urgent", "steps": [{"text": "on it"}]},
+        ]
+    }
+    m, sid, c = await _lane_app(world, scenario, sessions={"interrupt_settle_seconds": 1.0})
+    session = m.router(sid).session
+    url = f"/v1/sessions/{sid}/turns"
+    async with c:
+        r = await c.post(url, json={"text": "wedge", "lane": "idle"})
+        wedged = r.json()["turn_id"]
+        await world.until(lambda: session.ring.contains("working..."))
+        priority = asyncio.ensure_future(c.post(url, json={"text": "urgent", "lane": "priority"}))
+        await world.until(lambda: session.reserved)
+        assert session.current_turn is not None and session.current_turn.turn_id == wedged
+        late = await c.post(url, json={"text": "late steer"})
+        assert late.status_code == 409 and late.json()["error"]["code"] == "busy"
+        r = await priority
+        assert r.status_code == 202
+    assert "prompt_queued" not in [e["type"] for e in world.events(sid)]

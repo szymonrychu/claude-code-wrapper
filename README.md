@@ -467,8 +467,9 @@ Delivery lanes (`lane`):
   turn of its own: the wrapper waits up to `sessions.interrupt_settle_seconds` for their
   marker, accounts that turn as theirs (`prompt_delivered` with `new_turn: true`), interrupts it
   the same way, and only then starts the priority turn. From the interrupt to that submit the
-  slot stays reserved for the priority message: other turns are refused `409 busy` and queued
-  slash commands wait, even while the session shows `ready`. Every ESC of a priority delivery is a write of its
+  slot stays reserved for the priority message: other turns and `regular` messages are refused
+  `409 busy` (nothing is typed into the turn being interrupted) and queued slash commands wait,
+  even while the session shows `ready`. Every ESC of a priority delivery is a write of its
   own and keeps at least 1 s from the previous ESC (two ESCs close together at an empty prompt
   open claude's rewind menu), so two priority deliveries in a row wait for each other. A slash
   command run or a turn's command phase is never interrupted this way: `409 busy`.
