@@ -6,7 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Request
@@ -23,6 +23,12 @@ from claude_code_wrapper.turns import METADATA_MAX_BYTES
 from claude_code_wrapper.workdir import FileWriteError
 
 router = APIRouter()
+
+#: How a message reaches a session (`TurnRequest.lane`): `idle` waits for no turn to be running
+#: (409 busy otherwise), `regular` is typed into a running turn for claude to queue, `priority`
+#: interrupts the running turn first.
+Lane = Literal["idle", "regular", "priority"]
+LANES: tuple[str, ...] = get_args(Lane)
 
 _REJECT_STATUS = {"busy": 409, "booting": 503, "dead": 503, "slash_command": 422}
 _REJECT_TEXT = {
@@ -44,6 +50,7 @@ class TurnRequest(BaseModel):
     files: dict[str, str] | None = None
     callback_url: str | None = Field(default=None, alias="callbackUrl")
     metadata: dict[str, Any] | None = None
+    lane: Lane = "regular"
 
 
 class ProbeRequest(BaseModel):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -26,39 +27,60 @@ from claude_code_wrapper.claude_env import SECRET_KEY_RE, ClaudeEnv
 from claude_code_wrapper.interpolation import InterpolationError, interpolate
 
 MASK = "***"
-HOOK_EVENTS: tuple[str, ...] = (
-    "onCreate",
-    "onResume",
-    "onDestroy",
-    "onTurn",
-    "onTurnComplete",
-    "onStop",
-    "onTick",
-    "onAgentResponse",
-    "onAgentToolCall",
-    "onToolResult",
-    "onSubagentStart",
-    "onSubagentStop",
-    "onInterrupt",
-    "onCommand",
-    "onCommandComplete",
-    "onError",
-    "preJoin",
-    "postJoin",
-    "preLeave",
-    "postLeave",
-    "onStart",
+
+
+@dataclass(frozen=True)
+class HookEventSpec:
+    """One hook event and what its actions may carry (the hooks editor reads this)."""
+
+    name: str
+    #: A blocking action may answer `deny` (the event can be vetoed).
+    can_veto: bool = False
+    #: Actions may set `matcher` (a tool-name regex).
+    supports_matcher: bool = False
+    #: Actions may set `when` (onTick: busy or always).
+    supports_when: bool = False
+    #: Actions may set `interval_seconds`.
+    supports_interval: bool = False
+    #: `interval_seconds` is required on every action.
+    interval_required: bool = False
+
+
+_TICK = {"supports_when": True, "supports_interval": True, "interval_required": True}
+#: Every hook event, in config order. The orchestrator keeps an equal copy (no import).
+HOOK_EVENT_SPECS: tuple[HookEventSpec, ...] = (
+    HookEventSpec("onCreate", can_veto=True),
+    HookEventSpec("onResume", can_veto=True),
+    HookEventSpec("onDestroy"),
+    HookEventSpec("onTurn", can_veto=True),
+    HookEventSpec("onTurnComplete"),
+    HookEventSpec("onStop"),
+    HookEventSpec("onTick", **_TICK),
+    HookEventSpec("onAgentResponse"),
+    HookEventSpec("onAgentToolCall", can_veto=True, supports_matcher=True),
+    HookEventSpec("onToolResult", supports_matcher=True),
+    HookEventSpec("onSubagentStart"),
+    HookEventSpec("onSubagentStop"),
+    HookEventSpec("onInterrupt"),
+    HookEventSpec("onCommand", can_veto=True),
+    HookEventSpec("onCommandComplete"),
+    HookEventSpec("onError"),
+    HookEventSpec("preJoin", can_veto=True),
+    HookEventSpec("postJoin"),
+    HookEventSpec("preLeave"),
+    HookEventSpec("postLeave"),
+    HookEventSpec("onStart", can_veto=True),
 )
-VETO_EVENTS: tuple[str, ...] = (
-    "onCreate",
-    "onResume",
-    "onTurn",
-    "onAgentToolCall",
-    "onCommand",
-    "preJoin",
-    "onStart",
-)
-TOOL_EVENTS: tuple[str, ...] = ("onAgentToolCall", "onToolResult")
+HOOK_EVENTS: tuple[str, ...] = tuple(s.name for s in HOOK_EVENT_SPECS)
+VETO_EVENTS: tuple[str, ...] = tuple(s.name for s in HOOK_EVENT_SPECS if s.can_veto)
+TOOL_EVENTS: tuple[str, ...] = tuple(s.name for s in HOOK_EVENT_SPECS if s.supports_matcher)
+
+
+def hook_events_meta() -> list[dict[str, Any]]:
+    """`HOOK_EVENT_SPECS` as plain JSON objects, one per event, in config order."""
+    return [asdict(spec) for spec in HOOK_EVENT_SPECS]
+
+
 WELL_KNOWN_MARKETPLACES = frozenset({"claude-plugins-official"})
 _PLUGIN_ID = re.compile(r"^[^@\s]+@[^@\s]+$")
 _PLACEHOLDER = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")

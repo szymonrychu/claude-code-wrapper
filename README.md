@@ -409,6 +409,7 @@ Request body (exactly one of `text` and `template`):
 | `files` | object (path to content) | no | files written into the workdir before the prompt is pasted; relative paths only, limited by `limits.max_files_per_turn` and `limits.max_file_bytes` |
 | `callbackUrl` | string | no | `http`/`https` URL that receives this turn's terminal-state callback (and its questions); overrides the session's `callbackUrl` |
 | `metadata` | object | no | client-supplied JSON object kept on the turn record (`metadata`) and given to `onTurn` hooks as `data.metadata`, so hooks can gate on it; at most 16 KiB serialised |
+| `lane` | string | no | `idle`, `regular` (default) or `priority`: how the message reaches the session; any other value is `422 invalid_request` |
 
 Response `202`:
 

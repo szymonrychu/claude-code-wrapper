@@ -329,3 +329,22 @@ def test_example_hooks_reference_existing_commands():
         # Inline shell or an already-present program; never a relative script that ships nowhere.
         assert not re.match(r"^\./\S+", run.strip()), run
         assert shlex.split(run)
+
+
+def test_hook_event_specs_describe_every_event() -> None:
+    from claude_code_wrapper.config import HOOK_EVENT_SPECS, hook_events_meta
+
+    assert tuple(s.name for s in HOOK_EVENT_SPECS) == HOOK_EVENTS
+    meta = hook_events_meta()
+    assert [m["name"] for m in meta] == list(HOOK_EVENTS)
+    keys = {"name", "supports_matcher", "supports_when", "supports_interval", "interval_required"}
+    for m in meta:
+        assert set(m) == keys | {"can_veto"}
+        assert all(isinstance(m[k], bool) for k in m if k != "name")
+    by_name = {m["name"]: m for m in meta}
+    assert [n for n, m in by_name.items() if m["supports_matcher"]] == list(TOOL_EVENTS)
+    assert [n for n, m in by_name.items() if m["can_veto"]] == list(VETO_EVENTS)
+    tick = by_name["onTick"]
+    assert tick["supports_when"] and tick["supports_interval"] and tick["interval_required"]
+    others = [m for n, m in by_name.items() if n != "onTick"]
+    assert not any(m["supports_when"] or m["supports_interval"] for m in others)
