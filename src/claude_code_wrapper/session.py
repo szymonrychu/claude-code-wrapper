@@ -466,6 +466,8 @@ class _PendingInterrupt:
 
     record: TurnRecord
     final: TurnState
+    #: Every ESC keeps `ESC_SPACING_SECONDS` from the previous one (a priority delivery).
+    spaced: bool = False
     done: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Future[None] | None = None
 
@@ -1487,13 +1489,14 @@ class Session:
 
     # -- interrupt -------------------------------------------------------------------------
 
-    async def interrupt(self) -> str | None:
+    async def interrupt(self, *, spaced: bool = False) -> str | None:
         """Interrupt the running turn; its id once it has ended, None when idle.
 
         One ESC, then up to `interrupt_settle_seconds` for the transcript interrupt line
         (`on_interrupted`); without it a second ESC. claude runs no Stop hook for an
         interrupted turn, so the turn is ended here either way and the slot freed. A turn held
         across a crash ends at once: there is no claude to send ESC to, and nothing is pasted.
+        `spaced` (a priority delivery) keeps every ESC `ESC_SPACING_SECONDS` from the last one.
         """
         record = self._turn
         if record is not None and self._held is record:
@@ -1501,12 +1504,14 @@ class Session:
             return record.turn_id
         if record is None or self.state != "busy":
             return None
-        return await self._interrupt(record, "interrupted")
+        return await self._interrupt(record, "interrupted", spaced=spaced)
 
-    async def _interrupt(self, record: TurnRecord, final: TurnState) -> str:
+    async def _interrupt(
+        self, record: TurnRecord, final: TurnState, *, spaced: bool = False
+    ) -> str:
         pending = self._interrupting
         if pending is None or pending.record is not record:
-            pending = _PendingInterrupt(record, final)
+            pending = _PendingInterrupt(record, final, spaced)
             self._interrupting = pending
             pending.task = self._track(asyncio.ensure_future(self._run_interrupt(pending)))
         assert pending.task is not None
@@ -1521,7 +1526,7 @@ class Session:
                 # claude runs no turn: there is no interrupt line to wait for.
                 self._end_turn(record, pending.final)
                 return
-            await self._send_key(ESC)
+            await self._interrupt_key(pending)
             try:
                 await asyncio.wait_for(
                     pending.done.wait(), self.spec.sessions.interrupt_settle_seconds
@@ -1535,11 +1540,17 @@ class Session:
                         record.turn_id,
                         self.spec.sessions.interrupt_settle_seconds,
                     )
-                    await self._send_key(ESC)
+                    await self._interrupt_key(pending)
             self._end_turn(record, pending.final)
         finally:
             if self._interrupting is pending:
                 self._interrupting = None
+
+    async def _interrupt_key(self, pending: _PendingInterrupt) -> None:
+        if pending.spaced:
+            await self.send_escape()
+        else:
+            await self._send_key(ESC)
 
     async def _send_key(self, key: bytes) -> None:
         pty = self.pty

@@ -456,6 +456,15 @@ Delivery lanes (`lane`):
   turn, `files` are written, then a `user_message` (the running turn's `turn_id`) and a
   `prompt_queued` event are logged. A session busy with a slash command run (or the command
   phase of a turn) refuses it with `409 busy`, and claude that is not live with `409`.
+- `priority`: on an idle session exactly as `regular`. While a turn runs, `onTurn` fires first
+  (with `lane: "priority"`; a `deny` is `403 vetoed` and the running turn is left alone), then
+  the running turn is interrupted as by `POST /v1/sessions/{id}/interrupt` (one ESC, up to
+  `sessions.interrupt_settle_seconds` for claude's interrupt line, else a second ESC; the turn
+  ends `interrupted` with an `interrupted` event and `onInterrupt`), and then the message starts a
+  new turn (`queued: false`, the new turn's id). Every ESC of a priority delivery is a write of its
+  own and keeps at least 1 s from the previous ESC (two ESCs close together at an empty prompt
+  open claude's rewind menu), so two priority deliveries in a row wait for each other. A slash
+  command run or a turn's command phase is never interrupted this way: `409 busy`.
 
 Crash during a turn: when claude exits mid-turn it is relaunched (with `--resume` when the
 transcript exists) within `sessions.max_restarts`. By default the turn fails with `claude_exited`
@@ -1906,7 +1915,9 @@ a `deny` vetoes the turn (`403 vetoed`, `turn_rejected` event). `data`: `text`, 
 workdir-relative paths about to be written), `origin`, `metadata` (the submit body's object, `{}`
 when absent). A message typed into the running turn (a `regular` or `priority` delivery on a busy
 session) fires it too, with `turn_id` the running turn and two more fields: `lane` and
-`queued: true`; a `deny` vetoes the message, and annotations go to the running turn.
+`queued: true`; a `deny` vetoes the message, and annotations go to the running turn. A `priority`
+delivery to a busy session fires it once for the new turn, with `lane: "priority"`, before the
+running turn is interrupted.
 
 ### `onTurnComplete`
 

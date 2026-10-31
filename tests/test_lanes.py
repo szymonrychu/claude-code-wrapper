@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -23,7 +25,7 @@ from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.api.turns import LANES, TurnRequest
 from claude_code_wrapper.manager import CreateSessionRequest, InvalidState
 from claude_code_wrapper.pty_proc import paste_bytes
-from claude_code_wrapper.session import TurnRejected
+from claude_code_wrapper.session import ESC_SPACING_SECONDS, TurnRejected
 
 
 def post(client: TestClient, body: dict[str, Any]):  # noqa: F811
@@ -169,3 +171,125 @@ def test_lane_reaches_the_router(client: TestClient, stub: StubManager) -> None:
     for lane in ("idle", "regular", "priority"):
         assert post(client, {"text": "a", "lane": lane}).status_code == 202
     assert stub.router_obj.lanes == ["idle", "regular", "priority"]
+
+
+# ------------------------------------------------------------------ C3: priority lane
+
+
+async def _lane_app(world: World, scenario: dict, **sections: Any):
+    cfg = world.cfg(scenario, server={"auth_token": TOKEN}, **sections)
+    m = world.manager(cfg)
+    sid = (await m.create(CreateSessionRequest()))["session_id"]
+    transport = httpx.ASGITransport(app=create_app(m, cfg))
+    return m, sid, httpx.AsyncClient(transport=transport, base_url="http://t", headers=H)
+
+
+def _ts(value: str) -> float:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+
+
+PRIORITY = {"turns": [{"match": "slow|first|second", "steps": [{"sleep": 30}]}]}
+
+
+async def test_priority_interrupts_then_starts_a_turn(world: World) -> None:
+    m, sid, c = await _lane_app(world, PRIORITY)
+    router = m.router(sid)
+    writes: list[bytes] = []
+    pty = router.session.pty
+    original = pty._write_locked
+
+    async def spy(data: bytes) -> None:
+        writes.append(bytes(data))
+        await original(data)
+
+    setattr(pty, "_write_locked", spy)  # noqa: B010 - instance-level spy
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "slow one", "lane": "idle"})
+        first = r.json()["turn_id"]
+        await world.until(lambda: router.session.state == "busy")
+        writes.clear()
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "first", "lane": "priority"})
+        assert r.status_code == 202
+        body = r.json()
+        assert body["queued"] is False and body["lane"] == "priority"
+        assert body["turn_id"] != first and body["state"] == "running"
+    # ESC is a write of its own, before the paste of the new turn (then its CR).
+    assert writes[0] == b"\x1b"
+    assert writes[-2:] == [paste_bytes(f"first\n\n<!-- ccw turn: {body['turn_id']} -->"), b"\r"]
+    assert writes.count(b"\x1b") == 1  # the interrupt line came: no second ESC
+    turns = {t.turn_id: t for t in m.open_turns(sid).list()}
+    assert turns[first].state == "interrupted"
+    assert turns[body["turn_id"]].state == "running"
+    types = [e["type"] for e in world.events(sid)]
+    assert types.index("interrupted") < len(types) - 1 - types[::-1].index("turn_started")
+
+
+async def test_two_priority_sends_space_their_escs(world: World) -> None:
+    m, sid, c = await _lane_app(world, PRIORITY)
+    keys = world.session_dir(sid) / "config" / "fake-keys.jsonl"
+    async with c:
+        await c.post(f"/v1/sessions/{sid}/turns", json={"text": "slow one", "lane": "idle"})
+        await world.until(lambda: m.router(sid).session.state == "busy")
+        for text in ("first", "second"):
+            r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": text, "lane": "priority"})
+            assert r.status_code == 202 and r.json()["queued"] is False
+    await world.until(lambda: len(jsonl(keys)) >= 2)
+    stamps = [_ts(k["ts"]) for k in jsonl(keys)]
+    assert len(stamps) == 2 and stamps[1] - stamps[0] >= ESC_SPACING_SECONDS - 0.05
+    states = [t.state for t in m.open_turns(sid).list()]
+    assert states == ["interrupted", "interrupted", "running"]
+
+
+async def test_priority_settle_timeout_escalates_then_submits(world: World) -> None:
+    # The fake prints and goes idle without a Stop: no interrupt line ever comes.
+    scenario = {
+        "turns": [
+            {"match": "wedge", "steps": [{"print": "working...\n"}]},
+            {"match": "urgent", "steps": [{"text": "on it"}]},
+        ]
+    }
+    m, sid, c = await _lane_app(world, scenario, sessions={"interrupt_settle_seconds": 0.4})
+    keys = world.session_dir(sid) / "config" / "fake-keys.jsonl"
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "wedge", "lane": "idle"})
+        wedged = r.json()["turn_id"]
+        await world.until(lambda: m.router(sid).session.ring.contains("working..."))
+        started = time.monotonic()
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "urgent", "lane": "priority"})
+        assert time.monotonic() - started >= 0.4
+        assert r.status_code == 202 and r.json()["queued"] is False
+        urgent = r.json()["turn_id"]
+    await world.wait_turn(m, sid)
+    turns = {t.turn_id: t for t in m.open_turns(sid).list()}
+    assert turns[wedged].state == "interrupted"
+    assert turns[urgent].state == "completed" and turns[urgent].final_text == "on it"
+    assert len(jsonl(keys)) == 2  # ESC, then the second ESC after the settle time
+
+
+async def test_priority_on_an_idle_session_is_a_plain_turn(world: World) -> None:
+    m, sid, c = await _lane_app(world, {})
+    keys = world.session_dir(sid) / "config" / "fake-keys.jsonl"
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "hi", "lane": "priority"})
+        assert r.status_code == 202
+        assert r.json()["queued"] is False and r.json()["lane"] == "priority"
+    await world.wait_turn(m, sid)
+    assert jsonl(keys) == []
+    assert "interrupted" not in [e["type"] for e in world.events(sid)]
+
+
+async def test_vetoed_priority_does_not_interrupt(world: World, tmp_path) -> None:
+    hook = {
+        "type": "command",
+        "run": "echo no >&2; exit 2",
+        "blocking": True,
+    }
+    m, sid, c = await _lane_app(world, PRIORITY, hooks={"onTurn": [hook]})
+    keys = world.session_dir(sid) / "config" / "fake-keys.jsonl"
+    router = m.router(sid)
+    record = await router.session.submit("slow one")  # straight in: no onTurn for it
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "first", "lane": "priority"})
+        assert r.status_code == 403 and r.json()["error"]["code"] == "vetoed"
+    assert jsonl(keys) == []
+    assert router.session.current_turn is record and record.state == "running"

@@ -944,14 +944,17 @@ class SessionRouter(SessionListener):
         callback_url: str | None = None,
         origin: Origin = "client",
         metadata: Mapping[str, Any] | None = None,
+        vetted: tuple[str, HookOutcome] | None = None,
     ) -> TurnRecord:
+        """Start a turn. `vetted`: the turn id and onTurn outcome of a turn whose hook already
+        ran (a priority delivery vets before it interrupts), so onTurn is not fired again."""
         if slash_command(text) is not None:  # a slash line fires no hooks and writes no files
             raise TurnRejected("slash_command")
         self.session.check_submittable()  # a doomed turn fires no hooks
         was_armed = self._ac_armed
         self._cancel_auto_compact()
         try:
-            return await self._submit_turn(text, files, callback_url, origin, metadata)
+            return await self._submit_turn(text, files, callback_url, origin, metadata, vetted)
         except BaseException:
             if was_armed:  # no turn started and none will end: keep the idle gap alive
                 self._arm_auto_compact()
@@ -964,22 +967,13 @@ class SessionRouter(SessionListener):
         callback_url: str | None,
         origin: Origin,
         metadata: Mapping[str, Any] | None,
+        vetted: tuple[str, HookOutcome] | None = None,
     ) -> TurnRecord:
-        turn_id = new_turn_id()
-        outcome = await self._fire(
-            "onTurn",
-            {
-                "text": text,
-                "files": list((files or {}).keys()),
-                "origin": origin,
-                "metadata": dict(metadata or {}),
-            },
-            turn_id=turn_id,
-        )
-        if outcome.decision == "deny":
-            reason = outcome.reason or DEFAULT_DENY_REASON
-            self._emit("turn_rejected", {"reason": reason})
-            raise TurnVetoed(reason)
+        if vetted is None:
+            turn_id = new_turn_id()
+            outcome = await self._vet(text, files, origin, metadata, turn_id)
+        else:
+            turn_id, outcome = vetted
         # No await from this check through safe_write_files to submit's slot reservation.
         self.session.check_submittable()
         if files:
@@ -1020,10 +1014,13 @@ class SessionRouter(SessionListener):
         metadata: Mapping[str, Any] | None = None,
         message_id: str | None = None,
     ) -> Delivery:
-        """Deliver `text` on `lane`: `idle` is `submit_turn` (busy is refused); `regular`
-        starts a turn on an idle session and otherwise types the text into the running turn
-        (`queue_prompt`). Raises `TurnRejected` (slash_command, booting, dead, busy when
-        neither a turn can start nor a running turn take the text) or `TurnVetoed`.
+        """Deliver `text` on `lane`.
+
+        `idle` is `submit_turn` (busy is refused). `regular` starts a turn on an idle session
+        and otherwise types the text into the running turn (`queue_prompt`). `priority` first
+        interrupts the running turn (`_priority`) and then starts a turn; on an idle session it
+        is `regular`. Raises `TurnRejected` (slash_command, booting, dead, or busy when neither
+        a turn can start nor a running turn take the text) or `TurnVetoed`.
         """
         if slash_command(text) is not None:
             raise TurnRejected("slash_command")
@@ -1032,6 +1029,8 @@ class SessionRouter(SessionListener):
             return Delivery(lane, record=await self.submit_turn(text, **kw))
         session = self.session
         session.check_live()
+        if lane == "priority" and session.current_turn is not None:
+            return Delivery(lane, record=await self._priority(text, kw))
         if session.state == "ready" and session.current_turn is None:
             try:
                 return Delivery(lane, record=await self.submit_turn(text, **kw))
@@ -1040,6 +1039,46 @@ class SessionRouter(SessionListener):
                     raise
         message = await self._queue_prompt(text, lane=lane, message_id=message_id, **kw)
         return Delivery(lane, message=message)
+
+    async def _vet(
+        self,
+        text: str,
+        files: Mapping[str, str] | None,
+        origin: Origin,
+        metadata: Mapping[str, Any] | None,
+        turn_id: str,
+        **extra: Any,
+    ) -> HookOutcome:
+        """Fire onTurn; a deny logs `turn_rejected` and raises `TurnVetoed`."""
+        outcome = await self._fire(
+            "onTurn",
+            {
+                "text": text,
+                "files": list((files or {}).keys()),
+                "origin": origin,
+                "metadata": dict(metadata or {}),
+                **extra,
+            },
+            turn_id=turn_id,
+        )
+        if outcome.decision == "deny":
+            reason = outcome.reason or DEFAULT_DENY_REASON
+            self._emit("turn_rejected", {"reason": reason})
+            raise TurnVetoed(reason)
+        return outcome
+
+    async def _priority(self, text: str, kw: dict[str, Any]) -> TurnRecord:
+        """onTurn first (a veto must not cost the running turn), then the spaced interrupt,
+        then the new turn with that hook outcome."""
+        self.session.check_queueable()  # never ESC a slash command run or its command phase
+        turn_id = new_turn_id()
+        outcome = await self._vet(
+            text, kw["files"], kw["origin"], kw["metadata"], turn_id, lane="priority"
+        )
+        if self.session.current_turn is not None:
+            self.session.check_queueable()
+            await self.interrupt(spaced=True)
+        return await self.submit_turn(text, **kw, vetted=(turn_id, outcome))
 
     async def _queue_prompt(
         self,
@@ -1057,22 +1096,9 @@ class SessionRouter(SessionListener):
         session.check_queueable()  # a doomed delivery fires no hooks
         running = session.current_turn
         assert running is not None
-        outcome = await self._fire(
-            "onTurn",
-            {
-                "text": text,
-                "files": list((files or {}).keys()),
-                "origin": origin,
-                "metadata": dict(metadata or {}),
-                "lane": lane,
-                "queued": True,
-            },
-            turn_id=running.turn_id,
+        outcome = await self._vet(
+            text, files, origin, metadata, running.turn_id, lane=lane, queued=True
         )
-        if outcome.decision == "deny":
-            reason = outcome.reason or DEFAULT_DENY_REASON
-            self._emit("turn_rejected", {"reason": reason})
-            raise TurnVetoed(reason)
         session.check_queueable()
         if session.current_turn is not running:
             raise TurnRejected("busy")  # the turn ended while the hook ran
@@ -1104,12 +1130,14 @@ class SessionRouter(SessionListener):
         )
         return message
 
-    async def interrupt(self) -> str | None:
+    async def interrupt(self, *, spaced: bool = False) -> str | None:
+        """Interrupt the running turn (or the idle command run); `spaced`: see Session."""
         session = self.session
         if session.command_active and self.runner_active:
             return await self._interrupt_command()
         runner = self._runner if self.runner_active else None
-        turn_id = await session.interrupt()
+        # A plain interrupt calls the session exactly as before the lanes.
+        turn_id = await (session.interrupt(spaced=True) if spaced else session.interrupt())
         if runner is not None and turn_id is not None:
             # The turn's commands: on_turn_end aborted the runner; let it settle the records.
             await asyncio.wait({runner}, timeout=CLOSE_DRAIN_SECONDS)
