@@ -62,7 +62,7 @@ import os
 import re
 import time
 import unicodedata
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
@@ -79,6 +79,7 @@ from .turns import (
     TurnRecord,
     TurnState,
     merged_annotations,
+    new_message_id,
     new_probe_id,
     new_turn_id,
     now_iso,
@@ -121,6 +122,8 @@ TURN_WATCH_MAX_SLEEP = 0.25
 ACTIVITY_PERSIST_SECONDS = 5.0
 #: Probes remembered for `get_probe`; the oldest are forgotten first.
 MAX_PROBES = 100
+#: Queued messages remembered for `queued_message`; the oldest are forgotten first.
+MAX_QUEUED = 100
 
 STATES = ("booting", "ready", "busy", "stopping", "stopped", "dead")
 PUBLIC_STATES = ("creating", "ready", "busy", "stopped", "failed", "dead")
@@ -389,6 +392,9 @@ class SessionListener:
     def on_turn_end(self, record: Any) -> None:
         """A turn reached a terminal state."""
 
+    def on_prompt_dropped(self, message: Any, reason: str) -> None:
+        """A message typed into a turn (`queue_prompt`) will never be read: `reason`."""
+
 
 class FatalScanner:
     """Finds fatal patterns in a stream of output chunks, each occurrence exactly once.
@@ -442,11 +448,34 @@ def _age_seconds(record: TurnRecord) -> float:
 
 
 @dataclass
+class QueuedMessage:
+    """A message typed into a running turn (`queue_prompt`): claude queues it and hands it to
+    the model at its next tool boundary, or runs it as its own turn when the turn ends first."""
+
+    message_id: str
+    lane: str
+    text: str
+    origin: Origin
+    #: The turn that was running when the message was typed.
+    turn_id: str
+    queued_at: str
+    callback_url: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    #: The turn the model read it in, once its marker reached the transcript.
+    delivered_turn_id: str | None = None
+    #: Why it will never be read (`_drop_messages`): not_delivered, claude_exited,
+    #: session_stopped.
+    dropped: str | None = None
+
+
+@dataclass
 class _PendingInterrupt:
     """An interrupt in flight for `record`; `final` is the state the turn ends in."""
 
     record: TurnRecord
     final: TurnState
+    #: Every ESC keeps `ESC_SPACING_SECONDS` from the previous one (a priority delivery).
+    spaced: bool = False
     done: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Future[None] | None = None
 
@@ -493,6 +522,13 @@ class Session:
         self._dialog_hits = 0
         self._hits_at_escape = 0
         self._last_escape = float("-inf")
+        #: Dialog footers on screen at any time (permission prompts, questions), for the lanes:
+        #: when the last one was seen, the last relayed hook, and the last text typed (squashed;
+        #: its echo is not a dialog).
+        self._ui_dialogs = FatalScanner(spec.sessions.commands.dialog_patterns)
+        self._ui_dialog_at = float("-inf")
+        self._last_hook = float("-inf")
+        self._typed = ""
         #: Set while `restart_for_dialog` closes claude, so its exit takes the dialog relaunch.
         self._dialog_restart = False
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -518,6 +554,9 @@ class Session:
         self._turn_started = clock()
         self._activity_persisted = self._last_activity
         self._probes: dict[str, Probe] = {}
+        self._queued: dict[str, QueuedMessage] = {}
+        #: The slot is held for a priority delivery (`reserve`).
+        self._reserved = False
         if resume_turn is not None:
             # The slot is taken from the first boot; `start` continues or fails the turn.
             resume_turn.interrupted = None
@@ -668,6 +707,8 @@ class Session:
         pty.ring = self.ring  # one screen across relaunches; reset() empties it in between
         self._scanner.reset()
         self._dialogs.reset()
+        self._ui_dialogs.reset()
+        self._ui_dialog_at = float("-inf")
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._exited = asyncio.Event()
         self.pty = pty
@@ -738,6 +779,9 @@ class Session:
         self.last_output = self.clock()
         self._notify("on_output", text)
         self._dialog_hits += len(self._dialogs.feed(text))
+        for pattern in self._ui_dialogs.feed(text):
+            if _squash(pattern) not in self._typed:
+                self._ui_dialog_at = self.last_output
         for pattern in self._scanner.feed(text):
             self.last_fatal = pattern
             log.warning("session %s: fatal pattern %r on screen", self.spec.session_id, pattern)
@@ -754,6 +798,7 @@ class Session:
         self._exited.set()  # a booting claude: the boot wait sees this
         if self._stopping or self.state not in ("ready", "busy"):
             return
+        self._drop_messages("claude_exited")  # claude's input queue went with it
         if self._dialog_restart:
             self._dialog_restart = False
             log.warning("session %s: relaunching claude over an open dialog", self.spec.session_id)
@@ -868,6 +913,7 @@ class Session:
             self._commands_turn = None
         self._set_state("busy")
         try:
+            self._typed = _squash(text)
             await pty.send_prompt(
                 self._with_marker(text, record), self.spec.boot.submit_delay_seconds
             )
@@ -891,6 +937,7 @@ class Session:
         if self.state == "stopped":
             return
         self._stopping = True
+        self._drop_messages("session_stopped")
         record = self._turn
         if record is not None:
             if cause == "shutdown":
@@ -953,12 +1000,33 @@ class Session:
             raise TurnRejected("dead")
         return self.pty
 
-    def check_submittable(self) -> PtyProcess:
-        """Raise `TurnRejected(booting|dead|busy)` if a turn cannot start now (no side effects)."""
+    def check_submittable(self, *, reserved: bool = False) -> PtyProcess:
+        """Raise `TurnRejected(booting|dead|busy)` if a turn cannot start now (no side effects).
+
+        While the slot is reserved (`reserve`) only the holder (`reserved=True`) may start one.
+        """
         pty = self._writable_pty()
-        if self.state == "busy" or self._turn is not None:
+        if self.state == "busy" or self._turn is not None or (self._reserved and not reserved):
             raise TurnRejected("busy")
         return pty
+
+    @property
+    def reserved(self) -> bool:
+        return self._reserved
+
+    @contextlib.contextmanager
+    def reserve(self) -> Iterator[None]:
+        """Hold the turn slot across an interrupt and the next submit (a priority delivery).
+
+        Meanwhile other turns (`check_submittable`) and slash command runs (`begin_command`)
+        are refused busy, so nothing takes the slot the interrupt freed. A turn claude starts by
+        itself (`deliver_message`) is still accounted.
+        """
+        self._reserved = True
+        try:
+            yield
+        finally:
+            self._reserved = False
 
     async def submit(
         self,
@@ -969,6 +1037,7 @@ class Session:
         turn_id: str | None = None,
         annotations: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        reserved: bool = False,
     ) -> TurnRecord:
         """Start a turn: reserve the slot, persist the record, then paste and CR.
 
@@ -980,7 +1049,7 @@ class Session:
         if slash_command(text) is not None:
             # claude would run it as a command: no Stop, so the turn would never end (design D3).
             raise TurnRejected("slash_command")
-        pty = self.check_submittable()
+        pty = self.check_submittable(reserved=reserved)
         now = now_iso()
         record = TurnRecord(
             turn_id=turn_id or new_turn_id(),
@@ -1003,6 +1072,7 @@ class Session:
         self._arm_watch(record)
         log.info("session %s: turn %s submitted (%s)", self.spec.session_id, record.turn_id, origin)
         try:
+            self._typed = _squash(text)
             await pty.send_prompt(
                 self._with_marker(text, record), self.spec.boot.submit_delay_seconds
             )
@@ -1013,6 +1083,176 @@ class Session:
                 record, "failed", error="claude_exited", next_state="ready" if pty.alive else None
             )
         return record
+
+    def check_live(self) -> None:
+        """Raise `TurnRejected(booting|dead)` unless claude is live (no side effects)."""
+        self._writable_pty()
+
+    def note_hook(self) -> None:
+        """A claude hook was relayed: claude is past any dialog it showed before it."""
+        self._last_hook = self.clock()
+
+    def dialog_open(self) -> bool:
+        """A dialog footer (`sessions.commands.dialog_patterns`: a permission prompt, a
+        question) appeared on screen after the last relayed hook and the last ESC.
+
+        Typing into it would pick an answer, and an ESC would decline it, so the lanes refuse
+        to write while it is open. Footers that the last typed text quotes are its echo.
+        """
+        return self.state in ("ready", "busy") and self._ui_dialog_at > max(
+            self._last_hook, self._last_escape
+        )
+
+    def check_no_dialog(self) -> None:
+        """Raise `TurnRejected("dialog_open")` while `dialog_open` (no side effects)."""
+        if self.dialog_open():
+            raise TurnRejected("dialog_open")
+
+    def check_queueable(self, *, reserved: bool = False) -> PtyProcess:
+        """The PTY a message may be typed into: a live claude running a turn of its own.
+
+        Raises `TurnRejected` booting or dead, then dialog_open, else busy when no turn runs
+        or a slash command run, its command phase or a crash relaunch holds the slot (typing
+        then would reach a command line or a dialog, not the model), or a priority delivery is
+        interrupting the turn (`reserve`; only the holder passes `reserved=True`). No side
+        effects.
+        """
+        pty = self._writable_pty()
+        self.check_no_dialog()
+        record = self._turn
+        if (
+            self.state != "busy"
+            or record is None
+            or self._command_active
+            or self._commands_turn is not None
+            or self._held is record
+            or (self._reserved and not reserved)
+        ):
+            raise TurnRejected("busy")
+        return pty
+
+    async def queue_prompt(
+        self,
+        text: str,
+        *,
+        lane: str,
+        origin: Origin,
+        message_id: str | None = None,
+        callback_url: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> QueuedMessage:
+        """Type `text` into the running turn: paste with a message marker, then one CR.
+
+        No ESC and no turn marker: claude queues the text (Enter while busy) and passes it to
+        the model within the same turn, so the turn's Stop still completes the running record.
+        Raises `TurnRejected` (slash_command first, then `check_queueable`); a write to a
+        claude that exited raises `TurnRejected("dead")`.
+        """
+        if slash_command(text) is not None:
+            raise TurnRejected("slash_command")
+        pty = self.check_queueable()
+        record = self._turn
+        assert record is not None
+        message = QueuedMessage(
+            message_id=message_id or new_message_id(),
+            lane=lane,
+            text=text,
+            origin=origin,
+            turn_id=record.turn_id,
+            queued_at=now_iso(),
+            callback_url=callback_url,
+            metadata=dict(metadata or {}),
+        )
+        self._queued[message.message_id] = message
+        while len(self._queued) > MAX_QUEUED:
+            del self._queued[next(iter(self._queued))]
+        prompt = f"{text}\n\n<!-- ccw message: {message.message_id} -->"
+        try:
+            self._typed = _squash(prompt)
+            await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
+        except PtyClosed as exc:
+            self._queued.pop(message.message_id, None)
+            raise TurnRejected("dead") from exc
+        finally:
+            self.last_input = self.clock()
+        log.info(
+            "session %s: message %s queued into %s (%s)",
+            self.spec.session_id,
+            message.message_id,
+            record.turn_id,
+            lane,
+        )
+        return message
+
+    def queued_message(self, message_id: str) -> QueuedMessage | None:
+        return self._queued.get(message_id)
+
+    def undelivered(self, turn_id: str) -> list[QueuedMessage]:
+        """Messages typed into the turn `turn_id` whose marker has not been read yet."""
+        return [
+            m
+            for m in self._queued.values()
+            if m.turn_id == turn_id and m.delivered_turn_id is None and m.dropped is None
+        ]
+
+    def _drop_messages(self, reason: str, *, keep_turn: str | None = None) -> None:
+        """Give up on every message not read yet (but those typed into `keep_turn`)."""
+        for message in self._queued.values():
+            if message.delivered_turn_id or message.dropped or message.turn_id == keep_turn:
+                continue
+            message.dropped = reason
+            log.info(
+                "session %s: message %s dropped (%s)",
+                self.spec.session_id,
+                message.message_id,
+                reason,
+            )
+            self._notify("on_prompt_dropped", message, reason)
+
+    def deliver_message(self, message_id: str) -> tuple[QueuedMessage, bool] | None:
+        """The message's marker reached the transcript: `(message, new_turn)`, else None.
+
+        Read while its turn (or any turn) runs, the model took it within that turn. Read on a
+        ready session, claude ran it as a turn of its own after the turn it was typed into
+        ended: that becomes a new running turn here (`new_turn` True; origin, text, callback
+        and metadata from the message), so the next Stop completes it. None for an unknown or
+        already delivered id, or when claude is not live or a command run holds the slot.
+        """
+        message = self._queued.get(message_id)
+        if message is None or message.delivered_turn_id is not None or message.dropped:
+            return None
+        record = self._turn
+        if self.state == "busy" and record is not None:
+            message.delivered_turn_id = record.turn_id
+            return message, False
+        if self.state != "ready" or record is not None or self._command_active:
+            return None
+        now = now_iso()
+        record = TurnRecord(
+            turn_id=new_turn_id(),
+            session_id=self.spec.session_id,
+            origin=message.origin,
+            state="running",
+            text=message.text,
+            callback_url=message.callback_url,
+            started_at=now,
+            last_activity_at=now,
+            metadata=dict(message.metadata),
+        )
+        self._turn = record
+        self._turn_started = self.clock()
+        self._last_activity = self._activity_persisted = self.clock()
+        self._set_state("busy")
+        self._persist(record)
+        self._arm_watch(record)
+        message.delivered_turn_id = record.turn_id
+        log.info(
+            "session %s: message %s runs as turn %s",
+            self.spec.session_id,
+            message.message_id,
+            record.turn_id,
+        )
+        return message, True
 
     def _with_marker(self, text: str, record: TurnRecord) -> str:
         if not self.spec.sessions.turn_marker:
@@ -1202,6 +1442,9 @@ class Session:
         )
         self._persist(record)
         self._notify("on_turn_end", record)
+        # claude sends what is still queued when a turn ends, so a message typed into an earlier
+        # turn that no turn read by now never reached the model.
+        self._drop_messages("not_delivered", keep_turn=record.turn_id)
         return True
 
     def _persist(self, record: TurnRecord, *, append: bool = True) -> None:
@@ -1229,6 +1472,8 @@ class Session:
         the session. False, and nothing changes, unless the session is ready with no turn.
         """
         if self.state != "ready" or self._turn is not None or self._command_active:
+            return False
+        if self._reserved:
             return False
         self._command_active = True
         self._set_state("busy")
@@ -1300,6 +1545,7 @@ class Session:
         pty = self._writable_pty()
         log.info("session %s: typing %r", self.spec.session_id, line)
         try:
+            self._typed = _squash(line)
             await pty.send_prompt(line, self.spec.boot.submit_delay_seconds)
         finally:
             self.last_input = self.clock()
@@ -1389,13 +1635,14 @@ class Session:
 
     # -- interrupt -------------------------------------------------------------------------
 
-    async def interrupt(self) -> str | None:
+    async def interrupt(self, *, spaced: bool = False) -> str | None:
         """Interrupt the running turn; its id once it has ended, None when idle.
 
         One ESC, then up to `interrupt_settle_seconds` for the transcript interrupt line
         (`on_interrupted`); without it a second ESC. claude runs no Stop hook for an
         interrupted turn, so the turn is ended here either way and the slot freed. A turn held
         across a crash ends at once: there is no claude to send ESC to, and nothing is pasted.
+        `spaced` (a priority delivery) keeps every ESC `ESC_SPACING_SECONDS` from the last one.
         """
         record = self._turn
         if record is not None and self._held is record:
@@ -1403,12 +1650,14 @@ class Session:
             return record.turn_id
         if record is None or self.state != "busy":
             return None
-        return await self._interrupt(record, "interrupted")
+        return await self._interrupt(record, "interrupted", spaced=spaced)
 
-    async def _interrupt(self, record: TurnRecord, final: TurnState) -> str:
+    async def _interrupt(
+        self, record: TurnRecord, final: TurnState, *, spaced: bool = False
+    ) -> str:
         pending = self._interrupting
         if pending is None or pending.record is not record:
-            pending = _PendingInterrupt(record, final)
+            pending = _PendingInterrupt(record, final, spaced)
             self._interrupting = pending
             pending.task = self._track(asyncio.ensure_future(self._run_interrupt(pending)))
         assert pending.task is not None
@@ -1423,7 +1672,7 @@ class Session:
                 # claude runs no turn: there is no interrupt line to wait for.
                 self._end_turn(record, pending.final)
                 return
-            await self._send_key(ESC)
+            await self._interrupt_key(pending)
             try:
                 await asyncio.wait_for(
                     pending.done.wait(), self.spec.sessions.interrupt_settle_seconds
@@ -1437,11 +1686,17 @@ class Session:
                         record.turn_id,
                         self.spec.sessions.interrupt_settle_seconds,
                     )
-                    await self._send_key(ESC)
+                    await self._interrupt_key(pending)
             self._end_turn(record, pending.final)
         finally:
             if self._interrupting is pending:
                 self._interrupting = None
+
+    async def _interrupt_key(self, pending: _PendingInterrupt) -> None:
+        if pending.spaced:
+            await self.send_escape()
+        else:
+            await self._send_key(ESC)
 
     async def _send_key(self, key: bytes) -> None:
         pty = self.pty
@@ -1490,6 +1745,7 @@ class Session:
             del self._probes[next(iter(self._probes))]
         prompt = f"{probe.text}\n\n<!-- ccw probe: {probe.probe_id} -->"
         try:
+            self._typed = _squash(prompt)
             await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
         except PtyClosed as exc:
             self._probes.pop(probe.probe_id, None)

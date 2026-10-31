@@ -13,6 +13,7 @@ from claude_code_wrapper import __version__
 from claude_code_wrapper.commands import MAX_COMMAND_ARGS, CommandRejected
 from claude_code_wrapper.config import COMMAND_WILDCARD
 from claude_code_wrapper.peer_client import PeerError
+from claude_code_wrapper.turns import LANES
 
 SUPPORTED_PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL = "2025-06-18"
@@ -31,7 +32,8 @@ PEERS_TOOL = "peers"
 SEND_TOOL = "send_message"
 PEERS_INSTRUCTIONS = (
     " The `peers` tool lists the other ccw sessions you can message, and `send_message` sends "
-    "one a message that arrives as a new turn. Use them instead of SendMessage; reply to a "
+    "one a message, typed into its running turn or arriving as a new turn. Use them instead of "
+    "SendMessage; reply to a "
     "peer only when a reply is needed."
 )
 PEERS_DESCRIPTION = (
@@ -40,7 +42,9 @@ PEERS_DESCRIPTION = (
 )
 SEND_DESCRIPTION = (
     "Send a message to another ccw session by address (<instance>/<session id>, from `peers`). "
-    "It arrives there as a new turn; a reply, if any, arrives here as a new turn. Set "
+    "By lane: regular (default) is typed into the peer's running turn, or starts a turn when it "
+    "is idle; idle waits until the peer is idle; priority interrupts the peer's running turn. A "
+    "reply, if any, arrives here the same way. Set "
     "notify_when_idle to be told when the peer has handled it. Errors start with one of: "
     "unknown peer, peer unreachable, message too large, inbox full, rate limited, "
     "peer rejected the request, invalid arguments."
@@ -69,7 +73,7 @@ class PeerTools(Protocol):
     async def list_peers(self, caller_session: str, instance: str | None) -> list[dict]: ...
 
     async def send(
-        self, caller_session: str, to: str, message: str, notify_when_idle: bool
+        self, caller_session: str, to: str, message: str, notify_when_idle: bool, lane: str
     ) -> str: ...
 
 
@@ -123,6 +127,11 @@ def _peer_tools() -> list[dict[str, Any]]:
                     "to": {"type": "string", "description": "<instance>/<session id>"},
                     "message": {"type": "string", "description": "the message text"},
                     "notify_when_idle": {"type": "boolean"},
+                    "lane": {
+                        "type": "string",
+                        "enum": list(LANES),
+                        "description": "regular (default), idle or priority",
+                    },
                 },
                 "required": ["to", "message"],
                 "additionalProperties": False,
@@ -136,7 +145,7 @@ async def _call_peers(router: Any, name: str, args: Any, peers: PeerTools) -> di
         args = {}
     if not isinstance(args, dict):
         return _invalid("arguments must be an object")
-    allowed = {"instance"} if name == PEERS_TOOL else {"to", "message", "notify_when_idle"}
+    allowed = {"instance"} if name == PEERS_TOOL else {"to", "message", "notify_when_idle", "lane"}
     extra = sorted(set(args) - allowed)
     if extra:
         return _invalid(f"unknown arguments {', '.join(extra)}")
@@ -154,12 +163,15 @@ async def _call_peers(router: Any, name: str, args: Any, peers: PeerTools) -> di
         return _invalid("`message` must not be empty")
     if not isinstance(notify, bool):
         return _invalid("`notify_when_idle` must be a boolean")
+    lane = args.get("lane", "regular")
+    if lane not in LANES:
+        return _invalid(f"`lane` must be one of {', '.join(LANES)}")
     try:
-        msg_id = await peers.send(caller, to, message, notify)
+        msg_id = await peers.send(caller, to, message, notify, lane)
     except PeerError as exc:
         return _tool_result(exc.message, is_error=True)
     return _tool_result(
-        f"Sent {msg_id} to {to}. A reply, if any, arrives as a new turn.", is_error=False
+        f"Sent {msg_id} to {to}. A reply, if any, arrives here as a message.", is_error=False
     )
 
 

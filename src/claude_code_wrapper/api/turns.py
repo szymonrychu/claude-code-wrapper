@@ -19,17 +19,29 @@ from claude_code_wrapper.manager import InvalidState
 from claude_code_wrapper.prompts import resolve_prompt
 from claude_code_wrapper.router import SessionRouter, TurnVetoed
 from claude_code_wrapper.session import TurnRejected
-from claude_code_wrapper.turns import METADATA_MAX_BYTES
+from claude_code_wrapper.turns import METADATA_MAX_BYTES, Lane
 from claude_code_wrapper.workdir import FileWriteError
 
 router = APIRouter()
 
-_REJECT_STATUS = {"busy": 409, "booting": 503, "dead": 503, "slash_command": 422}
+#: A client message id: it is pasted into claude's input as a marker, so the charset is tight.
+MESSAGE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+#: Refusals a `regular` or `priority` delivery answers 409 (claude is not live), not 503.
+_LANE_CONFLICTS = frozenset({"booting", "dead"})
+
+_REJECT_STATUS = {
+    "busy": 409,
+    "booting": 503,
+    "dead": 503,
+    "slash_command": 422,
+    "dialog_open": 409,
+}
 _REJECT_TEXT = {
     "busy": "a turn is already running",
     "booting": "the session is still booting",
     "dead": "the session is not running",
     "slash_command": "slash commands go to POST /v1/sessions/{id}/commands",
+    "dialog_open": "a dialog (a permission prompt or a question) is open in claude",
 }
 
 
@@ -44,6 +56,9 @@ class TurnRequest(BaseModel):
     files: dict[str, str] | None = None
     callback_url: str | None = Field(default=None, alias="callbackUrl")
     metadata: dict[str, Any] | None = None
+    lane: Lane = "regular"
+    #: The id of the message when it is typed into a running turn; generated when absent.
+    message_id: str | None = Field(default=None, pattern=MESSAGE_ID_PATTERN)
 
 
 class ProbeRequest(BaseModel):
@@ -60,9 +75,12 @@ def _live_router(request: Request, session_id: str) -> SessionRouter:
         raise ApiError(503, "dead", "the session is not running") from exc
 
 
-def _rejected(exc: TurnRejected) -> ApiError:
+def _rejected(exc: TurnRejected, lane: str = "idle") -> ApiError:
+    status = _REJECT_STATUS.get(exc.reason, 503)
+    if lane != "idle" and exc.reason in _LANE_CONFLICTS:
+        status = 409
     return ApiError(
-        _REJECT_STATUS.get(exc.reason, 503),
+        status,
         exc.reason,
         _REJECT_TEXT.get(exc.reason, "the session cannot take input now"),
     )
@@ -70,7 +88,12 @@ def _rejected(exc: TurnRejected) -> ApiError:
 
 @router.post("/sessions/{session_id}/turns", status_code=202)
 async def submit_turn(session_id: str, body: TurnRequest, request: Request) -> Any:
-    live = _live_router(request, session_id)
+    try:
+        live = _live_router(request, session_id)
+    except ApiError as exc:
+        if body.lane != "idle":
+            exc.status = 409
+        raise
     cfg = request.app.state.cfg
     text = resolve_prompt(cfg, text=body.text, template=body.template, variables=body.variables)
     assert text is not None
@@ -85,14 +108,38 @@ async def submit_turn(session_id: str, body: TurnRequest, request: Request) -> A
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ApiError(400, "invalid_callback_url", "callbackUrl must be an http or https URL")
     try:
-        record = await live.submit_turn(text, files=body.files, callback_url=url, metadata=metadata)
+        delivery = await live.deliver(
+            text,
+            lane=body.lane,
+            files=body.files,
+            callback_url=url,
+            metadata=metadata,
+            message_id=body.message_id,
+        )
     except TurnRejected as exc:
-        raise _rejected(exc) from exc
+        raise _rejected(exc, body.lane) from exc
     except TurnVetoed as exc:
         raise ApiError(403, "vetoed", exc.reason) from exc
     except FileWriteError as exc:
         raise ApiError(413 if exc.code == "too_large" else 400, exc.code, str(exc)) from exc
-    return _out(request, {"turn_id": record.turn_id, "state": record.state})
+    message = delivery.message
+    if message is not None:
+        out = {
+            "turn_id": message.turn_id,
+            "state": "running",
+            "lane": body.lane,
+            "queued": True,
+            "message_id": message.message_id,
+        }
+    else:
+        assert delivery.record is not None
+        out = {
+            "turn_id": delivery.record.turn_id,
+            "state": delivery.record.state,
+            "lane": body.lane,
+            "queued": False,
+        }
+    return _out(request, out)
 
 
 @router.get("/sessions/{session_id}/turns")

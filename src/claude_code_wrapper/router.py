@@ -21,6 +21,7 @@ import contextlib
 import fnmatch
 import json
 import logging
+import re
 import sys
 import time
 from collections.abc import Coroutine, Mapping
@@ -42,6 +43,7 @@ from .pty_proc import PtyClosed
 from .redact import Redactor
 from .session import (
     ESC_SPACING_SECONDS,
+    QueuedMessage,
     Session,
     SessionListener,
     TurnRejected,
@@ -80,6 +82,14 @@ if TYPE_CHECKING:
     from .peer_inbox import PeerInbox
 
 log = logging.getLogger(__name__)
+#: A subagent id as claude names its files (`agent-<id>.jsonl`): no path separators.
+_AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+#: How long, and how often, a subagent whose meta file was not there at SubagentStart is
+#: re-checked for it (`subagent_linked`).
+SUBAGENT_LINK_WAIT_SECONDS = 10.0
+SUBAGENT_LINK_POLL_SECONDS = 0.1
+#: How often a priority delivery re-checks for the turn claude starts for its flushed queue.
+PRIORITY_FLUSH_POLL = 0.05
 
 CCW_TOOL_PREFIX = "mcp__ccw__"
 MAIN_AGENT_ONLY_DENY_REASON = (
@@ -181,12 +191,45 @@ def _abort_reason(record: TurnRecord) -> str:
     return "turn_failed"
 
 
+def subagent_meta_path(transcript_path: str | Path, agent_id: str) -> Path:
+    """`<session transcript without .jsonl>/subagents/agent-<id>.meta.json` (claude writes it
+    beside the subagent's own transcript)."""
+    return Path(transcript_path).with_suffix("") / "subagents" / f"agent-{agent_id}.meta.json"
+
+
+def _parent_tool_use_id(transcript_path: str | Path, agent_id: Any) -> str | None:
+    """`toolUseId` of the subagent's meta file: the parent's Task/Agent tool_use id, or None
+    (no such file yet, unreadable, or an agent id that is not a plain name)."""
+    if not isinstance(agent_id, str) or not _AGENT_ID.fullmatch(agent_id):
+        return None
+    try:
+        meta = json.loads(subagent_meta_path(transcript_path, agent_id).read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = meta.get("toolUseId") if isinstance(meta, dict) else None
+    return value if isinstance(value, str) else None
+
+
 class TurnVetoed(Exception):
     """An `onTurn` hook denied the turn."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+@dataclass
+class Delivery:
+    """What a lane delivery did: started a new turn (`record`) or typed the text into the
+    running turn (`message`); exactly one is set."""
+
+    lane: str
+    record: TurnRecord | None = None
+    message: QueuedMessage | None = None
+
+    @property
+    def queued(self) -> bool:
+        return self.message is not None
 
 
 @dataclass
@@ -285,6 +328,8 @@ class SessionRouter(SessionListener):
         self._watcher: SubagentWatcher | None = None
         self._tasks: list[asyncio.Task[Any]] = []
         self._background: set[asyncio.Task[Any]] = set()
+        #: agent_id -> the wait for a late subagent meta file (`_await_link`); not drained.
+        self._link_waits: dict[str, asyncio.Task[None]] = {}
         self._dropping_history = False
         self._tick_tasks: list[asyncio.Task[Any]] = []
         self._tick_runs: set[asyncio.Task[Any]] = set()
@@ -568,6 +613,7 @@ class SessionRouter(SessionListener):
     ) -> RelayResponse:
         try:
             self.session.note_activity()
+            self.session.note_hook()
             self._track_path(payload)
             handler = {
                 "UserPromptSubmit": self._on_user_prompt_submit,
@@ -898,12 +944,31 @@ class SessionRouter(SessionListener):
         data: dict[str, Any] = {
             "agent_id": payload.get("agent_id"),
             "agent_type": payload.get("agent_type"),
+            "parent_tool_use_id": _parent_tool_use_id(self.session.transcript_path, agent_id),
         }
         if not started and isinstance(payload.get("last_assistant_message"), str):
             data["last_assistant_message"] = payload["last_assistant_message"]
         self._emit("subagent_started" if started else "subagent_stopped", data)
+        if isinstance(agent_id, str):
+            if started and data["parent_tool_use_id"] is None and not self._closed:
+                self._link_waits[agent_id] = asyncio.ensure_future(self._await_link(agent_id))
+            elif not started and (wait := self._link_waits.pop(agent_id, None)) is not None:
+                wait.cancel()  # the stopped event carries whatever the file says now
         await self._fire("onSubagentStart" if started else "onSubagentStop", data)
         return _allow()
+
+    async def _await_link(self, agent_id: str) -> None:
+        """claude wrote the subagent's meta file after SubagentStart: once it appears (within
+        `SUBAGENT_LINK_WAIT_SECONDS`), emit `subagent_linked` with its parent tool_use id."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SUBAGENT_LINK_WAIT_SECONDS
+        while loop.time() < deadline:
+            await asyncio.sleep(SUBAGENT_LINK_POLL_SECONDS)
+            parent = _parent_tool_use_id(self.session.transcript_path, agent_id)
+            if parent is not None:
+                self._emit("subagent_linked", {"agent_id": agent_id, "parent_tool_use_id": parent})
+                break
+        self._link_waits.pop(agent_id, None)
 
     # ------------------------------------------------------------------ turns
 
@@ -929,14 +994,18 @@ class SessionRouter(SessionListener):
         callback_url: str | None = None,
         origin: Origin = "client",
         metadata: Mapping[str, Any] | None = None,
+        vetted: tuple[str, HookOutcome] | None = None,
     ) -> TurnRecord:
+        """Start a turn. `vetted`: the turn id and onTurn outcome of a turn whose hook already
+        ran (a priority delivery vets before it interrupts), so onTurn is not fired again."""
         if slash_command(text) is not None:  # a slash line fires no hooks and writes no files
             raise TurnRejected("slash_command")
-        self.session.check_submittable()  # a doomed turn fires no hooks
+        # a doomed turn fires no hooks; a vetted (priority) turn holds the reserved slot
+        self.session.check_submittable(reserved=vetted is not None)
         was_armed = self._ac_armed
         self._cancel_auto_compact()
         try:
-            return await self._submit_turn(text, files, callback_url, origin, metadata)
+            return await self._submit_turn(text, files, callback_url, origin, metadata, vetted)
         except BaseException:
             if was_armed:  # no turn started and none will end: keep the idle gap alive
                 self._arm_auto_compact()
@@ -949,24 +1018,15 @@ class SessionRouter(SessionListener):
         callback_url: str | None,
         origin: Origin,
         metadata: Mapping[str, Any] | None,
+        vetted: tuple[str, HookOutcome] | None = None,
     ) -> TurnRecord:
-        turn_id = new_turn_id()
-        outcome = await self._fire(
-            "onTurn",
-            {
-                "text": text,
-                "files": list((files or {}).keys()),
-                "origin": origin,
-                "metadata": dict(metadata or {}),
-            },
-            turn_id=turn_id,
-        )
-        if outcome.decision == "deny":
-            reason = outcome.reason or DEFAULT_DENY_REASON
-            self._emit("turn_rejected", {"reason": reason})
-            raise TurnVetoed(reason)
+        if vetted is None:
+            turn_id = new_turn_id()
+            outcome = await self._vet(text, files, origin, metadata, turn_id)
+        else:
+            turn_id, outcome = vetted
         # No await from this check through safe_write_files to submit's slot reservation.
-        self.session.check_submittable()
+        self.session.check_submittable(reserved=vetted is not None)
         if files:
             safe_write_files(
                 self.info.workdir,
@@ -985,6 +1045,7 @@ class SessionRouter(SessionListener):
             turn_id=turn_id,
             annotations=annotations,
             metadata=dict(metadata or {}),
+            reserved=vetted is not None,
         )
         self._usage.reset()
         self._emit_user_message(record.turn_id, record.origin, text, list((files or {}).keys()))
@@ -994,12 +1055,179 @@ class SessionRouter(SessionListener):
         self.ensure_tailing()
         return record
 
-    async def interrupt(self) -> str | None:
+    async def deliver(
+        self,
+        text: str,
+        *,
+        lane: str,
+        files: Mapping[str, str] | None = None,
+        callback_url: str | None = None,
+        origin: Origin = "client",
+        metadata: Mapping[str, Any] | None = None,
+        message_id: str | None = None,
+    ) -> Delivery:
+        """Deliver `text` on `lane`.
+
+        `idle` is `submit_turn` (busy is refused). `regular` starts a turn on an idle session
+        and otherwise types the text into the running turn (`queue_prompt`). `priority` first
+        interrupts the running turn (`_priority`) and then starts a turn; on an idle session it
+        is `regular`. Raises `TurnRejected` (slash_command, booting, dead, or busy when neither
+        a turn can start nor a running turn take the text) or `TurnVetoed`.
+        """
+        if slash_command(text) is not None:
+            raise TurnRejected("slash_command")
+        kw = {"files": files, "callback_url": callback_url, "origin": origin, "metadata": metadata}
+        if lane == "idle":
+            return Delivery(lane, record=await self.submit_turn(text, **kw))
+        session = self.session
+        session.check_live()
+        session.check_no_dialog()  # typing would answer it, an ESC would decline it
+        if lane == "priority" and session.current_turn is not None:
+            return Delivery(lane, record=await self._priority(text, kw))
+        if session.state == "ready" and session.current_turn is None:
+            try:
+                return Delivery(lane, record=await self.submit_turn(text, **kw))
+            except TurnRejected as exc:
+                if exc.reason != "busy":
+                    raise
+        message = await self._queue_prompt(text, lane=lane, message_id=message_id, **kw)
+        return Delivery(lane, message=message)
+
+    async def _vet(
+        self,
+        text: str,
+        files: Mapping[str, str] | None,
+        origin: Origin,
+        metadata: Mapping[str, Any] | None,
+        turn_id: str,
+        **extra: Any,
+    ) -> HookOutcome:
+        """Fire onTurn; a deny logs `turn_rejected` and raises `TurnVetoed`."""
+        outcome = await self._fire(
+            "onTurn",
+            {
+                "text": text,
+                "files": list((files or {}).keys()),
+                "origin": origin,
+                "metadata": dict(metadata or {}),
+                **extra,
+            },
+            turn_id=turn_id,
+        )
+        if outcome.decision == "deny":
+            reason = outcome.reason or DEFAULT_DENY_REASON
+            self._emit("turn_rejected", {"reason": reason})
+            raise TurnVetoed(reason)
+        return outcome
+
+    async def _priority(self, text: str, kw: dict[str, Any]) -> TurnRecord:
+        """onTurn first (a veto must not cost the running turn), then the spaced interrupt,
+        then the new turn with that hook outcome."""
+        self.session.check_queueable()  # never ESC a slash command run or its command phase
+        turn_id = new_turn_id()
+        outcome = await self._vet(
+            text, kw["files"], kw["origin"], kw["metadata"], turn_id, lane="priority"
+        )
+        session = self.session
+        running = session.current_turn
+        if running is None:  # it ended while onTurn ran
+            return await self.submit_turn(text, **kw, vetted=(turn_id, outcome))
+        session.check_queueable()
+        with session.reserve():  # the slot the interrupt frees stays this message's
+            while running is not None:
+                session.check_queueable(reserved=True)
+                pending = session.undelivered(running.turn_id)
+                await self.interrupt(spaced=True)
+                running = await self._flushed_turn(running, pending)
+            return await self.submit_turn(text, **kw, vetted=(turn_id, outcome))
+
+    async def _flushed_turn(
+        self, interrupted: TurnRecord, pending: list[QueuedMessage]
+    ) -> TurnRecord | None:
+        """The turn claude starts for `pending`, the messages that were still queued in
+        `interrupted` when it was interrupted, or None.
+
+        After an ESC claude sends its queued messages next, as a turn of its own; their marker
+        makes it a running turn here (`_message_delivered`). Waits up to
+        `interrupt_settle_seconds` for that, so the priority message is not typed into it.
+        """
+        session = self.session
+        if not pending:
+            return None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._cfg.sessions.interrupt_settle_seconds
+        while loop.time() < deadline:
+            delivered = [m.delivered_turn_id for m in pending if m.delivered_turn_id]
+            record = session.current_turn
+            if delivered and record is not None and record.turn_id in delivered:
+                return record
+            await asyncio.sleep(PRIORITY_FLUSH_POLL)
+        log.warning(
+            "session %s: messages %s queued in %s never reached the transcript after the interrupt",
+            self.info.session_id,
+            [m.message_id for m in pending],
+            interrupted.turn_id,
+        )
+        return None
+
+    async def _queue_prompt(
+        self,
+        text: str,
+        *,
+        lane: str,
+        files: Mapping[str, str] | None,
+        callback_url: str | None,
+        origin: Origin,
+        metadata: Mapping[str, Any] | None,
+        message_id: str | None,
+    ) -> QueuedMessage:
+        """onTurn (it may veto), the files, then the paste into the running turn."""
+        session = self.session
+        session.check_queueable()  # a doomed delivery fires no hooks
+        running = session.current_turn
+        assert running is not None
+        outcome = await self._vet(
+            text, files, origin, metadata, running.turn_id, lane=lane, queued=True
+        )
+        session.check_queueable()
+        if session.current_turn is not running:
+            raise TurnRejected("busy")  # the turn ended while the hook ran
+        if files:
+            safe_write_files(
+                self.info.workdir,
+                files,
+                max_bytes=self._cfg.limits.max_file_bytes,
+                max_files=self._cfg.limits.max_files_per_turn,
+            )
+        self._annotate(running, outcome)
+        message = await session.queue_prompt(
+            text,
+            lane=lane,
+            origin=origin,
+            message_id=message_id,
+            callback_url=callback_url,
+            metadata=dict(metadata or {}),
+        )
+        self._emit_user_message(message.turn_id, origin, text, list((files or {}).keys()))
+        self._emit(
+            "prompt_queued",
+            {
+                "message_id": message.message_id,
+                "lane": lane,
+                "turn_id": message.turn_id,
+                "origin": origin,
+            },
+        )
+        return message
+
+    async def interrupt(self, *, spaced: bool = False) -> str | None:
+        """Interrupt the running turn (or the idle command run); `spaced`: see Session."""
         session = self.session
         if session.command_active and self.runner_active:
             return await self._interrupt_command()
         runner = self._runner if self.runner_active else None
-        turn_id = await session.interrupt()
+        # A plain interrupt calls the session exactly as before the lanes.
+        turn_id = await (session.interrupt(spaced=True) if spaced else session.interrupt())
         if runner is not None and turn_id is not None:
             # The turn's commands: on_turn_end aborted the runner; let it settle the records.
             await asyncio.wait({runner}, timeout=CLOSE_DRAIN_SECONDS)
@@ -1085,10 +1313,55 @@ class SessionRouter(SessionListener):
             elif isinstance(ev, UserPrompt):
                 if ev.turn_marker:
                     self._last_marker = ev.turn_marker
+                if ev.message_id and not ev.sidechain:
+                    self._message_delivered(ev.message_id)
             elif isinstance(ev, ProbeMarker):
                 probe = self.session.probe_delivered(ev.probe_id)
                 if probe is not None and self._metrics is not None:
                     self._metrics.probe_outcome("delivered")
+
+    def on_prompt_dropped(self, message: Any, reason: str) -> None:
+        self._emit(
+            "prompt_dropped",
+            {
+                "message_id": message.message_id,
+                "lane": message.lane,
+                "turn_id": message.turn_id,
+                "reason": reason,
+            },
+        )
+        if self.peer_inbox is not None:
+            self.peer_inbox.message_dropped(message.message_id)
+
+    def _message_delivered(self, message_id: str) -> None:
+        """A queued message reached the model: in the running turn, or as a new turn."""
+        session = self.session
+        found = session.deliver_message(message_id)
+        if found is None:
+            return
+        message, new_turn = found
+        turn_id = message.delivered_turn_id
+        if new_turn:
+            record = session.current_turn
+            assert record is not None
+            self._last_marker = record.turn_id  # its Stop carries no marker of its own
+            self._usage.reset()
+            self._cancel_auto_compact()
+            self._emit(
+                "turn_started",
+                {"turn_id": record.turn_id, "origin": record.origin, "text": record.text},
+            )
+        self._emit(
+            "prompt_delivered",
+            {
+                "message_id": message.message_id,
+                "lane": message.lane,
+                "turn_id": turn_id,
+                "new_turn": new_turn,
+            },
+        )
+        if self.peer_inbox is not None and turn_id is not None:
+            self.peer_inbox.message_delivered(message.message_id, turn_id)
 
     async def _on_assistant_text(self, ev: AssistantText) -> None:
         self._emit(
@@ -1758,10 +2031,11 @@ class SessionRouter(SessionListener):
             self._tailer.stop()
         if self._watcher is not None:
             self._watcher.stop()
-        for task in self._tasks:
+        for task in [*self._tasks, *self._link_waits.values()]:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        await asyncio.gather(*self._tasks, *self._link_waits.values(), return_exceptions=True)
         self._tasks.clear()
+        self._link_waits.clear()
         runs = list(self._tick_runs)
         for task in [*self._tick_tasks, *runs]:
             task.cancel()

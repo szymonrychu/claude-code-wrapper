@@ -1,11 +1,14 @@
-"""Per-session peer inbox: queueing, bounds, rate limit and delivery as new turns (D7, D9, D14).
+"""Per-session peer inbox: queueing, bounds, rate limit and delivery by lane (D7, D9, D14).
 
-`put` queues a peer message or notice; delivery takes the head only when the session is idle
-(ready, no turn, no command runner, no idle-runner command queued) and submits it through
-`SessionRouter.submit_turn` with origin `peer`, so the onTurn hook may veto it. Nothing here
-writes to the PTY. `submit_turn` awaits the onTurn hook, so the session can change between the
-readiness check and the paste; a `TurnRejected` from the session then keeps the head queued and
-the next ready state delivers it.
+`put` queues a peer message or notice. On an idle session (ready, no turn, no command runner,
+no idle-runner command queued) delivery takes the head; while a turn runs it takes the first
+message whose lane is not `idle` (`regular`, the default, or `priority`), when the running turn
+can take a message (`Session.check_queueable`). Either way it goes through
+`SessionRouter.deliver` with the item's lane and origin `peer`, so the onTurn hook may veto it:
+a new turn, or the text typed into the running turn (`regular`) or a new turn after the running
+one is interrupted (`priority`). Notices are always `idle`. Nothing here writes to the PTY.
+`deliver` awaits the onTurn hook, so the session can change in between; a `TurnRejected` then
+keeps the item queued and the next ready state delivers it.
 
 At most one delivery attempt is in flight. A `kick` while one is scheduled or running sets a
 pending flag, honoured when the attempt ends; an attempt that ends with items left on a ready
@@ -14,7 +17,8 @@ most once: the inbox lives in memory only.
 
 Outcomes (D8): a `message` item that was vetoed (`rejected`) or still queued at `close`
 (`dropped`) always reaches `on_outcome`; a delivered one reaches it only with `notify_when_idle`,
-once its handling turn is terminal. Notices never produce outcomes. Each call runs as an
+once its handling turn is terminal (for a message typed into a running turn: the turn that read
+it, `message_delivered`). Notices never produce outcomes. Each call runs as an
 inbox-owned background task, so a slow sender never holds up the Stop answer, a delivery attempt
 or `close`; `drain` bounds the wait for them on shutdown.
 """
@@ -22,6 +26,7 @@ or `close`; `drain` bounds the wait for them on shutdown.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections import deque
@@ -36,7 +41,7 @@ from .peer_client import PeerError
 from .redact import Redactor
 from .router import TurnVetoed
 from .session import TurnRejected
-from .turns import TurnRecord
+from .turns import Lane, TurnRecord
 
 if TYPE_CHECKING:
     from .router import SessionRouter
@@ -51,6 +56,9 @@ RATE_WINDOW_SECONDS = 60.0
 MAX_RATE_SENDERS = 1024
 #: Seconds between re-checks while an idle-runner command is queued but not yet started.
 _QUEUED_COMMAND_POLL = 0.05
+#: Seconds before retrying a delivery the session refused (`TurnRejected`): a refusal on a
+#: ready session (a dialog open, a priority delivery holding the slot) can last a while.
+REJECT_BACKOFF_SECONDS = 0.25
 
 Kind = Literal["message", "notice"]
 #: What happened to a message: `on_outcome`'s status argument.
@@ -72,6 +80,8 @@ class InboxItem:
     state: str | None = None
     #: Notices: why the message was not delivered. Messages: the onTurn veto reason.
     reason: str | None = None
+    #: Messages: how it reaches the session (notices are always delivered `idle`).
+    lane: Lane = "regular"
 
 
 #: `on_outcome(item, status, record)`; `record` is the handling turn for `delivered`, else None.
@@ -149,12 +159,17 @@ class PeerInbox:
         self._seen: deque[tuple[str, str, str]] = deque()
         self._seen_set: set[tuple[str, str, str]] = set()
         self._rate: dict[str, deque[float]] = {}
-        #: turn_id -> the item that turn delivered, until the turn finishes.
-        self._turns: dict[str, InboxItem] = {}
+        #: turn_id -> the items that turn handles, until the turn finishes.
+        self._turns: dict[str, list[InboxItem]] = {}
+        #: message_id -> a message typed into a running turn, until its marker is read.
+        self._typed: dict[str, InboxItem] = {}
         self._scheduled = False
         self._pending = False
         self._closed = False
         self._task: asyncio.Task[None] | None = None
+        #: The last attempt ended on a `TurnRejected`: retry on a timer, not at once.
+        self._rejected = False
+        self._retry: asyncio.TimerHandle | None = None
 
     @property
     def depth(self) -> int:
@@ -267,9 +282,20 @@ class PeerInbox:
             log.error("peer inbox delivery attempt failed", exc_info=task.exception())
         if self._closed:
             return
-        if self._pending or (self._items and self._session_ready()):
+        if self._rejected:
+            self._rejected = False
+            if self._retry is None:
+                self._retry = asyncio.get_running_loop().call_later(
+                    REJECT_BACKOFF_SECONDS, self._retry_kick
+                )
+            return
+        if self._pending or (self._items and (self._session_ready() or self._busy_pick())):
             self._pending = False
             self.kick()
+
+    def _retry_kick(self) -> None:
+        self._retry = None
+        self.kick()
 
     def _session_ready(self) -> bool:
         session = self._router.session
@@ -278,11 +304,31 @@ class PeerInbox:
     def _idle_command_queued(self) -> bool:
         return any(r.turn_id is None for r in self._router.commands.pending())
 
+    @staticmethod
+    def _lane(item: InboxItem) -> str:
+        return item.lane if item.kind == "message" else "idle"
+
+    def _busy_pick(self) -> InboxItem | None:
+        """The first non-idle message, when the running turn can take one now."""
+        item = next((i for i in self._items if self._lane(i) != "idle"), None)
+        if item is None:
+            return None
+        try:
+            self._router.session.check_queueable()
+        except TurnRejected:
+            return None
+        return item
+
     async def _attempt(self) -> None:
         router = self._router
         while True:
-            if self._closed or not self._items or not self._session_ready():
+            if self._closed or not self._items:
                 return
+            if not self._session_ready():
+                picked = self._busy_pick()
+                if picked is None:
+                    return
+                break
             if router.runner_active:
                 await router.wait_runner_idle()  # a runner finishing on a ready session
                 continue
@@ -290,13 +336,17 @@ class PeerInbox:
                 # The idle runner starts on its own loop pass and takes the slot (busy).
                 await asyncio.sleep(_QUEUED_COMMAND_POLL)
                 continue
+            picked = self._items[0]
             break
-        item = self._items[0]
+        item = picked
         peer = {"from": item.from_address, "msg_id": item.msg_id, "kind": item.kind}
         try:
-            record = await router.submit_turn(frame(item), origin="peer", metadata={"peer": peer})
+            delivery = await router.deliver(
+                frame(item), lane=self._lane(item), origin="peer", metadata={"peer": peer}
+            )
         except TurnRejected as exc:
             log.debug("peer inbox: %s stays queued (%s)", item.msg_id, exc.reason)
+            self._rejected = True
             return
         except TurnVetoed as exc:
             self._pop(item)
@@ -308,12 +358,19 @@ class PeerInbox:
             log.exception("peer inbox: delivering %s failed; it stays queued", item.msg_id)
             return
         self._pop(item)
-        self._turns[record.turn_id] = item
-        self._emit_delivered(item, record.turn_id, "delivered")
+        message = delivery.message
+        if message is not None:
+            self._typed[message.message_id] = item
+            turn_id = message.turn_id
+        else:
+            assert delivery.record is not None
+            turn_id = delivery.record.turn_id
+            self._turns.setdefault(turn_id, []).append(item)
+        self._emit_delivered(item, turn_id, "delivered")
 
     def _pop(self, item: InboxItem) -> None:
-        if self._items and self._items[0] is item:
-            self._items.popleft()
+        with contextlib.suppress(ValueError):
+            self._items.remove(item)
 
     def _emit_delivered(self, item: InboxItem, turn_id: str | None, result: str) -> LogEvent:
         if self._metrics is not None:
@@ -336,18 +393,31 @@ class PeerInbox:
     # ------------------------------------------------------------------ outcomes
 
     def delivered_turn(self, turn_id: str) -> InboxItem | None:
-        """The item the running turn `turn_id` delivered, if it was a peer turn."""
-        return self._turns.get(turn_id)
+        """The first item the running turn `turn_id` handles, if it handles a peer message."""
+        items = self._turns.get(turn_id)
+        return items[0] if items else None
+
+    def message_delivered(self, message_id: str, turn_id: str) -> None:
+        """A peer message typed into a running turn was read in the turn `turn_id`."""
+        item = self._typed.pop(message_id, None)
+        if item is not None:
+            self._turns.setdefault(turn_id, []).append(item)
+
+    def message_dropped(self, message_id: str) -> None:
+        """A peer message typed into a running turn will never be read: outcome `dropped`."""
+        item = self._typed.pop(message_id, None)
+        if item is not None:
+            self._outcome(item, "dropped", None)
 
     def turn_finished(self, record: TurnRecord) -> None:
         """A turn reached a terminal state (synchronous: called on the Stop hook path).
 
-        A message that asked for `notify_when_idle` gets its `delivered` outcome now, with the
-        handling turn's record, in the background.
+        Each message it handled that asked for `notify_when_idle` gets its `delivered` outcome
+        now, with the handling turn's record, in the background.
         """
-        item = self._turns.pop(record.turn_id, None)
-        if item is not None and item.notify_when_idle:
-            self._outcome(item, "delivered", record)
+        for item in self._turns.pop(record.turn_id, []):
+            if item.notify_when_idle:
+                self._outcome(item, "delivered", record)
 
     def _outcome(self, item: InboxItem, status: OutcomeStatus, record: TurnRecord | None) -> None:
         """Run `on_outcome` for a message item as a background task; notices never notify."""
@@ -402,6 +472,9 @@ class PeerInbox:
         if self._closed:
             return []
         self._closed = True
+        if self._retry is not None:
+            self._retry.cancel()
+            self._retry = None
         task, self._task = self._task, None
         if task is not None and not task.done():
             task.cancel()

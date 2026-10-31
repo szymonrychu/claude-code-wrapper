@@ -196,8 +196,15 @@ class PeerService:
         rows += self.table.sessions(exclude=caller, instance=instance)
         return sorted(rows, key=lambda row: row["address"])
 
-    async def send(self, caller_session: str, to: str, message: str, notify_when_idle: bool) -> str:
-        """Send `message` to the session at `to`; returns its msg_id or raises PeerError."""
+    async def send(
+        self,
+        caller_session: str,
+        to: str,
+        message: str,
+        notify_when_idle: bool,
+        lane: str = "regular",
+    ) -> str:
+        """Send `message` to the session at `to` on `lane`; its msg_id, or raises PeerError."""
         msg_id = new_msg_id()
         local = self._sessions.get(caller_session)
         router = local.router if local is not None else None
@@ -209,7 +216,7 @@ class PeerService:
             "notify_when_idle": notify_when_idle,
         }
         try:
-            await self._send(caller_session, to, message, notify_when_idle, msg_id)
+            await self._send(caller_session, to, message, notify_when_idle, msg_id, lane)
         except PeerError as exc:
             self._count("message", exc.code)
             self._emit_sent(router, {**event, "result": exc.code})
@@ -219,7 +226,13 @@ class PeerService:
         return msg_id
 
     async def _send(
-        self, caller_session: str, to: str, message: str, notify_when_idle: bool, msg_id: str
+        self,
+        caller_session: str,
+        to: str,
+        message: str,
+        notify_when_idle: bool,
+        msg_id: str,
+        lane: str,
     ) -> None:
         caller = self._address(caller_session)
         try:
@@ -248,6 +261,7 @@ class PeerService:
                 "message": message,
                 "msg_id": msg_id,
                 "notify_when_idle": notify_when_idle,
+                "lane": lane,
             }
         )
         await self.client.send_message(url, body)
@@ -269,6 +283,7 @@ class PeerService:
                 msg_id=body.msg_id,
                 text=body.message,
                 notify_when_idle=body.notify_when_idle,
+                lane=body.lane,
             )
         )
         return {"msg_id": body.msg_id, "queued": put.depth, "duplicate": put.duplicate}

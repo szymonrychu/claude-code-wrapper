@@ -409,11 +409,20 @@ Request body (exactly one of `text` and `template`):
 | `files` | object (path to content) | no | files written into the workdir before the prompt is pasted; relative paths only, limited by `limits.max_files_per_turn` and `limits.max_file_bytes` |
 | `callbackUrl` | string | no | `http`/`https` URL that receives this turn's terminal-state callback (and its questions); overrides the session's `callbackUrl` |
 | `metadata` | object | no | client-supplied JSON object kept on the turn record (`metadata`) and given to `onTurn` hooks as `data.metadata`, so hooks can gate on it; at most 16 KiB serialised |
+| `lane` | string | no | `idle`, `regular` (default) or `priority`: how the message reaches the session, see "Delivery lanes" below; any other value is `422 invalid_request` |
+| `message_id` | string | no | id of the message when it is typed into a running turn (`queued: true`); `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`, generated (`msg-...`) when absent |
 
-Response `202`:
+Response `202`, a new turn:
 
 ```json
-{"turn_id": "turn-1k9x2m0q4zw8", "state": "running"}
+{"turn_id": "turn-1k9x2m0q4zw8", "state": "running", "lane": "regular", "queued": false}
+```
+
+or, when the text was typed into the running turn (`regular` or `priority` lane on a busy
+session), that turn's id and the message id:
+
+```json
+{"turn_id": "turn-1k9x2m0q4zw8", "state": "running", "lane": "regular", "queued": true, "message_id": "msg-1k9x2m0q5aa1"}
 ```
 
 | Status | Code | When |
@@ -425,12 +434,66 @@ Response `202`:
 | 401 | `unauthorized` | missing or wrong token |
 | 403 | `vetoed` | a blocking `onTurn` action denied (a `turn_rejected` event is logged) |
 | 404 | `not_found` | unknown session |
-| 409 | `busy` | a turn is already running |
+| 409 | `busy` | `idle` lane: a turn is already running; any lane: a slash command run holds the session |
+| 409 | `booting`, `dead` | `regular` or `priority` lane: claude is not live (the session is booting, stopped, failed or dead) |
+| 409 | `dialog_open` | `regular` or `priority` lane: a dialog is open in claude, see "Delivery lanes" |
 | 413 | `too_large` | prompt over `limits.max_prompt_bytes`, `metadata` over 16 KiB, or `files` over the per-file or count limits |
 | 422 | `slash_command` | the text is a slash command; send it to `POST /v1/sessions/{id}/commands` (the same code answers `POST /v1/sessions/{id}/probe`) |
 | 422 | `invalid_request` | invalid body (including `metadata` that is not an object), or `unknown_template`, `unknown_variable`, `missing_variable` |
-| 503 | `booting` | the session is still booting |
-| 503 | `dead` | the session is stopped, failed or dead |
+| 503 | `booting` | `idle` lane: the session is still booting |
+| 503 | `dead` | `idle` lane: the session is stopped, failed or dead |
+
+Delivery lanes (`lane`):
+
+- `idle`: the message starts a new turn; a busy session refuses it with `409 busy`, so the
+  caller queues it and retries once the session is ready.
+- `regular` (default): on an idle session the message starts a new turn, exactly as `idle`.
+  While a turn runs it is typed into claude instead: a bracketed paste of the text with a
+  `<!-- ccw message: <message_id> -->` marker, then one CR, and no ESC. claude queues it and hands
+  it to the model at the next tool boundary within the same turn (or, when the model is only
+  writing, once the turn ends), so the running turn keeps its single Stop. The answer is `202`
+  with `queued: true`, the running turn's id and the `message_id`; `onTurn` fires first with
+  `lane` and `queued: true` (a `deny` is `403 vetoed`) and its annotations go to the running
+  turn, `files` are written, then a `user_message` (the running turn's `turn_id`) and a
+  `prompt_queued` event are logged. A session busy with a slash command run (or the command
+  phase of a turn) refuses it with `409 busy`, and claude that is not live with `409`.
+- `priority`: on an idle session exactly as `regular`. While a turn runs, `onTurn` fires first
+  (with `lane: "priority"`; a `deny` is `403 vetoed` and the running turn is left alone), then
+  the running turn is interrupted as by `POST /v1/sessions/{id}/interrupt` (one ESC, up to
+  `sessions.interrupt_settle_seconds` for claude's interrupt line, else a second ESC; the turn
+  ends `interrupted` with an `interrupted` event and `onInterrupt`), and then the message starts a
+  new turn (`queued: false`, the new turn's id). Messages a `regular` delivery typed into the
+  interrupted turn and claude had not read yet are sent by claude right after the ESC, as a
+  turn of its own: the wrapper waits up to `sessions.interrupt_settle_seconds` for their
+  marker, accounts that turn as theirs (`prompt_delivered` with `new_turn: true`), interrupts it
+  the same way, and only then starts the priority turn. From the interrupt to that submit the
+  slot stays reserved for the priority message: other turns and `regular` messages are refused
+  `409 busy` (nothing is typed into the turn being interrupted) and queued slash commands wait,
+  even while the session shows `ready`. Every ESC of a priority delivery is a write of its
+  own and keeps at least 1 s from the previous ESC (two ESCs close together at an empty prompt
+  open claude's rewind menu), so two priority deliveries in a row wait for each other. A slash
+  command run or a turn's command phase is never interrupted this way: `409 busy`.
+
+Turn accounting for a typed message: claude records it as a `queued_command` attachment line (or
+a user line) holding the `<!-- ccw message: <message_id> -->` marker. When that line is read while
+a turn runs, the model took the message within that turn: a `prompt_delivered` event with
+`new_turn: false` is logged and the turn still ends on its single Stop. When it is read on a ready
+session, the turn it was typed into ended first and claude ran the message as a turn of its own:
+that becomes a new `running` turn (origin, text, `callbackUrl` and `metadata` of the message;
+`turn_started`, then `prompt_delivered` with `new_turn: true`), completed by claude's next Stop
+like any turn. `onTurn` does not fire again for it. A marker read twice, or for an unknown id,
+changes nothing. A message that will never be read gets a `prompt_dropped` event instead: claude
+exited or the session stopped before its marker came (claude's input queue goes with it), or a
+later turn ended without reading it (claude sends what is still queued when a turn ends, so it
+had its chance). A peer message dropped this way gets the `dropped` outcome.
+
+While a dialog is open in claude (a permission prompt, an `AskUserQuestion` question), typing
+would pick an answer and an ESC would decline it, so `regular` and `priority` deliveries are
+refused with `409 dialog_open` and nothing is written. A dialog counts as open from the moment
+one of the `sessions.commands.dialog_patterns` footers (`Esc to cancel`, `Enter to confirm`, ...)
+appears on screen until the next relayed claude hook (the tool ran or the turn ended) or the next
+ESC (`POST .../interrupt`); a footer that the last typed text itself quotes is its echo, not a
+dialog. The `idle` lane is not affected.
 
 Crash during a turn: when claude exits mid-turn it is relaunched (with `--resume` when the
 transcript exists) within `sessions.max_restarts`. By default the turn fails with `claude_exited`
@@ -1065,7 +1128,8 @@ first and while streaming otherwise (`413 message_too_large`); a `message` over
 `peers.max_message_bytes` UTF-8 bytes is also `413 message_too_large`.
 
 Body: `{"from": "<instance>/<session id>", "to_session": "ses_...", "message": "...",
-"msg_id": "msg_...", "notify_when_idle": false}`. Response `202`:
+"msg_id": "msg_...", "notify_when_idle": false, "lane": "regular"}` (`lane` optional: `idle`,
+`regular`, the default, or `priority`; see "Delivery" under Peers). Response `202`:
 `{"msg_id": "msg_...", "queued": true}`, plus `"duplicate": true` for a repeated `msg_id`.
 Errors: `401 unauthorized`, `404 not_found` (unknown session), `413 message_too_large`,
 `422 invalid_request`, `429 inbox_full`, `429 rate_limited`. Delivery is at-most-once.
@@ -1226,10 +1290,11 @@ answer `-32602` like any unknown tool). They work even when the `command` allowl
 - `peers`: arguments `{instance?}` (string, only that instance). Result (`isError: false`): a JSON
   array text of rows `{address, instance, session_id, name, cwd}`, where `address` is
   `<instance>/<session id>`.
-- `send_message`: arguments `{to, message, notify_when_idle?}`. `to` is an address from `peers`,
-  `message` a non-empty string (at most `peers.max_message_bytes` UTF-8 bytes), `notify_when_idle`
-  a boolean (default false). Success text: `Sent <msg_id> to <to>. A reply, if any, arrives as a
-  new turn.` Delivery is at most once; success means the peer queued it, not that it was handled.
+- `send_message`: arguments `{to, message, notify_when_idle?, lane?}`. `to` is an address from
+  `peers`, `message` a non-empty string (at most `peers.max_message_bytes` UTF-8 bytes),
+  `notify_when_idle` a boolean (default false), `lane` one of `regular` (default), `idle`,
+  `priority` (see "Delivery" under Peers). Success text: `Sent <msg_id> to <to>. A reply, if any,
+  arrives here as a message.` Delivery is at most once; success means the peer queued it, not that it was handled.
 - Errors are `isError: true` results whose text starts with one of:
   `unknown peer`, `peer unreachable`, `message too large`, `inbox full`, `rate limited`,
   `peer rejected the request`, or `invalid arguments` (a bad argument shape, an unknown argument,
@@ -1431,6 +1496,45 @@ event: turn_resumed
 data: {"seq":14,"ts":"2026-10-20T09:02:10.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_resumed","data":{"turn_id":"turn-1k9x2m0q4zw8","restart":1,"cause":"restart"}}
 ```
 
+### `prompt_queued`
+
+Emitted when a `regular` or `priority` delivery typed a message into the running turn (see
+"Delivery lanes" under `POST /v1/sessions/{id}/turns`). No new turn starts.
+
+`data`: `message_id`, `lane`, `turn_id` (the running turn), `origin`.
+
+```
+event: prompt_queued
+data: {"seq":15,"ts":"2026-10-20T09:02:11.000Z","session_id":"ses_3f9a1c0b7d42","type":"prompt_queued","data":{"message_id":"msg-1k9x2m0q5aa1","lane":"regular","turn_id":"turn-1k9x2m0q4zw8","origin":"client"}}
+```
+
+### `prompt_delivered`
+
+Emitted when the marker of a message typed into a running turn (`prompt_queued`) reaches the
+transcript, once per message (see "Delivery lanes" under `POST /v1/sessions/{id}/turns`).
+
+`data`: `message_id`, `lane`, `turn_id` (the turn that reads it), `new_turn` (false: the model
+took it within the running turn; true: claude ran it after that turn ended, as the new turn
+`turn_id`, which a `turn_started` event announced just before).
+
+```
+event: prompt_delivered
+data: {"seq":16,"ts":"2026-10-20T09:02:13.000Z","session_id":"ses_3f9a1c0b7d42","type":"prompt_delivered","data":{"message_id":"msg-1k9x2m0q5aa1","lane":"regular","turn_id":"turn-1k9x2m0q4zw8","new_turn":false}}
+```
+
+### `prompt_dropped`
+
+Emitted when a message typed into a running turn (`prompt_queued`) will never reach the model,
+once per message (see "Delivery lanes" under `POST /v1/sessions/{id}/turns`).
+
+`data`: `message_id`, `lane`, `turn_id` (the turn it was typed into), `reason`: `claude_exited`,
+`session_stopped` or `not_delivered` (a later turn ended and none read it).
+
+```
+event: prompt_dropped
+data: {"seq":17,"ts":"2026-10-20T09:02:20.000Z","session_id":"ses_3f9a1c0b7d42","type":"prompt_dropped","data":{"message_id":"msg-1k9x2m0q5aa1","lane":"regular","turn_id":"turn-1k9x2m0q4zw8","reason":"session_stopped"}}
+```
+
 ### `assistant_text`
 
 Emitted for each assistant text block read from the transcript (main thread and subagents).
@@ -1525,22 +1629,41 @@ data: {"seq":14,"ts":"2026-10-20T09:01:08.000Z","session_id":"ses_3f9a1c0b7d42",
 
 Emitted from the SubagentStart relay.
 
-`data`: `agent_id`, `agent_type`.
+`data`: `agent_id`, `agent_type`, `parent_tool_use_id`: the id of the main agent's `Task`/`Agent`
+`tool_use` that started the subagent (match it with `tool_call.data.tool_use_id`), read from the
+`toolUseId` of the `agent-<agent_id>.meta.json` file claude writes beside the subagent transcript
+(`<session transcript dir>/<claude session id>/subagents/`); null when that file is missing or
+unreadable. When it is null because the file was not there yet, a `subagent_linked` event follows
+once it appears (re-checked for up to 10 s); take the first non-null value of the two.
 
 ```
 event: subagent_started
-data: {"seq":16,"ts":"2026-10-20T09:01:10.000Z","session_id":"ses_3f9a1c0b7d42","type":"subagent_started","data":{"agent_id":"agent-1","agent_type":"Explore"}}
+data: {"seq":16,"ts":"2026-10-20T09:01:10.000Z","session_id":"ses_3f9a1c0b7d42","type":"subagent_started","data":{"agent_id":"agent-1","agent_type":"Explore","parent_tool_use_id":"toolu_01L1douhGrKCtucQYEnEdowj"}}
 ```
 
 ### `subagent_stopped`
 
 Emitted from the SubagentStop relay.
 
-`data`: `agent_id`, `agent_type`, `last_assistant_message` (when Claude supplied it).
+`data`: `agent_id`, `agent_type`, `parent_tool_use_id` (as for `subagent_started`),
+`last_assistant_message` (when Claude supplied it).
 
 ```
 event: subagent_stopped
 data: {"seq":17,"ts":"2026-10-20T09:01:20.000Z","session_id":"ses_3f9a1c0b7d42","type":"subagent_stopped","data":{"agent_id":"agent-1","agent_type":"Explore","last_assistant_message":"Done."}}
+```
+
+### `subagent_linked`
+
+Emitted when a subagent's meta file appears after its `subagent_started` carried a null
+`parent_tool_use_id` (claude wrote the file after the SubagentStart hook). At most once per
+subagent, within 10 s of the start.
+
+`data`: `agent_id`, `parent_tool_use_id`.
+
+```
+event: subagent_linked
+data: {"seq":17,"ts":"2026-10-20T09:01:10.300Z","session_id":"ses_3f9a1c0b7d42","type":"subagent_linked","data":{"agent_id":"agent-1","parent_tool_use_id":"toolu_01L1douhGrKCtucQYEnEdowj"}}
 ```
 
 ### `interrupted`
@@ -1690,9 +1813,11 @@ data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42",
 
 ### `peer_message_delivered`
 
-Emitted when the inbox delivers a received message as a turn, or drops or rejects it.
+Emitted when the inbox delivers a received message as a turn or types it into the running turn,
+or drops or rejects it.
 
-`data`: `msg_id`, `from`, `kind`, `turn_id` (the delivering turn), `result` (`delivered`, `rejected`, `dropped`).
+`data`: `msg_id`, `from`, `kind`, `turn_id` (the delivering turn; for a message typed into the
+running turn, that turn), `result` (`delivered`, `rejected`, `dropped`).
 
 ```
 event: peer_message_delivered
@@ -1867,7 +1992,11 @@ on shutdown). The `output` of each blocking action is returned in the `DELETE` r
 Trigger: the router, before the prompt is pasted (also for `initial`, `agent` and `peer` origins). Blocking:
 a `deny` vetoes the turn (`403 vetoed`, `turn_rejected` event). `data`: `text`, `files` (list of
 workdir-relative paths about to be written), `origin`, `metadata` (the submit body's object, `{}`
-when absent).
+when absent). A message typed into the running turn (a `regular` or `priority` delivery on a busy
+session) fires it too, with `turn_id` the running turn and two more fields: `lane` and
+`queued: true`; a `deny` vetoes the message, and annotations go to the running turn. A `priority`
+delivery to a busy session fires it once for the new turn, with `lane: "priority"`, before the
+running turn is interrupted.
 
 ### `onTurnComplete`
 
@@ -1975,12 +2104,13 @@ Trigger: PostToolUse and PostToolUseFailure. Supports `matcher`. Cannot veto; a 
 
 ### `onSubagentStart`
 
-Trigger: SubagentStart. Awaited when blocking; cannot veto. `data`: `agent_id`, `agent_type`.
+Trigger: SubagentStart. Awaited when blocking; cannot veto. `data`: `agent_id`, `agent_type`,
+`parent_tool_use_id` (see the `subagent_started` event).
 
 ### `onSubagentStop`
 
 Trigger: SubagentStop. Awaited when blocking; cannot veto. `data`: `agent_id`, `agent_type`,
-`last_assistant_message` (when provided).
+`parent_tool_use_id`, `last_assistant_message` (when provided).
 
 ### `onInterrupt`
 
@@ -2519,8 +2649,14 @@ nonces, so a captured request cannot be replayed. Details are under
 
 ### Delivery
 
-A message becomes a new turn with origin `peer` in the target session, in arrival order, when the
-session is idle; while it is busy, messages wait in a per-session inbox. The turn text is a frame:
+A message reaches the target session by its `lane` (chosen by the sender, `regular` by default),
+through the same paths as the lanes of `POST /v1/sessions/{id}/turns` with origin `peer`. On an
+idle session the inbox head becomes a new turn, in arrival order, whatever its lane. While a turn
+runs, `idle` messages wait in the per-session inbox; the first `regular` message is typed into the
+running turn (claude reads it at its next tool boundary), and the first `priority` message
+interrupts the running turn and becomes a new turn. When the running turn cannot take a message
+(a slash command run, a dialog open), those wait too, and go out as turns once the session is
+idle. Notices always wait for idle. The text is a frame:
 
 ```
 <agent-message from="b/ses_aa" msg_id="msg_0123456789abcdef">
@@ -2533,7 +2669,8 @@ The agent replies only when a reply is needed; a reply is just another message, 
 turn on the other side.
 
 **Notices.** With `notify_when_idle`, the sender is told when the receiver has handled the message:
-a `<peer-idle-notice>` frame is delivered to the sender as a new turn when the receiver's turn ends.
+a `<peer-idle-notice>` frame is delivered to the sender when the receiver's turn that handled it
+ends (for a message typed into a running turn: the turn that read it).
 If the message cannot be delivered (the turn was rejected, or the message was dropped, for example
 by a destroyed session), the sender gets a `<peer-delivery-failed>` notice with status `rejected` or
 `dropped` always, whether or not it asked. Notices ride the same signed route and never block the
@@ -2649,6 +2786,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `command_not_allowed` | 403 | the command is not in the session's client allowlist (`sessions.commands.client`) |
 | `method_not_allowed` | 405 | the route exists but not for this method |
 | `busy` | 409 | a turn is already running in the session |
+| `dialog_open` | 409 | a `regular` or `priority` turn delivery while a dialog (a permission prompt or a question) is open in claude |
 | `session_not_active` | 409 | the session exists but is not running, so it has no terminals (terminal create or attach) |
 | `terminal_limit` | 409 | `limits.terminals_max` terminals already exist in this service process |
 | `terminal_not_found` | 404 | unknown terminal id in the session (terminal delete or attach) |
@@ -2676,8 +2814,8 @@ FastAPI's `{"detail": ...}` body instead.
 | `command_queue_full` | 429 | the session already has the maximum of queued commands |
 | `too_many_sessions` | 429 | `sessions.max_sessions` reached |
 | `create_failed` | 500 | a create or resume step failed; the message names the step |
-| `booting` | 503 | the session is still booting |
-| `dead` | 503 | the session is stopped, failed or dead and cannot take input |
+| `booting` | 503 | the session is still booting (409 for a `regular` or `priority` turn delivery) |
+| `dead` | 503 | the session is stopped, failed or dead and cannot take input (409 for a `regular` or `priority` turn delivery) |
 | `not_ready` | 503 | `/readyz` before startup finished |
 | `http_error` | any | any other HTTP error status raised by the framework |
 

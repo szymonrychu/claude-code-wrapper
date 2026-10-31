@@ -62,6 +62,9 @@ class StubSession:
     def note_activity(self):
         self.calls.append(("note_activity",))
 
+    def note_hook(self):
+        """The lanes' dialog clock (not recorded: no test here reads it)."""
+
     def record_tool_call(self):
         self.calls.append(("record_tool_call",))
 
@@ -72,9 +75,20 @@ class StubSession:
         self.calls.append(("complete", payload, usage, model_tokens, marker_turn_id))
         return self.complete_result
 
-    def check_submittable(self):
+    def check_submittable(self, *, reserved=False):
         if self.reject:
             raise TurnRejected(self.reject)
+
+    def check_live(self):
+        if self.reject in ("booting", "dead"):
+            raise TurnRejected(self.reject)
+
+    def check_no_dialog(self):
+        """The stub never shows a dialog."""
+
+    def check_queueable(self):
+        """The stub has no PTY to type a message into a running turn."""
+        raise TurnRejected("busy")
 
     async def submit(
         self,
@@ -85,6 +99,7 @@ class StubSession:
         turn_id=None,
         annotations=None,
         metadata=None,
+        reserved=False,
     ):
         if self.reject:
             raise TurnRejected(self.reject)

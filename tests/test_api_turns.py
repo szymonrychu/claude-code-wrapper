@@ -18,7 +18,7 @@ from claude_code_wrapper.config import Config
 from claude_code_wrapper.manager import CreateSessionRequest, InvalidState, SessionNotFound
 from claude_code_wrapper.metrics import Metrics
 from claude_code_wrapper.redact import Redactor
-from claude_code_wrapper.router import TurnVetoed
+from claude_code_wrapper.router import Delivery, TurnVetoed
 from claude_code_wrapper.session import TurnRejected
 from claude_code_wrapper.turns import Probe, TurnRecord, TurnStore, now_iso
 from claude_code_wrapper.workdir import FileWriteError
@@ -51,6 +51,11 @@ class StubRouter:
         self.calls: list[tuple] = []
         self.raise_on: Exception | None = None
         self.interrupted: str | None = None
+        self.lanes: list[str] = []
+
+    async def deliver(self, text, *, lane, message_id=None, **kw):
+        self.lanes.append(lane)
+        return Delivery(lane, record=await self.submit_turn(text, **kw))
 
     async def submit_turn(
         self, text, *, files=None, callback_url=None, origin="client", metadata=None
@@ -119,7 +124,7 @@ def post(client: TestClient, body: dict[str, Any], sid: str = SID):
 def test_submit_turn_202(client: TestClient, stub: StubManager) -> None:
     r = post(client, {"text": "hello", "files": {"a.txt": "x"}, "callbackUrl": "http://h/cb"})
     assert r.status_code == 202
-    assert r.json() == {"turn_id": "turn-1", "state": "running"}
+    assert r.json() == {"turn_id": "turn-1", "state": "running", "lane": "regular", "queued": False}
     assert stub.router_obj.calls == [("submit", "hello", {"a.txt": "x"}, "http://h/cb", {})]
 
 
@@ -167,13 +172,13 @@ def test_turn_body_uses_callback_url_camel_case(client: TestClient) -> None:
 )
 def test_submit_error_mapping(client: TestClient, stub: StubManager, exc, status, code) -> None:
     stub.router_obj.raise_on = exc
-    r = post(client, {"text": "a"})
+    r = post(client, {"text": "a", "lane": "idle"})
     assert r.status_code == status and r.json()["error"]["code"] == code
 
 
 def test_stopped_session_is_503_dead_and_unknown_404(client: TestClient, stub: StubManager) -> None:
     stub.router_error = InvalidState(SID, "stopped")
-    r = post(client, {"text": "a"})
+    r = post(client, {"text": "a", "lane": "idle"})
     assert r.status_code == 503 and r.json()["error"]["code"] == "dead"
     stub.router_error = SessionNotFound("ses_x")
     assert post(client, {"text": "a"}, "ses_x").status_code == 404
@@ -274,9 +279,9 @@ def test_submit_validation_400_413(client: TestClient, stub: StubManager) -> Non
 def test_submit_busy_409_and_booting_503(client: TestClient, stub: StubManager) -> None:
     stub.router_obj.raise_on = TurnRejected("busy")
     assert post(client, {"text": "a"}).status_code == 409
-    for reason in ("booting", "dead"):
+    for reason in ("booting", "dead"):  # idle lane; regular and priority: test_lanes.py
         stub.router_obj.raise_on = TurnRejected(reason)
-        r = post(client, {"text": "a"})
+        r = post(client, {"text": "a", "lane": "idle"})
         assert r.status_code == 503 and r.json()["error"]["code"] == reason
 
 

@@ -16,7 +16,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationErr
 from . import peer_auth
 from .config import _PEER_NAME, _check_http_url
 from .peers import ADDRESS_RE
-from .turns import TERMINAL_STATES
+from .turns import TERMINAL_STATES, Lane
 
 _SESSION_ID_RE = r"^ses_[0-9a-f]{12}$"
 _MSG_ID_RE = r"^msg_[0-9a-f]{16}$"
@@ -94,6 +94,8 @@ class MessageBody(_Wire):
     message: str = Field(min_length=1)
     msg_id: MsgId
     notify_when_idle: bool = False
+    #: How the receiving inbox delivers it (`PeerInbox`): regular unless the sender says.
+    lane: Lane = "regular"
 
 
 class NoticeBody(_Wire):
