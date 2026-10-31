@@ -19,7 +19,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -28,6 +28,10 @@ from .timeutil import now_iso  # noqa: F401  (re-exported: the one service times
 log = logging.getLogger(__name__)
 
 Origin = Literal["client", "initial", "agent", "peer"]
+#: How a message reaches a session: `idle` waits for no turn to be running, `regular` is typed
+#: into a running turn for claude to queue, `priority` interrupts the running turn first.
+Lane = Literal["idle", "regular", "priority"]
+LANES: tuple[str, ...] = get_args(Lane)
 TurnState = Literal["running", "completed", "failed", "interrupted", "timeout"]
 ProbeState = Literal["pending", "delivered", "answered"]
 #: Why a `running` turn has no claude working on it: the service shut down under it.

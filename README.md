@@ -1118,7 +1118,8 @@ first and while streaming otherwise (`413 message_too_large`); a `message` over
 `peers.max_message_bytes` UTF-8 bytes is also `413 message_too_large`.
 
 Body: `{"from": "<instance>/<session id>", "to_session": "ses_...", "message": "...",
-"msg_id": "msg_...", "notify_when_idle": false}`. Response `202`:
+"msg_id": "msg_...", "notify_when_idle": false, "lane": "regular"}` (`lane` optional: `idle`,
+`regular`, the default, or `priority`; see "Delivery" under Peers). Response `202`:
 `{"msg_id": "msg_...", "queued": true}`, plus `"duplicate": true` for a repeated `msg_id`.
 Errors: `401 unauthorized`, `404 not_found` (unknown session), `413 message_too_large`,
 `422 invalid_request`, `429 inbox_full`, `429 rate_limited`. Delivery is at-most-once.
@@ -1279,10 +1280,11 @@ answer `-32602` like any unknown tool). They work even when the `command` allowl
 - `peers`: arguments `{instance?}` (string, only that instance). Result (`isError: false`): a JSON
   array text of rows `{address, instance, session_id, name, cwd}`, where `address` is
   `<instance>/<session id>`.
-- `send_message`: arguments `{to, message, notify_when_idle?}`. `to` is an address from `peers`,
-  `message` a non-empty string (at most `peers.max_message_bytes` UTF-8 bytes), `notify_when_idle`
-  a boolean (default false). Success text: `Sent <msg_id> to <to>. A reply, if any, arrives as a
-  new turn.` Delivery is at most once; success means the peer queued it, not that it was handled.
+- `send_message`: arguments `{to, message, notify_when_idle?, lane?}`. `to` is an address from
+  `peers`, `message` a non-empty string (at most `peers.max_message_bytes` UTF-8 bytes),
+  `notify_when_idle` a boolean (default false), `lane` one of `regular` (default), `idle`,
+  `priority` (see "Delivery" under Peers). Success text: `Sent <msg_id> to <to>. A reply, if any,
+  arrives here as a message.` Delivery is at most once; success means the peer queued it, not that it was handled.
 - Errors are `isError: true` results whose text starts with one of:
   `unknown peer`, `peer unreachable`, `message too large`, `inbox full`, `rate limited`,
   `peer rejected the request`, or `invalid arguments` (a bad argument shape, an unknown argument,
@@ -1769,9 +1771,11 @@ data: {"seq":24,"ts":"2026-10-20T09:11:00.000Z","session_id":"ses_3f9a1c0b7d42",
 
 ### `peer_message_delivered`
 
-Emitted when the inbox delivers a received message as a turn, or drops or rejects it.
+Emitted when the inbox delivers a received message as a turn or types it into the running turn,
+or drops or rejects it.
 
-`data`: `msg_id`, `from`, `kind`, `turn_id` (the delivering turn), `result` (`delivered`, `rejected`, `dropped`).
+`data`: `msg_id`, `from`, `kind`, `turn_id` (the delivering turn; for a message typed into the
+running turn, that turn), `result` (`delivered`, `rejected`, `dropped`).
 
 ```
 event: peer_message_delivered
@@ -2602,8 +2606,14 @@ nonces, so a captured request cannot be replayed. Details are under
 
 ### Delivery
 
-A message becomes a new turn with origin `peer` in the target session, in arrival order, when the
-session is idle; while it is busy, messages wait in a per-session inbox. The turn text is a frame:
+A message reaches the target session by its `lane` (chosen by the sender, `regular` by default),
+through the same paths as the lanes of `POST /v1/sessions/{id}/turns` with origin `peer`. On an
+idle session the inbox head becomes a new turn, in arrival order, whatever its lane. While a turn
+runs, `idle` messages wait in the per-session inbox; the first `regular` message is typed into the
+running turn (claude reads it at its next tool boundary), and the first `priority` message
+interrupts the running turn and becomes a new turn. When the running turn cannot take a message
+(a slash command run, a dialog open), those wait too, and go out as turns once the session is
+idle. Notices always wait for idle. The text is a frame:
 
 ```
 <agent-message from="b/ses_aa" msg_id="msg_0123456789abcdef">
@@ -2616,7 +2626,8 @@ The agent replies only when a reply is needed; a reply is just another message, 
 turn on the other side.
 
 **Notices.** With `notify_when_idle`, the sender is told when the receiver has handled the message:
-a `<peer-idle-notice>` frame is delivered to the sender as a new turn when the receiver's turn ends.
+a `<peer-idle-notice>` frame is delivered to the sender when the receiver's turn that handled it
+ends (for a message typed into a running turn: the turn that read it).
 If the message cannot be delivered (the turn was rejected, or the message was dropped, for example
 by a destroyed session), the sender gets a `<peer-delivery-failed>` notice with status `rejected` or
 `dropped` always, whether or not it asked. Notices ride the same signed route and never block the

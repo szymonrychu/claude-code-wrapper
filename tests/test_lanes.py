@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ import httpx
 import pytest
 from conftest import World, jsonl
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from test_api_turns import (  # noqa: F401 - fixtures
     SID,
     TOKEN,
@@ -20,14 +22,18 @@ from test_api_turns import (  # noqa: F401 - fixtures
     client,
     stub,
 )
+from test_peer_inbox import FROM, start_peer
 from test_session_turns import Harness, harness, wait_until  # noqa: F401 - fixture
 
 from claude_code_wrapper.api.app import create_app
-from claude_code_wrapper.api.turns import LANES, TurnRequest
+from claude_code_wrapper.api.turns import TurnRequest
 from claude_code_wrapper.manager import CreateSessionRequest, InvalidState
+from claude_code_wrapper.peer_client import MessageBody
+from claude_code_wrapper.peer_inbox import InboxItem
 from claude_code_wrapper.pty_proc import paste_bytes
 from claude_code_wrapper.session import ESC_SPACING_SECONDS, TurnRejected
 from claude_code_wrapper.transcript import UserPrompt, parse_line
+from claude_code_wrapper.turns import LANES
 
 
 def post(client: TestClient, body: dict[str, Any]):  # noqa: F811
@@ -461,3 +467,109 @@ async def test_unknown_message_marker_is_a_plain_prompt(world: World) -> None:
     assert router.session.state == "ready" and router.session.current_turn is None
     assert "prompt_delivered" not in [e["type"] for e in world.events(sid)]
     await c.aclose()
+
+
+# ------------------------------------------------------------------ C6: peer inbox lanes
+
+
+def test_peer_message_default_lane_is_regular() -> None:
+    item = InboxItem(kind="message", from_address=FROM, msg_id="msg_1", text="hi")
+    assert item.lane == "regular"
+    body = MessageBody.model_validate(
+        {"from": FROM, "to_session": SID, "message": "hi", "msg_id": "msg_0000000000000001"}
+    )
+    assert body.lane == "regular"
+    with pytest.raises(ValidationError):
+        MessageBody.model_validate(
+            {
+                "from": FROM,
+                "to_session": SID,
+                "message": "hi",
+                "msg_id": "msg_0000000000000001",
+                "lane": "urgent",
+            }
+        )
+
+
+def peer_msg(n: int, text: str, lane: str, notify: bool = False) -> InboxItem:
+    return InboxItem(
+        kind="message",
+        from_address=FROM,
+        msg_id=f"msg_{n:016x}",
+        text=text,
+        lane=lane,
+        notify_when_idle=notify,
+    )
+
+
+async def test_peer_regular_lane_types_into_the_running_turn(world: World) -> None:
+    outcomes: list[tuple[str, str, str | None]] = []
+
+    async def on_outcome(item, status, record) -> None:
+        outcomes.append((item.msg_id, status, record.turn_id if record else None))
+
+    m, sid, router, inbox = await start_peer(world, QUEUE)
+    inbox._on_outcome = on_outcome
+    running = await router.submit_turn("slow one")
+    item = peer_msg(1, "ping", "regular", notify=True)
+    inbox.put(item)
+    await world.until(lambda: inbox.depth == 0, what="the message left the inbox")
+    await world.until(lambda: m.open_turns(sid).get(running.turn_id).state == "completed")
+    assert [t.turn_id for t in m.open_turns(sid).list()] == [running.turn_id]  # no new turn
+    events = world.events(sid)
+    (queued,) = [e["data"] for e in events if e["type"] == "prompt_queued"]
+    assert queued["origin"] == "peer" and queued["turn_id"] == running.turn_id
+    (delivered,) = [e["data"] for e in events if e["type"] == "peer_message_delivered"]
+    assert delivered["turn_id"] == running.turn_id and delivered["result"] == "delivered"
+    await world.until(lambda: outcomes, what="the notify_when_idle outcome")
+    assert outcomes == [(item.msg_id, "delivered", running.turn_id)]
+
+
+async def test_peer_idle_lane_waits_for_the_turn_end(world: World) -> None:
+    m, sid, router, inbox = await start_peer(world, QUEUE)
+    running = await router.submit_turn("slow one")
+    inbox.put(peer_msg(1, "steer idle", "idle"))
+    await asyncio.sleep(0.4)
+    assert inbox.depth == 1
+    assert "prompt_queued" not in [e["type"] for e in world.events(sid)]
+    await world.until(lambda: len(m.open_turns(sid).list()) == 2, what="the peer turn")
+    first, peer = m.open_turns(sid).list()
+    assert first.turn_id == running.turn_id and peer.origin == "peer"
+
+
+async def test_peer_priority_lane_interrupts(world: World) -> None:
+    m, sid, router, inbox = await start_peer(world, PRIORITY)
+    running = await router.submit_turn("slow one")
+    await world.until(lambda: router.session.state == "busy")
+    inbox.put(peer_msg(1, "steer now", "priority"))
+    await world.until(lambda: len(m.open_turns(sid).list()) == 2, what="the peer turn")
+    first, peer = m.open_turns(sid).list()
+    assert first.turn_id == running.turn_id and first.state == "interrupted"
+    assert peer.origin == "peer" and "steer now" in peer.text
+
+
+async def test_peer_regular_lane_on_idle_session_is_a_turn(world: World) -> None:
+    m, sid, router, inbox = await start_peer(world, {})
+    inbox.put(peer_msg(1, "hello", "regular"))
+    await world.until(lambda: m.open_turns(sid).list(), what="the peer turn")
+    (turn,) = m.open_turns(sid).list()
+    assert turn.origin == "peer"
+
+
+async def test_send_message_tool_takes_a_lane() -> None:
+    from test_mcp_peers import FakePeers, FakeRouter, _call
+
+    from claude_code_wrapper.mcp_server import handle_message
+
+    peers = FakePeers()
+    for args in ({"lane": "priority"}, {}, {"lane": "idle"}):
+        call = _call("send_message", {"to": "b/s2", "message": "hi", **args})
+        reply = await handle_message(FakeRouter(), call, peers)
+        assert reply["result"]["isError"] is False
+    assert peers.lanes == ["priority", "regular", "idle"]
+    call = _call("send_message", {"to": "b/s2", "message": "hi", "lane": "fast"})
+    reply = await handle_message(FakeRouter(), call, peers)
+    assert reply["result"]["isError"] is True
+    assert reply["result"]["content"][0]["text"].startswith("invalid arguments")
+    assert "lane" in reply["result"]["content"][0]["text"]
+    assert len(peers.lanes) == 3

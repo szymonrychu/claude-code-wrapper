@@ -6,7 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, Literal, get_args
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Request
@@ -19,16 +19,11 @@ from claude_code_wrapper.manager import InvalidState
 from claude_code_wrapper.prompts import resolve_prompt
 from claude_code_wrapper.router import SessionRouter, TurnVetoed
 from claude_code_wrapper.session import TurnRejected
-from claude_code_wrapper.turns import METADATA_MAX_BYTES
+from claude_code_wrapper.turns import METADATA_MAX_BYTES, Lane
 from claude_code_wrapper.workdir import FileWriteError
 
 router = APIRouter()
 
-#: How a message reaches a session (`TurnRequest.lane`): `idle` waits for no turn to be running
-#: (409 busy otherwise), `regular` is typed into a running turn for claude to queue, `priority`
-#: interrupts the running turn first.
-Lane = Literal["idle", "regular", "priority"]
-LANES: tuple[str, ...] = get_args(Lane)
 #: A client message id: it is pasted into claude's input as a marker, so the charset is tight.
 MESSAGE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 #: Refusals a `regular` or `priority` delivery answers 409 (claude is not live), not 503.

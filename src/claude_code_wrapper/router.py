@@ -1259,6 +1259,8 @@ class SessionRouter(SessionListener):
                 "new_turn": new_turn,
             },
         )
+        if self.peer_inbox is not None and turn_id is not None:
+            self.peer_inbox.message_delivered(message.message_id, turn_id)
 
     async def _on_assistant_text(self, ev: AssistantText) -> None:
         self._emit(

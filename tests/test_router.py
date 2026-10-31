@@ -79,6 +79,17 @@ class StubSession:
         if self.reject:
             raise TurnRejected(self.reject)
 
+    def check_live(self):
+        if self.reject in ("booting", "dead"):
+            raise TurnRejected(self.reject)
+
+    def check_no_dialog(self):
+        """The stub never shows a dialog."""
+
+    def check_queueable(self):
+        """The stub has no PTY to type a message into a running turn."""
+        raise TurnRejected("busy")
+
     async def submit(
         self,
         text,

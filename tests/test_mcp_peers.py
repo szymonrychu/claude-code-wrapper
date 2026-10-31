@@ -37,6 +37,7 @@ class FakePeers:
     def __init__(self) -> None:
         self.listed: list[tuple[str, str | None]] = []
         self.sent: list[tuple[str, str, str, bool]] = []
+        self.lanes: list[str] = []
         self.error: PeerError | None = None
         self.rows = [
             {"address": "b/s2", "instance": "b", "session_id": "s2", "name": "n", "cwd": "/w"}
@@ -46,10 +47,18 @@ class FakePeers:
         self.listed.append((caller_session, instance))
         return self.rows
 
-    async def send(self, caller_session: str, to: str, message: str, notify_when_idle: bool) -> str:
+    async def send(
+        self,
+        caller_session: str,
+        to: str,
+        message: str,
+        notify_when_idle: bool,
+        lane: str = "regular",
+    ) -> str:
         if self.error is not None:
             raise self.error
         self.sent.append((caller_session, to, message, notify_when_idle))
+        self.lanes.append(lane)
         return "msg_abc"
 
 
@@ -132,7 +141,7 @@ async def test_send_message_success() -> None:
         "content": [
             {
                 "type": "text",
-                "text": "Sent msg_abc to b/s2. A reply, if any, arrives as a new turn.",
+                "text": "Sent msg_abc to b/s2. A reply, if any, arrives here as a message.",
             }
         ],
         "isError": False,

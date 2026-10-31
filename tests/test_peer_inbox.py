@@ -31,12 +31,15 @@ RECEIVED_KEYS = {"msg_id", "from", "kind", "bytes", "message", "queued"}
 DELIVERED_KEYS = {"msg_id", "from", "kind", "turn_id", "result"}
 
 
-def msg(n: int | str, text: str | None = None, sender: str = FROM) -> InboxItem:
+def msg(n: int | str, text: str | None = None, sender: str = FROM, lane: str = "idle") -> InboxItem:
+    """A peer message on the idle lane: these tests pin delivery as a new turn on a ready
+    session (the regular and priority lanes are covered in test_lanes.py)."""
     return InboxItem(
         kind="message",
         from_address=sender,
         msg_id=f"msg_{int(n):016x}" if isinstance(n, int) else n,
         text=text if text is not None else f"hello {n}",
+        lane=lane,
     )
 
 
