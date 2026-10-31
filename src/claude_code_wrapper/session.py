@@ -392,6 +392,9 @@ class SessionListener:
     def on_turn_end(self, record: Any) -> None:
         """A turn reached a terminal state."""
 
+    def on_prompt_dropped(self, message: Any, reason: str) -> None:
+        """A message typed into a turn (`queue_prompt`) will never be read: `reason`."""
+
 
 class FatalScanner:
     """Finds fatal patterns in a stream of output chunks, each occurrence exactly once.
@@ -460,6 +463,9 @@ class QueuedMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
     #: The turn the model read it in, once its marker reached the transcript.
     delivered_turn_id: str | None = None
+    #: Why it will never be read (`_drop_messages`): not_delivered, claude_exited,
+    #: session_stopped.
+    dropped: str | None = None
 
 
 @dataclass
@@ -792,6 +798,7 @@ class Session:
         self._exited.set()  # a booting claude: the boot wait sees this
         if self._stopping or self.state not in ("ready", "busy"):
             return
+        self._drop_messages("claude_exited")  # claude's input queue went with it
         if self._dialog_restart:
             self._dialog_restart = False
             log.warning("session %s: relaunching claude over an open dialog", self.spec.session_id)
@@ -930,6 +937,7 @@ class Session:
         if self.state == "stopped":
             return
         self._stopping = True
+        self._drop_messages("session_stopped")
         record = self._turn
         if record is not None:
             if cause == "shutdown":
@@ -1179,8 +1187,24 @@ class Session:
     def undelivered(self, turn_id: str) -> list[QueuedMessage]:
         """Messages typed into the turn `turn_id` whose marker has not been read yet."""
         return [
-            m for m in self._queued.values() if m.turn_id == turn_id and m.delivered_turn_id is None
+            m
+            for m in self._queued.values()
+            if m.turn_id == turn_id and m.delivered_turn_id is None and m.dropped is None
         ]
+
+    def _drop_messages(self, reason: str, *, keep_turn: str | None = None) -> None:
+        """Give up on every message not read yet (but those typed into `keep_turn`)."""
+        for message in self._queued.values():
+            if message.delivered_turn_id or message.dropped or message.turn_id == keep_turn:
+                continue
+            message.dropped = reason
+            log.info(
+                "session %s: message %s dropped (%s)",
+                self.spec.session_id,
+                message.message_id,
+                reason,
+            )
+            self._notify("on_prompt_dropped", message, reason)
 
     def deliver_message(self, message_id: str) -> tuple[QueuedMessage, bool] | None:
         """The message's marker reached the transcript: `(message, new_turn)`, else None.
@@ -1192,7 +1216,7 @@ class Session:
         already delivered id, or when claude is not live or a command run holds the slot.
         """
         message = self._queued.get(message_id)
-        if message is None or message.delivered_turn_id is not None:
+        if message is None or message.delivered_turn_id is not None or message.dropped:
             return None
         record = self._turn
         if self.state == "busy" and record is not None:
@@ -1415,6 +1439,9 @@ class Session:
         )
         self._persist(record)
         self._notify("on_turn_end", record)
+        # claude sends what is still queued when a turn ends, so a message typed into an earlier
+        # turn that no turn read by now never reached the model.
+        self._drop_messages("not_delivered", keep_turn=record.turn_id)
         return True
 
     def _persist(self, record: TurnRecord, *, append: bool = True) -> None:

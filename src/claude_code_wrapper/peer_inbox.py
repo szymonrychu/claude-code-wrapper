@@ -385,6 +385,12 @@ class PeerInbox:
         if item is not None:
             self._turns.setdefault(turn_id, []).append(item)
 
+    def message_dropped(self, message_id: str) -> None:
+        """A peer message typed into a running turn will never be read: outcome `dropped`."""
+        item = self._typed.pop(message_id, None)
+        if item is not None:
+            self._outcome(item, "dropped", None)
+
     def turn_finished(self, record: TurnRecord) -> None:
         """A turn reached a terminal state (synchronous: called on the Stop hook path).
 

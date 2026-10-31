@@ -481,7 +481,10 @@ session, the turn it was typed into ended first and claude ran the message as a 
 that becomes a new `running` turn (origin, text, `callbackUrl` and `metadata` of the message;
 `turn_started`, then `prompt_delivered` with `new_turn: true`), completed by claude's next Stop
 like any turn. `onTurn` does not fire again for it. A marker read twice, or for an unknown id,
-changes nothing.
+changes nothing. A message that will never be read gets a `prompt_dropped` event instead: claude
+exited or the session stopped before its marker came (claude's input queue goes with it), or a
+later turn ended without reading it (claude sends what is still queued when a turn ends, so it
+had its chance). A peer message dropped this way gets the `dropped` outcome.
 
 While a dialog is open in claude (a permission prompt, an `AskUserQuestion` question), typing
 would pick an answer and an ESC would decline it, so `regular` and `priority` deliveries are
@@ -1516,6 +1519,19 @@ took it within the running turn; true: claude ran it after that turn ended, as t
 ```
 event: prompt_delivered
 data: {"seq":16,"ts":"2026-10-20T09:02:13.000Z","session_id":"ses_3f9a1c0b7d42","type":"prompt_delivered","data":{"message_id":"msg-1k9x2m0q5aa1","lane":"regular","turn_id":"turn-1k9x2m0q4zw8","new_turn":false}}
+```
+
+### `prompt_dropped`
+
+Emitted when a message typed into a running turn (`prompt_queued`) will never reach the model,
+once per message (see "Delivery lanes" under `POST /v1/sessions/{id}/turns`).
+
+`data`: `message_id`, `lane`, `turn_id` (the turn it was typed into), `reason`: `claude_exited`,
+`session_stopped` or `not_delivered` (a later turn ended and none read it).
+
+```
+event: prompt_dropped
+data: {"seq":17,"ts":"2026-10-20T09:02:20.000Z","session_id":"ses_3f9a1c0b7d42","type":"prompt_dropped","data":{"message_id":"msg-1k9x2m0q5aa1","lane":"regular","turn_id":"turn-1k9x2m0q4zw8","reason":"session_stopped"}}
 ```
 
 ### `assistant_text`

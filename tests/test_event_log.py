@@ -19,6 +19,7 @@ def test_event_types_exact():
         "turn_resumed",
         "prompt_queued",
         "prompt_delivered",
+        "prompt_dropped",
         "assistant_text",
         "thinking",
         "usage",

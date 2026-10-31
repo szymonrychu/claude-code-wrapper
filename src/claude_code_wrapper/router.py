@@ -1273,6 +1273,19 @@ class SessionRouter(SessionListener):
                 if probe is not None and self._metrics is not None:
                     self._metrics.probe_outcome("delivered")
 
+    def on_prompt_dropped(self, message: Any, reason: str) -> None:
+        self._emit(
+            "prompt_dropped",
+            {
+                "message_id": message.message_id,
+                "lane": message.lane,
+                "turn_id": message.turn_id,
+                "reason": reason,
+            },
+        )
+        if self.peer_inbox is not None:
+            self.peer_inbox.message_dropped(message.message_id)
+
     def _message_delivered(self, message_id: str) -> None:
         """A queued message reached the model: in the running turn, or as a new turn."""
         session = self.session

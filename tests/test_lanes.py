@@ -644,3 +644,46 @@ async def test_priority_keeps_the_slot_between_interrupt_and_submit(world: World
     await world.wait_turn(m, sid)
     assert [t.text for t in m.open_turns(sid).list()] == ["slow one", "urgent"]
     assert not router.session.reserved
+
+
+async def test_undelivered_messages_are_dropped(harness: Harness) -> None:  # noqa: F811
+    dropped: list[tuple[str, str]] = []
+    harness.listener.on_prompt_dropped = lambda m, reason: dropped.append((m.message_id, reason))
+    scenario = {"turns": [{"match": "slow", "steps": [{"sleep": 1.0}, {"text": "done"}]}]}
+    session = await harness.start(scenario)
+    first = await session.submit("slow one")
+    # Without queue_input the fake drops what is typed while busy: no marker ever comes.
+    lost = await session.queue_prompt("lost", lane="regular", origin="client")
+    stop = await harness.next_stop()
+    session.complete(stop, marker_turn_id=first.turn_id)
+    assert dropped == []  # claude may still send it after the turn it was typed into
+    second = await session.submit("slow two")
+    session.complete(await harness.next_stop(2), marker_turn_id=second.turn_id)
+    assert dropped == [(lost.message_id, "not_delivered")]
+    assert session.undelivered(first.turn_id) == []
+    # A stop drops what is still queued in the running turn.
+    third = await session.submit("slow three")
+    gone = await session.queue_prompt("gone", lane="regular", origin="client")
+    assert third.state == "running"
+    await session.stop(grace=1.0)
+    assert dropped[-1] == (gone.message_id, "session_stopped")
+    assert len(dropped) == 2
+
+
+async def test_prompt_dropped_event_and_peer_outcome(world: World) -> None:
+    outcomes: list[tuple[str, str]] = []
+
+    async def on_outcome(item, status, record) -> None:
+        outcomes.append((item.msg_id, status))
+
+    m, sid, router, inbox = await start_peer(world, PRIORITY)
+    inbox._on_outcome = on_outcome
+    await router.submit_turn("slow one")
+    item = peer_msg(1, "ping", "regular")
+    inbox.put(item)
+    await world.until(lambda: inbox.depth == 0)
+    await router.session.stop(grace=1.0)
+    (ev,) = [e["data"] for e in world.events(sid) if e["type"] == "prompt_dropped"]
+    assert ev["reason"] == "session_stopped" and ev["lane"] == "regular"
+    await world.until(lambda: outcomes, what="the dropped outcome")
+    assert outcomes == [(item.msg_id, "dropped")]
