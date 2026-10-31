@@ -62,6 +62,9 @@ class StubSession:
     def note_activity(self):
         self.calls.append(("note_activity",))
 
+    def note_hook(self):
+        """The lanes' dialog clock (not recorded: no test here reads it)."""
+
     def record_tool_call(self):
         self.calls.append(("record_tool_call",))
 

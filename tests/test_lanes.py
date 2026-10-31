@@ -19,7 +19,7 @@ from test_api_turns import (  # noqa: F401 - fixtures
     client,
     stub,
 )
-from test_session_turns import Harness, harness  # noqa: F401 - fixture
+from test_session_turns import Harness, harness, wait_until  # noqa: F401 - fixture
 
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.api.turns import LANES, TurnRequest
@@ -293,3 +293,67 @@ async def test_vetoed_priority_does_not_interrupt(world: World, tmp_path) -> Non
         assert r.status_code == 403 and r.json()["error"]["code"] == "vetoed"
     assert jsonl(keys) == []
     assert router.session.current_turn is record and record.state == "running"
+
+
+# ------------------------------------------------------------------ C4: dialog refusal
+
+DIALOG = {
+    "turns": [
+        {
+            "match": "edit",
+            "steps": [
+                {"text": "Do you want to proceed?\n 1. Yes\n 2. No\n Esc to cancel"},
+                {"sleep": 30},
+            ],
+        }
+    ]
+}
+
+
+async def test_open_dialog_refuses_regular_and_priority(world: World) -> None:
+    m, sid, c = await _lane_app(world, DIALOG)
+    router = m.router(sid)
+    session = router.session
+    cfg_dir = world.session_dir(sid) / "config"
+    async with c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "edit it", "lane": "idle"})
+        running = r.json()["turn_id"]
+        await world.until(session.dialog_open, what="the permission prompt on screen")
+        writes: list[bytes] = []
+        original = session.pty._write_locked
+
+        async def spy(data: bytes) -> None:
+            writes.append(bytes(data))
+            await original(data)
+
+        setattr(session.pty, "_write_locked", spy)  # noqa: B010 - instance-level spy
+        for lane in ("regular", "priority"):
+            r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": lane})
+            assert r.status_code == 409, r.text
+            assert r.json()["error"]["code"] == "dialog_open"
+        assert writes == []  # nothing typed into the dialog, no ESC
+        assert jsonl(cfg_dir / "fake-keys.jsonl") == []
+        assert session.current_turn is not None and session.current_turn.turn_id == running
+        assert "prompt_queued" not in [e["type"] for e in world.events(sid)]
+        # A relayed hook (the tool ran: the prompt was answered) closes it.
+        session.note_hook()
+        assert not session.dialog_open()
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": "regular"})
+        assert r.status_code == 202 and r.json()["queued"] is True
+
+
+async def test_dialog_closed_by_escape_and_own_echo_ignored(harness: Harness) -> None:  # noqa: F811
+    session = await harness.start(DIALOG)
+    await session.submit("edit it")
+    await wait_until(session.dialog_open)
+    with pytest.raises(TurnRejected) as exc:
+        await session.queue_prompt("x", lane="regular", origin="client")
+    assert exc.value.reason == "dialog_open"
+    await session.send_escape()  # an ESC closes (declines) the dialog
+    assert not session.dialog_open()
+    await session.stop(grace=1.0)
+    # Text we typed ourselves that quotes a footer is not a dialog.
+    session = await harness.start({"turns": [{"match": "q", "steps": [{"sleep": 30}]}]})
+    await session.submit("q: what does Esc to cancel mean?")
+    await wait_until(lambda: session.ring.contains("Esc to cancel"))
+    assert not session.dialog_open()

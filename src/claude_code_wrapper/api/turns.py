@@ -34,12 +34,19 @@ MESSAGE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 #: Refusals a `regular` or `priority` delivery answers 409 (claude is not live), not 503.
 _LANE_CONFLICTS = frozenset({"booting", "dead"})
 
-_REJECT_STATUS = {"busy": 409, "booting": 503, "dead": 503, "slash_command": 422}
+_REJECT_STATUS = {
+    "busy": 409,
+    "booting": 503,
+    "dead": 503,
+    "slash_command": 422,
+    "dialog_open": 409,
+}
 _REJECT_TEXT = {
     "busy": "a turn is already running",
     "booting": "the session is still booting",
     "dead": "the session is not running",
     "slash_command": "slash commands go to POST /v1/sessions/{id}/commands",
+    "dialog_open": "a dialog (a permission prompt or a question) is open in claude",
 }
 
 

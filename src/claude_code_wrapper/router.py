@@ -583,6 +583,7 @@ class SessionRouter(SessionListener):
     ) -> RelayResponse:
         try:
             self.session.note_activity()
+            self.session.note_hook()
             self._track_path(payload)
             handler = {
                 "UserPromptSubmit": self._on_user_prompt_submit,
@@ -1029,6 +1030,7 @@ class SessionRouter(SessionListener):
             return Delivery(lane, record=await self.submit_turn(text, **kw))
         session = self.session
         session.check_live()
+        session.check_no_dialog()  # typing would answer it, an ESC would decline it
         if lane == "priority" and session.current_turn is not None:
             return Delivery(lane, record=await self._priority(text, kw))
         if session.state == "ready" and session.current_turn is None:

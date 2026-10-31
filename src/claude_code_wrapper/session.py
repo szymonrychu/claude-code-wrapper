@@ -514,6 +514,13 @@ class Session:
         self._dialog_hits = 0
         self._hits_at_escape = 0
         self._last_escape = float("-inf")
+        #: Dialog footers on screen at any time (permission prompts, questions), for the lanes:
+        #: when the last one was seen, the last relayed hook, and the last text typed (squashed;
+        #: its echo is not a dialog).
+        self._ui_dialogs = FatalScanner(spec.sessions.commands.dialog_patterns)
+        self._ui_dialog_at = float("-inf")
+        self._last_hook = float("-inf")
+        self._typed = ""
         #: Set while `restart_for_dialog` closes claude, so its exit takes the dialog relaunch.
         self._dialog_restart = False
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -690,6 +697,8 @@ class Session:
         pty.ring = self.ring  # one screen across relaunches; reset() empties it in between
         self._scanner.reset()
         self._dialogs.reset()
+        self._ui_dialogs.reset()
+        self._ui_dialog_at = float("-inf")
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._exited = asyncio.Event()
         self.pty = pty
@@ -760,6 +769,9 @@ class Session:
         self.last_output = self.clock()
         self._notify("on_output", text)
         self._dialog_hits += len(self._dialogs.feed(text))
+        for pattern in self._ui_dialogs.feed(text):
+            if _squash(pattern) not in self._typed:
+                self._ui_dialog_at = self.last_output
         for pattern in self._scanner.feed(text):
             self.last_fatal = pattern
             log.warning("session %s: fatal pattern %r on screen", self.spec.session_id, pattern)
@@ -890,6 +902,7 @@ class Session:
             self._commands_turn = None
         self._set_state("busy")
         try:
+            self._typed = _squash(text)
             await pty.send_prompt(
                 self._with_marker(text, record), self.spec.boot.submit_delay_seconds
             )
@@ -1025,6 +1038,7 @@ class Session:
         self._arm_watch(record)
         log.info("session %s: turn %s submitted (%s)", self.spec.session_id, record.turn_id, origin)
         try:
+            self._typed = _squash(text)
             await pty.send_prompt(
                 self._with_marker(text, record), self.spec.boot.submit_delay_seconds
             )
@@ -1040,14 +1054,35 @@ class Session:
         """Raise `TurnRejected(booting|dead)` unless claude is live (no side effects)."""
         self._writable_pty()
 
+    def note_hook(self) -> None:
+        """A claude hook was relayed: claude is past any dialog it showed before it."""
+        self._last_hook = self.clock()
+
+    def dialog_open(self) -> bool:
+        """A dialog footer (`sessions.commands.dialog_patterns`: a permission prompt, a
+        question) appeared on screen after the last relayed hook and the last ESC.
+
+        Typing into it would pick an answer, and an ESC would decline it, so the lanes refuse
+        to write while it is open. Footers that the last typed text quotes are its echo.
+        """
+        return self.state in ("ready", "busy") and self._ui_dialog_at > max(
+            self._last_hook, self._last_escape
+        )
+
+    def check_no_dialog(self) -> None:
+        """Raise `TurnRejected("dialog_open")` while `dialog_open` (no side effects)."""
+        if self.dialog_open():
+            raise TurnRejected("dialog_open")
+
     def check_queueable(self) -> PtyProcess:
         """The PTY a message may be typed into: a live claude running a turn of its own.
 
-        Raises `TurnRejected` booting or dead, else busy when no turn runs or a slash command
-        run, its command phase or a crash relaunch holds the slot (typing then would reach a
-        command line or a dialog, not the model). No side effects.
+        Raises `TurnRejected` booting or dead, then dialog_open, else busy when no turn runs
+        or a slash command run, its command phase or a crash relaunch holds the slot (typing
+        then would reach a command line or a dialog, not the model). No side effects.
         """
         pty = self._writable_pty()
+        self.check_no_dialog()
         record = self._turn
         if (
             self.state != "busy"
@@ -1096,6 +1131,7 @@ class Session:
             del self._queued[next(iter(self._queued))]
         prompt = f"{text}\n\n<!-- ccw message: {message.message_id} -->"
         try:
+            self._typed = _squash(prompt)
             await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
         except PtyClosed as exc:
             self._queued.pop(message.message_id, None)
@@ -1400,6 +1436,7 @@ class Session:
         pty = self._writable_pty()
         log.info("session %s: typing %r", self.spec.session_id, line)
         try:
+            self._typed = _squash(line)
             await pty.send_prompt(line, self.spec.boot.submit_delay_seconds)
         finally:
             self.last_input = self.clock()
@@ -1599,6 +1636,7 @@ class Session:
             del self._probes[next(iter(self._probes))]
         prompt = f"{probe.text}\n\n<!-- ccw probe: {probe.probe_id} -->"
         try:
+            self._typed = _squash(prompt)
             await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
         except PtyClosed as exc:
             self._probes.pop(probe.probe_id, None)

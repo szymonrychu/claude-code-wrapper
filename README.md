@@ -436,6 +436,7 @@ session), that turn's id and the message id:
 | 404 | `not_found` | unknown session |
 | 409 | `busy` | `idle` lane: a turn is already running; any lane: a slash command run holds the session |
 | 409 | `booting`, `dead` | `regular` or `priority` lane: claude is not live (the session is booting, stopped, failed or dead) |
+| 409 | `dialog_open` | `regular` or `priority` lane: a dialog is open in claude, see "Delivery lanes" |
 | 413 | `too_large` | prompt over `limits.max_prompt_bytes`, `metadata` over 16 KiB, or `files` over the per-file or count limits |
 | 422 | `slash_command` | the text is a slash command; send it to `POST /v1/sessions/{id}/commands` (the same code answers `POST /v1/sessions/{id}/probe`) |
 | 422 | `invalid_request` | invalid body (including `metadata` that is not an object), or `unknown_template`, `unknown_variable`, `missing_variable` |
@@ -465,6 +466,14 @@ Delivery lanes (`lane`):
   own and keeps at least 1 s from the previous ESC (two ESCs close together at an empty prompt
   open claude's rewind menu), so two priority deliveries in a row wait for each other. A slash
   command run or a turn's command phase is never interrupted this way: `409 busy`.
+
+While a dialog is open in claude (a permission prompt, an `AskUserQuestion` question), typing
+would pick an answer and an ESC would decline it, so `regular` and `priority` deliveries are
+refused with `409 dialog_open` and nothing is written. A dialog counts as open from the moment
+one of the `sessions.commands.dialog_patterns` footers (`Esc to cancel`, `Enter to confirm`, ...)
+appears on screen until the next relayed claude hook (the tool ran or the turn ended) or the next
+ESC (`POST .../interrupt`); a footer that the last typed text itself quotes is its echo, not a
+dialog. The `idle` lane is not affected.
 
 Crash during a turn: when claude exits mid-turn it is relaunched (with `--resume` when the
 transcript exists) within `sessions.max_restarts`. By default the turn fails with `claude_exited`
@@ -2699,6 +2708,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `command_not_allowed` | 403 | the command is not in the session's client allowlist (`sessions.commands.client`) |
 | `method_not_allowed` | 405 | the route exists but not for this method |
 | `busy` | 409 | a turn is already running in the session |
+| `dialog_open` | 409 | a `regular` or `priority` turn delivery while a dialog (a permission prompt or a question) is open in claude |
 | `session_not_active` | 409 | the session exists but is not running, so it has no terminals (terminal create or attach) |
 | `terminal_limit` | 409 | `limits.terminals_max` terminals already exist in this service process |
 | `terminal_not_found` | 404 | unknown terminal id in the session (terminal delete or attach) |
@@ -2726,8 +2736,8 @@ FastAPI's `{"detail": ...}` body instead.
 | `command_queue_full` | 429 | the session already has the maximum of queued commands |
 | `too_many_sessions` | 429 | `sessions.max_sessions` reached |
 | `create_failed` | 500 | a create or resume step failed; the message names the step |
-| `booting` | 503 | the session is still booting |
-| `dead` | 503 | the session is stopped, failed or dead and cannot take input |
+| `booting` | 503 | the session is still booting (409 for a `regular` or `priority` turn delivery) |
+| `dead` | 503 | the session is stopped, failed or dead and cannot take input (409 for a `regular` or `priority` turn delivery) |
 | `not_ready` | 503 | `/readyz` before startup finished |
 | `http_error` | any | any other HTTP error status raised by the framework |
 
