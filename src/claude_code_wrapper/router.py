@@ -42,6 +42,7 @@ from .pty_proc import PtyClosed
 from .redact import Redactor
 from .session import (
     ESC_SPACING_SECONDS,
+    QueuedMessage,
     Session,
     SessionListener,
     TurnRejected,
@@ -187,6 +188,20 @@ class TurnVetoed(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+@dataclass
+class Delivery:
+    """What a lane delivery did: started a new turn (`record`) or typed the text into the
+    running turn (`message`); exactly one is set."""
+
+    lane: str
+    record: TurnRecord | None = None
+    message: QueuedMessage | None = None
+
+    @property
+    def queued(self) -> bool:
+        return self.message is not None
 
 
 @dataclass
@@ -993,6 +1008,101 @@ class SessionRouter(SessionListener):
         )
         self.ensure_tailing()
         return record
+
+    async def deliver(
+        self,
+        text: str,
+        *,
+        lane: str,
+        files: Mapping[str, str] | None = None,
+        callback_url: str | None = None,
+        origin: Origin = "client",
+        metadata: Mapping[str, Any] | None = None,
+        message_id: str | None = None,
+    ) -> Delivery:
+        """Deliver `text` on `lane`: `idle` is `submit_turn` (busy is refused); `regular`
+        starts a turn on an idle session and otherwise types the text into the running turn
+        (`queue_prompt`). Raises `TurnRejected` (slash_command, booting, dead, busy when
+        neither a turn can start nor a running turn take the text) or `TurnVetoed`.
+        """
+        if slash_command(text) is not None:
+            raise TurnRejected("slash_command")
+        kw = {"files": files, "callback_url": callback_url, "origin": origin, "metadata": metadata}
+        if lane == "idle":
+            return Delivery(lane, record=await self.submit_turn(text, **kw))
+        session = self.session
+        session.check_live()
+        if session.state == "ready" and session.current_turn is None:
+            try:
+                return Delivery(lane, record=await self.submit_turn(text, **kw))
+            except TurnRejected as exc:
+                if exc.reason != "busy":
+                    raise
+        message = await self._queue_prompt(text, lane=lane, message_id=message_id, **kw)
+        return Delivery(lane, message=message)
+
+    async def _queue_prompt(
+        self,
+        text: str,
+        *,
+        lane: str,
+        files: Mapping[str, str] | None,
+        callback_url: str | None,
+        origin: Origin,
+        metadata: Mapping[str, Any] | None,
+        message_id: str | None,
+    ) -> QueuedMessage:
+        """onTurn (it may veto), the files, then the paste into the running turn."""
+        session = self.session
+        session.check_queueable()  # a doomed delivery fires no hooks
+        running = session.current_turn
+        assert running is not None
+        outcome = await self._fire(
+            "onTurn",
+            {
+                "text": text,
+                "files": list((files or {}).keys()),
+                "origin": origin,
+                "metadata": dict(metadata or {}),
+                "lane": lane,
+                "queued": True,
+            },
+            turn_id=running.turn_id,
+        )
+        if outcome.decision == "deny":
+            reason = outcome.reason or DEFAULT_DENY_REASON
+            self._emit("turn_rejected", {"reason": reason})
+            raise TurnVetoed(reason)
+        session.check_queueable()
+        if session.current_turn is not running:
+            raise TurnRejected("busy")  # the turn ended while the hook ran
+        if files:
+            safe_write_files(
+                self.info.workdir,
+                files,
+                max_bytes=self._cfg.limits.max_file_bytes,
+                max_files=self._cfg.limits.max_files_per_turn,
+            )
+        self._annotate(running, outcome)
+        message = await session.queue_prompt(
+            text,
+            lane=lane,
+            origin=origin,
+            message_id=message_id,
+            callback_url=callback_url,
+            metadata=dict(metadata or {}),
+        )
+        self._emit_user_message(message.turn_id, origin, text, list((files or {}).keys()))
+        self._emit(
+            "prompt_queued",
+            {
+                "message_id": message.message_id,
+                "lane": lane,
+                "turn_id": message.turn_id,
+                "origin": origin,
+            },
+        )
+        return message
 
     async def interrupt(self) -> str | None:
         session = self.session

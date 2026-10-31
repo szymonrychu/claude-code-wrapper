@@ -79,6 +79,7 @@ from .turns import (
     TurnRecord,
     TurnState,
     merged_annotations,
+    new_message_id,
     new_probe_id,
     new_turn_id,
     now_iso,
@@ -121,6 +122,8 @@ TURN_WATCH_MAX_SLEEP = 0.25
 ACTIVITY_PERSIST_SECONDS = 5.0
 #: Probes remembered for `get_probe`; the oldest are forgotten first.
 MAX_PROBES = 100
+#: Queued messages remembered for `queued_message`; the oldest are forgotten first.
+MAX_QUEUED = 100
 
 STATES = ("booting", "ready", "busy", "stopping", "stopped", "dead")
 PUBLIC_STATES = ("creating", "ready", "busy", "stopped", "failed", "dead")
@@ -442,6 +445,22 @@ def _age_seconds(record: TurnRecord) -> float:
 
 
 @dataclass
+class QueuedMessage:
+    """A message typed into a running turn (`queue_prompt`): claude queues it and hands it to
+    the model at its next tool boundary, or runs it as its own turn when the turn ends first."""
+
+    message_id: str
+    lane: str
+    text: str
+    origin: Origin
+    #: The turn that was running when the message was typed.
+    turn_id: str
+    queued_at: str
+    callback_url: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class _PendingInterrupt:
     """An interrupt in flight for `record`; `final` is the state the turn ends in."""
 
@@ -518,6 +537,7 @@ class Session:
         self._turn_started = clock()
         self._activity_persisted = self._last_activity
         self._probes: dict[str, Probe] = {}
+        self._queued: dict[str, QueuedMessage] = {}
         if resume_turn is not None:
             # The slot is taken from the first boot; `start` continues or fails the turn.
             resume_turn.interrupted = None
@@ -1013,6 +1033,84 @@ class Session:
                 record, "failed", error="claude_exited", next_state="ready" if pty.alive else None
             )
         return record
+
+    def check_live(self) -> None:
+        """Raise `TurnRejected(booting|dead)` unless claude is live (no side effects)."""
+        self._writable_pty()
+
+    def check_queueable(self) -> PtyProcess:
+        """The PTY a message may be typed into: a live claude running a turn of its own.
+
+        Raises `TurnRejected` booting or dead, else busy when no turn runs or a slash command
+        run, its command phase or a crash relaunch holds the slot (typing then would reach a
+        command line or a dialog, not the model). No side effects.
+        """
+        pty = self._writable_pty()
+        record = self._turn
+        if (
+            self.state != "busy"
+            or record is None
+            or self._command_active
+            or self._commands_turn is not None
+            or self._held is record
+        ):
+            raise TurnRejected("busy")
+        return pty
+
+    async def queue_prompt(
+        self,
+        text: str,
+        *,
+        lane: str,
+        origin: Origin,
+        message_id: str | None = None,
+        callback_url: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> QueuedMessage:
+        """Type `text` into the running turn: paste with a message marker, then one CR.
+
+        No ESC and no turn marker: claude queues the text (Enter while busy) and passes it to
+        the model within the same turn, so the turn's Stop still completes the running record.
+        Raises `TurnRejected` (slash_command first, then `check_queueable`); a write to a
+        claude that exited raises `TurnRejected("dead")`.
+        """
+        if slash_command(text) is not None:
+            raise TurnRejected("slash_command")
+        pty = self.check_queueable()
+        record = self._turn
+        assert record is not None
+        message = QueuedMessage(
+            message_id=message_id or new_message_id(),
+            lane=lane,
+            text=text,
+            origin=origin,
+            turn_id=record.turn_id,
+            queued_at=now_iso(),
+            callback_url=callback_url,
+            metadata=dict(metadata or {}),
+        )
+        self._queued[message.message_id] = message
+        while len(self._queued) > MAX_QUEUED:
+            del self._queued[next(iter(self._queued))]
+        prompt = f"{text}\n\n<!-- ccw message: {message.message_id} -->"
+        try:
+            await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
+        except PtyClosed as exc:
+            self._queued.pop(message.message_id, None)
+            raise TurnRejected("dead") from exc
+        finally:
+            self.last_input = self.clock()
+        log.info(
+            "session %s: message %s queued into %s (%s)",
+            self.spec.session_id,
+            message.message_id,
+            record.turn_id,
+            lane,
+        )
+        return message
+
+    def queued_message(self, message_id: str) -> QueuedMessage | None:
+        return self._queued.get(message_id)
 
     def _with_marker(self, text: str, record: TurnRecord) -> str:
         if not self.spec.sessions.turn_marker:

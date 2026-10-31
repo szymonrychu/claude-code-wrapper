@@ -109,7 +109,7 @@ class Node:
             while True:
                 r = await c.post(
                     f"{self.svc.url}/v1/sessions/{self.sid}/turns",
-                    json={"text": prompt},
+                    json={"text": prompt, "lane": "idle"},
                     headers=self.headers,
                 )
                 if r.status_code != 409 or asyncio.get_running_loop().time() > end:

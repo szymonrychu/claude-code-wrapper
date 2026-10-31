@@ -61,7 +61,9 @@ class Node:
         """POST a turn, retrying while the session is busy; returns the turn id."""
         end = time.monotonic() + DEADLINE
         while True:
-            resp = self.api.post(f"/v1/sessions/{self.sid}/turns", json={"text": text})
+            resp = self.api.post(
+                f"/v1/sessions/{self.sid}/turns", json={"text": text, "lane": "idle"}
+            )
             if resp.status_code != 409 or time.monotonic() > end:
                 break
             time.sleep(0.25)

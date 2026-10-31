@@ -83,6 +83,11 @@ def new_probe_id() -> str:
     return "probe-" + base36(_next_ns())
 
 
+def new_message_id() -> str:
+    """`msg-<base36 nanoseconds>`: a message typed into a running turn (a lane delivery)."""
+    return "msg-" + base36(_next_ns())
+
+
 class TurnRecord(BaseModel):
     """One turn. Mutated in place by its session and `put` to the store after every change."""
 

@@ -409,12 +409,20 @@ Request body (exactly one of `text` and `template`):
 | `files` | object (path to content) | no | files written into the workdir before the prompt is pasted; relative paths only, limited by `limits.max_files_per_turn` and `limits.max_file_bytes` |
 | `callbackUrl` | string | no | `http`/`https` URL that receives this turn's terminal-state callback (and its questions); overrides the session's `callbackUrl` |
 | `metadata` | object | no | client-supplied JSON object kept on the turn record (`metadata`) and given to `onTurn` hooks as `data.metadata`, so hooks can gate on it; at most 16 KiB serialised |
-| `lane` | string | no | `idle`, `regular` (default) or `priority`: how the message reaches the session; any other value is `422 invalid_request` |
+| `lane` | string | no | `idle`, `regular` (default) or `priority`: how the message reaches the session, see "Delivery lanes" below; any other value is `422 invalid_request` |
+| `message_id` | string | no | id of the message when it is typed into a running turn (`queued: true`); `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`, generated (`msg-...`) when absent |
 
-Response `202`:
+Response `202`, a new turn:
 
 ```json
-{"turn_id": "turn-1k9x2m0q4zw8", "state": "running"}
+{"turn_id": "turn-1k9x2m0q4zw8", "state": "running", "lane": "regular", "queued": false}
+```
+
+or, when the text was typed into the running turn (`regular` or `priority` lane on a busy
+session), that turn's id and the message id:
+
+```json
+{"turn_id": "turn-1k9x2m0q4zw8", "state": "running", "lane": "regular", "queued": true, "message_id": "msg-1k9x2m0q5aa1"}
 ```
 
 | Status | Code | When |
@@ -426,12 +434,28 @@ Response `202`:
 | 401 | `unauthorized` | missing or wrong token |
 | 403 | `vetoed` | a blocking `onTurn` action denied (a `turn_rejected` event is logged) |
 | 404 | `not_found` | unknown session |
-| 409 | `busy` | a turn is already running |
+| 409 | `busy` | `idle` lane: a turn is already running; any lane: a slash command run holds the session |
+| 409 | `booting`, `dead` | `regular` or `priority` lane: claude is not live (the session is booting, stopped, failed or dead) |
 | 413 | `too_large` | prompt over `limits.max_prompt_bytes`, `metadata` over 16 KiB, or `files` over the per-file or count limits |
 | 422 | `slash_command` | the text is a slash command; send it to `POST /v1/sessions/{id}/commands` (the same code answers `POST /v1/sessions/{id}/probe`) |
 | 422 | `invalid_request` | invalid body (including `metadata` that is not an object), or `unknown_template`, `unknown_variable`, `missing_variable` |
-| 503 | `booting` | the session is still booting |
-| 503 | `dead` | the session is stopped, failed or dead |
+| 503 | `booting` | `idle` lane: the session is still booting |
+| 503 | `dead` | `idle` lane: the session is stopped, failed or dead |
+
+Delivery lanes (`lane`):
+
+- `idle`: the message starts a new turn; a busy session refuses it with `409 busy`, so the
+  caller queues it and retries once the session is ready.
+- `regular` (default): on an idle session the message starts a new turn, exactly as `idle`.
+  While a turn runs it is typed into claude instead: a bracketed paste of the text with a
+  `<!-- ccw message: <message_id> -->` marker, then one CR, and no ESC. claude queues it and hands
+  it to the model at the next tool boundary within the same turn (or, when the model is only
+  writing, once the turn ends), so the running turn keeps its single Stop. The answer is `202`
+  with `queued: true`, the running turn's id and the `message_id`; `onTurn` fires first with
+  `lane` and `queued: true` (a `deny` is `403 vetoed`) and its annotations go to the running
+  turn, `files` are written, then a `user_message` (the running turn's `turn_id`) and a
+  `prompt_queued` event are logged. A session busy with a slash command run (or the command
+  phase of a turn) refuses it with `409 busy`, and claude that is not live with `409`.
 
 Crash during a turn: when claude exits mid-turn it is relaunched (with `--resume` when the
 transcript exists) within `sessions.max_restarts`. By default the turn fails with `claude_exited`
@@ -1432,6 +1456,18 @@ event: turn_resumed
 data: {"seq":14,"ts":"2026-10-20T09:02:10.000Z","session_id":"ses_3f9a1c0b7d42","type":"turn_resumed","data":{"turn_id":"turn-1k9x2m0q4zw8","restart":1,"cause":"restart"}}
 ```
 
+### `prompt_queued`
+
+Emitted when a `regular` or `priority` delivery typed a message into the running turn (see
+"Delivery lanes" under `POST /v1/sessions/{id}/turns`). No new turn starts.
+
+`data`: `message_id`, `lane`, `turn_id` (the running turn), `origin`.
+
+```
+event: prompt_queued
+data: {"seq":15,"ts":"2026-10-20T09:02:11.000Z","session_id":"ses_3f9a1c0b7d42","type":"prompt_queued","data":{"message_id":"msg-1k9x2m0q5aa1","lane":"regular","turn_id":"turn-1k9x2m0q4zw8","origin":"client"}}
+```
+
 ### `assistant_text`
 
 Emitted for each assistant text block read from the transcript (main thread and subagents).
@@ -1868,7 +1904,9 @@ on shutdown). The `output` of each blocking action is returned in the `DELETE` r
 Trigger: the router, before the prompt is pasted (also for `initial`, `agent` and `peer` origins). Blocking:
 a `deny` vetoes the turn (`403 vetoed`, `turn_rejected` event). `data`: `text`, `files` (list of
 workdir-relative paths about to be written), `origin`, `metadata` (the submit body's object, `{}`
-when absent).
+when absent). A message typed into the running turn (a `regular` or `priority` delivery on a busy
+session) fires it too, with `turn_id` the running turn and two more fields: `lane` and
+`queued: true`; a `deny` vetoes the message, and annotations go to the running turn.
 
 ### `onTurnComplete`
 

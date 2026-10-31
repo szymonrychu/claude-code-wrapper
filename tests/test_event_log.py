@@ -17,6 +17,7 @@ def test_event_types_exact():
         "turn_continued",
         "turn_deferred",
         "turn_resumed",
+        "prompt_queued",
         "assistant_text",
         "thinking",
         "usage",
