@@ -48,9 +48,22 @@ async def test_missing_or_bad_meta_is_null(tmp_path) -> None:
     meta.parent.mkdir(parents=True)
     meta.write_text("not json")
     await h.router.handle_claude_hook("SubagentStart", {"agent_id": "bad", "agent_type": "x"})
-    meta = subagent_meta_path(h.transcript, "../escape")
-    await h.router.handle_claude_hook("SubagentStart", {"agent_id": "../escape", "agent_type": "x"})
-    assert [e.data["parent_tool_use_id"] for e in h.events("subagent_started")] == [None] * 3
+    assert [e.data["parent_tool_use_id"] for e in h.events("subagent_started")] == [None] * 2
+    await h.router.close()
+
+
+async def test_agent_id_cannot_reach_a_file_outside_subagents(tmp_path) -> None:
+    # A decoy meta file reachable only by walking out of `subagents/` with "..".
+    h = Harness(tmp_path)
+    evil = "x/../../../decoy"
+    path = subagent_meta_path(h.transcript, evil)
+    (path.parent.parent.parent / "subagents" / "agent-x").mkdir(parents=True)
+    decoy = h.transcript.parent / "decoy.meta.json"
+    decoy.write_text(json.dumps({"toolUseId": "toolu_DECOY"}))
+    assert json.loads(path.read_text())["toolUseId"] == "toolu_DECOY"  # the path does resolve
+    await h.router.handle_claude_hook("SubagentStart", {"agent_id": evil, "agent_type": "x"})
+    (started,) = h.events("subagent_started")
+    assert started.data["parent_tool_use_id"] is None
     await h.router.close()
 
 
