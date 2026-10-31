@@ -56,6 +56,9 @@ RATE_WINDOW_SECONDS = 60.0
 MAX_RATE_SENDERS = 1024
 #: Seconds between re-checks while an idle-runner command is queued but not yet started.
 _QUEUED_COMMAND_POLL = 0.05
+#: Seconds before retrying a delivery the session refused (`TurnRejected`): a refusal on a
+#: ready session (a dialog open, a priority delivery holding the slot) can last a while.
+REJECT_BACKOFF_SECONDS = 0.25
 
 Kind = Literal["message", "notice"]
 #: What happened to a message: `on_outcome`'s status argument.
@@ -164,6 +167,9 @@ class PeerInbox:
         self._pending = False
         self._closed = False
         self._task: asyncio.Task[None] | None = None
+        #: The last attempt ended on a `TurnRejected`: retry on a timer, not at once.
+        self._rejected = False
+        self._retry: asyncio.TimerHandle | None = None
 
     @property
     def depth(self) -> int:
@@ -276,9 +282,20 @@ class PeerInbox:
             log.error("peer inbox delivery attempt failed", exc_info=task.exception())
         if self._closed:
             return
+        if self._rejected:
+            self._rejected = False
+            if self._retry is None:
+                self._retry = asyncio.get_running_loop().call_later(
+                    REJECT_BACKOFF_SECONDS, self._retry_kick
+                )
+            return
         if self._pending or (self._items and (self._session_ready() or self._busy_pick())):
             self._pending = False
             self.kick()
+
+    def _retry_kick(self) -> None:
+        self._retry = None
+        self.kick()
 
     def _session_ready(self) -> bool:
         session = self._router.session
@@ -329,6 +346,7 @@ class PeerInbox:
             )
         except TurnRejected as exc:
             log.debug("peer inbox: %s stays queued (%s)", item.msg_id, exc.reason)
+            self._rejected = True
             return
         except TurnVetoed as exc:
             self._pop(item)
@@ -454,6 +472,9 @@ class PeerInbox:
         if self._closed:
             return []
         self._closed = True
+        if self._retry is not None:
+            self._retry.cancel()
+            self._retry = None
         task, self._task = self._task, None
         if task is not None and not task.done():
             task.cancel()

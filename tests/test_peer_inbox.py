@@ -23,6 +23,7 @@ from claude_code_wrapper.peer_inbox import (
     frame_message,
     frame_notice,
 )
+from claude_code_wrapper.session import TurnRejected
 from claude_code_wrapper.turns import TurnRecord
 
 FROM = "a/ses_0123456789ab"
@@ -572,3 +573,23 @@ async def test_idle_compact_races_pop(world):
     types = [e["type"] for e in world.events(sid)]
     assert types.index("turn_started") > types.index("command_completed")
     assert inbox.depth == 0
+
+
+async def test_rejected_delivery_backs_off_instead_of_spinning(ph):
+    # A ready session whose deliveries keep being refused (a dialog open, a priority delivery
+    # holding the slot): the inbox retries on a timer, not on every loop pass.
+    calls: list[float] = []
+
+    async def refuse(text, **kw):
+        calls.append(asyncio.get_running_loop().time())
+        raise TurnRejected("dialog_open")
+
+    ph.router.deliver = refuse  # type: ignore[method-assign]
+    ph.inbox.put(msg(1))
+    await asyncio.sleep(0.6)
+    assert 1 <= len(calls) <= 4, len(calls)
+    assert ph.inbox.depth == 1
+    # Once deliveries go through again, the item leaves on the next retry.
+    del ph.router.deliver
+    await until(lambda: ph.submits(), timeout=2.0)
+    assert ph.inbox.depth == 0
