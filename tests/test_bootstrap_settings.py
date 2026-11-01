@@ -174,3 +174,15 @@ def test_enabled_plugins_written_by_cli_preserved(tmp_path):
     (tmp_path / "settings.json").write_text(json.dumps({"enabledPlugins": {"a@b": True}}))
     doc = _render(tmp_path, _cfg(plugins={"disable": ["p@m"]}))
     assert doc["enabledPlugins"] == {"a@b": True, "p@m": False}
+
+
+def test_auto_mode_seeds_skip_auto_permission_prompt(tmp_path):
+    doc = _render(tmp_path, _cfg(claude={"permission_mode": "auto"}))
+    assert doc["permissions"]["defaultMode"] == "auto"
+    assert doc["skipAutoPermissionPrompt"] is True
+
+
+def test_bypass_mode_does_not_seed_skip_auto_permission_prompt(tmp_path):
+    doc = _render(tmp_path)
+    assert doc["permissions"]["defaultMode"] == "bypassPermissions"
+    assert "skipAutoPermissionPrompt" not in doc

@@ -178,6 +178,9 @@ def render_settings(
         deny=deny,
     )
     doc["permissions"] = permissions
+    if cfg.claude.permission_mode == "auto":
+        # Suppresses claude's auto mode opt-in dialog (user setting, nothing to answer at boot).
+        doc["skipAutoPermissionPrompt"] = True
     doc["enableAllProjectMcpServers"] = True
 
     if cfg.plugins.disable:

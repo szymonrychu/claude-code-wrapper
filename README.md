@@ -256,6 +256,8 @@ Response `201`:
   "current_turn_id": null,
   "stall_suspected_since": null,
   "last_fatal": null,
+  "permission_mode_state": null,
+  "permission_mode_reason": null,
   "restarts": 0,
   "pid": 4121,
   "context": {"used_tokens": 41200, "window_tokens": 200000, "used_percentage": 20.6, "model": "claude-sonnet-4-5", "source": "statusline", "updated_at": "2026-10-20T09:00:20.100Z"},
@@ -267,7 +269,7 @@ Response `201`:
 Snapshot fields: `state` is one of `creating`, `ready`, `busy`, `stopped`, `failed`, `dead`;
 `step` is the create/resume step last entered (on `failed`, the one that failed, with `error:
 {"step", "message"}`); `outstanding_subagents` is the number of subagents started and not yet stopped (0 for stopped and persisted sessions); `current_turn_id` is the running turn; `last_fatal` is the last fatal
-screen text; `pid` is the claude pid while alive; `env` shows set values with secrets masked as
+screen text; `permission_mode_state` is `"unavailable"` (with `permission_mode_reason`: `settings`, `plan`, `fast_mode`, `model`, `unknown` or `no_safety_verdict`) once claude printed that auto mode cannot be used, else `null` (only ever set when `claude.permission_mode` is `auto`); `pid` is the claude pid while alive; `env` shows set values with secrets masked as
 `***`. `idle_since` is the ISO timestamp of the latest transition into `ready` (boot, a turn or command
 completing, a relaunch of claude) and `null` in every other state, including stopped sessions
 loaded from disk; the orchestrator uses it to route to the agent idle the longest. It differs from
@@ -1700,6 +1702,22 @@ event: stall_suspected
 data: {"seq":19,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"stall_suspected","data":{"turn_id":"turn-1k9x2m0q4zw8"}}
 ```
 
+### `permission_mode_unavailable`
+
+Emitted once per reason when `claude.permission_mode` is `auto` and claude prints that auto mode
+cannot be used (not available for the plan or model, fast mode on, disabled by settings, or the
+server returned no safety verdict). The running turn, and every later turn until claude is
+relaunched, fails at once with `error: "permission_mode_unavailable"` instead of waiting on a
+permission prompt until `stall_suspected`. A healthy auto session emits nothing.
+
+`data`: `reason` (`settings`, `plan`, `fast_mode`, `model`, `unknown`, `no_safety_verdict`),
+`tail` (the redacted screen tail).
+
+```
+event: permission_mode_unavailable
+data: {"seq":20,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_mode_unavailable","data":{"reason":"plan","tail":"auto mode is unavailable for your plan"}}
+```
+
 ### `probe`
 
 Emitted when a liveness probe is answered.
@@ -2964,7 +2982,7 @@ claude:
 | `claude.binary` | string | `"claude"` | - | Claude Code executable to spawn. |
 | `claude.model` | string | `""` | - | Value for `--model`; empty uses Claude's default. |
 | `claude.effort` | string | `""` | - | Value for `--effort`; empty uses Claude's default. |
-| `claude.permission_mode` | string | `"bypassPermissions"` | - | Written to `settings.json` as `permissions.defaultMode`. |
+| `claude.permission_mode` | string | `"bypassPermissions"` | - | One of `default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk`; written to `settings.json` as `permissions.defaultMode`. `auto` also seeds `skipAutoPermissionPrompt: true`. |
 | `claude.extra_args` | list | `[]` | - | Extra argv appended after the service flags. `--dangerously-skip-permissions` is rejected (it adds a boot dialog). |
 | `claude.passthrough_env` | list | `[]` | - | List of env var name patterns (`fnmatch`, case-sensitive; a plain name matches only itself, `GH_*` matches by prefix) copied from the service environment into Claude's environment and the setup-command environment when present. `CCW_*` names and service-managed names are never passed, even through `*` (the refusal is logged). Warning: `*` hands every service secret to Claude; use explicit globs plus `passthrough_env_exclude`. |
 | `claude.passthrough_env_exclude` | list | `[]` | - | List of `fnmatch` patterns removing names matched by `claude.passthrough_env`, for example `["*_SECRET*", "AWS_*"]`. |
@@ -2980,7 +2998,7 @@ claude:
 | `claude.boot.idle_ready_seconds` | number | `1.5` | - | Output quiescence that counts as ready. |
 | `claude.boot.submit_delay_seconds` | number | `0.4` | - | Gap between the bracketed paste and the Enter key. |
 | `claude.boot.dialogs` | list | `[{"pattern": "Bypass Permissions mode", "keys": ["\u001b[B", "\r"], "delay_seconds": 0.6}, {"pattern": "Do you trust the files in this folder", "keys": ["\r"], "delay_seconds": 0.0}]` | - | List of `{pattern, keys: [], delay_seconds: 0.0}`: when `pattern` appears on screen, send `keys` after the delay. |
-| `claude.boot.ready_markers` | list | `["? for shortcuts", "bypass permissions on"]` | - | List of screen texts that mark the TUI as ready. |
+| `claude.boot.ready_markers` | list | `["? for shortcuts", "bypass permissions on", "auto mode on"]` | - | List of screen texts that mark the TUI as ready. |
 | `claude.boot.fatal_patterns` | list | `["API Error: 401", "API Error: 403", "Please run /login", "Credit balance is too low", "OAuth token has expired"]` | - | List of screen texts that fail the session (auth errors, no credit). |
 
 The typed Claude Code environment. Each field is the variable name lowercased; unset fields are not exported. Full semantics: [Claude Code environment](#claude-code-environment).

@@ -780,6 +780,7 @@ class SessionManager:
             boot=self.cfg.claude.boot,
             max_restarts=self.cfg.sessions.max_restarts,
             resume=resume,
+            permission_mode=self.cfg.claude.permission_mode,
             sessions=self.cfg.sessions,
             limits=self.cfg.limits,
         )
@@ -1553,6 +1554,8 @@ class SessionManager:
                 current.stall_suspected_since if current is not None else None
             ),
             "last_fatal": live.get("last_fatal"),
+            "permission_mode_state": live.get("permission_mode_state"),
+            "permission_mode_reason": live.get("permission_mode_reason"),
             "restarts": live.get("restarts", 0),
             "pid": live.get("pid"),
             "context": dict(context) if context is not None else None,

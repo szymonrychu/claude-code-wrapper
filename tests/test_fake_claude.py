@@ -937,3 +937,12 @@ def test_print_mode(env, work, scenario_file):
     log = [json.loads(x) for x in Path(env["FAKE_CLAUDE_LOG"]).read_text().splitlines()]
     assert ["-p", "ping now"] in [entry["argv"] for entry in log]
     assert any("--strict-mcp-config" in entry["argv"] for entry in log)
+
+
+def test_auto_boot_has_no_dialog_and_prints_auto_footer(spawn, tmp_path):
+    scenario = tmp_path / "auto.json"
+    scenario.write_text(json.dumps({"boot": {"mode": "auto", "min_seconds": 0.1}}))
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(scenario))
+    p.wait_for("auto mode on")
+    assert "Bypass Permissions mode" not in p.buf
+    assert "? for shortcuts" not in p.buf
