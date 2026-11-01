@@ -310,6 +310,7 @@ async def test_vetoed_priority_does_not_interrupt(world: World, tmp_path) -> Non
         assert r.status_code == 403 and r.json()["error"]["code"] == "vetoed"
     assert jsonl(keys) == []
     assert router.session.current_turn is record and record.state == "running"
+    assert [t.turn_id for t in m.open_turns(sid).list()] == [record.turn_id]  # no pending left
 
 
 # ------------------------------------------------------------------ C4: dialog refusal
@@ -541,7 +542,10 @@ async def test_peer_idle_lane_waits_for_the_turn_end(world: World) -> None:
     await asyncio.sleep(0.4)
     assert inbox.depth == 1
     assert "prompt_queued" not in [e["type"] for e in world.events(sid)]
-    await world.until(lambda: len(m.open_turns(sid).list()) == 2, what="the peer turn")
+    await world.until(
+        lambda: [t.state for t in m.open_turns(sid).list()][1:] == ["running"],
+        what="the peer turn",
+    )
     first, peer = m.open_turns(sid).list()
     assert first.turn_id == running.turn_id and peer.origin == "peer"
 
@@ -551,7 +555,10 @@ async def test_peer_priority_lane_interrupts(world: World) -> None:
     running = await router.submit_turn("slow one")
     await world.until(lambda: router.session.state == "busy")
     inbox.put(peer_msg(1, "steer now", "priority"))
-    await world.until(lambda: len(m.open_turns(sid).list()) == 2, what="the peer turn")
+    await world.until(
+        lambda: [t.state for t in m.open_turns(sid).list()][1:] == ["running"],
+        what="the peer turn",
+    )
     first, peer = m.open_turns(sid).list()
     assert first.turn_id == running.turn_id and first.state == "interrupted"
     assert peer.origin == "peer" and "steer now" in peer.text
@@ -721,4 +728,96 @@ async def test_nothing_is_typed_into_a_turn_a_priority_delivery_interrupts(world
         assert late.status_code == 409 and late.json()["error"]["code"] == "busy"
         r = await priority
         assert r.status_code == 202
+    assert "prompt_queued" not in [e["type"] for e in world.events(sid)]
+
+
+# ------------------------------------------------------------------ priority double delivery
+
+WEDGE = {
+    "turns": [
+        {"match": "wedge", "steps": [{"print": "working...\n"}]},
+        {"match": "urgent", "steps": [{"text": "on it"}]},
+    ]
+}
+
+
+async def test_priority_turn_is_recorded_pending_while_the_interrupt_is_delayed(
+    world: World,
+) -> None:
+    # The interrupt waits longer than a client's send timeout (no interrupt line comes): the
+    # turn the delivery will start is listed at once, `pending`, with its metadata, so a client
+    # that gave up can find it by its metadata instead of concluding it never arrived.
+    m, sid, c = await _lane_app(world, WEDGE, sessions={"interrupt_settle_seconds": 1.5})
+    session = m.router(sid).session
+    url = f"/v1/sessions/{sid}/turns"
+    meta = {"orch_message_id": 524}
+    async with c:
+        r = await c.post(url, json={"text": "wedge", "lane": "idle"})
+        await world.until(lambda: session.ring.contains("working..."))
+        body = {"text": "urgent", "lane": "priority", "metadata": meta, "message_id": "orch-524"}
+        priority = asyncio.ensure_future(c.post(url, json=body))
+        await world.until(lambda: session.reserved)
+        with pytest.raises(TimeoutError):  # a client timeout shorter than the interrupt
+            await asyncio.wait_for(asyncio.shield(priority), 0.3)
+        listed = (await c.get(url)).json()["turns"]
+        assert [t["state"] for t in listed] == ["running", "pending"]
+        pending_id = listed[-1]["turn_id"]
+        record = (await c.get(f"{url}/{pending_id}")).json()
+        assert record["state"] == "pending" and record["metadata"] == meta
+        assert record["text"] == "urgent"
+        r = await priority
+        assert r.status_code == 202 and r.json()["turn_id"] == pending_id
+        assert r.json()["state"] == "running"
+    await world.until(lambda: m.open_turns(sid).get(pending_id).state == "completed")
+    states = [t.state for t in m.open_turns(sid).list()]
+    assert states == ["interrupted", "completed"]
+
+
+async def test_retried_priority_with_the_same_message_id_delivers_once(world: World) -> None:
+    m, sid, c = await _lane_app(world, WEDGE, sessions={"interrupt_settle_seconds": 1.0})
+    session = m.router(sid).session
+    keys = world.session_dir(sid) / "config" / "fake-keys.jsonl"
+    url = f"/v1/sessions/{sid}/turns"
+    body = {"text": "urgent", "lane": "priority", "message_id": "orch-7"}
+    async with c:
+        await c.post(url, json={"text": "wedge", "lane": "idle"})
+        await world.until(lambda: session.ring.contains("working..."))
+        first = asyncio.ensure_future(c.post(url, json=body))
+        await world.until(lambda: session.reserved)
+        # A retry while the first is still interrupting: the same turn, still pending.
+        retry = await c.post(url, json=body)
+        assert retry.status_code == 202
+        assert retry.json()["state"] == "pending" and retry.json()["duplicate"] is True
+        r = await first
+        assert r.status_code == 202 and r.json()["turn_id"] == retry.json()["turn_id"]
+        turn_id = r.json()["turn_id"]
+        await world.until(lambda: m.open_turns(sid).get(turn_id).state == "completed")
+        escs = len(jsonl(keys))
+        # A retry after the turn ran: the same turn again, nothing typed, nothing interrupted.
+        again = await c.post(url, json=body)
+        assert again.status_code == 202 and again.json()["turn_id"] == turn_id
+        assert again.json()["state"] == "completed" and again.json()["duplicate"] is True
+    assert len(jsonl(keys)) == escs
+    assert [t.text for t in m.open_turns(sid).list()] == ["wedge", "urgent"]
+    started = [e for e in world.events(sid) if e["type"] == "turn_started"]
+    assert [e["data"]["text"] for e in started] == ["wedge", "urgent"]
+
+
+async def test_concurrent_priority_retry_on_an_idle_session_delivers_once(world: World) -> None:
+    # onTurn holds the first send before its turn starts; a retry in that window must answer
+    # the same turn, not start a second one or type the text into the first.
+    hook = {"type": "command", "run": "sleep 1", "blocking": True}
+    m, sid, c = await _lane_app(world, WEDGE, hooks={"onTurn": [hook]})
+    url = f"/v1/sessions/{sid}/turns"
+    body = {"text": "urgent", "lane": "priority", "message_id": "orch-8"}
+    async with c:
+        first = asyncio.ensure_future(c.post(url, json=body))
+        await world.until(lambda: [t.state for t in m.open_turns(sid).list()] == ["pending"])
+        retry = await c.post(url, json=body)
+        r = await first
+    assert r.status_code == 202 and retry.status_code == 202
+    assert retry.json()["duplicate"] is True
+    assert retry.json()["turn_id"] == r.json()["turn_id"]
+    await world.wait_turn(m, sid)
+    assert [t.text for t in m.open_turns(sid).list()] == ["urgent"]
     assert "prompt_queued" not in [e["type"] for e in world.events(sid)]

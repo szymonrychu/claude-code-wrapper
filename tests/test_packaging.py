@@ -176,6 +176,6 @@ def test_version_matches_pyproject():
 
     import claude_code_wrapper
 
-    assert VERSION == "0.5.0"
+    assert VERSION == "0.5.1"
     assert claude_code_wrapper.__version__ == VERSION
     assert version("claude-code-wrapper") == VERSION

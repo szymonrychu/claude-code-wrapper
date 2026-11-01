@@ -58,6 +58,8 @@ class TurnRequest(BaseModel):
     metadata: dict[str, Any] | None = None
     lane: Lane = "regular"
     #: The id of the message when it is typed into a running turn; generated when absent.
+    #: On the priority lane it also makes a retry idempotent: a second send with an id this
+    #: session already took answers the turn the first one started (`duplicate: true`).
     message_id: str | None = Field(default=None, pattern=MESSAGE_ID_PATTERN)
 
 
@@ -139,6 +141,8 @@ async def submit_turn(session_id: str, body: TurnRequest, request: Request) -> A
             "lane": body.lane,
             "queued": False,
         }
+        if delivery.duplicate:  # a retried priority send: the turn its first send started
+            out["duplicate"] = True
     return _out(request, out)
 
 

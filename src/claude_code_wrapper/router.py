@@ -24,6 +24,7 @@ import logging
 import re
 import sys
 import time
+from collections import OrderedDict
 from collections.abc import Coroutine, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -90,6 +91,8 @@ SUBAGENT_LINK_WAIT_SECONDS = 10.0
 SUBAGENT_LINK_POLL_SECONDS = 0.1
 #: How often a priority delivery re-checks for the turn claude starts for its flushed queue.
 PRIORITY_FLUSH_POLL = 0.05
+#: Priority deliveries remembered by client message id, so a retried send is idempotent.
+PRIORITY_IDS_MAX = 256
 
 CCW_TOOL_PREFIX = "mcp__ccw__"
 MAIN_AGENT_ONLY_DENY_REASON = (
@@ -226,6 +229,8 @@ class Delivery:
     lane: str
     record: TurnRecord | None = None
     message: QueuedMessage | None = None
+    #: A priority retry: `record` is the turn an earlier send with this message id started.
+    duplicate: bool = False
 
     @property
     def queued(self) -> bool:
@@ -324,6 +329,8 @@ class SessionRouter(SessionListener):
         self.info = SessionInfo.coerce(session_info)
         self._usage = UsageTotals()
         self._last_marker: str | None = None
+        #: client message id -> the turn its priority delivery started (or holds pending).
+        self._priority_ids: OrderedDict[str, str] = OrderedDict()
         self._tailer: TranscriptTailer | None = None
         self._watcher: SubagentWatcher | None = None
         self._tasks: list[asyncio.Task[Any]] = []
@@ -995,9 +1002,11 @@ class SessionRouter(SessionListener):
         origin: Origin = "client",
         metadata: Mapping[str, Any] | None = None,
         vetted: tuple[str, HookOutcome] | None = None,
+        turn_id: str | None = None,
     ) -> TurnRecord:
         """Start a turn. `vetted`: the turn id and onTurn outcome of a turn whose hook already
-        ran (a priority delivery vets before it interrupts), so onTurn is not fired again."""
+        ran (a priority delivery vets before it interrupts), so onTurn is not fired again.
+        `turn_id`: an id allocated earlier (a priority turn already listed `pending`)."""
         if slash_command(text) is not None:  # a slash line fires no hooks and writes no files
             raise TurnRejected("slash_command")
         # a doomed turn fires no hooks; a vetted (priority) turn holds the reserved slot
@@ -1005,7 +1014,9 @@ class SessionRouter(SessionListener):
         was_armed = self._ac_armed
         self._cancel_auto_compact()
         try:
-            return await self._submit_turn(text, files, callback_url, origin, metadata, vetted)
+            return await self._submit_turn(
+                text, files, callback_url, origin, metadata, vetted, turn_id
+            )
         except BaseException:
             if was_armed:  # no turn started and none will end: keep the idle gap alive
                 self._arm_auto_compact()
@@ -1019,9 +1030,10 @@ class SessionRouter(SessionListener):
         origin: Origin,
         metadata: Mapping[str, Any] | None,
         vetted: tuple[str, HookOutcome] | None = None,
+        turn_id: str | None = None,
     ) -> TurnRecord:
         if vetted is None:
-            turn_id = new_turn_id()
+            turn_id = turn_id or new_turn_id()
             outcome = await self._vet(text, files, origin, metadata, turn_id)
         else:
             turn_id, outcome = vetted
@@ -1076,6 +1088,10 @@ class SessionRouter(SessionListener):
         """
         if slash_command(text) is not None:
             raise TurnRejected("slash_command")
+        if lane == "priority" and message_id is not None:
+            known = self._priority_turn(message_id)
+            if known is not None:  # a retry: never delivered twice
+                return Delivery(lane, record=known, duplicate=True)
         kw = {"files": files, "callback_url": callback_url, "origin": origin, "metadata": metadata}
         if lane == "idle":
             return Delivery(lane, record=await self.submit_turn(text, **kw))
@@ -1083,10 +1099,19 @@ class SessionRouter(SessionListener):
         session.check_live()
         session.check_no_dialog()  # typing would answer it, an ESC would decline it
         if lane == "priority" and session.current_turn is not None:
-            return Delivery(lane, record=await self._priority(text, kw))
+            return Delivery(lane, record=await self._priority(text, kw, message_id))
         if session.state == "ready" and session.current_turn is None:
             try:
-                return Delivery(lane, record=await self.submit_turn(text, **kw))
+                if lane != "priority":
+                    return Delivery(lane, record=await self.submit_turn(text, **kw))
+                # listed pending (and its message id taken) before onTurn runs, as below
+                turn_id = new_turn_id()
+                self._hold_pending(turn_id, text, kw, message_id)
+                try:
+                    record = await self.submit_turn(text, **kw, turn_id=turn_id)
+                finally:
+                    self._release_pending(turn_id, message_id)
+                return Delivery(lane, record=record)
             except TurnRejected as exc:
                 if exc.reason != "busy":
                     raise
@@ -1120,11 +1145,73 @@ class SessionRouter(SessionListener):
             raise TurnVetoed(reason)
         return outcome
 
-    async def _priority(self, text: str, kw: dict[str, Any]) -> TurnRecord:
+    def _priority_turn(self, message_id: str) -> TurnRecord | None:
+        """The turn an earlier priority delivery of `message_id` started or holds pending."""
+        turn_id = self._priority_ids.get(message_id)
+        store = self.turns
+        if turn_id is None or store is None:
+            return None
+        return store.get(turn_id)
+
+    def _remember_priority(self, message_id: str, turn_id: str) -> None:
+        self._priority_ids[message_id] = turn_id
+        while len(self._priority_ids) > PRIORITY_IDS_MAX:
+            self._priority_ids.popitem(last=False)
+
+    async def _priority(
+        self, text: str, kw: dict[str, Any], message_id: str | None = None
+    ) -> TurnRecord:
         """onTurn first (a veto must not cost the running turn), then the spaced interrupt,
-        then the new turn with that hook outcome."""
+        then the new turn with that hook outcome.
+
+        The turn is listed `pending` (with its metadata) from the start: the interrupt can
+        hold this request for longer than a client waits for the answer, and a client that
+        looks for the turn must find it rather than conclude that nothing arrived. It is
+        dropped again when the delivery fails before the turn starts.
+        """
         self.session.check_queueable()  # never ESC a slash command run or its command phase
         turn_id = new_turn_id()
+        self._hold_pending(turn_id, text, kw, message_id)
+        try:
+            return await self._interrupt_and_submit(text, kw, turn_id)
+        finally:
+            self._release_pending(turn_id, message_id)
+
+    def _release_pending(self, turn_id: str, message_id: str | None) -> None:
+        """Drop the `pending` record of a delivery that did not start its turn (a no-op once
+        it started), and with it the message id, so a retry delivers."""
+        store = self.turns
+        if store is not None:
+            store.discard(turn_id)
+        if message_id is not None and (store is None or store.get(turn_id) is None):
+            self._priority_ids.pop(message_id, None)
+
+    def _hold_pending(
+        self, turn_id: str, text: str, kw: dict[str, Any], message_id: str | None
+    ) -> None:
+        store = self.turns
+        if store is None:
+            return
+        now = now_iso()
+        store.refresh(
+            TurnRecord(
+                turn_id=turn_id,
+                session_id=self.info.session_id,
+                origin=kw["origin"],
+                state="pending",
+                text=text,
+                callback_url=kw["callback_url"],
+                started_at=now,
+                last_activity_at=now,
+                metadata=dict(kw["metadata"] or {}),
+            )
+        )
+        if message_id is not None:
+            self._remember_priority(message_id, turn_id)
+
+    async def _interrupt_and_submit(
+        self, text: str, kw: dict[str, Any], turn_id: str
+    ) -> TurnRecord:
         outcome = await self._vet(
             text, kw["files"], kw["origin"], kw["metadata"], turn_id, lane="priority"
         )
