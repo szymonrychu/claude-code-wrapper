@@ -55,7 +55,7 @@ claude:
     dialogs:                 # pattern seen on screen -> keys to send
       - {pattern: "Bypass Permissions mode", keys: ["\u001b[B", "\r"], delay_seconds: 0.6}
       - {pattern: "Do you trust the files in this folder", keys: ["\r"]}
-    ready_markers: ["? for shortcuts", "bypass permissions on"]
+    ready_markers: ["? for shortcuts", "bypass permissions on", "auto mode on"]
     fatal_patterns:          # screen text that fails the session
       - "API Error: 401"
       - "API Error: 403"

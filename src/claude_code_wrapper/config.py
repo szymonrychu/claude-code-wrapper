@@ -156,7 +156,7 @@ class BootConfig(_Model):
         ]
     )
     ready_markers: list[str] = Field(
-        default_factory=lambda: ["? for shortcuts", "bypass permissions on"]
+        default_factory=lambda: ["? for shortcuts", "bypass permissions on", "auto mode on"]
     )
     fatal_patterns: list[str] = Field(
         default_factory=lambda: [
@@ -203,11 +203,14 @@ class ConfigFile(_Model):
         return value
 
 
+PermissionMode = Literal["default", "acceptEdits", "plan", "auto", "bypassPermissions", "dontAsk"]
+
+
 class ClaudeConfig(_Model):
     binary: str = "claude"
     model: str = ""
     effort: str = ""
-    permission_mode: str = "bypassPermissions"
+    permission_mode: PermissionMode = "bypassPermissions"
     extra_args: list[str] = Field(default_factory=list)
     env: ClaudeEnv = Field(default_factory=ClaudeEnv)  # type: ignore[valid-type]
     passthrough_env: list[str] = Field(default_factory=list)

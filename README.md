@@ -2964,7 +2964,7 @@ claude:
 | `claude.binary` | string | `"claude"` | - | Claude Code executable to spawn. |
 | `claude.model` | string | `""` | - | Value for `--model`; empty uses Claude's default. |
 | `claude.effort` | string | `""` | - | Value for `--effort`; empty uses Claude's default. |
-| `claude.permission_mode` | string | `"bypassPermissions"` | - | Written to `settings.json` as `permissions.defaultMode`. |
+| `claude.permission_mode` | string | `"bypassPermissions"` | - | One of `default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk`; written to `settings.json` as `permissions.defaultMode`. `auto` also seeds `skipAutoPermissionPrompt: true`. |
 | `claude.extra_args` | list | `[]` | - | Extra argv appended after the service flags. `--dangerously-skip-permissions` is rejected (it adds a boot dialog). |
 | `claude.passthrough_env` | list | `[]` | - | List of env var name patterns (`fnmatch`, case-sensitive; a plain name matches only itself, `GH_*` matches by prefix) copied from the service environment into Claude's environment and the setup-command environment when present. `CCW_*` names and service-managed names are never passed, even through `*` (the refusal is logged). Warning: `*` hands every service secret to Claude; use explicit globs plus `passthrough_env_exclude`. |
 | `claude.passthrough_env_exclude` | list | `[]` | - | List of `fnmatch` patterns removing names matched by `claude.passthrough_env`, for example `["*_SECRET*", "AWS_*"]`. |
@@ -2980,7 +2980,7 @@ claude:
 | `claude.boot.idle_ready_seconds` | number | `1.5` | - | Output quiescence that counts as ready. |
 | `claude.boot.submit_delay_seconds` | number | `0.4` | - | Gap between the bracketed paste and the Enter key. |
 | `claude.boot.dialogs` | list | `[{"pattern": "Bypass Permissions mode", "keys": ["\u001b[B", "\r"], "delay_seconds": 0.6}, {"pattern": "Do you trust the files in this folder", "keys": ["\r"], "delay_seconds": 0.0}]` | - | List of `{pattern, keys: [], delay_seconds: 0.0}`: when `pattern` appears on screen, send `keys` after the delay. |
-| `claude.boot.ready_markers` | list | `["? for shortcuts", "bypass permissions on"]` | - | List of screen texts that mark the TUI as ready. |
+| `claude.boot.ready_markers` | list | `["? for shortcuts", "bypass permissions on", "auto mode on"]` | - | List of screen texts that mark the TUI as ready. |
 | `claude.boot.fatal_patterns` | list | `["API Error: 401", "API Error: 403", "Please run /login", "Credit balance is too low", "OAuth token has expired"]` | - | List of screen texts that fail the session (auth errors, no credit). |
 
 The typed Claude Code environment. Each field is the variable name lowercased; unset fields are not exported. Full semantics: [Claude Code environment](#claude-code-environment).

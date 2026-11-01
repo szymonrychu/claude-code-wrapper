@@ -648,3 +648,14 @@ def test_fatal_scanner_matches_across_chunks() -> None:
     assert scanner.feed("API Error: 401 API Error: 401") == ["API Error: 401", "API Error: 401"]
     scanner.reset()
     assert scanner.feed("Error: 401") == []  # reset drops the carry
+
+
+async def test_boot_ready_on_auto_footer_marker(make_spec, sessions) -> None:
+    # Auto mode prints "auto mode on" instead of "? for shortcuts": the default markers must see it.
+    spec = make_spec(
+        {"boot": {"mode": "auto", "min_seconds": 0.05}},
+        boot={**FAST, "idle_ready_seconds": 30.0, "dialogs": []},
+    )
+    session = sessions(Session(spec, Recorder()))
+    await session.start()
+    assert session.state == "ready"

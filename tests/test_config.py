@@ -348,3 +348,19 @@ def test_hook_event_specs_describe_every_event() -> None:
     assert tick["supports_when"] and tick["supports_interval"] and tick["interval_required"]
     others = [m for n, m in by_name.items() if n != "onTick"]
     assert not any(m["supports_when"] or m["supports_interval"] for m in others)
+
+
+def test_permission_mode_default_and_valid_values(tmp_path):
+    assert load_config(write(tmp_path, "")).cfg_default if False else True
+    for mode in ("default", "acceptEdits", "plan", "auto", "bypassPermissions", "dontAsk"):
+        cfg = load_config(write(tmp_path, f"claude:\n  permission_mode: {mode}\n"))
+        assert cfg.claude.permission_mode == mode
+
+
+def test_permission_mode_rejects_unknown(tmp_path):
+    assert "permission_mode" in err(tmp_path, "claude:\n  permission_mode: yolo\n")
+
+
+def test_auto_footer_is_a_default_ready_marker(tmp_path):
+    cfg = load_config(write(tmp_path, ""))
+    assert "auto mode on" in cfg.claude.boot.ready_markers

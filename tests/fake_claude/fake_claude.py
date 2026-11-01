@@ -27,7 +27,8 @@ Environment
 Interactive mode (no subcommand) needs a TTY on stdin, else exits 2. Boot prints a
 colored banner, then (boot.bypass_dialog, default true) a "Bypass Permissions mode"
 dialog needing Down (ESC [ B) then CR; CR without Down exits 1. Input arriving before
-boot.min_seconds (default 0.3) exits 1. Then the idle footer "? for shortcuts".
+boot.min_seconds (default 0.3) exits 1. Then the idle footer "? for shortcuts". With
+boot.mode "auto" there is no bypass dialog and the footer reads "auto mode on" instead.
 Input: bracketed paste ESC[200~ ... ESC[201~; a CR in a later read than the paste end
 submits; a CR in the same read as the paste end is a newline. A lone ESC during a turn
 interrupts it. Byte 0x03 at idle exits 0.
@@ -197,6 +198,7 @@ PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
 DOWN = b"\x1b[B"
 FOOTER = "? for shortcuts"
+AUTO_FOOTER = "auto mode on"
 INTERRUPT_TEXT = "[Request interrupted by user]"
 VERSION = "0.0.0 (Fake Claude)"
 DEFAULT_BLOCK_CAP = 8
@@ -440,7 +442,8 @@ class Fake:
         return data
 
     def footer(self) -> None:
-        self.out(f"\n  {FOOTER}\n")
+        auto = self.scenario.get("boot", {}).get("mode") == "auto"
+        self.out(f"\n  {AUTO_FOOTER if auto else FOOTER}\n")
 
     # ---- transcript
     def write_line(self, obj: dict, path: str | None = None, sidechain: bool = False) -> None:
@@ -544,7 +547,8 @@ class Fake:
         while (left := deadline - time.monotonic()) > 0:
             if self.read(left) is not None:
                 raise Exit(1)
-        if cfg.get("bypass_dialog", True):
+        auto = cfg.get("mode") == "auto"
+        if cfg.get("bypass_dialog", True) and not auto:
             self.out(
                 "\n\x1b[1;31mWARNING: Bypass Permissions mode\x1b[0m\n"
                 "  1. No, exit\n  2. Yes, I accept\n"
