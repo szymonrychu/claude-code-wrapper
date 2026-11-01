@@ -476,7 +476,8 @@ Delivery lanes (`lane`):
   The answer comes only after those waits (up to three `interrupt_settle_seconds` plus a few
   seconds), so the turn is listed from the moment the request arrives: `GET .../turns` and
   `GET .../turns/{turn_id}` show it with `state: "pending"`, its text and `metadata`, until it
-  starts (`running`, same `turn_id`) or the delivery fails (the record is gone again). A
+  starts (`running`, same `turn_id`) or the delivery fails (the record is gone again); on an
+  idle session it is listed `pending` while `onTurn` runs. A
   pending record lives in memory only and is never written to `turns.jsonl`. A priority send
   with a `message_id` this session already took (the last 256) is idempotent: it answers `202`
   with the turn the first send started, in its current state (`pending`, `running` or

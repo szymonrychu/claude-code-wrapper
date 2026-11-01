@@ -801,3 +801,23 @@ async def test_retried_priority_with_the_same_message_id_delivers_once(world: Wo
     assert [t.text for t in m.open_turns(sid).list()] == ["wedge", "urgent"]
     started = [e for e in world.events(sid) if e["type"] == "turn_started"]
     assert [e["data"]["text"] for e in started] == ["wedge", "urgent"]
+
+
+async def test_concurrent_priority_retry_on_an_idle_session_delivers_once(world: World) -> None:
+    # onTurn holds the first send before its turn starts; a retry in that window must answer
+    # the same turn, not start a second one or type the text into the first.
+    hook = {"type": "command", "run": "sleep 1", "blocking": True}
+    m, sid, c = await _lane_app(world, WEDGE, hooks={"onTurn": [hook]})
+    url = f"/v1/sessions/{sid}/turns"
+    body = {"text": "urgent", "lane": "priority", "message_id": "orch-8"}
+    async with c:
+        first = asyncio.ensure_future(c.post(url, json=body))
+        await world.until(lambda: [t.state for t in m.open_turns(sid).list()] == ["pending"])
+        retry = await c.post(url, json=body)
+        r = await first
+    assert r.status_code == 202 and retry.status_code == 202
+    assert retry.json()["duplicate"] is True
+    assert retry.json()["turn_id"] == r.json()["turn_id"]
+    await world.wait_turn(m, sid)
+    assert [t.text for t in m.open_turns(sid).list()] == ["urgent"]
+    assert "prompt_queued" not in [e["type"] for e in world.events(sid)]

@@ -1002,9 +1002,11 @@ class SessionRouter(SessionListener):
         origin: Origin = "client",
         metadata: Mapping[str, Any] | None = None,
         vetted: tuple[str, HookOutcome] | None = None,
+        turn_id: str | None = None,
     ) -> TurnRecord:
         """Start a turn. `vetted`: the turn id and onTurn outcome of a turn whose hook already
-        ran (a priority delivery vets before it interrupts), so onTurn is not fired again."""
+        ran (a priority delivery vets before it interrupts), so onTurn is not fired again.
+        `turn_id`: an id allocated earlier (a priority turn already listed `pending`)."""
         if slash_command(text) is not None:  # a slash line fires no hooks and writes no files
             raise TurnRejected("slash_command")
         # a doomed turn fires no hooks; a vetted (priority) turn holds the reserved slot
@@ -1012,7 +1014,9 @@ class SessionRouter(SessionListener):
         was_armed = self._ac_armed
         self._cancel_auto_compact()
         try:
-            return await self._submit_turn(text, files, callback_url, origin, metadata, vetted)
+            return await self._submit_turn(
+                text, files, callback_url, origin, metadata, vetted, turn_id
+            )
         except BaseException:
             if was_armed:  # no turn started and none will end: keep the idle gap alive
                 self._arm_auto_compact()
@@ -1026,9 +1030,10 @@ class SessionRouter(SessionListener):
         origin: Origin,
         metadata: Mapping[str, Any] | None,
         vetted: tuple[str, HookOutcome] | None = None,
+        turn_id: str | None = None,
     ) -> TurnRecord:
         if vetted is None:
-            turn_id = new_turn_id()
+            turn_id = turn_id or new_turn_id()
             outcome = await self._vet(text, files, origin, metadata, turn_id)
         else:
             turn_id, outcome = vetted
@@ -1097,9 +1102,15 @@ class SessionRouter(SessionListener):
             return Delivery(lane, record=await self._priority(text, kw, message_id))
         if session.state == "ready" and session.current_turn is None:
             try:
-                record = await self.submit_turn(text, **kw)
-                if lane == "priority" and message_id is not None:
-                    self._remember_priority(message_id, record.turn_id)
+                if lane != "priority":
+                    return Delivery(lane, record=await self.submit_turn(text, **kw))
+                # listed pending (and its message id taken) before onTurn runs, as below
+                turn_id = new_turn_id()
+                self._hold_pending(turn_id, text, kw, message_id)
+                try:
+                    record = await self.submit_turn(text, **kw, turn_id=turn_id)
+                finally:
+                    self._release_pending(turn_id, message_id)
                 return Delivery(lane, record=record)
             except TurnRejected as exc:
                 if exc.reason != "busy":
@@ -1164,11 +1175,16 @@ class SessionRouter(SessionListener):
         try:
             return await self._interrupt_and_submit(text, kw, turn_id)
         finally:
-            store = self.turns
-            if store is not None:
-                store.discard(turn_id)  # a no-op once the turn started
-            if message_id is not None and (store is None or store.get(turn_id) is None):
-                self._priority_ids.pop(message_id, None)
+            self._release_pending(turn_id, message_id)
+
+    def _release_pending(self, turn_id: str, message_id: str | None) -> None:
+        """Drop the `pending` record of a delivery that did not start its turn (a no-op once
+        it started), and with it the message id, so a retry delivers."""
+        store = self.turns
+        if store is not None:
+            store.discard(turn_id)
+        if message_id is not None and (store is None or store.get(turn_id) is None):
+            self._priority_ids.pop(message_id, None)
 
     def _hold_pending(
         self, turn_id: str, text: str, kw: dict[str, Any], message_id: str | None
