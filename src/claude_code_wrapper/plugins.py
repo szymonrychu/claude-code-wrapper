@@ -132,12 +132,22 @@ async def install_plugins(
     for name in referenced:
         try:
             await run(name, "plugin", "marketplace", "update", name)
-        except PluginInstallError:
-            if name != OFFICIAL_MARKETPLACE:
-                raise
-            await run(
-                name, "plugin", "marketplace", "add", OFFICIAL_SOURCE, "--scope", "user", "--json"
-            )
+        except PluginInstallError as exc:
+            if name == OFFICIAL_MARKETPLACE and name not in known:
+                await run(
+                    name,
+                    "plugin",
+                    "marketplace",
+                    "add",
+                    OFFICIAL_SOURCE,
+                    "--scope",
+                    "user",
+                    "--json",
+                )
+                continue
+            # best-effort: the local copy may serve the install, which reports its own failure
+            log.warning("marketplace %s update failed, using the local copy: %s", name, exc)
+            report.warnings.append(f"marketplace {name} update failed: {exc}")
 
     failed: set[str] = set()
     present = _ids(await run("plugin list", "plugin", "list", "--json"), "id", "plugin list")

@@ -242,3 +242,23 @@ async def test_subprocess_stdin_is_closed(tmp_path, monkeypatch, live_stdin):
     render_global_mise(mcfg)
     await install_global(mcfg, {"PATH": os.environ["PATH"]})
     assert mseen.read_text().split() == ["eof"]
+
+
+async def test_marketplace_update_failure_is_a_warning_and_install_continues(
+    fake_claude_bin, tmp_path, log
+):
+    c = cfg(str(marketplace(tmp_path)))
+    report, _ = await go(c, fake_claude_bin, tmp_path, {"FAKE_CLAUDE_UPDATE_FAIL": "1"})
+    assert report.installed == [ID]
+    assert len(report.warnings) == 1 and "wb" in report.warnings[0]
+    assert ["plugin", "install", ID, "-s", "user", "-y", "--json"] in argvs(log)
+
+
+async def test_install_failure_surfaces_after_a_failed_marketplace_update(
+    fake_claude_bin, tmp_path, log
+):
+    c = cfg(str(marketplace(tmp_path)))
+    env = {"FAKE_CLAUDE_UPDATE_FAIL": "1", "FAKE_CLAUDE_PLUGIN_FAIL": ID}
+    with pytest.raises(PluginInstallError) as ei:
+        await go(c, fake_claude_bin, tmp_path, env)
+    assert ei.value.plugin_id == ID
