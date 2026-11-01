@@ -4367,6 +4367,8 @@ mise run test:integration
 
 ## Development
 
+Run `pre-commit install` once per clone to enable the gitleaks hook.
+
 ```bash
 mise run install    # uv sync
 mise run test       # uv run pytest
