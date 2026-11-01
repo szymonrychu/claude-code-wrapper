@@ -81,6 +81,35 @@ async def test_command_receives_payload_on_stdin_and_env(tmp_path):
     assert body
 
 
+async def test_command_env_has_no_usage_token(tmp_path):
+    out = tmp_path / "env.txt"
+    results: list = []
+    d = HookDispatcher(
+        HooksConfig.model_validate(
+            {
+                "onTurn": [
+                    cmd(
+                        f"echo [${{CCW_USAGE_TOKEN-unset}}][${{CCW_AUTH_TOKEN-unset}}] > {out}",
+                        blocking=True,
+                    )
+                ]
+            }
+        ),
+        Redactor([]),
+        base_env={
+            "PATH": os.environ["PATH"],
+            "CCW_USAGE_TOKEN": "usage-ingest-token-0123456789",
+            "CCW_AUTH_TOKEN": "auth-token-0123456789",
+        },
+        default_cwd=tmp_path,
+        on_result=results.append,
+    )
+    await d.fire("onTurn", payload())
+    assert results[0].ok
+    # CCW_AUTH_TOKEN stays (documented full service env); the usage token never reaches a hook
+    assert out.read_text().strip() == "[unset][auth-token-0123456789]"
+
+
 async def test_cwd_override(tmp_path):
     sub = tmp_path / "sub"
     sub.mkdir()

@@ -10,6 +10,7 @@ import asyncio
 import ipaddress
 import json
 import math
+import re
 from collections import OrderedDict
 from typing import Any
 
@@ -32,7 +33,17 @@ from claude_code_wrapper.mcp_server import (
 )
 
 DEDUPE_LIMIT = 256
-STATUSLINE_MAX_BODY = 4096
+STATUSLINE_MAX_BODY = 16384
+VERSION_MAX_CHARS = 64
+#: At most this many windows are kept (the agents-usage ingest body is capped at 8192 bytes).
+MAX_RATE_LIMIT_WINDOWS = 16
+#: Kept first when the cap bites.
+_PRIORITY_WINDOWS = ("five_hour", "seven_day")
+_RATE_LIMIT_KEY = re.compile(r"[a-z0-9_]{1,64}")
+#: Plausible bounds of a window: a percent of 0..1000 and an epoch-seconds reset before 2100.
+#: They also keep the serialized windows far below the agents-usage ingest cap.
+MAX_RATE_LIMIT_PERCENT = 1000
+MAX_RATE_LIMIT_RESETS_AT = 4102444800
 USAGE_KEYS = (
     "input_tokens",
     "output_tokens",
@@ -56,25 +67,62 @@ def _finite(value: float) -> bool:
         return False
 
 
+def _number(value: Any) -> bool:
+    """A finite int or float, never a bool."""
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and _finite(value)
+
+
 def _check_usage(usage: dict[str, Any] | None) -> None:
     """Token counts must be absent/null or finite non-negative numbers (never bool)."""
     for key, value in (usage or {}).items():
         if key not in USAGE_KEYS or value is None:
             continue
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not _finite(value)
-            or value < 0
-        ):
+        if not _number(value) or value < 0:
             raise ValueError(f"context_window.current_usage.{key} must be a finite number >= 0")
 
 
+def _rate_limits(value: Any) -> dict[str, dict[str, int | float]] | None:
+    """The valid windows of the statusLine `rate_limits` object, None when none is left.
+
+    A window needs a `[a-z0-9_]{1,64}` key, a finite `used_percentage` in 0..1000 and a
+    finite `resets_at` in (0, 4102444800] epoch seconds; anything else (for example
+    `spend_limit`) is dropped without an error.
+    At most `MAX_RATE_LIMIT_WINDOWS` are kept: `five_hour` and `seven_day` first, then the rest
+    in payload order."""
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, dict[str, int | float]] = {}
+    for key, window in value.items():
+        if not (isinstance(key, str) and _RATE_LIMIT_KEY.fullmatch(key)):
+            continue
+        if not isinstance(window, dict):
+            continue
+        pct, resets = window.get("used_percentage"), window.get("resets_at")
+        if (
+            _number(pct)
+            and 0 <= pct <= MAX_RATE_LIMIT_PERCENT
+            and _number(resets)
+            and 0 < resets <= MAX_RATE_LIMIT_RESETS_AT
+        ):
+            out[key] = {"used_percentage": pct, "resets_at": resets}
+    if len(out) > MAX_RATE_LIMIT_WINDOWS:
+        first = [k for k in _PRIORITY_WINDOWS if k in out]
+        rest = [k for k in out if k not in first]
+        keep = set(first + rest[: MAX_RATE_LIMIT_WINDOWS - len(first)])
+        out = {k: v for k, v in out.items() if k in keep}
+    return out or None
+
+
+def _version(value: Any) -> str | None:
+    return value if isinstance(value, str) and 0 < len(value) <= VERSION_MAX_CHARS else None
+
+
 def parse_statusline(payload: dict[str, Any]) -> dict[str, Any]:
-    """Validate a Claude Code statusLine payload down to the context values the router stores.
+    """Validate a Claude Code statusLine payload down to the values the router uses.
 
     `context_window` and its fields are null before the first assistant message and after
-    /compact; null is accepted and stored as null."""
+    /compact; null is accepted and stored as null. `rate_limits` and `version` never raise:
+    what does not validate is dropped, so the context values still land."""
     window = _optional(payload.get("context_window"), dict, "context_window") or {}
     values = {
         "used_percentage": _optional(
@@ -87,6 +135,8 @@ def parse_statusline(payload: dict[str, Any]) -> dict[str, Any]:
             window.get("current_usage"), dict, "context_window.current_usage"
         ),
         "model": _optional(payload.get("model"), (dict, str), "model"),
+        "rate_limits": _rate_limits(payload.get("rate_limits")),
+        "version": _version(payload.get("version")),
     }
     pct = values["used_percentage"]
     if pct is not None and (not _finite(pct) or pct < 0):

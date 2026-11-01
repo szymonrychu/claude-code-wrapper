@@ -83,6 +83,7 @@ from .session import (
 from .terminals import CLOSE_GRACE_SECONDS, SessionNotActive, ShellTarget, TerminalRegistry
 from .tooling import install_workdir, mise_env
 from .turns import TurnStore, now_iso
+from .usage_forward import UsageForwarder
 from .workdir import prepare_workdir, run_setup_commands, write_gitconfig
 
 log = logging.getLogger(__name__)
@@ -291,8 +292,11 @@ class SessionManager:
         reaper_interval: float = REAPER_INTERVAL_SECONDS,
         metrics: Metrics | None = None,
         on_exit_request: Callable[[int], None] | None = None,
+        usage: UsageForwarder | None = None,
     ) -> None:
         self.metrics = metrics
+        #: Takes every session's statusLine rate limits (`usage.url` set), else None.
+        self.usage = usage
         self._on_exit_request = on_exit_request
         self._created_any = False
         self.cfg = cfg
@@ -768,6 +772,8 @@ class SessionManager:
         )
         if self.cfg.notes.enabled:
             ctx.router.notes = self._notes_for(ctx.session_id)
+        if self.usage is not None:
+            ctx.router.on_rate_limits = self.usage.offer
         spec = SessionSpec(
             session_id=ctx.session_id,
             claude_session_id=str(meta["claude_session_id"]),

@@ -25,6 +25,7 @@ from claude_code_wrapper.internal_api import create_internal_app
 from claude_code_wrapper.manager import SessionManager
 from claude_code_wrapper.metrics import Metrics
 from claude_code_wrapper.redact import Redactor
+from claude_code_wrapper.usage_forward import UsageForwarder
 
 log = logging.getLogger(__name__)
 
@@ -223,6 +224,8 @@ async def _run(
     ]
     servers: list[_Server] = []
     tasks: list[asyncio.Task[None]] = []
+    usage: UsageForwarder | None = None
+    usage_task: asyncio.Task[None] | None = None
     try:
         handle.public_port = socks[0].getsockname()[1]
         handle.internal_port = socks[1].getsockname()[1]
@@ -232,6 +235,10 @@ async def _run(
             if handle.request_exit(code):
                 asyncio.get_running_loop().call_later(EXIT_STOP_DELAY_SECONDS, stop.set)
 
+        if cfg.usage.url:
+            redactor.add([cfg.usage.token])
+            usage = UsageForwarder(cfg.usage)
+            usage_task = asyncio.create_task(usage.run())
         manager = SessionManager(
             cfg,
             internal_url=f"http://{INTERNAL_HOST}:{handle.internal_port}",
@@ -240,6 +247,7 @@ async def _run(
             redactor=redactor,
             metrics=metrics,
             on_exit_request=on_exit_request,
+            usage=usage,
         )
         await manager.start_peers(handle.public_port)
         await manager.load_persisted()
@@ -271,6 +279,9 @@ async def _run(
             srv.should_exit = True
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if usage is not None:
+            await usage.aclose()
+            await asyncio.gather(usage_task, return_exceptions=True)
         for sock in socks:
             sock.close()
 

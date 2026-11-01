@@ -1246,11 +1246,17 @@ Response `200`:
 
 Internal, loopback-only, not for clients. The statusLine relay: `ccw statusline` posts the JSON
 Claude Code pipes to its `statusLine.command` here, so the wrapper learns the real context-window
-usage. The body must be a JSON object; `context_window.used_percentage` (number),
-`context_window.context_window_size` (integer), `context_window.current_usage` (object) and `model`
-(object or string) are validated, each may be `null` (Claude Code sends null before the first
-assistant message and after `/compact`), and the router callback `on_statusline` stores the latest
-values. Answers `204`.
+usage. The body must be a JSON object of at most 16384 bytes; `context_window.used_percentage`
+(number), `context_window.context_window_size` (integer), `context_window.current_usage` (object)
+and `model` (object or string) are validated, each may be `null` (Claude Code sends null before the
+first assistant message and after `/compact`), and the router callback `on_statusline` stores the
+latest values. `rate_limits` and `version` are kept too but never cause a `400`: each
+`rate_limits` entry whose key matches `^[a-z0-9_]{1,64}$` and whose value has a finite number
+`used_percentage` in 0..1000 and a finite number `resets_at` in (0, 4102444800] (epoch seconds, before 2100) is kept as just those two fields, any
+other entry (for example `spend_limit`) is dropped, at most 16 windows are kept (`five_hour` and
+`seven_day` first, then the rest in payload order, so the ingest body stays under its 8192 byte cap), and `version` is kept when it is a string of 1
+to 64 characters. With `usage.url` set, the kept rate limits go to the usage forwarder (see
+[Usage forwarding](#usage-forwarding)); the route never waits on it. Answers `204`.
 
 Auth: same as the hook route (loopback source address, `X-CCW-Session`, `X-CCW-Hook-Token`).
 
@@ -1259,6 +1265,7 @@ Auth: same as the hook route (loopback source address, `X-CCW-Session`, `X-CCW-H
 | 204 | stored |
 | 400 | body is not a JSON object, or a context field has the wrong type |
 | 403 | non-loopback caller, missing or wrong token, or unknown or stopped session |
+| 413 | body larger than 16384 bytes |
 
 `ccw statusline` reads the statusLine JSON on stdin, posts it to this route (best effort, 2 second
 timeout, a failure never fails the statusline), then runs the chained command with the same stdin
@@ -1271,7 +1278,8 @@ it is written to `ccw-statusline-chain.json` beside `settings.json`, and its `pa
 `refreshInterval` are kept on the replacement. Re-rendering is idempotent: a `statusLine` that already
 is a ccw relay (recognised by the basename of its executable, so a moved venv still matches) leaves
 the chain file as is and is never chained to itself. The chained command runs with the inherited
-environment minus `CCW_HOOK_TOKEN`, so the user command never receives the hook token.
+environment minus `CCW_HOOK_TOKEN` and `CCW_USAGE_TOKEN`, so the user command never receives the
+hook token (the usage token is not in claude's environment to begin with).
 
 ### `POST /internal/mcp`
 
@@ -2235,7 +2243,8 @@ Trigger: after the leaving heartbeat round, before any `onDestroy` fires. Cannot
 ### Command actions
 
 The payload envelope is written to stdin. Environment: the FULL service environment (every
-variable of the ccw process, including secrets such as `CCW_AUTH_TOKEN`), then the action's `env`,
+variable of the ccw process, including secrets such as `CCW_AUTH_TOKEN`, except `CCW_USAGE_TOKEN`,
+which no hook command receives), then the action's `env`,
 then `CCW_EVENT`, `CCW_SESSION_ID`, `CCW_TURN_ID`, `CCW_WORKDIR`, `CCW_CLAUDE_CONFIG_DIR`,
 `CCW_STATE_DIR` and `CCW_API_URL` (service-managed, they win over the action's `env`).
 `CCW_STATE_DIR` is `<session_dir>/hook-state`, a per-session directory created before the first
@@ -2840,6 +2849,49 @@ Delivery rules:
   emits `note_delivered`. Delivery reads memory only, so the hook path does no I/O.
 
 See [`POST /v1/sessions/{id}/notes`](#post-v1sessionsidnotes) and the `notes` config section.
+
+## Usage forwarding
+
+Opt-in forwarding of Claude Code's subscription rate limits to the agents-usage service. Every
+interactive session already pipes its statusLine JSON to the wrapper (see
+[`POST /internal/statusline`](#post-internalstatusline)); on a subscription account that JSON
+carries `rate_limits` (`five_hour`, `seven_day`, each with `used_percentage` 0 to 100 and
+`resets_at` in epoch seconds). With `usage.url` set the wrapper sends them on, so usage is known
+without spending a token. With `usage.url` empty (the default) nothing is sent and no HTTP client
+is opened.
+
+```yaml
+usage:
+  url: http://agents-usage-ingest.agents.svc:8002
+  token: ${CCW_USAGE_TOKEN}
+  agent: ${POD_NAME}
+```
+
+- One forwarder per wrapper process, shared by every session, started with the service and closed
+  on shutdown.
+- `POST {usage.url}/usage/v1/samples` with `Authorization: Bearer <usage.token>` and the JSON body
+  `{"agent": <usage.agent, or null when empty>, "cli_version": <statusLine version or null>,
+  "rate_limits": <the kept rate_limits>}`; any `2xx` is success (agents-usage answers `202`).
+- Never blocks a session: the statusLine route only offers the value. A value equal to the last one
+  sent is dropped unless `usage.min_interval_seconds` passed since that send, so a busy agent
+  re-confirms at most once per interval and an idle one sends nothing. Any other value replaces
+  the one pending value (latest wins) and wakes the single sender, so a slow or dead agents-usage
+  never builds a backlog.
+- A failure (non-`2xx`, timeout after `usage.timeout_seconds`, connection error) logs one warning
+  per failure streak with the status code or the exception class only, never the body, the token
+  or a percent. There is no retry loop: the next offer, even of the same value, sends again.
+- The token lives only in the wrapper server process: interpolated into the config from the
+  service env, masked as `***` in `GET /v1/config` and redacted from logs. `CCW_*` names never pass
+  through to claude, so claude, its relay hooks, the `ccw statusline` relay and the chained statusLine
+  command never see it, and the wrapper removes it from the environment of `command` hook actions
+  (which otherwise get the full service environment) and from the `mise trust` / `mise install`
+  processes (global and per workdir, whose repo-controlled `mise.toml` is trusted). As with `CCW_AUTH_TOKEN`, a process running
+  as the same uid can still read the wrapper's own `/proc/<pid>/environ` (see
+  [Trust model](#trust-model)).
+- A body over 8192 bytes (the agents-usage ingest cap) is never sent: it is dropped with one
+  warning per streak. The window bounds above keep a valid body far below it.
+- No valid rate limit window (an API-key account, or before the first response) means nothing is
+  sent.
 
 ## Errors
 
@@ -3699,6 +3751,26 @@ Opt-in notes inbox for hived agents (see [Notes](#notes)); with `enabled: false`
 | `notes.delivery_max_chars` | integer | `8000` | - | Most characters of notes delivered in one hook output, below Claude Code's 10,000-character hook limit (>= 1). |
 | `notes.throttle_seconds` | integer | `30` | - | Minimum seconds between note deliveries on tool results (>= 0). |
 | `notes.throttle_tool_results` | integer | `10` | - | Tool results between note deliveries (>= 0). |
+
+### `usage`
+
+```yaml
+usage:
+  url: http://agents-usage-ingest.agents.svc:8002
+  token: ${CCW_USAGE_TOKEN}
+  agent: ${POD_NAME}
+```
+
+Opt-in forwarding of the statusLine rate limits to agents-usage (see
+[Usage forwarding](#usage-forwarding)); with `url` empty (the default) nothing is sent.
+
+| Key | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `usage.url` | string | `""` | - | agents-usage ingest base URL; samples go to `{url}/usage/v1/samples`. Absolute http(s), no trailing slash. Empty turns forwarding off. |
+| `usage.token` | string | `""` | - | Bearer token for the ingest. Required when `usage.url` is set, normally `${CCW_USAGE_TOKEN}`; at least 16 characters. Never logged, never passed to claude, masked as `***` in `GET /v1/config`. |
+| `usage.agent` | string | `""` | - | Agent id sent with every sample, normally `${POD_NAME}`; empty sends `null`. `[A-Za-z0-9._-]{0,128}`. |
+| `usage.min_interval_seconds` | number | `60` | - | An unchanged value is sent again at most this often (> 0). |
+| `usage.timeout_seconds` | number | `5` | - | Timeout of one POST in seconds (> 0, at most 30). |
 
 ## Claude Code environment
 

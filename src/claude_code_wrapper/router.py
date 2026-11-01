@@ -25,7 +25,7 @@ import re
 import sys
 import time
 from collections import OrderedDict
-from collections.abc import Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -305,6 +305,10 @@ def _response_is_error(event_name: str, payload: Mapping[str, Any]) -> bool:
 
 
 class SessionRouter(SessionListener):
+    #: Takes `(rate_limits, cli_version)` from every statusLine that carries rate limits; the
+    #: manager wires `UsageForwarder.offer` (synchronous, never raises) when `usage.url` is set.
+    on_rate_limits: Callable[[Mapping[str, Any], str | None], None] | None = None
+
     def __init__(
         self,
         session: Session | None,
@@ -558,9 +562,13 @@ class SessionRouter(SessionListener):
         self.ensure_tailing()
 
     def on_statusline(self, payload: Mapping[str, Any]) -> None:
-        """Store the latest context-window values and model from the statusLine relay."""
+        """Store the latest context-window values and model from the statusLine relay and
+        hand its rate limits, when there are any, to `on_rate_limits`."""
         self.statusline = dict(payload)
         self._set_context(self._derive_context(self.statusline))
+        rate_limits = self.statusline.get("rate_limits")
+        if rate_limits and self.on_rate_limits is not None:
+            self.on_rate_limits(rate_limits, self.statusline.get("version"))
 
     @staticmethod
     def _derive_context(values: Mapping[str, Any]) -> dict[str, Any] | None:

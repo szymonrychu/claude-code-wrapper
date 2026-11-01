@@ -3,12 +3,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
-from claude_code_wrapper.internal_api import create_internal_app
+from claude_code_wrapper.internal_api import (
+    MAX_RATE_LIMIT_WINDOWS,
+    create_internal_app,
+    parse_statusline,
+)
 from claude_code_wrapper.manager import InvalidState
 
 TOKEN = "tok-secret-123"
@@ -281,17 +286,27 @@ async def test_statusline_rejects_huge_integer_percentage() -> None:
         assert r.status_code == 400
 
 
-async def test_statusline_body_cap() -> None:
+async def test_statusline_body_cap_16k() -> None:
     mgr = FakeManager()
     async with client(mgr) as c:
-        big = json.dumps({"model": "x" * 5000})
+        ok = json.dumps({"cwd": "x" * 10240, "rate_limits": RL})
+        r = await c.post(
+            "/internal/statusline", content=ok, headers={**H, "content-type": "application/json"}
+        )
+        assert r.status_code == 204
+        pad = 16385 - len(json.dumps({"model": ""}))
+        big = json.dumps({"model": "x" * pad})
+        assert len(big) == 16385
         r = await c.post(
             "/internal/statusline", content=big, headers={**H, "content-type": "application/json"}
         )
         assert r.status_code == 413
-        r = await c.post("/internal/statusline", json={"model": "x" * 100}, headers=H)
+        exact = json.dumps({"model": "x" * (pad - 1)})
+        r = await c.post(
+            "/internal/statusline", content=exact, headers={**H, "content-type": "application/json"}
+        )
         assert r.status_code == 204
-    assert len(mgr.r.statuslines) == 1
+    assert len(mgr.r.statuslines) == 2
 
 
 async def test_statusline_rejects_overflowing_token_sum() -> None:
@@ -309,3 +324,170 @@ async def test_statusline_rejects_overflowing_token_sum() -> None:
             headers=H,
         )
         assert r.status_code == 400
+
+
+# ---------------------------------------------------------------- statusLine rate_limits
+
+RL = {
+    "five_hour": {"used_percentage": 23.5, "resets_at": 1794020400},
+    "seven_day": {"used_percentage": 22, "resets_at": 1794049200},
+}
+CONTEXT = {
+    "used_percentage": 12.5,
+    "context_window_size": 200000,
+    "current_usage": {"input_tokens": 10},
+}
+
+
+def test_statusline_keeps_rate_limits() -> None:
+    values = parse_statusline({"rate_limits": RL, "version": "2.1.304"})
+    assert values["rate_limits"] == RL
+    assert values["version"] == "2.1.304"
+
+
+@pytest.mark.parametrize("bad", ["x", 1, [RL], None, True, {}])
+def test_statusline_rate_limits_not_an_object(bad: Any) -> None:
+    assert parse_statusline({"rate_limits": bad})["rate_limits"] is None
+
+
+def test_statusline_bad_rate_limits_dropped() -> None:
+    rate_limits = {
+        "five_hour": RL["five_hour"],
+        "pct_string": {"used_percentage": "a", "resets_at": 1},
+        "pct_bool": {"used_percentage": True, "resets_at": 1},
+        "pct_nan": {"used_percentage": float("nan"), "resets_at": 1},
+        "pct_inf": {"used_percentage": float("inf"), "resets_at": 1},
+        "pct_huge": {"used_percentage": 10**400, "resets_at": 1},
+        "pct_negative": {"used_percentage": -1, "resets_at": 1},
+        "resets_missing": {"used_percentage": 1},
+        "resets_zero": {"used_percentage": 1, "resets_at": 0},
+        "resets_string": {"used_percentage": 1, "resets_at": "x"},
+        "resets_bool": {"used_percentage": 1, "resets_at": True},
+        "Bad-Key": {"used_percentage": 1, "resets_at": 1},
+        "k" * 65: {"used_percentage": 1, "resets_at": 1},
+        "spend_limit": {"monthly_limit": 100, "used": 3},
+        "not_an_object": 5,
+        "seven_day": {**RL["seven_day"], "extra": "dropped"},
+        "zero_ok": {"used_percentage": 0, "resets_at": 1.5},
+    }
+    values = parse_statusline({"rate_limits": rate_limits})
+    assert values["rate_limits"] == {
+        **RL,
+        "zero_ok": {"used_percentage": 0, "resets_at": 1.5},
+    }
+    only_bad = {k: v for k, v in rate_limits.items() if k not in (*RL, "zero_ok")}
+    assert parse_statusline({"rate_limits": only_bad})["rate_limits"] is None
+
+
+def test_statusline_rate_limits_out_of_range_dropped() -> None:
+    rate_limits = {
+        "pct_over": {"used_percentage": 1000.5, "resets_at": 1794020400},
+        "pct_big": {"used_percentage": 10**308, "resets_at": 1794020400},
+        "resets_far": {"used_percentage": 1, "resets_at": 10**308},
+        "resets_ms": {"used_percentage": 1, "resets_at": 1794020400000},
+        "edge_ok": {"used_percentage": 1000, "resets_at": 4102444800},
+    }
+    kept = parse_statusline({"rate_limits": rate_limits})["rate_limits"]
+    assert kept == {"edge_ok": {"used_percentage": 1000, "resets_at": 4102444800}}
+
+
+def test_statusline_rate_limits_worst_case_body_fits_ingest_cap() -> None:
+    """Every kept window at its widest still serializes far below the 8192-byte ingest cap."""
+    widest = {"used_percentage": 999.9999999999999, "resets_at": 4102444799.9999995}
+    many = {f"{i:02d}" + "k" * 62: widest for i in range(40)}
+    kept = parse_statusline({"rate_limits": many})["rate_limits"]
+    assert len(kept) == 16
+    body = {"agent": "a" * 128, "cli_version": "v" * 64, "rate_limits": kept}
+    assert len(json.dumps(body)) <= 8192
+
+
+def test_statusline_version_bounds() -> None:
+    assert parse_statusline({"version": "v" * 64})["version"] == "v" * 64
+    for bad in ("v" * 65, 2, None, "", ["2.1.304"]):
+        assert parse_statusline({"version": bad})["version"] is None
+
+
+def test_statusline_rate_limits_capped_keeps_known_windows() -> None:
+    many = {f"w{i:02d}": {"used_percentage": i, "resets_at": 1794000000 + i} for i in range(40)}
+    # the well-known windows come last, so a plain "first 16" would lose them
+    rate_limits = {**many, **RL}
+    kept = parse_statusline({"rate_limits": rate_limits})["rate_limits"]
+    assert len(kept) == MAX_RATE_LIMIT_WINDOWS == 16
+    assert kept["five_hour"] == RL["five_hour"] and kept["seven_day"] == RL["seven_day"]
+    # the rest are the first valid ones in payload order
+    assert [k for k in kept if k not in RL] == [f"w{i:02d}" for i in range(14)]
+    assert len(json.dumps(kept)) < 8192
+
+
+def test_statusline_without_rate_limits() -> None:
+    values = parse_statusline({"context_window": CONTEXT, "model": "m"})
+    assert values == {
+        **CONTEXT,
+        "model": "m",
+        "rate_limits": None,
+        "version": None,
+    }
+
+
+class Offers:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, Any]] = []
+
+    def offer(self, rate_limits: Any, cli_version: Any) -> None:
+        self.calls.append((rate_limits, cli_version))
+
+
+class RealManager(FakeManager):
+    """A FakeManager whose router is a real SessionRouter, optionally wired to `offers`."""
+
+    def __init__(self, tmp_path: Path, offers: Offers | None) -> None:
+        from test_router import Harness
+
+        self.h = Harness(tmp_path)
+        if offers is not None:
+            self.h.router.on_rate_limits = offers.offer
+        self.r = self.h.router
+
+
+async def test_route_offers_rate_limits(tmp_path: Path) -> None:
+    offers = Offers()
+    mgr = RealManager(tmp_path, offers)
+    try:
+        async with client(mgr) as c:
+            body = {"context_window": CONTEXT, "rate_limits": RL, "version": "2.1.304"}
+            r = await c.post("/internal/statusline", json=body, headers=H)
+            assert r.status_code == 204
+        assert mgr.h.router.context is not None
+        assert mgr.h.router.context["used_percentage"] == 12.5
+        assert offers.calls == [(RL, "2.1.304")]
+    finally:
+        await mgr.h.router.close()
+
+
+async def test_route_bad_rate_limits_still_204(tmp_path: Path) -> None:
+    offers = Offers()
+    mgr = RealManager(tmp_path, offers)
+    try:
+        async with client(mgr) as c:
+            for bad in ("x", {"five_hour": {"used_percentage": "a", "resets_at": 1}}):
+                body = {"context_window": CONTEXT, "rate_limits": bad, "version": "2.1.304"}
+                r = await c.post("/internal/statusline", json=body, headers=H)
+                assert r.status_code == 204
+        assert mgr.h.router.context is not None
+        assert mgr.h.router.context["used_percentage"] == 12.5
+        assert offers.calls == []
+    finally:
+        await mgr.h.router.close()
+
+
+async def test_route_no_forwarder(tmp_path: Path) -> None:
+    mgr = RealManager(tmp_path, None)
+    try:
+        async with client(mgr) as c:
+            body = {"context_window": CONTEXT, "rate_limits": RL, "version": "2.1.304"}
+            r = await c.post("/internal/statusline", json=body, headers=H)
+            assert r.status_code == 204
+        assert mgr.h.router.context is not None
+        assert mgr.h.router.on_rate_limits is None
+    finally:
+        await mgr.h.router.close()

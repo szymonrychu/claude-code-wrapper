@@ -118,3 +118,40 @@ async def test_install_workdir_noop_without_config(tmp_path, fake_mise):
     wd.mkdir()
     assert await install_workdir(cfg(tmp_path), wd, {}) is False
     assert not fake_mise.exists()
+
+
+@pytest.fixture
+def env_mise(tmp_path, monkeypatch):
+    """A mise stand-in that records the environment it was started with."""
+    bindir = tmp_path / "envbin"
+    bindir.mkdir()
+    dump = tmp_path / "mise.env"
+    m = bindir / "mise"
+    m.write_text(f'#!/bin/sh\nenv >> "{dump}"\nexit 0\n')
+    m.chmod(m.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{bindir}:/usr/bin:/bin")
+    return dump
+
+
+USAGE_TOKEN = "usage-ingest-token-0123456789"
+
+
+async def test_install_global_env_lacks_usage_token(tmp_path, env_mise, monkeypatch):
+    monkeypatch.setenv("CCW_USAGE_TOKEN", USAGE_TOKEN)
+    c = cfg(tmp_path, tools={"node": "22"})
+    render_global_mise(c)
+    await install_global(c, {"CCW_USAGE_TOKEN": USAGE_TOKEN, "KEEP_ME": "yes"})
+    seen = env_mise.read_text()
+    assert "KEEP_ME=yes" in seen
+    assert "CCW_USAGE_TOKEN" not in seen and USAGE_TOKEN not in seen
+
+
+async def test_install_workdir_env_lacks_usage_token(tmp_path, env_mise, monkeypatch):
+    monkeypatch.setenv("CCW_USAGE_TOKEN", USAGE_TOKEN)
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    (wd / "mise.toml").write_text("")
+    assert await install_workdir(cfg(tmp_path), wd, {"CCW_USAGE_TOKEN": USAGE_TOKEN}) is True
+    seen = env_mise.read_text()
+    assert seen.count("MISE_YES=1") == 2  # trust and install both ran
+    assert "CCW_USAGE_TOKEN" not in seen and USAGE_TOKEN not in seen

@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,13 @@ STATUSLINE_PATH = "/internal/statusline"
 CHAIN_FILE = "ccw-statusline-chain.json"
 POST_TIMEOUT = 2.0
 CHAIN_TIMEOUT = 30.0
+#: The agents-usage ingest token of the wrapper server process (`usage.token`); never passed on.
+ENV_USAGE_TOKEN = "CCW_USAGE_TOKEN"
+
+
+def without_usage_token(env: Mapping[str, str]) -> dict[str, str]:
+    """`env` minus the usage ingest token: for every environment handed to a child process."""
+    return {k: v for k, v in env.items() if k != ENV_USAGE_TOKEN}
 
 
 def chain_path(config_dir: str | Path) -> Path:
@@ -78,7 +86,7 @@ def chained_command() -> str | None:
 
 
 def run_chain(command: str, body: bytes) -> str:
-    env = {k: v for k, v in os.environ.items() if k != ENV_TOKEN}
+    env = without_usage_token({k: v for k, v in os.environ.items() if k != ENV_TOKEN})
     try:
         done = subprocess.run(  # noqa: S602
             command,

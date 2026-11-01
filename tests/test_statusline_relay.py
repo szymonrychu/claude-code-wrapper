@@ -164,6 +164,8 @@ async def test_internal_route_validates_and_dispatches() -> None:
                 "context_window_size": 200000,
                 "current_usage": {"input_tokens": 10},
                 "model": {"id": "claude-x", "display_name": "X"},
+                "rate_limits": None,
+                "version": None,
             }
         ]
         nulls = await c.post("/internal/statusline", json={"context_window": None}, headers=h)
@@ -225,3 +227,20 @@ def test_chain_env_drops_hook_token(monkeypatch) -> None:
     monkeypatch.setenv("CCW_SESSION_ID", "s1")
     out = statusline.run_chain('echo "[${CCW_HOOK_TOKEN-unset}][$CCW_SESSION_ID]"', b"{}")
     assert out == "[unset][s1]\n"
+
+
+def test_relay_env_has_no_usage_token(monkeypatch, capsys, tmp_path) -> None:
+    usage_token = "usage-ingest-token-0123456789"
+    monkeypatch.setenv("CCW_USAGE_TOKEN", usage_token)
+    _Capture.seen = []
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Capture)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        _env(monkeypatch, f"http://127.0.0.1:{server.server_port}", tmp_path)
+        _run(monkeypatch, capsys, json.dumps(PAYLOAD).encode())
+    finally:
+        server.shutdown()
+    ((_, headers, body),) = _Capture.seen
+    assert usage_token not in json.dumps(headers) and usage_token.encode() not in body
+    out = statusline.run_chain('echo "[${CCW_USAGE_TOKEN-unset}][${CCW_HOOK_TOKEN-unset}]"', b"{}")
+    assert out == "[unset][unset]\n"
