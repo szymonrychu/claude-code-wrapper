@@ -410,7 +410,7 @@ Request body (exactly one of `text` and `template`):
 | `callbackUrl` | string | no | `http`/`https` URL that receives this turn's terminal-state callback (and its questions); overrides the session's `callbackUrl` |
 | `metadata` | object | no | client-supplied JSON object kept on the turn record (`metadata`) and given to `onTurn` hooks as `data.metadata`, so hooks can gate on it; at most 16 KiB serialised |
 | `lane` | string | no | `idle`, `regular` (default) or `priority`: how the message reaches the session, see "Delivery lanes" below; any other value is `422 invalid_request` |
-| `message_id` | string | no | id of the message when it is typed into a running turn (`queued: true`); `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`, generated (`msg-...`) when absent |
+| `message_id` | string | no | id of the message when it is typed into a running turn (`queued: true`); `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`, generated (`msg-...`) when absent. On the `priority` lane it is also the idempotency key of a retry (`duplicate: true`) |
 
 Response `202`, a new turn:
 
@@ -473,6 +473,14 @@ Delivery lanes (`lane`):
   own and keeps at least 1 s from the previous ESC (two ESCs close together at an empty prompt
   open claude's rewind menu), so two priority deliveries in a row wait for each other. A slash
   command run or a turn's command phase is never interrupted this way: `409 busy`.
+  The answer comes only after those waits (up to three `interrupt_settle_seconds` plus a few
+  seconds), so the turn is listed from the moment the request arrives: `GET .../turns` and
+  `GET .../turns/{turn_id}` show it with `state: "pending"`, its text and `metadata`, until it
+  starts (`running`, same `turn_id`) or the delivery fails (the record is gone again). A
+  pending record lives in memory only and is never written to `turns.jsonl`. A priority send
+  with a `message_id` this session already took (the last 256) is idempotent: it answers `202`
+  with the turn the first send started, in its current state (`pending`, `running` or
+  terminal), and `duplicate: true`; nothing is typed and nothing is interrupted.
 
 Turn accounting for a typed message: claude records it as a `queued_command` attachment line (or
 a user line) holding the `<!-- ccw message: <message_id> -->` marker. When that line is read while
@@ -584,7 +592,8 @@ Response `200`:
 }
 ```
 
-Fields: `state` is `running`, `completed`, `failed`, `interrupted` or `timeout`; `final_text` is
+Fields: `state` is `pending` (a priority delivery still interrupting, see the lanes), `running`,
+`completed`, `failed`, `interrupted` or `timeout`; `final_text` is
 Claude's last assistant message (set on completed turns); `error` names why a turn failed
 (`claude_exited`, `session_stopped`, `service_shutdown`, or the fatal pattern matched on screen);
 `interrupted` is `"shutdown"` while a `running` turn waits for its session's resume after a
