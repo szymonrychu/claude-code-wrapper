@@ -1253,7 +1253,8 @@ first assistant message and after `/compact`), and the router callback `on_statu
 latest values. `rate_limits` and `version` are kept too but never cause a `400`: each
 `rate_limits` entry whose key matches `^[a-z0-9_]{1,64}$` and whose value has a finite number
 `used_percentage` >= 0 and a finite number `resets_at` > 0 is kept as just those two fields, any
-other entry (for example `spend_limit`) is dropped, and `version` is kept when it is a string of 1
+other entry (for example `spend_limit`) is dropped, at most 16 windows are kept (`five_hour` and
+`seven_day` first, then the rest in payload order, so the ingest body stays under its 8192 byte cap), and `version` is kept when it is a string of 1
 to 64 characters. With `usage.url` set, the kept rate limits go to the usage forwarder (see
 [Usage forwarding](#usage-forwarding)); the route never waits on it. Answers `204`.
 
@@ -2242,7 +2243,8 @@ Trigger: after the leaving heartbeat round, before any `onDestroy` fires. Cannot
 ### Command actions
 
 The payload envelope is written to stdin. Environment: the FULL service environment (every
-variable of the ccw process, including secrets such as `CCW_AUTH_TOKEN`), then the action's `env`,
+variable of the ccw process, including secrets such as `CCW_AUTH_TOKEN`, except `CCW_USAGE_TOKEN`,
+which no hook command receives), then the action's `env`,
 then `CCW_EVENT`, `CCW_SESSION_ID`, `CCW_TURN_ID`, `CCW_WORKDIR`, `CCW_CLAUDE_CONFIG_DIR`,
 `CCW_STATE_DIR` and `CCW_API_URL` (service-managed, they win over the action's `env`).
 `CCW_STATE_DIR` is `<session_dir>/hook-state`, a per-session directory created before the first
@@ -2880,9 +2882,11 @@ usage:
   or a percent. There is no retry loop: the next offer, even of the same value, sends again.
 - The token lives only in the wrapper server process: interpolated into the config from the
   service env, masked as `***` in `GET /v1/config` and redacted from logs. `CCW_*` names never pass
-  through to claude, so claude, its hooks, the `ccw statusline` relay and the chained statusLine
-  command never see it. As with `CCW_AUTH_TOKEN`, a process running as the same uid can still read
-  the wrapper's own `/proc/<pid>/environ` (see [Trust model](#trust-model)).
+  through to claude, so claude, its relay hooks, the `ccw statusline` relay and the chained statusLine
+  command never see it, and the wrapper removes it from the environment of `command` hook actions
+  (which otherwise get the full service environment). As with `CCW_AUTH_TOKEN`, a process running
+  as the same uid can still read the wrapper's own `/proc/<pid>/environ` (see
+  [Trust model](#trust-model)).
 - No valid rate limit window (an API-key account, or before the first response) means nothing is
   sent.
 

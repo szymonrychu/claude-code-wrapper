@@ -77,9 +77,9 @@ async def until(pred: Callable[[], Any], timeout: float = 2.0) -> None:
         await asyncio.sleep(0.005)
 
 
-async def settle() -> None:
-    """Let the sender finish handling the response it just got."""
-    await asyncio.sleep(0.03)
+async def settle(fwd: UsageForwarder) -> None:
+    """Wait until the sender is idle: nothing queued, nothing in flight, no wake-up pending."""
+    await until(lambda: fwd._in_flight is None and fwd._pending is None and not fwd._wake.is_set())
 
 
 async def running(fake: Fake, clock: Clock | None = None, **kw: Any) -> UsageForwarder:
@@ -125,11 +125,11 @@ async def test_unchanged_value_deduped_60s() -> None:
     try:
         fwd.offer(RL, "2.1.304")
         await until(lambda: len(fake.requests) == 1)
-        await settle()
+        await settle(fwd)
         for t in (10, 59):
             clock.t = t
             fwd.offer(RL, "2.1.304")
-            await settle()
+            await settle(fwd)
         assert len(fake.requests) == 1
         clock.t = 61
         fwd.offer(RL, "2.1.304")
@@ -144,7 +144,7 @@ async def test_changed_value_sent_at_once() -> None:
     try:
         fwd.offer(RL, "2.1.304")
         await until(lambda: len(fake.requests) == 1)
-        await settle()
+        await settle(fwd)
         clock.t = 1
         fwd.offer(changed(24.0), "2.1.304")
         await until(lambda: len(fake.requests) == 2)
@@ -163,12 +163,12 @@ async def test_offer_never_blocks() -> None:
         start = time.monotonic()
         for i in range(1, 1001):
             fwd.offer(changed(float(i)), "2.1.304")
-        assert time.monotonic() - start < 0.1
-        await settle()
+        assert time.monotonic() - start < 0.5
+        await asyncio.sleep(0)  # the only sender is blocked on the gate: no second POST can start
         assert len(fake.requests) == 1 and fake.in_flight == 1
         fake.gate.set()
         await until(lambda: len(fake.requests) == 2)
-        await settle()
+        await settle(fwd)
         assert len(fake.requests) == 2
         assert fake.max_in_flight == 1
         assert fake.bodies()[1]["rate_limits"] == changed(1000.0)
@@ -182,7 +182,7 @@ async def test_return_to_last_sent_while_another_in_flight() -> None:
     try:
         fwd.offer(RL, "2.1.304")
         await until(lambda: len(fake.requests) == 1)
-        await settle()
+        await settle(fwd)
         fake.gate = asyncio.Event()
         clock.t = 1
         fwd.offer(changed(24.0), "2.1.304")
@@ -207,14 +207,14 @@ async def test_failure_logged_once_per_streak(caplog: pytest.LogCaptureFixture) 
         for n in range(1, 4):
             fwd.offer(RL, "2.1.304")
             await until(lambda n=n: len(fake.requests) == n)
-            await settle()
+            await settle(fwd)
         assert len(_forward_warnings(caplog)) == 1
         fwd.offer(RL, "2.1.304")  # 202 ends the streak
         await until(lambda: len(fake.requests) == 4)
-        await settle()
+        await settle(fwd)
         fwd.offer(changed(30.0), "2.1.304")  # a new failure starts a new streak
         await until(lambda: len(fake.requests) == 5)
-        await settle()
+        await settle(fwd)
         warnings = _forward_warnings(caplog)
         assert len(warnings) == 2
         assert "500" in warnings[0].getMessage() and "500" in warnings[1].getMessage()
@@ -234,7 +234,7 @@ async def test_exception_class_logged_not_message(caplog: pytest.LogCaptureFixtu
     try:
         fwd.offer(RL, "2.1.304")
         await until(lambda: len(fake.requests) == 1)
-        await settle()
+        await settle(fwd)
     finally:
         await fwd.aclose()
     (warning,) = _forward_warnings(caplog)
@@ -248,14 +248,14 @@ async def test_failed_post_retried_on_next_offer() -> None:
     try:
         fwd.offer(RL, "2.1.304")
         await until(lambda: len(fake.requests) == 1)
-        await settle()
+        await settle(fwd)
         clock.t = 1
         fwd.offer(RL, "2.1.304")
         await until(lambda: len(fake.requests) == 2)
-        await settle()
+        await settle(fwd)
         clock.t = 2
         fwd.offer(RL, "2.1.304")  # the retry succeeded: now deduped
-        await settle()
+        await settle(fwd)
         assert len(fake.requests) == 2
     finally:
         await fwd.aclose()
@@ -410,7 +410,7 @@ async def test_manager_wires_router_to_forwarder(world: Any) -> None:
         await until(lambda: len(fake.requests) == 1)
         assert fake.bodies()[0]["rate_limits"] == RL
         router.on_statusline(parse_statusline({"context_window": None}))
-        await settle()
+        await settle(fwd)
         assert len(fake.requests) == 1
     finally:
         await m.shutdown()

@@ -9,7 +9,11 @@ from typing import Any
 import httpx
 import pytest
 
-from claude_code_wrapper.internal_api import create_internal_app, parse_statusline
+from claude_code_wrapper.internal_api import (
+    MAX_RATE_LIMIT_WINDOWS,
+    create_internal_app,
+    parse_statusline,
+)
 from claude_code_wrapper.manager import InvalidState
 
 TOKEN = "tok-secret-123"
@@ -379,6 +383,18 @@ def test_statusline_version_bounds() -> None:
     assert parse_statusline({"version": "v" * 64})["version"] == "v" * 64
     for bad in ("v" * 65, 2, None, "", ["2.1.304"]):
         assert parse_statusline({"version": bad})["version"] is None
+
+
+def test_statusline_rate_limits_capped_keeps_known_windows() -> None:
+    many = {f"w{i:02d}": {"used_percentage": i, "resets_at": 1794000000 + i} for i in range(40)}
+    # the well-known windows come last, so a plain "first 16" would lose them
+    rate_limits = {**many, **RL}
+    kept = parse_statusline({"rate_limits": rate_limits})["rate_limits"]
+    assert len(kept) == MAX_RATE_LIMIT_WINDOWS == 16
+    assert kept["five_hour"] == RL["five_hour"] and kept["seven_day"] == RL["seven_day"]
+    # the rest are the first valid ones in payload order
+    assert [k for k in kept if k not in RL] == [f"w{i:02d}" for i in range(14)]
+    assert len(json.dumps(kept)) < 8192
 
 
 def test_statusline_without_rate_limits() -> None:

@@ -35,6 +35,10 @@ from claude_code_wrapper.mcp_server import (
 DEDUPE_LIMIT = 256
 STATUSLINE_MAX_BODY = 16384
 VERSION_MAX_CHARS = 64
+#: At most this many windows are kept (the agents-usage ingest body is capped at 8192 bytes).
+MAX_RATE_LIMIT_WINDOWS = 16
+#: Kept first when the cap bites.
+_PRIORITY_WINDOWS = ("five_hour", "seven_day")
 _RATE_LIMIT_KEY = re.compile(r"[a-z0-9_]{1,64}")
 USAGE_KEYS = (
     "input_tokens",
@@ -77,7 +81,9 @@ def _rate_limits(value: Any) -> dict[str, dict[str, int | float]] | None:
     """The valid windows of the statusLine `rate_limits` object, None when none is left.
 
     A window needs a `[a-z0-9_]{1,64}` key, a finite `used_percentage` >= 0 and a finite
-    `resets_at` > 0; anything else (for example `spend_limit`) is dropped without an error."""
+    `resets_at` > 0; anything else (for example `spend_limit`) is dropped without an error.
+    At most `MAX_RATE_LIMIT_WINDOWS` are kept: `five_hour` and `seven_day` first, then the rest
+    in payload order."""
     if not isinstance(value, dict):
         return None
     out: dict[str, dict[str, int | float]] = {}
@@ -89,6 +95,11 @@ def _rate_limits(value: Any) -> dict[str, dict[str, int | float]] | None:
         pct, resets = window.get("used_percentage"), window.get("resets_at")
         if _number(pct) and pct >= 0 and _number(resets) and resets > 0:
             out[key] = {"used_percentage": pct, "resets_at": resets}
+    if len(out) > MAX_RATE_LIMIT_WINDOWS:
+        first = [k for k in _PRIORITY_WINDOWS if k in out]
+        rest = [k for k in out if k not in first]
+        keep = set(first + rest[: MAX_RATE_LIMIT_WINDOWS - len(first)])
+        out = {k: v for k, v in out.items() if k in keep}
     return out or None
 
 
