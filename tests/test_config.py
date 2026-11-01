@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -364,3 +365,101 @@ def test_permission_mode_rejects_unknown(tmp_path):
 def test_auto_footer_is_a_default_ready_marker(tmp_path):
     cfg = load_config(write(tmp_path, ""))
     assert "auto mode on" in cfg.claude.boot.ready_markers
+
+
+# ---------------------------------------------------------------- usage forwarding
+
+USAGE_TOKEN = "usage-ingest-token-0123456789"
+
+
+def test_usage_off_by_default(tmp_path):
+    cfg = load_config(write(tmp_path, ""))
+    assert cfg.usage.url == "" and cfg.usage.token == "" and cfg.usage.agent == ""
+    assert cfg.usage.min_interval_seconds == 60
+    assert cfg.usage.timeout_seconds == 5
+    assert Config().usage.url == ""
+
+
+def test_usage_url_requires_token(tmp_path):
+    msg = err(tmp_path, "usage:\n  url: http://agents-usage:8002\n")
+    assert "usage.token: required when usage.url is set" in msg
+    msg = err(tmp_path, "usage:\n  url: http://agents-usage:8002\n  token: " + "t" * 15 + "\n")
+    assert "usage.token: must be at least 16 characters" in msg
+    cfg = load_config(
+        write(tmp_path, "usage:\n  url: http://agents-usage:8002\n  token: " + "t" * 16 + "\n")
+    )
+    assert cfg.usage.url == "http://agents-usage:8002"
+
+
+def test_usage_bad_url_refused(tmp_path):
+    for url in ("ftp://x", "agents-usage:8002", "http://agents-usage:8002/"):
+        msg = err(tmp_path, f"usage:\n  url: {url}\n  token: {USAGE_TOKEN}\n")
+        assert "usage.url:" in msg, url
+
+
+def test_usage_bad_agent_refused(tmp_path):
+    for agent in ("a b", "x" * 129, "pod/0"):
+        assert "usage.agent:" in err(tmp_path, f"usage:\n  agent: '{agent}'\n"), agent
+    cfg = load_config(write(tmp_path, "usage:\n  agent: " + "a" * 128 + "\n"))
+    assert cfg.usage.agent == "a" * 128
+
+
+def test_usage_interval_and_timeout_bounds(tmp_path):
+    assert "usage.min_interval_seconds" in err(tmp_path, "usage:\n  min_interval_seconds: 0\n")
+    assert "usage.timeout_seconds" in err(tmp_path, "usage:\n  timeout_seconds: 0\n")
+    assert "usage.timeout_seconds" in err(tmp_path, "usage:\n  timeout_seconds: 31\n")
+    assert "usage.extra" in err(tmp_path, "usage:\n  extra: 1\n")
+
+
+def test_usage_token_redacted():
+    cfg = Config.model_validate(
+        {"usage": {"url": "http://agents-usage:8002", "token": USAGE_TOKEN, "agent": "pod-0"}}
+    )
+    red = cfg.redacted()
+    assert red["usage"]["token"] == "***"
+    assert red["usage"]["url"] == "http://agents-usage:8002"
+    assert USAGE_TOKEN not in json.dumps(red)
+    assert Config().redacted()["usage"]["token"] == ""
+
+
+def test_usage_interpolated_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCW_USAGE_TOKEN", USAGE_TOKEN)
+    monkeypatch.setenv("POD_NAME", "agent-7f9c-0")
+    text = (
+        "usage:\n"
+        "  url: http://agents-usage-ingest.agents.svc:8002\n"
+        '  token: "${CCW_USAGE_TOKEN}"\n'
+        '  agent: "${POD_NAME}"\n'
+    )
+    cfg = load_config(write(tmp_path, text))
+    assert cfg.usage.token == USAGE_TOKEN
+    assert cfg.usage.agent == "agent-7f9c-0"
+
+
+def test_claude_env_never_carries_usage_token(tmp_path, monkeypatch):
+    from claude_code_wrapper.claude_env import ClaudeEnv
+    from claude_code_wrapper.session import build_env
+
+    monkeypatch.setenv("CCW_USAGE_TOKEN", USAGE_TOKEN)
+    cfg = Config.model_validate(
+        {
+            "usage": {"url": "http://agents-usage:8002", "token": USAGE_TOKEN},
+            "claude": {"passthrough_env": ["*", "CCW_USAGE_TOKEN"]},
+        }
+    )
+    env = build_env(
+        service_env=dict(os.environ),
+        claude_env=ClaudeEnv(),
+        config_dir=str(tmp_path / "config"),
+        gitconfig=str(tmp_path / "gitconfig"),
+        session_id="s1",
+        internal_url="http://127.0.0.1:8090",
+        hook_token="hook-token-0123456789",
+        gate_fail="allow",
+        gate_timeout=14,
+        mise_env=None,
+        passthrough=cfg.claude.passthrough_env,
+        passthrough_exclude=cfg.claude.passthrough_env_exclude,
+    )
+    assert "CCW_USAGE_TOKEN" not in env
+    assert USAGE_TOKEN not in env.values()

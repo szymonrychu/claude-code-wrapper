@@ -828,6 +828,43 @@ class PeersConfig(_Model):
         return PeersConfig.model_validate({**self.model_dump(), "static": [*self.static, *urls]})
 
 
+_USAGE_AGENT = re.compile(r"[A-Za-z0-9._-]{0,128}")
+_USAGE_TOKEN_MIN = 16
+
+
+class UsageConfig(_Model):
+    """Forward statusLine rate limits to agents-usage (README "Usage forwarding")."""
+
+    url: str = ""
+    token: str = ""
+    agent: str = ""
+    min_interval_seconds: float = Field(60, gt=0)
+    timeout_seconds: float = Field(5, gt=0, le=30)
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, value: str) -> str:
+        return _check_http_url(value) if value else value
+
+    @field_validator("agent")
+    @classmethod
+    def _agent(cls, value: str) -> str:
+        if not _USAGE_AGENT.fullmatch(value):
+            raise ValueError(f"must match [A-Za-z0-9._-]{{0,128}}, got {value!r}")
+        return value
+
+    @model_validator(mode="after")
+    def _token(self) -> UsageConfig:
+        if self.url and not self.token:
+            raise _at(
+                "token",
+                "required when usage.url is set; set it, normally from ${CCW_USAGE_TOKEN}",
+            )
+        if self.token and len(self.token) < _USAGE_TOKEN_MIN:
+            raise _at("token", f"must be at least {_USAGE_TOKEN_MIN} characters")
+        return self
+
+
 class LimitsConfig(_Model):
     max_prompt_bytes: int = Field(1048576, ge=1)
     max_file_bytes: int = Field(262144, ge=1)
@@ -872,6 +909,7 @@ class Config(_Model):
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     peers: PeersConfig = Field(default_factory=PeersConfig)
     notes: NotesConfig = Field(default_factory=NotesConfig)
+    usage: UsageConfig = Field(default_factory=UsageConfig)
 
     @model_validator(mode="after")
     def _peer_token_distinct(self) -> Config:
@@ -895,8 +933,9 @@ class Config(_Model):
         for key in ("auth_token", "callback_secret"):
             if out["server"][key]:
                 out["server"][key] = MASK
-        if out["peers"]["token"]:
-            out["peers"]["token"] = MASK
+        for section in ("peers", "usage"):
+            if out[section]["token"]:
+                out[section]["token"] = MASK
         out["claude"]["env"] = self.claude.env.redacted()  # type: ignore[attr-defined]
         for name, server in self.claude.mcp_servers.items():
             dumped = out["claude"]["mcp_servers"][name]
