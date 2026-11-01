@@ -29,7 +29,7 @@ from claude_code_wrapper.config import (
     WebhookAction,
 )
 from claude_code_wrapper.redact import Redactor
-from claude_code_wrapper.statusline import ENV_USAGE_TOKEN
+from claude_code_wrapper.statusline import without_usage_token
 from claude_code_wrapper.timeutil import now_iso
 
 log = logging.getLogger(__name__)
@@ -222,7 +222,7 @@ class HookDispatcher:
         self._cfg = hooks_cfg
         self._redactor = redactor
         # The usage ingest token is for the wrapper server process alone: no hook command gets it.
-        self._base_env = {k: v for k, v in base_env.items() if k != ENV_USAGE_TOKEN}
+        self._base_env = without_usage_token(base_env)
         self._default_cwd = str(default_cwd)
         self._config_dir = str(config_dir) if config_dir is not None else ""
         self._state_dir = str(state_dir) if state_dir is not None else ""

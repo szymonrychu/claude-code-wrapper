@@ -379,6 +379,28 @@ def test_statusline_bad_rate_limits_dropped() -> None:
     assert parse_statusline({"rate_limits": only_bad})["rate_limits"] is None
 
 
+def test_statusline_rate_limits_out_of_range_dropped() -> None:
+    rate_limits = {
+        "pct_over": {"used_percentage": 1000.5, "resets_at": 1794020400},
+        "pct_big": {"used_percentage": 10**308, "resets_at": 1794020400},
+        "resets_far": {"used_percentage": 1, "resets_at": 10**308},
+        "resets_ms": {"used_percentage": 1, "resets_at": 1794020400000},
+        "edge_ok": {"used_percentage": 1000, "resets_at": 4102444800},
+    }
+    kept = parse_statusline({"rate_limits": rate_limits})["rate_limits"]
+    assert kept == {"edge_ok": {"used_percentage": 1000, "resets_at": 4102444800}}
+
+
+def test_statusline_rate_limits_worst_case_body_fits_ingest_cap() -> None:
+    """Every kept window at its widest still serializes far below the 8192-byte ingest cap."""
+    widest = {"used_percentage": 999.9999999999999, "resets_at": 4102444799.9999995}
+    many = {f"{i:02d}" + "k" * 62: widest for i in range(40)}
+    kept = parse_statusline({"rate_limits": many})["rate_limits"]
+    assert len(kept) == 16
+    body = {"agent": "a" * 128, "cli_version": "v" * 64, "rate_limits": kept}
+    assert len(json.dumps(body)) <= 8192
+
+
 def test_statusline_version_bounds() -> None:
     assert parse_statusline({"version": "v" * 64})["version"] == "v" * 64
     for bad in ("v" * 65, 2, None, "", ["2.1.304"]):

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import math
 import time
@@ -25,6 +26,8 @@ from claude_code_wrapper.config import UsageConfig
 log = logging.getLogger(__name__)
 
 SAMPLES_PATH = "/usage/v1/samples"
+#: The agents-usage ingest rejects a larger body.
+MAX_BODY_BYTES = 8192
 
 #: (rate_limits, cli_version): what is sent, and what an offer is compared with.
 _Value = tuple[dict[str, Any], str | None]
@@ -99,8 +102,14 @@ class UsageForwarder:
             "cli_version": cli_version,
             "rate_limits": rate_limits,
         }
+        content = json.dumps(body, separators=(",", ":")).encode()
+        if len(content) > MAX_BODY_BYTES:
+            self._failed("body over the ingest cap")
+            return
         try:
-            response = await self._client.post(self._url, json=body)
+            response = await self._client.post(
+                self._url, content=content, headers={"Content-Type": "application/json"}
+            )
         except Exception as exc:
             self._failed(type(exc).__name__)
             return

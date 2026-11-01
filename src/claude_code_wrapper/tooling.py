@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from claude_code_wrapper.config import MiseConfig
+from claude_code_wrapper.statusline import without_usage_token
 
 log = logging.getLogger(__name__)
 
@@ -94,12 +95,14 @@ async def install_global(mise_cfg: MiseConfig, env: Mapping[str, str]) -> None:
         return
     if not Path(mise_cfg.global_config_path).is_file():
         return
-    full = {
-        **os.environ,
-        **env,
-        "MISE_GLOBAL_CONFIG_FILE": mise_cfg.global_config_path,
-        "MISE_YES": "1",
-    }
+    full = without_usage_token(
+        {
+            **os.environ,
+            **env,
+            "MISE_GLOBAL_CONFIG_FILE": mise_cfg.global_config_path,
+            "MISE_YES": "1",
+        }
+    )
     try:
         await _mise(["install"], cwd=None, env=full, timeout=mise_cfg.install_timeout_seconds)
     except ToolingError as exc:
@@ -114,7 +117,7 @@ async def install_workdir(mise_cfg: MiseConfig, workdir: Path, env: Mapping[str,
     )
     if marker is None:
         return False
-    full = {**os.environ, **env, "MISE_YES": "1"}
+    full = without_usage_token({**os.environ, **env, "MISE_YES": "1"})
     if _configured(mise_cfg):
         full["MISE_GLOBAL_CONFIG_FILE"] = mise_cfg.global_config_path
     try:

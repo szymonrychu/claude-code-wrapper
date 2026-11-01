@@ -1252,7 +1252,7 @@ and `model` (object or string) are validated, each may be `null` (Claude Code se
 first assistant message and after `/compact`), and the router callback `on_statusline` stores the
 latest values. `rate_limits` and `version` are kept too but never cause a `400`: each
 `rate_limits` entry whose key matches `^[a-z0-9_]{1,64}$` and whose value has a finite number
-`used_percentage` >= 0 and a finite number `resets_at` > 0 is kept as just those two fields, any
+`used_percentage` in 0..1000 and a finite number `resets_at` in (0, 4102444800] (epoch seconds, before 2100) is kept as just those two fields, any
 other entry (for example `spend_limit`) is dropped, at most 16 windows are kept (`five_hour` and
 `seven_day` first, then the rest in payload order, so the ingest body stays under its 8192 byte cap), and `version` is kept when it is a string of 1
 to 64 characters. With `usage.url` set, the kept rate limits go to the usage forwarder (see
@@ -2884,9 +2884,12 @@ usage:
   service env, masked as `***` in `GET /v1/config` and redacted from logs. `CCW_*` names never pass
   through to claude, so claude, its relay hooks, the `ccw statusline` relay and the chained statusLine
   command never see it, and the wrapper removes it from the environment of `command` hook actions
-  (which otherwise get the full service environment). As with `CCW_AUTH_TOKEN`, a process running
+  (which otherwise get the full service environment) and from the `mise trust` / `mise install`
+  processes (global and per workdir, whose repo-controlled `mise.toml` is trusted). As with `CCW_AUTH_TOKEN`, a process running
   as the same uid can still read the wrapper's own `/proc/<pid>/environ` (see
   [Trust model](#trust-model)).
+- A body over 8192 bytes (the agents-usage ingest cap) is never sent: it is dropped with one
+  warning per streak. The window bounds above keep a valid body far below it.
 - No valid rate limit window (an API-key account, or before the first response) means nothing is
   sent.
 

@@ -195,6 +195,28 @@ async def test_return_to_last_sent_while_another_in_flight() -> None:
         await fwd.aclose()
 
 
+async def test_oversized_body_dropped_with_one_warning_per_streak(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger=LOGGER)
+    wide = {"used_percentage": 10**308, "resets_at": 10**308}
+    huge = {f"w{i:02d}" + "k" * 60: wide for i in range(16)}
+    fake = Fake()
+    fwd = await running(fake)
+    try:
+        fwd.offer(huge, None)
+        await settle(fwd)
+        fwd.offer({**huge, "w00" + "k" * 60: {"used_percentage": 5, "resets_at": 1}}, None)
+        await settle(fwd)
+        assert fake.requests == []
+        assert len(_forward_warnings(caplog)) == 1
+        fwd.offer(RL, "2.1.304")  # a sendable value ends the streak and goes out
+        await until(lambda: len(fake.requests) == 1)
+        assert all(len(r.content) <= 8192 for r in fake.requests)
+    finally:
+        await fwd.aclose()
+
+
 def _forward_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     return [r for r in caplog.records if r.name == LOGGER and r.levelno == logging.WARNING]
 

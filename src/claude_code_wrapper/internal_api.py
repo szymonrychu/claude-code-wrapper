@@ -40,6 +40,10 @@ MAX_RATE_LIMIT_WINDOWS = 16
 #: Kept first when the cap bites.
 _PRIORITY_WINDOWS = ("five_hour", "seven_day")
 _RATE_LIMIT_KEY = re.compile(r"[a-z0-9_]{1,64}")
+#: Plausible bounds of a window: a percent of 0..1000 and an epoch-seconds reset before 2100.
+#: They also keep the serialized windows far below the agents-usage ingest cap.
+MAX_RATE_LIMIT_PERCENT = 1000
+MAX_RATE_LIMIT_RESETS_AT = 4102444800
 USAGE_KEYS = (
     "input_tokens",
     "output_tokens",
@@ -80,8 +84,9 @@ def _check_usage(usage: dict[str, Any] | None) -> None:
 def _rate_limits(value: Any) -> dict[str, dict[str, int | float]] | None:
     """The valid windows of the statusLine `rate_limits` object, None when none is left.
 
-    A window needs a `[a-z0-9_]{1,64}` key, a finite `used_percentage` >= 0 and a finite
-    `resets_at` > 0; anything else (for example `spend_limit`) is dropped without an error.
+    A window needs a `[a-z0-9_]{1,64}` key, a finite `used_percentage` in 0..1000 and a
+    finite `resets_at` in (0, 4102444800] epoch seconds; anything else (for example
+    `spend_limit`) is dropped without an error.
     At most `MAX_RATE_LIMIT_WINDOWS` are kept: `five_hour` and `seven_day` first, then the rest
     in payload order."""
     if not isinstance(value, dict):
@@ -93,7 +98,12 @@ def _rate_limits(value: Any) -> dict[str, dict[str, int | float]] | None:
         if not isinstance(window, dict):
             continue
         pct, resets = window.get("used_percentage"), window.get("resets_at")
-        if _number(pct) and pct >= 0 and _number(resets) and resets > 0:
+        if (
+            _number(pct)
+            and 0 <= pct <= MAX_RATE_LIMIT_PERCENT
+            and _number(resets)
+            and 0 < resets <= MAX_RATE_LIMIT_RESETS_AT
+        ):
             out[key] = {"used_percentage": pct, "resets_at": resets}
     if len(out) > MAX_RATE_LIMIT_WINDOWS:
         first = [k for k in _PRIORITY_WINDOWS if k in out]
