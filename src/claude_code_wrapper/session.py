@@ -381,6 +381,10 @@ class SessionListener:
     def on_permission_unavailable(self, reason: str, tail: str) -> None:
         """Auto mode is unavailable for `reason` (see `AUTO_UNAVAILABLE`); `tail` is the screen."""
 
+    def on_waiting(self, reason: str | None, previous: str | None) -> None:
+        """The wait for the user changed from `previous` to `reason` (`dialog`, `permission`,
+        `question`; None when nothing is awaited)."""
+
     def on_restart(self, count: int, resumed: bool) -> None:
         """claude crashed and is back at its prompt after relaunch number `count`."""
 
@@ -554,6 +558,11 @@ class Session:
         self._ui_dialogs = FatalScanner(spec.sessions.commands.dialog_patterns)
         self._ui_dialog_at = float("-inf")
         self._last_hook = float("-inf")
+        #: The agent asked the user a question (AskUserQuestion, forwarded) and nothing answered.
+        self._question = False
+        #: What the session waits on the user for (`waiting_reason`), and since when.
+        self._waiting: str | None = None
+        self.waiting_since: str | None = None
         self._typed = ""
         #: Set while `restart_for_dialog` closes claude, so its exit takes the dialog relaunch.
         self._dialog_restart = False
@@ -602,6 +611,7 @@ class Session:
             self.state_since = now_iso()
             self.idle_since = self.state_since if public == "ready" else None
             self._notify("on_state", public)
+        self._sync_waiting()
 
     def snapshot(self) -> dict[str, Any]:
         pty = self.pty
@@ -612,6 +622,11 @@ class Session:
             "last_fatal": self.last_fatal,
             "permission_mode_state": self.permission_mode_state,
             "permission_mode_reason": self.permission_mode_reason,
+            "waiting": (
+                {"reason": self._waiting, "since": self.waiting_since}
+                if self._waiting is not None
+                else None
+            ),
             "started_at": self.started_at,
             "ready_at": self.ready_at,
             "idle_since": self.idle_since,
@@ -739,6 +754,8 @@ class Session:
         self._dialogs.reset()
         self._ui_dialogs.reset()
         self._ui_dialog_at = float("-inf")
+        self._question = False
+        self._sync_waiting()
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._exited = asyncio.Event()
         self.pty = pty
@@ -812,6 +829,7 @@ class Session:
         for pattern in self._ui_dialogs.feed(text):
             if _squash(pattern) not in self._typed:
                 self._ui_dialog_at = self.last_output
+        self._sync_waiting()
         for pattern in self._scanner.feed(text):
             self.last_fatal = pattern
             log.warning("session %s: fatal pattern %r on screen", self.spec.session_id, pattern)
@@ -1096,6 +1114,7 @@ class Session:
             # claude would run it as a command: no Stop, so the turn would never end (design D3).
             raise TurnRejected("slash_command")
         pty = self.check_submittable(reserved=reserved)
+        self._question = False  # a new prompt answers (or drops) the question
         now = now_iso()
         record = TurnRecord(
             turn_id=turn_id or new_turn_id(),
@@ -1142,6 +1161,31 @@ class Session:
     def note_hook(self) -> None:
         """A claude hook was relayed: claude is past any dialog it showed before it."""
         self._last_hook = self.clock()
+        self._sync_waiting()
+
+    def set_question_waiting(self) -> None:
+        """The agent asked the user a question; the session waits for the answer, which arrives
+        as the next prompt (`submit`, `queue_prompt`, `deliver_message`)."""
+        self._question = True
+        self._sync_waiting()
+
+    def waiting_reason(self) -> str | None:
+        """Why the session waits on the user: `question` (asked, not answered), `permission` (a
+        dialog footer on screen while a turn runs: a permission prompt) or `dialog` (a footer
+        with no turn running: a slash command dialog); None otherwise."""
+        if self._question:
+            return "question"
+        if not self.dialog_open():
+            return None
+        return "permission" if self._turn is not None else "dialog"
+
+    def _sync_waiting(self) -> None:
+        reason = self.waiting_reason()
+        if reason == self._waiting:
+            return
+        previous, self._waiting = self._waiting, reason
+        self.waiting_since = now_iso() if reason is not None else None
+        self._notify("on_waiting", reason, previous)
 
     def dialog_open(self) -> bool:
         """A dialog footer (`sessions.commands.dialog_patterns`: a permission prompt, a
@@ -1202,6 +1246,7 @@ class Session:
         if slash_command(text) is not None:
             raise TurnRejected("slash_command")
         pty = self.check_queueable()
+        self._question = False
         record = self._turn
         assert record is not None
         message = QueuedMessage(
@@ -1759,6 +1804,7 @@ class Session:
         if key == ESC:
             self._last_escape = self.last_input
             self._hits_at_escape = self._dialog_hits
+            self._sync_waiting()
 
     def on_interrupted(self) -> None:
         """The transcript shows an interrupt: end the running turn (pending or unprompted)."""

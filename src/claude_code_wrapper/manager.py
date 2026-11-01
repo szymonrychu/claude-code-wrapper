@@ -100,6 +100,8 @@ SHUTDOWN_STOP_SHARE = 0.75
 SHUTDOWN_KILL_CLOSE_SHARE = 0.1
 SESSION_ID_RE = re.compile(r"^ses_[0-9a-f]{12}$")
 META_FILE = "session.json"
+#: Longest `message` of a `bootstrap_step` entry.
+BOOTSTRAP_MESSAGE_MAX = 200
 #: Persisted states whose claude died with the previous service process.
 LIVE_STATES = ("creating", "ready", "busy")
 
@@ -792,14 +794,41 @@ class SessionManager:
         """Record `name` as the running step, run it; any failure becomes `_StepFailed`."""
         try:
             self._set_step(ctx, name)
+            self._bootstrap_step(ctx, name, "running")
             result = fn(*args)
             if inspect.isawaitable(result):
                 result = await result
+            self._bootstrap_step(ctx, name, "succeeded")
             return result
-        except (CreateVetoed, asyncio.CancelledError):
+        except asyncio.CancelledError:
             raise
         except Exception as exc:
+            self._bootstrap_step(ctx, name, "failed", str(exc) or type(exc).__name__)
+            if isinstance(exc, CreateVetoed):
+                raise
             raise _StepFailed(name, exc) from exc
+
+    def _bootstrap_step(
+        self, ctx: _Active, name: str, status: str, message: str | None = None
+    ) -> None:
+        """Record a step's progress in the snapshot and emit `bootstrap_step`. The message is
+        redacted, one line and at most `BOOTSTRAP_MESSAGE_MAX` characters."""
+        steps: list[dict[str, Any]] = ctx.meta.setdefault("bootstrap", {}).setdefault("steps", [])
+        now = now_iso()
+        entry = next((e for e in steps if e["step"] == name), None)
+        if status == "running" or entry is None:
+            steps[:] = [e for e in steps if e["step"] != name]
+            entry = {"step": name, "status": status, "message": None, "started_at": now}
+            steps.append(entry)
+        entry["status"] = status
+        entry["finished_at"] = None if status == "running" else now
+        if message is not None:
+            text = " ".join(str(self.redactor.redact(message)).split())
+            if len(text) > BOOTSTRAP_MESSAGE_MAX:
+                text = text[: BOOTSTRAP_MESSAGE_MAX - 3] + "..."
+            entry["message"] = text
+        data = {k: entry[k] for k in ("step", "status", "message", "started_at", "finished_at")}
+        self._emit(ctx, "bootstrap_step", data)
 
     async def _fail(self, ctx: _Active, exc: _StepFailed, kind: str) -> CreateFailed:
         """A create/resume step failed: record it, report it, stop claude, free the slot."""
@@ -1539,6 +1568,8 @@ class SessionManager:
             "state": state,
             "step": meta.get("step"),
             "error": meta.get("error"),
+            "bootstrap": meta.get("bootstrap") or {"steps": []},
+            "waiting": live.get("waiting"),
             "workdir": meta.get("workdir"),
             "workdir_mode": meta.get("workdir_mode"),
             "model": meta.get("model"),

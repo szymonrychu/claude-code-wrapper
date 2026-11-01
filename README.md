@@ -258,6 +258,8 @@ Response `201`:
   "last_fatal": null,
   "permission_mode_state": null,
   "permission_mode_reason": null,
+  "waiting": null,
+  "bootstrap": {"steps": [{"step": "session_dir", "status": "succeeded", "message": null, "started_at": "2026-10-20T09:00:00.130+00:00", "finished_at": "2026-10-20T09:00:00.140+00:00"}]},
   "restarts": 0,
   "pid": 4121,
   "context": {"used_tokens": 41200, "window_tokens": 200000, "used_percentage": 20.6, "model": "claude-sonnet-4-5", "source": "statusline", "updated_at": "2026-10-20T09:00:20.100Z"},
@@ -266,7 +268,12 @@ Response `201`:
 }
 ```
 
-Snapshot fields: `state` is one of `creating`, `ready`, `busy`, `stopped`, `failed`, `dead`;
+Snapshot fields: `waiting` is `{"reason", "since"}` while the session waits on the user (`reason`
+`permission`: a dialog footer on screen while a turn runs; `dialog`: a footer with no turn running,
+such as a slash command dialog; `question`: an `AskUserQuestion` was forwarded and no prompt has
+answered it), else `null`; `bootstrap.steps` lists each create/resume step in order with `step`,
+`status` (`running`, `succeeded`, `failed`), `message` (on `failed`: redacted, one line, at most 200
+characters) and `started_at`/`finished_at`; `state` is one of `creating`, `ready`, `busy`, `stopped`, `failed`, `dead`;
 `step` is the create/resume step last entered (on `failed`, the one that failed, with `error:
 {"step", "message"}`); `outstanding_subagents` is the number of subagents started and not yet stopped (0 for stopped and persisted sessions); `current_turn_id` is the running turn; `last_fatal` is the last fatal
 screen text; `permission_mode_state` is `"unavailable"` (with `permission_mode_reason`: `settings`, `plan`, `fast_mode`, `model`, `unknown` or `no_safety_verdict`) once claude printed that auto mode cannot be used, else `null` (only ever set when `claude.permission_mode` is `auto`); `pid` is the claude pid while alive; `env` shows set values with secrets masked as
@@ -1716,6 +1723,41 @@ permission prompt until `stall_suspected`. A healthy auto session emits nothing.
 ```
 event: permission_mode_unavailable
 data: {"seq":20,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_mode_unavailable","data":{"reason":"plan","tail":"auto mode is unavailable for your plan"}}
+```
+
+### `waiting_started` and `waiting_ended`
+
+`waiting_started` is emitted when the session starts waiting on the user: a permission prompt or
+dialog is open on screen, or the agent asked a question (`question` is emitted just before it).
+`waiting_ended` is emitted when that wait ends (a hook shows the prompt was answered, an ESC
+declined it, or a new prompt answered the question). A change of reason emits `waiting_ended`
+for the old reason, then `waiting_started`. The snapshot field `waiting` shows the same state.
+
+`data`: `waiting_started`: `reason` (`permission`, `dialog`, `question`), `since`;
+`waiting_ended`: `reason` (the one that ended).
+
+```
+event: waiting_started
+data: {"seq":21,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"waiting_started","data":{"reason":"permission","since":"2026-10-20T09:31:00.000Z"}}
+
+event: waiting_ended
+data: {"seq":22,"ts":"2026-10-20T09:31:40.000Z","session_id":"ses_3f9a1c0b7d42","type":"waiting_ended","data":{"reason":"permission"}}
+```
+
+### `bootstrap_step`
+
+Emitted when a create or resume step (`prepare_workdir`, `run_setup_commands`,
+`install_plugins`, `render_settings`, `start`, ...) starts, succeeds or fails, so a startup
+problem is visible without asking. The `session_dir` step reports only its end (the event log
+opens inside it). The same entries are in the snapshot `bootstrap.steps`.
+
+`data`: `step`, `status` (`running`, `succeeded`, `failed`), `message` (`null`, or on `failed` the
+redacted one-line error, at most 200 characters), `started_at`, `finished_at` (`null` while
+`running`).
+
+```
+event: bootstrap_step
+data: {"seq":9,"ts":"2026-10-20T09:00:05.000Z","session_id":"ses_3f9a1c0b7d42","type":"bootstrap_step","data":{"step":"install_plugins","status":"failed","message":"superpowers not found in marketplace claude-plugins-official","started_at":"2026-10-20T09:00:04.000+00:00","finished_at":"2026-10-20T09:00:05.000+00:00"}}
 ```
 
 ### `probe`
