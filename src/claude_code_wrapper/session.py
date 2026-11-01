@@ -1529,6 +1529,7 @@ class Session:
             pending.done.set()
         if next_state is not None and self.state == "busy":
             self._set_state(next_state)
+        self._sync_waiting()  # permission becomes dialog once no turn runs
         log.info(
             "session %s: turn %s %s%s",
             self.spec.session_id,

@@ -42,6 +42,16 @@ async def test_dialog_reason_when_no_turn_runs(harness: Harness) -> None:  # noq
     assert session.snapshot()["waiting"] is None
 
 
+async def test_turn_end_turns_permission_into_dialog(harness: Harness) -> None:  # noqa: F811
+    session = await harness.start({"turns": [{"match": "go", "steps": [{"sleep": 30}]}]})
+    record = await session.submit("go")
+    session._ui_dialog_at = session.clock()
+    session._sync_waiting()
+    assert session.snapshot()["waiting"]["reason"] == "permission"
+    session._end_turn(record, "failed", error="x", next_state=None)
+    assert session.snapshot()["waiting"]["reason"] == "dialog"
+
+
 async def test_question_waits_until_next_prompt(harness: Harness) -> None:  # noqa: F811
     session = await harness.start({"turns": [{"match": "next", "steps": [{"text": "ok"}]}]})
     reasons: list[tuple[str | None, str | None]] = []
