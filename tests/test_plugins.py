@@ -59,6 +59,7 @@ async def test_adds_missing_marketplace_and_installs(fake_claude_bin, tmp_path, 
     assert argvs(log) == [
         ["plugin", "marketplace", "list", "--json"],
         ["plugin", "marketplace", "add", str(mk), "--scope", "user", "--json"],
+        ["plugin", "marketplace", "update", "wb"],
         ["plugin", "list", "--json"],
         ["plugin", "install", ID, "-s", "user", "-y", "--json"],
         ["plugin", "list", "--json"],
@@ -74,9 +75,47 @@ async def test_idempotent_second_run_no_commands(fake_claude_bin, tmp_path, log)
     new = argvs(log)[n:]
     assert new == [
         ["plugin", "marketplace", "list", "--json"],
+        ["plugin", "marketplace", "update", "wb"],
         ["plugin", "list", "--json"],
         ["plugin", "list", "--json"],
     ]
+
+
+OFFICIAL = "claude-plugins-official"
+
+
+def official_cfg(**kw) -> PluginsConfig:
+    return PluginsConfig.model_validate({"install": [{"plugin": f"superpowers@{OFFICIAL}", **kw}]})
+
+
+async def test_official_marketplace_unknown_falls_back_to_add(fake_claude_bin, tmp_path, log):
+    report, _ = await go(official_cfg(), fake_claude_bin, tmp_path)
+    assert report.installed == [f"superpowers@{OFFICIAL}"]
+    assert argvs(log)[:3] == [
+        ["plugin", "marketplace", "list", "--json"],
+        ["plugin", "marketplace", "update", OFFICIAL],
+        [
+            "plugin",
+            "marketplace",
+            "add",
+            "anthropics/claude-plugins-official",
+            "--scope",
+            "user",
+            "--json",
+        ],
+    ]
+
+
+async def test_official_marketplace_known_is_updated_not_added(fake_claude_bin, tmp_path, log):
+    await go(official_cfg(), fake_claude_bin, tmp_path)
+    n = len(entries(log))
+    report, _ = await go(official_cfg(), fake_claude_bin, tmp_path)
+    assert report.already_present == [f"superpowers@{OFFICIAL}"]
+    assert argvs(log)[n : n + 2] == [
+        ["plugin", "marketplace", "list", "--json"],
+        ["plugin", "marketplace", "update", OFFICIAL],
+    ]
+    assert not any(a[:3] == ["plugin", "marketplace", "add"] for a in argvs(log)[n:])
 
 
 async def test_required_failure_raises_with_tail(fake_claude_bin, tmp_path, log):

@@ -7,6 +7,7 @@ CLI
                                                 print mode, see below
     fake_claude --version                       prints "0.0.0 (Fake Claude)"
     fake_claude plugin marketplace add <source> [--scope s] [--json]
+    fake_claude plugin marketplace update <name>
     fake_claude plugin marketplace list --json
     fake_claude plugin install <name@mkt> [-s scope] [-y] [--json]
     fake_claude plugin list --json
@@ -336,6 +337,12 @@ def plugin_main(args: list[str]) -> int:
         state["marketplaces"].append({"name": name, "source": source, "path": path})
         _save_state(state)
         print(json.dumps({"name": name}) if as_json else f"Added marketplace {name}")
+        return 0
+    if pos[:2] == ["marketplace", "update"] and len(pos) >= 3:
+        if pos[2] not in {m["name"] for m in state["marketplaces"]}:
+            print(f"Error: Marketplace '{pos[2]}' not found", file=sys.stderr)
+            return 1
+        print(f"Updated marketplace {pos[2]}")
         return 0
     if pos[:2] == ["marketplace", "list"]:
         if as_json:
