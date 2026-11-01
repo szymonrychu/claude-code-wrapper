@@ -2024,6 +2024,12 @@ class SessionRouter(SessionListener):
         data = self._report_error("fatal", text, tail=self._redactor.redact(tail))
         self._spawn(self._fire("onError", data))
 
+    def on_permission_unavailable(self, reason: str, tail: str) -> None:
+        self._emit(
+            "permission_mode_unavailable",
+            {"reason": reason, "tail": self._redactor.redact(tail)},
+        )
+
     def on_restart(self, count: int, resumed: bool) -> None:
         self._subagents.clear()
         self._emit(

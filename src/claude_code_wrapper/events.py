@@ -52,6 +52,7 @@ EVENT_TYPES: list[str] = [
     "compacted",
     "context",
     "error",
+    "permission_mode_unavailable",
     "destroy_output",
     "peer_message_received",
     "peer_message_sent",

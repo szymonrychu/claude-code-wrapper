@@ -243,6 +243,8 @@ class SessionSpec:
     boot: BootConfig = field(default_factory=BootConfig)
     max_restarts: int = 3
     resume: bool = False
+    #: `claude.permission_mode`; `auto` arms the "auto mode unavailable" screen scan.
+    permission_mode: str = "bypassPermissions"
     #: Turn behaviour: `turn_marker`, `turn_stall_seconds`, `interrupt_settle_seconds`.
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
     #: Turn limits: `turn_max_seconds`.
@@ -376,6 +378,9 @@ class SessionListener:
     def on_fatal(self, text: str, tail: str) -> None:
         """A configured fatal pattern appeared; `tail` is the redacted screen tail."""
 
+    def on_permission_unavailable(self, reason: str, tail: str) -> None:
+        """Auto mode is unavailable for `reason` (see `AUTO_UNAVAILABLE`); `tail` is the screen."""
+
     def on_restart(self, count: int, resumed: bool) -> None:
         """claude crashed and is back at its prompt after relaunch number `count`."""
 
@@ -394,6 +399,20 @@ class SessionListener:
 
     def on_prompt_dropped(self, message: Any, reason: str) -> None:
         """A message typed into a turn (`queue_prompt`) will never be read: `reason`."""
+
+
+#: What claude prints instead of the "auto mode on" footer when auto cannot be used (MEMORY
+#: 2026-11-01, C1), with the reason reported. Matched like fatal patterns (case, whitespace and
+#: escapes ignored). The "no safety verdict" text comes first: it is the longest and most specific.
+AUTO_UNAVAILABLE: tuple[tuple[str, str], ...] = (
+    ("auto mode is unavailable: the server returned no safety verdict", "no_safety_verdict"),
+    ("auto mode disabled by settings", "settings"),
+    ("auto mode is unavailable for your plan", "plan"),
+    ("auto mode unavailable while fast mode is on", "fast_mode"),
+    ("auto mode unavailable for this model", "model"),
+    ("auto mode is unavailable right now", "unknown"),
+)
+PERMISSION_UNAVAILABLE_ERROR = "permission_mode_unavailable"
 
 
 class FatalScanner:
@@ -517,6 +536,13 @@ class Session:
         self.boot_error: BootError | None = None
         self._redactor = _redactor_for(spec.env)
         self._scanner = FatalScanner(spec.boot.fatal_patterns)
+        #: Armed in auto mode only: claude then prompts for every tool call and the turn would
+        #: sit on the prompt until `turn_stall`, so the first unavailable text fails it at once.
+        self._unavailable = FatalScanner(
+            p for p, _ in AUTO_UNAVAILABLE if spec.permission_mode == "auto"
+        )
+        self.permission_mode_state: str | None = None  # "unavailable" or None
+        self.permission_mode_reason: str | None = None
         #: Dialog footers of the slash command being run (`watch_dialogs`); none otherwise.
         self._dialogs = FatalScanner(())
         self._dialog_hits = 0
@@ -584,6 +610,8 @@ class Session:
             "pid": pty.pid if pty is not None and pty.alive else None,
             "restarts": self.restarts,
             "last_fatal": self.last_fatal,
+            "permission_mode_state": self.permission_mode_state,
+            "permission_mode_reason": self.permission_mode_reason,
             "started_at": self.started_at,
             "ready_at": self.ready_at,
             "idle_since": self.idle_since,
@@ -706,6 +734,8 @@ class Session:
         pty = PtyProcess()
         pty.ring = self.ring  # one screen across relaunches; reset() empties it in between
         self._scanner.reset()
+        self._unavailable.reset()
+        self.permission_mode_state = self.permission_mode_reason = None
         self._dialogs.reset()
         self._ui_dialogs.reset()
         self._ui_dialog_at = float("-inf")
@@ -791,6 +821,22 @@ class Session:
             # A prompt that quotes the pattern is echoed on screen; that is not the error.
             if record is not None and _squash(pattern) not in _squash(record.text):
                 self._end_turn(record, "failed", error=pattern)
+
+        for pattern in self._unavailable.feed(text):
+            self._on_permission_unavailable(pattern)
+
+    def _on_permission_unavailable(self, pattern: str) -> None:
+        record = self._turn
+        # A prompt that quotes the text is echoed on screen; that is not claude saying it.
+        if record is not None and _squash(pattern) in _squash(record.text):
+            return
+        reason = dict(AUTO_UNAVAILABLE)[pattern]
+        if self.permission_mode_reason != reason:
+            self.permission_mode_state, self.permission_mode_reason = "unavailable", reason
+            log.warning("session %s: auto mode unavailable (%s)", self.spec.session_id, reason)
+            self._notify("on_permission_unavailable", reason, self.tail())
+        if record is not None:
+            self._end_turn(record, "failed", error=PERMISSION_UNAVAILABLE_ERROR)
 
     def _on_exit(self, pty: PtyProcess, code: int) -> None:
         if pty is not self.pty:
@@ -1063,6 +1109,11 @@ class Session:
             annotations=dict(annotations or {}),
             metadata=dict(metadata or {}),
         )
+        if self.permission_mode_state == "unavailable":
+            # claude would stop at a permission prompt for the first tool call: fail it now.
+            self._persist(record)
+            self._end_turn(record, "failed", error=PERMISSION_UNAVAILABLE_ERROR)
+            return record
         # Reserve before the first byte: a second submit racing this one sees busy.
         self._turn = record
         self._turn_started = self.clock()

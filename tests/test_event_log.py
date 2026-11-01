@@ -42,6 +42,7 @@ def test_event_types_exact():
         "compacted",
         "context",
         "error",
+        "permission_mode_unavailable",
         "destroy_output",
         "peer_message_received",
         "peer_message_sent",

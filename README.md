@@ -256,6 +256,8 @@ Response `201`:
   "current_turn_id": null,
   "stall_suspected_since": null,
   "last_fatal": null,
+  "permission_mode_state": null,
+  "permission_mode_reason": null,
   "restarts": 0,
   "pid": 4121,
   "context": {"used_tokens": 41200, "window_tokens": 200000, "used_percentage": 20.6, "model": "claude-sonnet-4-5", "source": "statusline", "updated_at": "2026-10-20T09:00:20.100Z"},
@@ -267,7 +269,7 @@ Response `201`:
 Snapshot fields: `state` is one of `creating`, `ready`, `busy`, `stopped`, `failed`, `dead`;
 `step` is the create/resume step last entered (on `failed`, the one that failed, with `error:
 {"step", "message"}`); `outstanding_subagents` is the number of subagents started and not yet stopped (0 for stopped and persisted sessions); `current_turn_id` is the running turn; `last_fatal` is the last fatal
-screen text; `pid` is the claude pid while alive; `env` shows set values with secrets masked as
+screen text; `permission_mode_state` is `"unavailable"` (with `permission_mode_reason`: `settings`, `plan`, `fast_mode`, `model`, `unknown` or `no_safety_verdict`) once claude printed that auto mode cannot be used, else `null` (only ever set when `claude.permission_mode` is `auto`); `pid` is the claude pid while alive; `env` shows set values with secrets masked as
 `***`. `idle_since` is the ISO timestamp of the latest transition into `ready` (boot, a turn or command
 completing, a relaunch of claude) and `null` in every other state, including stopped sessions
 loaded from disk; the orchestrator uses it to route to the agent idle the longest. It differs from
@@ -1698,6 +1700,22 @@ only; the turn is not failed.
 ```
 event: stall_suspected
 data: {"seq":19,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"stall_suspected","data":{"turn_id":"turn-1k9x2m0q4zw8"}}
+```
+
+### `permission_mode_unavailable`
+
+Emitted once per reason when `claude.permission_mode` is `auto` and claude prints that auto mode
+cannot be used (not available for the plan or model, fast mode on, disabled by settings, or the
+server returned no safety verdict). The running turn, and every later turn until claude is
+relaunched, fails at once with `error: "permission_mode_unavailable"` instead of waiting on a
+permission prompt until `stall_suspected`. A healthy auto session emits nothing.
+
+`data`: `reason` (`settings`, `plan`, `fast_mode`, `model`, `unknown`, `no_safety_verdict`),
+`tail` (the redacted screen tail).
+
+```
+event: permission_mode_unavailable
+data: {"seq":20,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_mode_unavailable","data":{"reason":"plan","tail":"auto mode is unavailable for your plan"}}
 ```
 
 ### `probe`

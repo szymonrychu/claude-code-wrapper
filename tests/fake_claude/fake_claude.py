@@ -28,7 +28,9 @@ Interactive mode (no subcommand) needs a TTY on stdin, else exits 2. Boot prints
 colored banner, then (boot.bypass_dialog, default true) a "Bypass Permissions mode"
 dialog needing Down (ESC [ B) then CR; CR without Down exits 1. Input arriving before
 boot.min_seconds (default 0.3) exits 1. Then the idle footer "? for shortcuts". With
-boot.mode "auto" there is no bypass dialog and the footer reads "auto mode on" instead.
+boot.mode "auto" there is no bypass dialog and the footer reads "auto mode on" instead;
+boot.footer replaces the boot footer text (the first footer only), e.g. an "auto mode is
+unavailable ..." line.
 Input: bracketed paste ESC[200~ ... ESC[201~; a CR in a later read than the paste end
 submits; a CR in the same read as the paste end is a newline. A lone ESC during a turn
 interrupts it. Byte 0x03 at idle exits 0.
@@ -441,9 +443,9 @@ class Fake:
             raise Exit(0)
         return data
 
-    def footer(self) -> None:
+    def footer(self, text: str | None = None) -> None:
         auto = self.scenario.get("boot", {}).get("mode") == "auto"
-        self.out(f"\n  {AUTO_FOOTER if auto else FOOTER}\n")
+        self.out(f"\n  {text or (AUTO_FOOTER if auto else FOOTER)}\n")
 
     # ---- transcript
     def write_line(self, obj: dict, path: str | None = None, sidechain: bool = False) -> None:
@@ -561,7 +563,7 @@ class Fake:
                     break
                 if idx < 0 and b"\r" in buf:
                     raise Exit(1)
-        self.footer()
+        self.footer(cfg.get("footer"))
 
     # ---- main loop
     def run(self) -> int:
