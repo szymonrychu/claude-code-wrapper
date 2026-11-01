@@ -15,6 +15,8 @@ from claude_code_wrapper.redact import Redactor
 log = logging.getLogger(__name__)
 
 TAIL_BYTES = 2000
+OFFICIAL_MARKETPLACE = "claude-plugins-official"
+OFFICIAL_SOURCE = "anthropics/claude-plugins-official"
 
 
 class PluginInstallError(Exception):
@@ -121,6 +123,21 @@ async def install_plugins(
         await run(
             m.name, "plugin", "marketplace", "add", sources[m.name], "--scope", "user", "--json"
         )
+
+    # `plugin install` resolves against the marketplace copy on disk, which goes stale in a
+    # long-lived config dir; refresh every referenced marketplace first (a no-op when current).
+    referenced = dict.fromkeys(
+        i.plugin.rpartition("@")[2] for i in plugins_cfg.install if "@" in i.plugin
+    )
+    for name in referenced:
+        try:
+            await run(name, "plugin", "marketplace", "update", name)
+        except PluginInstallError:
+            if name != OFFICIAL_MARKETPLACE:
+                raise
+            await run(
+                name, "plugin", "marketplace", "add", OFFICIAL_SOURCE, "--scope", "user", "--json"
+            )
 
     failed: set[str] = set()
     present = _ids(await run("plugin list", "plugin", "list", "--json"), "id", "plugin list")
