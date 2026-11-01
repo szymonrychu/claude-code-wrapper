@@ -23,6 +23,7 @@ Environment
                                  CLAUDE_CODE_PROJECT_DIR_NAME, CCW_SESSION_ID,
                                  CCW_INTERNAL_URL}}
     FAKE_CLAUDE_PLUGIN_FAIL      `plugin install` of exactly this id exits 1
+    FAKE_CLAUDE_UPDATE_FAIL      `plugin marketplace update` exits 1 (a network failure)
     CLAUDE_CODE_STOP_HOOK_BLOCK_CAP  max consecutive Stop blocks per turn (default 8)
 
 Interactive mode (no subcommand) needs a TTY on stdin, else exits 2. Boot prints a
@@ -339,6 +340,9 @@ def plugin_main(args: list[str]) -> int:
         print(json.dumps({"name": name}) if as_json else f"Added marketplace {name}")
         return 0
     if pos[:2] == ["marketplace", "update"] and len(pos) >= 3:
+        if os.environ.get("FAKE_CLAUDE_UPDATE_FAIL"):
+            print("Error: network unreachable", file=sys.stderr)
+            return 1
         if pos[2] not in {m["name"] for m in state["marketplaces"]}:
             print(f"Error: Marketplace '{pos[2]}' not found", file=sys.stderr)
             return 1
@@ -643,6 +647,11 @@ class Fake:
         if data is not None:
             if self.scenario.get("queue_input"):
                 self.queue_busy(data)
+                # a loaded host coalesces reads: an ESC can arrive glued to a paste's CR
+                bare = data.replace(PASTE_START, b"").replace(PASTE_END, b"")
+                if b"\x1b" in bare:
+                    self.record_key("esc")
+                    return True
             else:
                 text = data.replace(PASTE_START, b"").replace(PASTE_END, b"")
                 self.record_input(text.decode(errors="replace"), "busy")
