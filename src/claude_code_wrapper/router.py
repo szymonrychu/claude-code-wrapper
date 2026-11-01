@@ -760,6 +760,7 @@ class SessionRouter(SessionListener):
             tool_input = {}
         if tool_name == "AskUserQuestion" and self._cfg.sessions.ask_user_question == "forward":
             event = self._emit("question", {"tool_use_id": tool_use_id, "questions": tool_input})
+            self.session.set_question_waiting()
             self._deliver(self._callback_url(self.session.current_turn), event)
             return {"stdout": deny_output(QUESTION_DENY_REASON), "stderr": "", "exit_code": 0}
         who = _attribution(payload)
@@ -2023,6 +2024,15 @@ class SessionRouter(SessionListener):
     def on_fatal(self, text: str, tail: str) -> None:
         data = self._report_error("fatal", text, tail=self._redactor.redact(tail))
         self._spawn(self._fire("onError", data))
+
+    def on_waiting(self, reason: str | None, previous: str | None) -> None:
+        if previous is not None:
+            self._emit("waiting_ended", {"reason": previous})
+        if reason is not None:
+            self._emit(
+                "waiting_started",
+                {"reason": reason, "since": self.session.waiting_since or now_iso()},
+            )
 
     def on_permission_unavailable(self, reason: str, tail: str) -> None:
         self._emit(
