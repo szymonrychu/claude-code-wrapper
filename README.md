@@ -1725,21 +1725,28 @@ event: permission_mode_unavailable
 data: {"seq":20,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_mode_unavailable","data":{"reason":"plan","tail":"auto mode is unavailable for your plan"}}
 ```
 
-### `waiting_started` and `waiting_ended`
+### `waiting_started`
 
-`waiting_started` is emitted when the session starts waiting on the user: a permission prompt or
-dialog is open on screen, or the agent asked a question (`question` is emitted just before it).
-`waiting_ended` is emitted when that wait ends (a hook shows the prompt was answered, an ESC
-declined it, or a new prompt answered the question). A change of reason emits `waiting_ended`
-for the old reason, then `waiting_started`. The snapshot field `waiting` shows the same state.
+Emitted when the session starts waiting on the user: a permission prompt or dialog is open on
+screen, or the agent asked a question (`question` is emitted just before it). The snapshot field
+`waiting` shows the same state.
 
-`data`: `waiting_started`: `reason` (`permission`, `dialog`, `question`), `since`;
-`waiting_ended`: `reason` (the one that ended).
+`data`: `reason` (`permission`, `dialog`, `question`), `since`.
 
 ```
 event: waiting_started
 data: {"seq":21,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"waiting_started","data":{"reason":"permission","since":"2026-10-20T09:31:00.000Z"}}
+```
 
+### `waiting_ended`
+
+Emitted when that wait ends: a hook shows the prompt was answered, an ESC declined it, or a new
+prompt answered the question. A change of reason emits `waiting_ended` for the old reason, then
+`waiting_started`.
+
+`data`: `reason` (the one that ended).
+
+```
 event: waiting_ended
 data: {"seq":22,"ts":"2026-10-20T09:31:40.000Z","session_id":"ses_3f9a1c0b7d42","type":"waiting_ended","data":{"reason":"permission"}}
 ```
