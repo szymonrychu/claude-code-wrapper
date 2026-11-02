@@ -279,3 +279,36 @@ async def test_shutdown_grace_from_config(tmp_path: Path, monkeypatch: pytest.Mo
     stop.set()
     await asyncio.wait_for(task, 10)
     assert seen == [7]
+
+
+async def test_global_mise_install_gets_no_service_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    dump = tmp_path / "mise.env"
+    mise = bindir / "mise"
+    mise.write_text(f'#!/bin/sh\nenv >> "{dump}"\nexit 0\n')
+    mise.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:/usr/bin:/bin")
+    secrets = {
+        "CCW_AUTH_TOKEN": "svc-auth-sentinel",
+        "CCW_PEER_TOKEN": "svc-peer-sentinel",
+        "CCW_USAGE_TOKEN": "svc-usage-sentinel",
+        "CLAUDE_CODE_OAUTH_TOKEN": "svc-oauth-sentinel",
+    }
+    for name, value in secrets.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("SERVICE_ONLY", "service-only-value")
+    cfg = make_cfg(
+        tmp_path,
+        mise={"tools": {"node": "22"}, "global_config_path": str(tmp_path / "g/config.toml")},
+    )
+    task, stop, _ = await start(cfg)
+    stop.set()
+    await asyncio.wait_for(task, 10)
+    seen = dump.read_text()
+    assert f"PATH={bindir}:/usr/bin:/bin" in seen and "MISE_YES=1" in seen
+    assert "SERVICE_ONLY" not in seen
+    for name, value in secrets.items():
+        assert f"{name}=" not in seen and value not in seen, name

@@ -25,6 +25,7 @@ from claude_code_wrapper.internal_api import create_internal_app
 from claude_code_wrapper.manager import SessionManager
 from claude_code_wrapper.metrics import Metrics
 from claude_code_wrapper.redact import Redactor
+from claude_code_wrapper.session import allowed_env
 from claude_code_wrapper.usage_forward import UsageForwarder
 
 log = logging.getLogger(__name__)
@@ -214,7 +215,8 @@ async def _run(
     handle: ServiceHandle,
 ) -> None:
     tooling.render_global_mise(cfg.mise)
-    await tooling.install_global(cfg.mise, tooling.mise_env(cfg.mise))
+    base = allowed_env(os.environ, cfg.claude.passthrough_env, cfg.claude.passthrough_env_exclude)
+    await tooling.install_global(cfg.mise, {**base, **tooling.mise_env(cfg.mise)})
     if not await _fire_on_start(cfg, redactor, handle):
         return
 

@@ -129,6 +129,17 @@ never put it behind a public ingress.
   frames) are not passed through the secret redactor: redaction would corrupt files and PTY
   streams, and the shell already runs as the agent uid, so anything the agent can read a client
   holding the bearer token can read.
+- The children that run repo-controlled code before claude starts (the per-workdir `mise trust`
+  and `mise install`, whose `mise.toml` is trusted automatically and can define tasks, hooks and
+  env that execute, plus `init.setup_commands`, git and plugin installs) get an allow-listed
+  environment: the base vars, `claude.passthrough_env`, the claude env without its secret-kind
+  variables (the Claude credentials; other `claude.env.extra` names stay), the mise vars, `CLAUDE_CONFIG_DIR` and
+  `GIT_CONFIG_GLOBAL`. They never get a `CCW_*` variable (`CCW_AUTH_TOKEN`, `CCW_PEER_TOKEN`,
+  `CCW_HOOK_TOKEN`, `CCW_USAGE_TOKEN`) or a Claude credential such as `CLAUDE_CODE_OAUTH_TOKEN`,
+  even when `claude.passthrough_env` selects one (`*`, `CLAUDE_*`): only the claude child gets those. The global `mise install` at start gets the base vars,
+  `claude.passthrough_env` and the mise vars, so a proxy or `GITHUB_TOKEN` mise needs is listed in
+  `claude.passthrough_env`. As with terminals, a same-uid process can still read
+  `/proc/<pid>/environ` of claude and the wrapper.
 - Terminals (`/v1/sessions/{id}/terminals`) are interactive login shells (`/bin/bash -l`, or
   `/bin/sh -l` without bash) running as the agent uid in the session workdir, so a client holding
   the bearer token can run anything the agent can. Their environment is the one Claude gets with
@@ -2251,8 +2262,9 @@ then `CCW_EVENT`, `CCW_SESSION_ID`, `CCW_TURN_ID`, `CCW_WORKDIR`, `CCW_CLAUDE_CO
 hook (onCreate) fires, kept across stop and resume and removed by purge. `CCW_API_URL` is
 `http://127.0.0.1:<public port>`. `CCW_CLAUDE_CONFIG_DIR` is the same path as the session's
 `CLAUDE_CONFIG_DIR`. By contrast `init.setup_commands` get the allow-listed tool environment
-(base vars, passthrough, claude env, mise, `CLAUDE_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`), not the full
-service environment. The working directory is the session workdir. The process runs in its own
+(base vars, passthrough, claude env without its secrets, mise, `CLAUDE_CONFIG_DIR`,
+`GIT_CONFIG_GLOBAL`), not the full service environment and never a Claude credential (see
+[Trust model](#trust-model)). The working directory is the session workdir. The process runs in its own
 process group and is killed with its children on timeout.
 
 Exit codes: `0` allow; `2` deny (a block on `onStop`), with trimmed stderr (up to 2000 chars) as
@@ -2884,8 +2896,9 @@ usage:
   service env, masked as `***` in `GET /v1/config` and redacted from logs. `CCW_*` names never pass
   through to claude, so claude, its relay hooks, the `ccw statusline` relay and the chained statusLine
   command never see it, and the wrapper removes it from the environment of `command` hook actions
-  (which otherwise get the full service environment) and from the `mise trust` / `mise install`
-  processes (global and per workdir, whose repo-controlled `mise.toml` is trusted). As with `CCW_AUTH_TOKEN`, a process running
+  (which otherwise get the full service environment). The `mise trust` / `mise install` processes
+  (global and per workdir, whose repo-controlled `mise.toml` is trusted) get an allow-listed env
+  with no `CCW_*` name at all. As with `CCW_AUTH_TOKEN`, a process running
   as the same uid can still read the wrapper's own `/proc/<pid>/environ` (see
   [Trust model](#trust-model)).
 - A body over 8192 bytes (the agents-usage ingest cap) is never sent: it is dropped with one

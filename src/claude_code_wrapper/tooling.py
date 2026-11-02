@@ -1,4 +1,10 @@
-"""mise tooling: render the global config, install tools, build the child's mise env."""
+"""mise tooling: render the global config, install tools, build the child's mise env.
+
+mise runs repo-controlled code: a workdir's mise.toml (auto-trusted) defines tasks, hooks and
+env templates that execute. So a mise child gets only the allow-listed env its caller built,
+never the service env (only `MISE_DATA_DIR` is read from it), and never a wrapper token or a
+Claude credential even when handed one.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +15,8 @@ import shutil
 from collections.abc import Mapping
 from pathlib import Path
 
+from claude_code_wrapper.claude_env import without_secrets
 from claude_code_wrapper.config import MiseConfig
-from claude_code_wrapper.statusline import without_usage_token
 
 log = logging.getLogger(__name__)
 
@@ -95,13 +101,8 @@ async def install_global(mise_cfg: MiseConfig, env: Mapping[str, str]) -> None:
         return
     if not Path(mise_cfg.global_config_path).is_file():
         return
-    full = without_usage_token(
-        {
-            **os.environ,
-            **env,
-            "MISE_GLOBAL_CONFIG_FILE": mise_cfg.global_config_path,
-            "MISE_YES": "1",
-        }
+    full = without_secrets(
+        {**env, "MISE_GLOBAL_CONFIG_FILE": mise_cfg.global_config_path, "MISE_YES": "1"}
     )
     try:
         await _mise(["install"], cwd=None, env=full, timeout=mise_cfg.install_timeout_seconds)
@@ -117,7 +118,7 @@ async def install_workdir(mise_cfg: MiseConfig, workdir: Path, env: Mapping[str,
     )
     if marker is None:
         return False
-    full = without_usage_token({**os.environ, **env, "MISE_YES": "1"})
+    full = without_secrets({**env, "MISE_YES": "1"})
     if _configured(mise_cfg):
         full["MISE_GLOBAL_CONFIG_FILE"] = mise_cfg.global_config_path
     try:
