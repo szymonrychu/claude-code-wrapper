@@ -12,6 +12,7 @@ are reserved and cannot be passed through `extra`.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -2323,6 +2324,12 @@ CREDENTIAL_ENV = frozenset(s.env for s in _SPECS if s.secret)
 _MODELLED_ENV = frozenset(s.env for s in _SPECS)
 
 
+def without_secrets(env: Mapping[str, str]) -> dict[str, str]:
+    """`env` without a `CCW_*` name (the wrapper's tokens and plumbing) or a `CREDENTIAL_ENV`
+    name: the last filter on the env of every child that runs repo-controlled code."""
+    return {k: v for k, v in env.items() if not k.startswith("CCW_") and k not in CREDENTIAL_ENV}
+
+
 class _ClaudeEnvBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2404,11 +2411,6 @@ class _ClaudeEnvBase(BaseModel):
                 k: MASK if SECRET_KEY_RE.search(k) else v for k, v in self.extra.items()
             }
         return out
-
-    def without_credentials(self) -> dict[str, str]:
-        """`to_env()` without a `CREDENTIAL_ENV` name: the env of every child but claude itself.
-        Other `extra` names stay, like passthrough: the caller chose them."""
-        return {k: v for k, v in self.to_env().items() if k not in CREDENTIAL_ENV}
 
     def secret_values(self) -> list[str]:
         values = [

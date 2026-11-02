@@ -2,7 +2,8 @@
 
 mise runs repo-controlled code: a workdir's mise.toml (auto-trusted) defines tasks, hooks and
 env templates that execute. So a mise child gets only the allow-listed env its caller built,
-never the service env, and never a wrapper token or a Claude credential even when handed one.
+never the service env (only `MISE_DATA_DIR` is read from it), and never a wrapper token or a
+Claude credential even when handed one.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import shutil
 from collections.abc import Mapping
 from pathlib import Path
 
-from claude_code_wrapper.claude_env import CREDENTIAL_ENV
+from claude_code_wrapper.claude_env import without_secrets
 from claude_code_wrapper.config import MiseConfig
 
 log = logging.getLogger(__name__)
@@ -24,11 +25,6 @@ TAIL_BYTES = 2000
 
 class ToolingError(Exception):
     pass
-
-
-def _scrub(env: Mapping[str, str]) -> dict[str, str]:
-    """`env` without any `CCW_*` name (the wrapper's tokens and plumbing) or Claude credential."""
-    return {k: v for k, v in env.items() if not k.startswith("CCW_") and k not in CREDENTIAL_ENV}
 
 
 def _configured(cfg: MiseConfig) -> bool:
@@ -105,7 +101,9 @@ async def install_global(mise_cfg: MiseConfig, env: Mapping[str, str]) -> None:
         return
     if not Path(mise_cfg.global_config_path).is_file():
         return
-    full = _scrub({**env, "MISE_GLOBAL_CONFIG_FILE": mise_cfg.global_config_path, "MISE_YES": "1"})
+    full = without_secrets(
+        {**env, "MISE_GLOBAL_CONFIG_FILE": mise_cfg.global_config_path, "MISE_YES": "1"}
+    )
     try:
         await _mise(["install"], cwd=None, env=full, timeout=mise_cfg.install_timeout_seconds)
     except ToolingError as exc:
@@ -120,7 +118,7 @@ async def install_workdir(mise_cfg: MiseConfig, workdir: Path, env: Mapping[str,
     )
     if marker is None:
         return False
-    full = _scrub({**env, "MISE_YES": "1"})
+    full = without_secrets({**env, "MISE_YES": "1"})
     if _configured(mise_cfg):
         full["MISE_GLOBAL_CONFIG_FILE"] = mise_cfg.global_config_path
     try:

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
+import subprocess
 import tomllib
 from pathlib import Path
 
 import pytest
 
+from claude_code_wrapper.claude_env import CREDENTIAL_ENV
 from claude_code_wrapper.config import MiseConfig
 from claude_code_wrapper.manager import CreateSessionRequest, SessionManager
 from claude_code_wrapper.redact import Redactor
@@ -259,3 +262,87 @@ async def test_session_tool_children_get_no_wrapper_secret(world, tmp_path):
         for value in (oauth, ctx.hook_token):
             assert value not in seen
     assert m._child_env(ctx)["CLAUDE_CODE_OAUTH_TOKEN"] == oauth
+
+
+def _dumping(bindir: Path, name: str, dump: Path, target: str, when: str = "true") -> Path:
+    """An executable `name` in `bindir` that appends its env to `dump` (when the shell test
+    `when` holds), then runs `target`."""
+    exe = bindir / name
+    exe.write_text(f'#!/bin/sh\nif {when}; then env >> "{dump}"; fi\nexec {target} "$@"\n')
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    return exe
+
+
+@pytest.fixture
+async def passthrough_all_session(world, tmp_path):
+    """A clone-mode session with a setup command, a workdir mise.toml and a plugin install,
+    under `claude.passthrough_env: ["*"]` and a service env holding every wrapper secret.
+    Each tool child dumps its env to its own file. Returns (manager, ctx, dumps)."""
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "a"],
+    ):
+        subprocess.run(["git", *args], cwd=origin, env=env, check=True)
+    bindir = tmp_path / "dumpbin"
+    bindir.mkdir()
+    dumps = {k: tmp_path / f"{k}.env" for k in ("git", "setup", "mise", "plugin")}
+    _dumping(bindir, "git", dumps["git"], "/usr/bin/git")
+    _dumping(bindir, "mise", dumps["mise"], "true")
+    # the same binary runs the claude child, which may hold the OAuth token: dump plugin runs only
+    claude = _dumping(
+        bindir, "claude-dump", dumps["plugin"], str(world.bin), when='[ "$1" = plugin ]'
+    )
+    source = tmp_path / "mkt"
+    (source / ".claude-plugin").mkdir(parents=True)
+    (source / ".claude-plugin" / "marketplace.json").write_text(json.dumps({"name": "wb"}))
+    service_env = {
+        "PATH": f"{bindir}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        **WRAPPER_SECRETS,
+        "GH_TOKEN": "operator-passthrough",
+    }
+    c = world.cfg(
+        claude={
+            "binary": str(claude),
+            "env": {"claude_code_oauth_token": "claude-oauth-sentinel-0123"},
+            "passthrough_env": ["*"],
+        },
+        init={
+            "workdir": {"mode": "clone", "repo_url": f"file://{origin}", "name": "proj"},
+            "setup_commands": [f'env > "{dumps["setup"]}"; : > mise.toml'],
+        },
+        plugins={
+            "marketplaces": [{"name": "wb", "source": str(source)}],
+            "install": [{"plugin": "workbench@wb"}],
+        },
+    )
+    m = SessionManager(c, internal_url=world.url, service_env=service_env, redactor=Redactor())
+    world.managers.append(m)
+    sid = (await m.create(CreateSessionRequest()))["session_id"]
+    return m, m._active[sid], dumps
+
+
+@pytest.mark.parametrize("child", ["git", "setup", "mise", "plugin"])
+async def test_passthrough_all_never_hands_a_tool_child_a_secret(passthrough_all_session, child):
+    """`passthrough_env: ["*"]` selects every service name, Claude credentials included; still
+    no repo-controlled child (git, setup commands, workdir mise, plugin installs) gets the OAuth
+    token, the API key or a wrapper token. Only the claude child holds the OAuth token."""
+    m, ctx, dumps = passthrough_all_session
+    seen = dumps[child].read_text()
+    assert "GH_TOKEN=operator-passthrough" in seen
+    assert_no_wrapper_secret(seen)
+    for value in ("claude-oauth-sentinel-0123", ctx.hook_token):
+        assert value not in seen
+    assert m._child_env(ctx)["CLAUDE_CODE_OAUTH_TOKEN"] == "claude-oauth-sentinel-0123"
+
+
+async def test_tool_env_has_no_secret_under_passthrough_all(passthrough_all_session):
+    m, ctx, _ = passthrough_all_session
+    for gitconfig in (None, ctx.session_dir / "gitconfig"):
+        env = m._tool_env(ctx, gitconfig)
+        assert env["GH_TOKEN"] == "operator-passthrough"
+        assert not [k for k in env if k.startswith("CCW_") or k in CREDENTIAL_ENV]
+        assert "claude-oauth-sentinel-0123" not in env.values()

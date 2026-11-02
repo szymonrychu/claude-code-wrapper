@@ -49,7 +49,7 @@ from .bootstrap import (
     write_instructions,
 )
 from .bootstrap.settings import relay_timeouts, render_settings
-from .claude_env import SECRET_KEY_RE, ClaudeEnv
+from .claude_env import SECRET_KEY_RE, ClaudeEnv, without_secrets
 from .commands import CommandRejected, effective_commands
 from .config import CommandsConfig, CommandsOverride, Config, InitialPromptTemplate
 from .events import EventLog
@@ -705,18 +705,19 @@ class SessionManager:
         """Env for git, setup commands, mise and plugin installs: what the child gets from the
         service and config (base vars, passthrough, claude env, mise), without the CCW_* relay
         plumbing and without the Claude credentials, which only the claude child gets. These
-        children run repo-controlled code (a cloned repo's mise.toml, setup commands in it)."""
+        children run repo-controlled code (a cloned repo's mise.toml, setup commands in it), so
+        the result drops those names even when `claude.passthrough_env` or `claude.env` set them."""
         env = allowed_env(
             self.service_env,
             self.cfg.claude.passthrough_env,
             self.cfg.claude.passthrough_env_exclude,
         )
-        env.update(ctx.claude_env.without_credentials())
+        env.update(ctx.claude_env.to_env())
         env.update(mise_env(self.cfg.mise))
         env["CLAUDE_CONFIG_DIR"] = str(ctx.config_dir)
         if gitconfig is not None and gitconfig.is_file():
             env["GIT_CONFIG_GLOBAL"] = str(gitconfig)
-        return env
+        return without_secrets(env)
 
     def _terminal_target(self, session_id: str) -> ShellTarget:
         """Workdir and env of a running session's shells: the env claude gets (the registry

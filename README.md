@@ -135,8 +135,8 @@ never put it behind a public ingress.
   environment: the base vars, `claude.passthrough_env`, the claude env without its secret-kind
   variables (the Claude credentials; other `claude.env.extra` names stay), the mise vars, `CLAUDE_CONFIG_DIR` and
   `GIT_CONFIG_GLOBAL`. They never get a `CCW_*` variable (`CCW_AUTH_TOKEN`, `CCW_PEER_TOKEN`,
-  `CCW_HOOK_TOKEN`, `CCW_USAGE_TOKEN`) or a Claude credential such as `CLAUDE_CODE_OAUTH_TOKEN`:
-  only the claude child gets those. The global `mise install` at start gets the base vars,
+  `CCW_HOOK_TOKEN`, `CCW_USAGE_TOKEN`) or a Claude credential such as `CLAUDE_CODE_OAUTH_TOKEN`,
+  even when `claude.passthrough_env` selects one (`*`, `CLAUDE_*`): only the claude child gets those. The global `mise install` at start gets the base vars,
   `claude.passthrough_env` and the mise vars, so a proxy or `GITHUB_TOKEN` mise needs is listed in
   `claude.passthrough_env`. As with terminals, a same-uid process can still read
   `/proc/<pid>/environ` of claude and the wrapper.
