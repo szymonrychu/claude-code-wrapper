@@ -2938,6 +2938,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `invalid_callback_url` | 400 | `callbackUrl` is not an `http` or `https` URL |
 | `invalid_last_event_id` | 400 | the `Last-Event-ID` header is not an integer |
 | `invalid_path` | 400 | a turn `files` path is invalid, escapes the workdir or conflicts with an existing entry; also a file API path (listing, content, download or write) that is absolute, holds a NUL byte or leaves the workdir (`..` or a symlink) |
+| `invalid_attachment` | 400 | an attachment name is not `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` or repeats within one request, or binary files were offered where they are not accepted |
 | `not_a_directory` | 400 | the file listing `path` is not a directory |
 | `not_a_file` | 400 | the file content, download or write `path` is a directory, FIFO, socket or device (or the workdir itself) |
 | `text_or_template` | 400 | exactly one of `text` and `template` is required (turns), or both initial prompts were given (create) |
