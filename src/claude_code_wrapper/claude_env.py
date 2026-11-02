@@ -2318,6 +2318,8 @@ _SPECS: tuple[EnvVarSpec, ...] = tuple(
 )
 _KIND = {env.lower(): kind for env, _, kind, _ in _TABLE}
 _BY_FIELD = {s.field: s for s in _SPECS}
+#: The Claude credentials (every secret-kind variable): only the claude child may hold them.
+CREDENTIAL_ENV = frozenset(s.env for s in _SPECS if s.secret)
 _MODELLED_ENV = frozenset(s.env for s in _SPECS)
 
 
@@ -2402,6 +2404,11 @@ class _ClaudeEnvBase(BaseModel):
                 k: MASK if SECRET_KEY_RE.search(k) else v for k, v in self.extra.items()
             }
         return out
+
+    def without_credentials(self) -> dict[str, str]:
+        """`to_env()` without a `CREDENTIAL_ENV` name: the env of every child but claude itself.
+        Other `extra` names stay, like passthrough: the caller chose them."""
+        return {k: v for k, v in self.to_env().items() if k not in CREDENTIAL_ENV}
 
     def secret_values(self) -> list[str]:
         values = [

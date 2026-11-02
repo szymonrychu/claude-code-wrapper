@@ -311,6 +311,16 @@ def passthrough_names(
     return sorted(chosen)
 
 
+def allowed_env(
+    service_env: Mapping[str, str], patterns: Iterable[str], exclude: Iterable[str] = ()
+) -> dict[str, str]:
+    """The allow-listed part of the service env: the base vars plus the passthrough names."""
+    env = {name: service_env[name] for name in BASE_ENV if name in service_env}
+    for name in passthrough_names(service_env, patterns, exclude):
+        env[name] = service_env[name]
+    return env
+
+
 def build_env(
     *,
     service_env: Mapping[str, str],
@@ -349,9 +359,7 @@ def build_env(
     }
     if peers:
         managed["CLAUDE_CODE_HARBOR_KITE"] = "0"
-    env = {name: service_env[name] for name in BASE_ENV if name in service_env}
-    for name in passthrough_names(service_env, passthrough, passthrough_exclude):
-        env[name] = service_env[name]
+    env = allowed_env(service_env, passthrough, passthrough_exclude)
     env["TERM"] = "xterm-256color"
     env.update(claude_env.to_env())
     env.update(mise_env or {})

@@ -69,15 +69,14 @@ from .prompts import render_template, resolve_prompt
 from .redact import Redactor
 from .router import DEFAULT_DENY_REASON, SessionInfo, SessionRouter, TurnVetoed
 from .session import (
-    BASE_ENV,
     PROJECT_DIR_NAME,
     PUBLIC_STATES,
     Session,
     SessionSpec,
     StopCause,
     TurnRejected,
+    allowed_env,
     build_env,
-    passthrough_names,
     slash_command,
 )
 from .terminals import CLOSE_GRACE_SECONDS, SessionNotActive, ShellTarget, TerminalRegistry
@@ -705,15 +704,14 @@ class SessionManager:
     def _tool_env(self, ctx: _Active, gitconfig: Path | None) -> dict[str, str]:
         """Env for git, setup commands, mise and plugin installs: what the child gets from the
         service and config (base vars, passthrough, claude env, mise), without the CCW_* relay
-        plumbing that only the claude child needs."""
-        env = {n: self.service_env[n] for n in BASE_ENV if n in self.service_env}
-        for name in passthrough_names(
+        plumbing and without the Claude credentials, which only the claude child gets. These
+        children run repo-controlled code (a cloned repo's mise.toml, setup commands in it)."""
+        env = allowed_env(
             self.service_env,
             self.cfg.claude.passthrough_env,
             self.cfg.claude.passthrough_env_exclude,
-        ):
-            env[name] = self.service_env[name]
-        env.update(ctx.claude_env.to_env())
+        )
+        env.update(ctx.claude_env.without_credentials())
         env.update(mise_env(self.cfg.mise))
         env["CLAUDE_CONFIG_DIR"] = str(ctx.config_dir)
         if gitconfig is not None and gitconfig.is_file():

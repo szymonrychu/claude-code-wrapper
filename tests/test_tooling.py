@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import stat
 import tomllib
 from pathlib import Path
@@ -7,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from claude_code_wrapper.config import MiseConfig
+from claude_code_wrapper.manager import CreateSessionRequest, SessionManager
+from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.tooling import (
     ToolingError,
     install_global,
@@ -155,3 +158,104 @@ async def test_install_workdir_env_lacks_usage_token(tmp_path, env_mise, monkeyp
     seen = env_mise.read_text()
     assert seen.count("MISE_YES=1") == 2  # trust and install both ran
     assert "CCW_USAGE_TOKEN" not in seen and USAGE_TOKEN not in seen
+
+
+# The wrapper's own secrets never reach a mise child: mise runs repo-controlled config (a
+# cloned repo's mise.toml defines tasks, hooks and env that execute code).
+WRAPPER_SECRETS = {
+    "CCW_AUTH_TOKEN": "wrapper-auth-sentinel-0123",
+    "CCW_PEER_TOKEN": "wrapper-peer-sentinel-0123",
+    "CCW_HOOK_TOKEN": "wrapper-hook-sentinel-0123",
+    "CCW_USAGE_TOKEN": "wrapper-usage-sentinel-0123",
+    "CLAUDE_CODE_OAUTH_TOKEN": "wrapper-oauth-sentinel-0123",
+    "ANTHROPIC_API_KEY": "wrapper-apikey-sentinel-0123",
+}
+
+
+def assert_no_wrapper_secret(seen: str) -> None:
+    for name, value in WRAPPER_SECRETS.items():
+        assert f"{name}=" not in seen, name
+        assert value not in seen, name
+
+
+async def test_install_global_env_is_not_the_service_env(tmp_path, env_mise, monkeypatch):
+    for name, value in WRAPPER_SECRETS.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("SERVICE_ONLY", "service-only-value")
+    c = cfg(tmp_path, tools={"node": "22"})
+    render_global_mise(c)
+    await install_global(c, {"PATH": os.environ["PATH"], "KEEP_ME": "yes"})
+    seen = env_mise.read_text()
+    assert "KEEP_ME=yes" in seen
+    assert "SERVICE_ONLY" not in seen
+    assert_no_wrapper_secret(seen)
+
+
+async def test_install_workdir_env_is_not_the_service_env(tmp_path, env_mise, monkeypatch):
+    for name, value in WRAPPER_SECRETS.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("SERVICE_ONLY", "service-only-value")
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    (wd / "mise.toml").write_text("")
+    assert await install_workdir(cfg(tmp_path), wd, {"PATH": os.environ["PATH"]}) is True
+    seen = env_mise.read_text()
+    assert seen.count("MISE_YES=1") == 2
+    assert "SERVICE_ONLY" not in seen
+    assert_no_wrapper_secret(seen)
+
+
+async def test_mise_drops_wrapper_secrets_handed_in(tmp_path, env_mise):
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    (wd / "mise.toml").write_text("")
+    c = cfg(tmp_path, tools={"node": "22"})
+    render_global_mise(c)
+    env = {"PATH": os.environ["PATH"], "GH_TOKEN": "operator-passthrough", **WRAPPER_SECRETS}
+    await install_global(c, env)
+    assert await install_workdir(c, wd, env) is True
+    seen = env_mise.read_text()
+    assert seen.count("GH_TOKEN=operator-passthrough") == 3  # install, trust, install
+    assert_no_wrapper_secret(seen)
+
+
+async def test_session_tool_children_get_no_wrapper_secret(world, tmp_path):
+    """End to end: the setup command and the workdir mise install of a real session create
+    get neither the service's secrets nor the claude credentials; claude still gets its token."""
+    bindir = tmp_path / "misebin"
+    bindir.mkdir()
+    mise_dump = tmp_path / "mise.env"
+    setup_dump = tmp_path / "setup.env"
+    m_bin = bindir / "mise"
+    m_bin.write_text(f'#!/bin/sh\nenv >> "{mise_dump}"\nexit 0\n')
+    m_bin.chmod(m_bin.stat().st_mode | stat.S_IXUSR)
+    service_env = {
+        "PATH": f"{bindir}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        **WRAPPER_SECRETS,
+        "SERVICE_ONLY": "service-only-value",
+        "GH_TOKEN": "operator-passthrough",
+    }
+    oauth = "claude-oauth-sentinel-0123"
+    c = world.cfg(
+        claude={
+            "env": {
+                "claude_code_oauth_token": oauth,
+                "extra": {"PLAIN_V": "plain"},
+            },
+            "passthrough_env": ["GH_TOKEN"],
+        },
+        init={"setup_commands": [f'env > "{setup_dump}"; : > mise.toml']},
+    )
+    m = SessionManager(c, internal_url=world.url, service_env=service_env, redactor=Redactor())
+    world.managers.append(m)
+    sid = (await m.create(CreateSessionRequest()))["session_id"]
+    ctx = m._active[sid]
+    for dump in (setup_dump, mise_dump):
+        seen = dump.read_text()
+        assert "GH_TOKEN=operator-passthrough" in seen and "PLAIN_V=plain" in seen
+        assert "SERVICE_ONLY" not in seen
+        assert_no_wrapper_secret(seen)
+        for value in (oauth, ctx.hook_token):
+            assert value not in seen
+    assert m._child_env(ctx)["CLAUDE_CODE_OAUTH_TOKEN"] == oauth
