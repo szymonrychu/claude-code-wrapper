@@ -17,6 +17,7 @@ Every wait is bounded: a hung step fails the test with what it was waiting for.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 from collections.abc import Callable
@@ -177,6 +178,31 @@ async def test_files_over_real_service(workspace) -> None:
         r = await client.get(f"/v1/sessions/{sid}/{route}", params={"path": "../.."})
         assert r.status_code == 400, r.text
         assert r.json()["error"]["code"] == "invalid_path", r.text
+
+
+async def test_attachments_over_real_service(workspace) -> None:
+    svc, client, sid = workspace
+    png = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+    body = {
+        "text": "look",
+        "message_id": "orch-1",
+        "attachments": [
+            {"name": "a.png", "mime": "image/png", "data_b64": base64.b64encode(png).decode()}
+        ],
+    }
+    r = await client.post(f"/v1/sessions/{sid}/turns", json=body)
+    assert r.status_code == 202, r.text
+    assert r.json()["attachments"] == [".attachments/orch-1/a.png"]
+    r = await client.get(
+        f"/v1/sessions/{sid}/files/download", params={"path": ".attachments/orch-1/a.png"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.content == png
+    r = await client.get(
+        f"/v1/sessions/{sid}/files/content", params={"path": ".attachments/.gitignore"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["content"] == "*\n"
 
 
 async def test_terminal_over_real_service(workspace) -> None:

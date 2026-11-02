@@ -463,3 +463,10 @@ def test_claude_env_never_carries_usage_token(tmp_path, monkeypatch):
     )
     assert "CCW_USAGE_TOKEN" not in env
     assert USAGE_TOKEN not in env.values()
+
+
+def test_attachment_limit_defaults() -> None:
+    limits = Config.model_validate({}).limits
+    assert limits.max_attachment_bytes == 6291456
+    assert limits.max_attachments_total_bytes == 8388608
+    assert limits.max_attachments_per_turn == 8

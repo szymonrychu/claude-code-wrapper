@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,7 @@ from test_metrics import sample
 from test_session_turns import Harness
 
 from claude_code_wrapper.api.app import create_app
+from claude_code_wrapper.api.turns import MESSAGE_ID_PATTERN
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.manager import CreateSessionRequest, InvalidState, SessionNotFound
 from claude_code_wrapper.metrics import Metrics
@@ -52,9 +55,11 @@ class StubRouter:
         self.raise_on: Exception | None = None
         self.interrupted: str | None = None
         self.lanes: list[str] = []
+        self.message_ids: list[str | None] = []
 
     async def deliver(self, text, *, lane, message_id=None, **kw):
         self.lanes.append(lane)
+        self.message_ids.append(message_id)
         return Delivery(lane, record=await self.submit_turn(text, **kw))
 
     async def submit_turn(
@@ -102,7 +107,12 @@ def client(stub: StubManager) -> TestClient:
     cfg = Config.model_validate(
         {
             "server": {"auth_token": TOKEN},
-            "limits": {"max_prompt_bytes": 64},
+            "limits": {
+                "max_prompt_bytes": 64,
+                "max_attachment_bytes": 8,
+                "max_attachments_total_bytes": 12,
+                "max_attachments_per_turn": 2,
+            },
             "prompts": {
                 "templates": {
                     "greet": {
@@ -343,3 +353,117 @@ async def test_slash_turn_fires_no_on_turn(world: World, tmp_path: Path) -> None
     assert [e["data"]["text"] for e in jsonl(on_turn)] == ["hello"]
     assert (workdir / "b.txt").read_text() == "y"
     assert not (workdir / "a.txt").exists()
+
+
+def att(name: str, raw: bytes = b"PNGDATA", mime: str = "image/png") -> dict[str, str]:
+    return {"name": name, "mime": mime, "data_b64": base64.b64encode(raw).decode()}
+
+
+def test_attachments_merge_into_files(client: TestClient, stub: StubManager) -> None:
+    r = post(client, {"text": "hi", "message_id": "m-1", "attachments": [att("a.png")]})
+    assert r.status_code == 202, r.text
+    assert r.json()["attachments"] == [".attachments/m-1/a.png"]
+    assert r.json()["message_id"] == "m-1"
+    assert stub.router_obj.calls[0][2] == {
+        ".attachments/.gitignore": b"*\n",
+        ".attachments/m-1/a.png": b"PNGDATA",
+    }
+    assert stub.router_obj.message_ids == ["m-1"]
+
+
+def test_attachments_generate_message_id(client: TestClient, stub: StubManager) -> None:
+    r = post(client, {"text": "hi", "attachments": [att("a.png")]})
+    assert r.status_code == 202, r.text
+    mid = r.json()["message_id"]
+    assert re.match(MESSAGE_ID_PATTERN, mid)
+    assert r.json()["attachments"] == [f".attachments/{mid}/a.png"]
+    assert stub.router_obj.message_ids == [mid]
+
+
+def test_attachments_and_text_files_together(client: TestClient, stub: StubManager) -> None:
+    r = post(client, {"text": "hi", "files": {"n.txt": "x"}, "attachments": [att("a.png")]})
+    assert r.status_code == 202, r.text
+    files = stub.router_obj.calls[0][2]
+    assert files["n.txt"] == "x"
+    assert any(k.endswith("/a.png") for k in files)
+
+
+def test_no_attachments_leaves_response_unchanged(client: TestClient) -> None:
+    r = post(client, {"text": "hi", "attachments": []})
+    assert r.status_code == 202
+    assert "attachments" not in r.json()
+
+
+@pytest.mark.parametrize("data_b64", ["@@@", "QUJD\nRA=="])
+def test_attachment_bad_base64_400(client: TestClient, stub: StubManager, data_b64: str) -> None:
+    a = {"name": "a.png", "mime": "image/png", "data_b64": data_b64}
+    r = post(client, {"text": "hi", "attachments": [a]})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_attachment"
+    assert stub.router_obj.calls == []
+
+
+@pytest.mark.parametrize(
+    "attachments",
+    [
+        [att("../x")],
+        [att(".gitignore")],
+        [att("a.png", b"1"), att("a.png", b"2")],
+        [att("a.png", mime="PNG")],
+    ],
+)
+def test_attachment_bad_name_400(client: TestClient, stub: StubManager, attachments) -> None:
+    r = post(client, {"text": "hi", "attachments": attachments})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_attachment"
+    assert stub.router_obj.calls == []
+
+
+@pytest.mark.parametrize("message_id", [".", ".."])
+def test_attachment_dot_message_id_refused(
+    client: TestClient, stub: StubManager, message_id
+) -> None:
+    # the request pattern already refuses a leading dot (422); the handler check is a second line
+    r = post(client, {"text": "hi", "message_id": message_id, "attachments": [att("a.png")]})
+    assert r.status_code == 422
+    assert stub.router_obj.calls == []
+
+
+def test_attachment_message_id_with_colon_400(client: TestClient, stub: StubManager) -> None:
+    r = post(client, {"text": "hi", "message_id": "a:b", "attachments": [att("a.png")]})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_attachment"
+
+
+@pytest.mark.parametrize(
+    "attachments",
+    [
+        [att("a.png", b"123456789")],
+        [att("a.png", b"1234567"), att("b.png", b"1234567")],
+        [att("a.png", b"1"), att("b.png", b"1"), att("c.png", b"1")],
+    ],
+)
+def test_attachment_caps_413(client: TestClient, stub: StubManager, attachments) -> None:
+    r = post(client, {"text": "hi", "attachments": attachments})
+    assert r.status_code == 413
+    assert r.json()["error"]["code"] == "too_large"
+    assert stub.router_obj.calls == []
+
+
+def test_attachment_oversize_not_decoded(
+    client: TestClient, stub: StubManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*a, **k):
+        raise AssertionError("decoded an oversize attachment")
+
+    monkeypatch.setattr(base64, "b64decode", boom)
+    a = {"name": "a.png", "mime": "image/png", "data_b64": "A" * 10000}
+    r = post(client, {"text": "hi", "attachments": [a]})
+    assert r.status_code == 413
+    assert r.json()["error"]["code"] == "too_large"
+
+
+def test_attachment_zero_bytes_400(client: TestClient) -> None:
+    r = post(client, {"text": "hi", "attachments": [att("a.png", b"")]})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_attachment"

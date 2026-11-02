@@ -427,6 +427,7 @@ Request body (exactly one of `text` and `template`):
 | `template` | string | one of text/template | name of a configured prompt template |
 | `variables` | object | no | values for the template's `{{name}}` placeholders; only with `template` |
 | `files` | object (path to content) | no | files written into the workdir before the prompt is pasted; relative paths only, limited by `limits.max_files_per_turn` and `limits.max_file_bytes` |
+| `attachments` | array of `{name, mime, data_b64}` | no | binary files written to `.attachments/<message_id>/<name>` in the workdir (plus `.attachments/.gitignore` with `*`, so a git workdir never commits them) before the prompt is pasted; `name` matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` and is unique, `mime` matches `^[a-z]+/[A-Za-z0-9.+-]{1,100}$`, `data_b64` is strict standard base64 (no whitespace) of at least one byte; limited by `limits.max_attachments_per_turn`, `limits.max_attachment_bytes` and `limits.max_attachments_total_bytes`; a `message_id` is generated when absent and must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`; the response lists the paths in `attachments` and always carries `message_id` |
 | `callbackUrl` | string | no | `http`/`https` URL that receives this turn's terminal-state callback (and its questions); overrides the session's `callbackUrl` |
 | `metadata` | object | no | client-supplied JSON object kept on the turn record (`metadata`) and given to `onTurn` hooks as `data.metadata`, so hooks can gate on it; at most 16 KiB serialised |
 | `lane` | string | no | `idle`, `regular` (default) or `priority`: how the message reaches the session, see "Delivery lanes" below; any other value is `422 invalid_request` |
@@ -450,6 +451,7 @@ session), that turn's id and the message id:
 | 202 | | accepted |
 | 400 | `text_or_template` | both or neither of `text` and `template` |
 | 400 | `invalid_callback_url` | `callbackUrl` is not an `http` or `https` URL |
+| 400 | `invalid_attachment` | an attachment has bad base64, a bad or duplicate name, a bad mime, zero bytes, or the turn's `message_id` is not usable in a path |
 | 400 | `invalid_path` | a `files` path is absolute, escapes the workdir or conflicts with an existing entry |
 | 401 | `unauthorized` | missing or wrong token |
 | 403 | `vetoed` | a blocking `onTurn` action denied (a `turn_rejected` event is logged) |
@@ -457,7 +459,7 @@ session), that turn's id and the message id:
 | 409 | `busy` | `idle` lane: a turn is already running; any lane: a slash command run holds the session |
 | 409 | `booting`, `dead` | `regular` or `priority` lane: claude is not live (the session is booting, stopped, failed or dead) |
 | 409 | `dialog_open` | `regular` or `priority` lane: a dialog is open in claude, see "Delivery lanes" |
-| 413 | `too_large` | prompt over `limits.max_prompt_bytes`, `metadata` over 16 KiB, or `files` over the per-file or count limits |
+| 413 | `too_large` | prompt over `limits.max_prompt_bytes`, `metadata` over 16 KiB, `files` over the per-file or count limits, or `attachments` over `limits.max_attachment_bytes`, `limits.max_attachments_total_bytes` or `limits.max_attachments_per_turn` |
 | 422 | `slash_command` | the text is a slash command; send it to `POST /v1/sessions/{id}/commands` (the same code answers `POST /v1/sessions/{id}/probe`) |
 | 422 | `invalid_request` | invalid body (including `metadata` that is not an object), or `unknown_template`, `unknown_variable`, `missing_variable` |
 | 503 | `booting` | `idle` lane: the session is still booting |
@@ -2938,7 +2940,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `invalid_callback_url` | 400 | `callbackUrl` is not an `http` or `https` URL |
 | `invalid_last_event_id` | 400 | the `Last-Event-ID` header is not an integer |
 | `invalid_path` | 400 | a turn `files` path is invalid, escapes the workdir or conflicts with an existing entry; also a file API path (listing, content, download or write) that is absolute, holds a NUL byte or leaves the workdir (`..` or a symlink) |
-| `invalid_attachment` | 400 | an attachment name is not `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` or repeats within one request, or binary files were offered where they are not accepted |
+| `invalid_attachment` | 400 | an attachment name is not `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` or repeats within one request, an attachment has bad base64, a bad mime or zero bytes, the turn's `message_id` is not usable in a path, or binary files were offered where they are not accepted |
 | `not_a_directory` | 400 | the file listing `path` is not a directory |
 | `not_a_file` | 400 | the file content, download or write `path` is a directory, FIFO, socket or device (or the workdir itself) |
 | `text_or_template` | 400 | exactly one of `text` and `template` is required (turns), or both initial prompts were given (create) |
@@ -2946,7 +2948,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `unknown_variable` | 422 | a variable is not declared by the template, or variables were sent without a template |
 | `missing_variable` | 422 | a required template variable has no value or default |
 | `invalid_request` | 422 | the body, query or path failed validation (including a `terminal_id` outside `^term_[0-9a-f]{12}$`), or the merged `env` is invalid; the message lists `field: problem` entries |
-| `too_large` | 413 | prompt over `limits.max_prompt_bytes`, or turn `files` over `limits.max_file_bytes` or `limits.max_files_per_turn`; also a file write (`PUT .../files/content`) whose content is over `limits.file_preview_max_bytes` UTF-8 bytes |
+| `too_large` | 413 | prompt over `limits.max_prompt_bytes`, turn `files` over `limits.max_file_bytes` or `limits.max_files_per_turn`, or turn `attachments` over `limits.max_attachment_bytes`, `limits.max_attachments_total_bytes` or `limits.max_attachments_per_turn`; also a file write (`PUT .../files/content`) whose content is over `limits.file_preview_max_bytes` UTF-8 bytes |
 | `file_changed` | 409 | a file write (`PUT .../files/content`) whose `expected` `mtime` or `size` differs from the file on disk |
 | `message_too_large` | 413 | a peer request body over `peers.max_message_bytes` + 4096 bytes, or a peer `message` over `peers.max_message_bytes` |
 | `inbox_full` | 429 | the target session's peer inbox is at `peers.inbox_max` |
@@ -3704,6 +3706,9 @@ limits:
 | `limits.max_prompt_bytes` | integer | `1048576` | - | Largest accepted turn prompt in bytes. |
 | `limits.max_file_bytes` | integer | `262144` | - | Largest accepted turn file in bytes. |
 | `limits.max_files_per_turn` | integer | `16` | - | Most files accepted with one turn. |
+| `limits.max_attachment_bytes` | integer | `6291456` | - | Largest decoded turn attachment in bytes (>= 1). |
+| `limits.max_attachments_total_bytes` | integer | `8388608` | - | Most decoded attachment bytes with one turn, all files together (>= 1). |
+| `limits.max_attachments_per_turn` | integer | `8` | - | Most attachments accepted with one turn. |
 | `limits.files_max_entries` | integer | `2000` | - | Most directory entries per file-listing response (>= 1). |
 | `limits.file_preview_max_bytes` | integer | `1048576` | - | Largest file the file content route returns inline, in bytes (>= 1); bigger files answer `kind: too_large` (the download route has no cap). |
 | `limits.turn_max_seconds` | number | `0` | - | Hard cap per turn; 0 for none. |

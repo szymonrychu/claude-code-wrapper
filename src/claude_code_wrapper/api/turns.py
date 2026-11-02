@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -19,8 +22,8 @@ from claude_code_wrapper.manager import InvalidState
 from claude_code_wrapper.prompts import resolve_prompt
 from claude_code_wrapper.router import SessionRouter, TurnVetoed
 from claude_code_wrapper.session import TurnRejected
-from claude_code_wrapper.turns import METADATA_MAX_BYTES, Lane
-from claude_code_wrapper.workdir import FileWriteError
+from claude_code_wrapper.turns import METADATA_MAX_BYTES, Lane, new_message_id
+from claude_code_wrapper.workdir import FileWriteError, attachment_files
 
 router = APIRouter()
 
@@ -28,6 +31,10 @@ router = APIRouter()
 MESSAGE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 #: Refusals a `regular` or `priority` delivery answers 409 (claude is not live), not 503.
 _LANE_CONFLICTS = frozenset({"booting", "dead"})
+
+#: A message id that names an attachment directory: no colon, no separator, no leading dot.
+_ATTACHMENT_MESSAGE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_ATTACHMENT_MIME_RE = re.compile(r"[a-z]+/[A-Za-z0-9.+-]{1,100}")
 
 _REJECT_STATUS = {
     "busy": 409,
@@ -45,6 +52,16 @@ _REJECT_TEXT = {
 }
 
 
+class TurnAttachment(BaseModel):
+    """One binary file for the turn; every check but the shape is made in the handler."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    mime: str
+    data_b64: str
+
+
 class TurnRequest(BaseModel):
     """`POST /v1/sessions/{id}/turns` body: exactly one of `text` and `template`."""
 
@@ -54,6 +71,7 @@ class TurnRequest(BaseModel):
     template: str | None = None
     variables: dict[str, Any] | None = None
     files: dict[str, str] | None = None
+    attachments: list[TurnAttachment] | None = None
     callback_url: str | None = Field(default=None, alias="callbackUrl")
     metadata: dict[str, Any] | None = None
     lane: Lane = "regular"
@@ -88,6 +106,46 @@ def _rejected(exc: TurnRejected, lane: str = "idle") -> ApiError:
     )
 
 
+def _decode_attachments(
+    attachments: list[TurnAttachment], message_id: str, limits: Any
+) -> dict[str, bytes]:
+    """Check and decode the attachments into turn files; oversize ones are refused undecoded."""
+    if _ATTACHMENT_MESSAGE_ID_RE.fullmatch(message_id) is None or message_id in (".", ".."):
+        raise ApiError(400, "invalid_attachment", "message_id is not usable with attachments")
+    if len(attachments) > limits.max_attachments_per_turn:
+        raise ApiError(413, "too_large", f"more than {limits.max_attachments_per_turn} attachments")
+    max_b64 = 4 * -(-limits.max_attachment_bytes // 3)
+    decoded: list[tuple[str, bytes]] = []
+    total = 0
+    for a in attachments:
+        if _ATTACHMENT_MIME_RE.fullmatch(a.mime) is None:
+            raise ApiError(400, "invalid_attachment", f"invalid mime {a.mime!r}")
+        if len(a.data_b64) > max_b64:
+            raise ApiError(
+                413, "too_large", f"{a.name!r} exceeds {limits.max_attachment_bytes} bytes"
+            )
+        try:
+            data = base64.b64decode(a.data_b64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ApiError(400, "invalid_attachment", f"{a.name!r} is not valid base64") from exc
+        if not data:
+            raise ApiError(400, "invalid_attachment", f"{a.name!r} is empty")
+        if len(data) > limits.max_attachment_bytes:
+            raise ApiError(
+                413, "too_large", f"{a.name!r} exceeds {limits.max_attachment_bytes} bytes"
+            )
+        total += len(data)
+        if total > limits.max_attachments_total_bytes:
+            raise ApiError(
+                413, "too_large", f"attachments exceed {limits.max_attachments_total_bytes} bytes"
+            )
+        decoded.append((a.name, data))
+    try:
+        return attachment_files(message_id, decoded)
+    except FileWriteError as exc:
+        raise ApiError(400, exc.code, str(exc)) from exc
+
+
 @router.post("/sessions/{session_id}/turns", status_code=202)
 async def submit_turn(session_id: str, body: TurnRequest, request: Request) -> Any:
     try:
@@ -109,14 +167,22 @@ async def submit_turn(session_id: str, body: TurnRequest, request: Request) -> A
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ApiError(400, "invalid_callback_url", "callbackUrl must be an http or https URL")
+    files: dict[str, str | bytes] | None = dict(body.files) if body.files else None
+    message_id = body.message_id
+    attachment_paths: list[str] = []
+    if body.attachments:
+        message_id = message_id or new_message_id()
+        extra = _decode_attachments(body.attachments, message_id, cfg.limits)
+        attachment_paths = [p for p in extra if not p.endswith("/.gitignore")]
+        files = {**(files or {}), **extra}
     try:
         delivery = await live.deliver(
             text,
             lane=body.lane,
-            files=body.files,
+            files=files,
             callback_url=url,
             metadata=metadata,
-            message_id=body.message_id,
+            message_id=message_id,
         )
     except TurnRejected as exc:
         raise _rejected(exc, body.lane) from exc
@@ -143,6 +209,9 @@ async def submit_turn(session_id: str, body: TurnRequest, request: Request) -> A
         }
         if delivery.duplicate:  # a retried priority send: the turn its first send started
             out["duplicate"] = True
+    if attachment_paths:
+        out["attachments"] = attachment_paths
+        out["message_id"] = message_id
     return _out(request, out)
 
 

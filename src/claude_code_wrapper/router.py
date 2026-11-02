@@ -1006,7 +1006,7 @@ class SessionRouter(SessionListener):
         self,
         text: str,
         *,
-        files: Mapping[str, str] | None = None,
+        files: Mapping[str, str | bytes] | None = None,
         callback_url: str | None = None,
         origin: Origin = "client",
         metadata: Mapping[str, Any] | None = None,
@@ -1034,7 +1034,7 @@ class SessionRouter(SessionListener):
     async def _submit_turn(
         self,
         text: str,
-        files: Mapping[str, str] | None,
+        files: Mapping[str, str | bytes] | None,
         callback_url: str | None,
         origin: Origin,
         metadata: Mapping[str, Any] | None,
@@ -1054,6 +1054,7 @@ class SessionRouter(SessionListener):
                 files,
                 max_bytes=self._cfg.limits.max_file_bytes,
                 max_files=self._cfg.limits.max_files_per_turn,
+                max_binary_bytes=self._cfg.limits.max_attachment_bytes,
             )
         annotations = outcome.annotations
         if annotations and merged_annotations({}, annotations) is None:
@@ -1081,7 +1082,7 @@ class SessionRouter(SessionListener):
         text: str,
         *,
         lane: str,
-        files: Mapping[str, str] | None = None,
+        files: Mapping[str, str | bytes] | None = None,
         callback_url: str | None = None,
         origin: Origin = "client",
         metadata: Mapping[str, Any] | None = None,
@@ -1130,7 +1131,7 @@ class SessionRouter(SessionListener):
     async def _vet(
         self,
         text: str,
-        files: Mapping[str, str] | None,
+        files: Mapping[str, str | bytes] | None,
         origin: Origin,
         metadata: Mapping[str, Any] | None,
         turn_id: str,
@@ -1271,7 +1272,7 @@ class SessionRouter(SessionListener):
         text: str,
         *,
         lane: str,
-        files: Mapping[str, str] | None,
+        files: Mapping[str, str | bytes] | None,
         callback_url: str | None,
         origin: Origin,
         metadata: Mapping[str, Any] | None,
@@ -1294,6 +1295,7 @@ class SessionRouter(SessionListener):
                 files,
                 max_bytes=self._cfg.limits.max_file_bytes,
                 max_files=self._cfg.limits.max_files_per_turn,
+                max_binary_bytes=self._cfg.limits.max_attachment_bytes,
             )
         self._annotate(running, outcome)
         message = await session.queue_prompt(
