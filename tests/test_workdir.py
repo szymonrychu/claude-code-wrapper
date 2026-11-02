@@ -10,6 +10,7 @@ from claude_code_wrapper.config import InitConfig
 from claude_code_wrapper.workdir import (
     FileWriteError,
     WorkdirError,
+    attachment_files,
     prepare_workdir,
     run_setup_commands,
     safe_write_files,
@@ -331,3 +332,79 @@ def test_safe_write_files_directory_and_file_parent_are_invalid_path(tmp_path: P
             safe_write_files(wd, {"ok.txt": "1", path: "x"}, max_bytes=10, max_files=5)
         assert exc.value.code == "invalid_path"
         assert not (wd / "ok.txt").exists()
+
+
+def test_attachment_files_layout() -> None:
+    got = attachment_files("orch-7", [("a.png", b"\x89PNG"), ("s.json", b"{}")])
+    assert got == {
+        ".attachments/.gitignore": b"*\n",
+        ".attachments/orch-7/a.png": b"\x89PNG",
+        ".attachments/orch-7/s.json": b"{}",
+    }
+
+
+@pytest.mark.parametrize("name", ["../x", "a/b", ".gitignore", "", "x\x00y", "a" * 129])
+def test_attachment_files_rejects_bad_names(name: str) -> None:
+    with pytest.raises(FileWriteError) as exc:
+        attachment_files("m1", [(name, b"x")])
+    assert exc.value.code == "invalid_attachment"
+
+
+def test_attachment_files_rejects_duplicate_names() -> None:
+    with pytest.raises(FileWriteError) as exc:
+        attachment_files("m1", [("a.png", b"1"), ("a.png", b"2")])
+    assert exc.value.code == "invalid_attachment"
+
+
+def test_safe_write_files_writes_bytes_verbatim(tmp_path: Path) -> None:
+    data = b"\x00\xff\x89PNG"
+    out = safe_write_files(
+        tmp_path, {"d/a.bin": data}, max_bytes=10, max_files=1, max_binary_bytes=100
+    )
+    assert out == ["d/a.bin"]
+    assert (tmp_path / "d/a.bin").read_bytes() == data
+
+
+def test_safe_write_files_binary_cap(tmp_path: Path) -> None:
+    with pytest.raises(FileWriteError) as exc:
+        safe_write_files(
+            tmp_path, {"a.bin": b"x" * 11}, max_bytes=10, max_files=1, max_binary_bytes=10
+        )
+    assert exc.value.code == "too_large"
+    files = {f"b{i}.bin": b"x" for i in range(9)}
+    out = safe_write_files(tmp_path, files, max_bytes=10, max_files=1, max_binary_bytes=10)
+    assert len(out) == 9
+
+
+def test_safe_write_files_binary_refused_without_cap(tmp_path: Path) -> None:
+    with pytest.raises(FileWriteError) as exc:
+        safe_write_files(tmp_path, {"a.bin": b"x"}, max_bytes=10, max_files=1)
+    assert exc.value.code == "invalid_attachment"
+    assert not (tmp_path / "a.bin").exists()
+
+
+def test_safe_write_files_rewrite_same_paths(tmp_path: Path) -> None:
+    first = attachment_files("m1", [("a.png", b"one")])
+    second = attachment_files("m1", [("a.png", b"two")])
+    for files in (first, second):
+        safe_write_files(tmp_path, files, max_bytes=10, max_files=1, max_binary_bytes=100)
+    assert (tmp_path / ".attachments/m1/a.png").read_bytes() == b"two"
+    assert (tmp_path / ".attachments/.gitignore").read_bytes() == b"*\n"
+
+
+def test_attachments_symlink_escape_refused(tmp_path: Path) -> None:
+    wd = tmp_path / "wd"
+    outside = tmp_path / "outside"
+    wd.mkdir()
+    outside.mkdir()
+    (wd / ".attachments").symlink_to(outside)
+    with pytest.raises(FileWriteError) as exc:
+        safe_write_files(
+            wd,
+            attachment_files("m1", [("a.png", b"x")]),
+            max_bytes=10,
+            max_files=1,
+            max_binary_bytes=100,
+        )
+    assert exc.value.code == "invalid_path"
+    assert list(outside.iterdir()) == []

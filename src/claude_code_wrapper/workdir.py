@@ -15,6 +15,9 @@ from .redact import Redactor
 
 _NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 MAX_NAME_LEN = 64
+ATTACHMENTS_DIR = ".attachments"
+ATTACHMENT_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+_ATTACHMENT_NAME_RE = re.compile(ATTACHMENT_NAME_PATTERN)
 OUTPUT_TAIL = 2000
 _USERINFO = re.compile(r"(://)[^/\s@]+@")
 _REDACTOR = Redactor()
@@ -25,7 +28,7 @@ class WorkdirError(Exception):
 
 
 class FileWriteError(Exception):
-    """Rejected turn file write; `code` is `too_large` or `invalid_path`."""
+    """Rejected turn file write; `code` is `too_large`, `invalid_path` or `invalid_attachment`."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -170,17 +173,47 @@ async def run_setup_commands(
     marker.write_text("done\n")
 
 
+def attachment_files(message_id: str, attachments: Sequence[tuple[str, bytes]]) -> dict[str, bytes]:
+    """Map attachments to turn file paths under `.attachments/<message_id>/`.
+
+    Includes `.attachments/.gitignore` so a git workdir never commits them.
+    """
+    files: dict[str, bytes] = {f"{ATTACHMENTS_DIR}/.gitignore": b"*\n"}
+    seen: set[str] = set()
+    for name, data in attachments:
+        if _ATTACHMENT_NAME_RE.fullmatch(name) is None:
+            raise FileWriteError("invalid_attachment", f"invalid attachment name {name!r}")
+        if name in seen:
+            raise FileWriteError("invalid_attachment", f"duplicate attachment name {name!r}")
+        seen.add(name)
+        files[f"{ATTACHMENTS_DIR}/{message_id}/{name}"] = data
+    return files
+
+
 def safe_write_files(
-    workdir: str | Path, files: Mapping[str, str], *, max_bytes: int, max_files: int
+    workdir: str | Path,
+    files: Mapping[str, str | bytes],
+    *,
+    max_bytes: int,
+    max_files: int,
+    max_binary_bytes: int | None = None,
 ) -> list[str]:
-    if len(files) > max_files:
+    text_count = sum(1 for v in files.values() if isinstance(v, str))
+    if text_count > max_files:
         raise FileWriteError("too_large", f"more than {max_files} files")
     root = Path(os.path.realpath(workdir))
     planned: list[tuple[str, Path, bytes]] = []
     for rel, content in files.items():
-        data = content.encode("utf-8")
-        if len(data) > max_bytes:
-            raise FileWriteError("too_large", f"{rel!r} exceeds {max_bytes} bytes")
+        if isinstance(content, str):
+            data = content.encode("utf-8")
+            if len(data) > max_bytes:
+                raise FileWriteError("too_large", f"{rel!r} exceeds {max_bytes} bytes")
+        else:
+            data = content
+            if max_binary_bytes is None:
+                raise FileWriteError("invalid_attachment", "binary files are not accepted here")
+            if len(data) > max_binary_bytes:
+                raise FileWriteError("too_large", f"{rel!r} exceeds {max_binary_bytes} bytes")
         if not rel or "\x00" in rel or os.path.isabs(rel):
             raise FileWriteError("invalid_path", f"invalid path {rel!r}")
         resolved = Path(os.path.realpath(root / rel))

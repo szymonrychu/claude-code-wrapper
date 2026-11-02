@@ -192,6 +192,9 @@ limits:
   max_prompt_bytes: 1048576
   max_file_bytes: 262144
   max_files_per_turn: 16
+  max_attachment_bytes: 6291456         # largest decoded turn attachment
+  max_attachments_total_bytes: 8388608  # decoded attachments per turn, all together
+  max_attachments_per_turn: 8           # most attachments with one turn
   files_max_entries: 2000    # entries per file-listing page
   file_preview_max_bytes: 1048576   # largest file the content route returns
   turn_max_seconds: 0        # hard cap per turn (0 = none)
