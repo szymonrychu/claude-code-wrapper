@@ -40,6 +40,7 @@ def test_readme_slash_commands_subsections():
         "Lifecycle",
         "Configuration",
         "Idle auto-compact",
+        "Clearing the conversation (`/clear`)",
         "Limits",
     ]
 

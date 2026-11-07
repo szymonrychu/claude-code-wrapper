@@ -17,6 +17,7 @@ SignalKind = Literal[
     "command_output",
     "command_unknown",
     "prompt_submitted",
+    "session_cleared",
 ]
 HISTORY = 64
 

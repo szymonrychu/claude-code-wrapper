@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -520,3 +521,114 @@ def test_prose_command_scenario(boot, env, work, tmp_path):  # noqa: F811
     assert lines[0]["message"]["content"] == "/tmp"
     assert events_of(out) == ["UserPromptSubmit", "Stop"]
     assert payloads(out)[0]["prompt"] == "/tmp"
+
+
+# ---------------------------------------------------------------- /clear (claude 2.1.304)
+
+
+def record_clear(config_dir, out, matcher="clear"):
+    """SessionEnd, SessionStart (with `matcher`) and the turn hooks append their payloads."""
+    cmd = [{"type": "command", "command": f"cat >> {out}; echo >> {out}"}]
+    hooks = {ev: [{"matcher": "", "hooks": cmd}] for ev in ("UserPromptSubmit", "Stop")}
+    hooks["SessionEnd"] = [{"matcher": "", "hooks": cmd}]
+    hooks["SessionStart"] = [{"matcher": matcher, "hooks": cmd}]
+    hook_settings(config_dir, hooks)
+
+
+def transcript_files(config_dir, workdir):
+    proj = Path(config_dir) / "projects" / re.sub(r"[^A-Za-z0-9]", "-", workdir)
+    return sorted(p.name for p in proj.glob("*.jsonl"))
+
+
+def test_clear_mints_new_session_and_fires_session_start(boot, env, work, tmp_path):  # noqa: F811
+    out = tmp_path / "h.out"
+    record_clear(env["CLAUDE_CONFIG_DIR"], out)
+    p = boot()
+    p.submit("ccw turn marker-1 hello")
+    p.wait_for("? for shortcuts", since=p.buf.rindex("hello"))
+    [old] = transcript_files(env["CLAUDE_CONFIG_DIR"], work)
+    p.submit("/clear", wait="(no content)")
+    pl = payloads(out)
+    assert [x["hook_event_name"] for x in pl] == [
+        "UserPromptSubmit",
+        "Stop",
+        "SessionEnd",
+        "SessionStart",
+    ]
+    end, start = pl[2], pl[3]
+    assert end["reason"] == "clear" and end["session_id"] == pl[0]["session_id"]
+    new_id = start["session_id"]
+    assert start["source"] == "clear" and new_id != pl[0]["session_id"]
+    assert start["transcript_path"].endswith(f"/{new_id}.jsonl")
+    # The new transcript appears only with the next write: no turn, no file.
+    assert transcript_files(env["CLAUDE_CONFIG_DIR"], work) == [old]
+    p.submit("after clear")
+    p.wait_for("echo: after clear")
+    p.wait_for("? for shortcuts", since=p.buf.rindex("echo: after clear"))
+    assert sorted(transcript_files(env["CLAUDE_CONFIG_DIR"], work)) == sorted(
+        [old, f"{new_id}.jsonl"]
+    )
+    later = payloads(out)[4:]
+    assert [x["hook_event_name"] for x in later] == ["UserPromptSubmit", "Stop"]
+    assert {x["session_id"] for x in later} == {new_id}
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work, new_id)
+    assert {x["sessionId"] for x in lines} == {new_id}
+    assert "/clear" not in json.dumps(lines)  # no echo of the clear in either file
+
+
+def test_session_start_matcher_skips_startup(spawn, scenario_file, env, tmp_path):  # noqa: F811
+    out = tmp_path / "h.out"
+    record_clear(env["CLAUDE_CONFIG_DIR"], out, matcher="startup")
+    sc = {"boot": {"bypass_dialog": False}}
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(scenario_file(sc)))
+    p.wait_for("? for shortcuts")
+    [boot_start] = payloads(out)
+    assert (boot_start["hook_event_name"], boot_start["source"]) == ("SessionStart", "startup")
+    p.submit("/clear", wait="(no content)")
+    # The "startup" group does not match the clear source: only SessionEnd ran.
+    assert [x["hook_event_name"] for x in payloads(out)] == ["SessionStart", "SessionEnd"]
+
+
+def test_clear_session_start_delayed_and_suppressed(boot, env, tmp_path):  # noqa: F811
+    out = tmp_path / "h.out"
+    record_clear(env["CLAUDE_CONFIG_DIR"], out)
+    p = boot(commands={"clear": {"hook_delay_seconds": 0.8}})
+    p.submit("/clear", wait="(no content)")
+    p.wait_for("? for shortcuts", since=p.buf.rindex("(no content)"))
+    assert events_of(out) == ["SessionEnd"]  # the footer came first
+    end = time.monotonic() + 5
+    while time.monotonic() < end and len(payloads(out)) < 2:
+        p.pump(0.1)
+    assert events_of(out) == ["SessionEnd", "SessionStart"]
+
+    out2 = tmp_path / "h2.out"
+    record_clear(env["CLAUDE_CONFIG_DIR"], out2)
+    q = boot(commands={"clear": {"session_start_hook": False}})
+    q.submit("/clear", wait="(no content)")
+    q.wait_for("? for shortcuts", since=q.buf.rindex("(no content)"))
+    time.sleep(0.3)
+    assert events_of(out2) == ["SessionEnd"]
+
+
+def test_clear_unknown_knob(boot, env, work):  # noqa: F811
+    p = boot(commands={"clear": {"unknown": True}})
+    p.submit("/clear", wait="Unknown command: /clear")
+    assert informational(transcript_lines(env["CLAUDE_CONFIG_DIR"], work)) == [
+        "Unknown command: /clear"
+    ]
+
+
+def test_background_subagent_survives_clear(boot, env, tmp_path):  # noqa: F811
+    out = tmp_path / "h.out"
+    cmd = [{"type": "command", "command": f"cat >> {out}; echo >> {out}"}]
+    hooks = {ev: [{"matcher": "", "hooks": cmd}] for ev in ("SubagentStart", "SubagentStop")}
+    hooks["SessionStart"] = [{"matcher": "clear", "hooks": cmd}]
+    hook_settings(env["CLAUDE_CONFIG_DIR"], hooks)
+    sub = {"subagent": {"id": "a1", "type": "general-purpose", "text": "bg", "running": True}}
+    p = boot(turns=[{"match": "spawn", "steps": [sub, {"text": "spawned"}]}])
+    p.submit("spawn it")
+    p.wait_for("spawned")
+    p.wait_for("? for shortcuts", since=p.buf.rindex("spawned"))
+    p.submit("/clear", wait="(no content)")
+    # SubagentStart only: the background subagent neither stopped nor was killed by /clear.
+    assert events_of(out) == ["SubagentStart", "SessionStart"]

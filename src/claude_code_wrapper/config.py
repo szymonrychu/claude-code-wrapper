@@ -525,11 +525,11 @@ COMMAND_WILDCARD = "*"
 #: ultraplan, ultrareview, autofix-pr, cloud-plugins, session with its alias remote) and the
 #: commands that rewrite the session's tool and permission settings (mcp, permissions with its
 #: alias allowed-tools, config with its alias settings, hooks). A create override only extends
-#: this list.
+#: this list. `clear` is not here (0.10.0): it is client-only, see `CLIENT_ONLY_COMMANDS`; its
+#: aliases `reset` and `new` stay denied, so one name means one code path.
 DEFAULT_COMMAND_DENY: tuple[str, ...] = (
     "exit",
     "quit",
-    "clear",
     "reset",
     "new",
     "resume",
@@ -637,6 +637,12 @@ def _check_dialog_patterns(patterns: list[str]) -> list[str]:
         if not pattern.strip():
             raise _at(str(i), "must not be blank")
     return patterns
+
+
+#: Commands only an API client may run, and only when `sessions.commands.client` names them
+#: literally (a `*` does not admit them); the agent origin is always denied them. `/clear` starts
+#: a fresh conversation under a new claude session id, which the wrapper then follows (0.10.0).
+CLIENT_ONLY_COMMANDS: tuple[str, ...] = ("clear",)
 
 
 class CommandsConfig(_Model):

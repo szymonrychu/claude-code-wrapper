@@ -65,11 +65,13 @@ Scenario schema
                          $CLAUDE_CONFIG_DIR/fake-mcp.jsonl gets one line per step:
                          {url, headers, requests, responses} (expanded url and header values,
                          so a test can prove env expansion happened in the fake)
-    {"subagent": {"id", "type", "text", "tool_use_id", "description"}}
+    {"subagent": {"id", "type", "text", "tool_use_id", "description", "running"}}
                          -> <project dir>/<session id>/subagents/agent-<id>.jsonl (isSidechain
                          true) and, before SubagentStart, agent-<id>.meta.json {agentType,
                          description, toolUseId} as claude writes it (toolUseId: the parent's
-                         Task tool_use id; tool_use_id, else a generated id)
+                         Task tool_use id; tool_use_id, else a generated id); "running": true
+                         models a background subagent: SubagentStart only, no SubagentStop, and
+                         a later /clear keeps it running (claude 2.1.304), firing nothing
     {"sleep": seconds}   ESC during it writes "[Request interrupted by user]" and
                          returns to idle without a Stop hook
     {"print": s}         raw PTY output, then idle without Stop
@@ -96,7 +98,8 @@ Scenario schema
 Local slash commands
   Submitted text (stripped) starting with "/" plus a name is a command, not a turn: no
   UserPromptSubmit, no Stop, no assistant line; the idle footer follows. Known names: compact,
-  reload-plugins, reload-skills, mcp, context, plus every name listed under scenario "commands".
+  clear, reload-plugins, reload-skills, mcp, context, plus every name listed under scenario
+  "commands".
   An unknown "/name [ARGS]" (claude 2.1.304) writes a system line {"subtype": "informational",
   "content": "Unknown command: /name"}, or "Unknown command: /name. Did you mean /other?" when the
   top-level scenario key "suggest" maps name to other, then, only when ARGS is not empty, a
@@ -115,6 +118,11 @@ Local slash commands
     continued from a previous conversation" and holds "All user messages:" followed by every earlier
     user prompt of this process verbatim (turn markers included), then PostCompact hooks with
     {trigger, compact_summary}, then "Compacted" on the PTY and the idle footer.
+  /clear (claude 2.1.304): no echo; SessionEnd hooks run with {reason: "clear"}, then the fake
+    mints a new session id (uuid4) and moves to <project dir>/<new id>.jsonl (created by the next
+    transcript write, so a /clear followed by no turn leaves no file), forgets the prompts of the
+    previous conversation, prints "(no content)" and the idle footer, and runs the SessionStart
+    hooks with {source: "clear"} (payload session_id and transcript_path are the new ones).
   Every other known command (/reload-plugins [--force], /reload-skills, /context, /mcp ARGS, a
     scenario-listed name): writes one stdout entry
     <local-command-stdout>STDOUT</local-command-stdout> as a system line (subtype
@@ -129,6 +137,9 @@ Local slash commands
       "pre_tokens"/"post_tokens" set the boundary token counts. A failure outcome writes a system
       local_command line <local-command-stderr>MSG</local-command-stderr>, prints MSG, writes no
       boundary and runs no PostCompact.
+    clear: "hook_delay_seconds": N runs the SessionStart(clear) hooks N seconds after the footer
+      (claude may run them in the background); "session_start_hook": false never runs them;
+      "unknown": true answers as for an unknown name (an older claude).
     any command: "echo": "user" | "system" overrides the echo style; "echo_name" is the name the
       echo carries (claude echoes the resolved alias: /cost echoes /usage); "delay_seconds" before
       completing (ESC during it cancels); "print_every": seconds prints "  working" on the PTY
@@ -174,7 +185,10 @@ Print mode
   "echo: <prompt>") and exits 0; with `--output-format json` it prints {"result": <text>}.
   Other flags are accepted and logged via FAKE_CLAUDE_LOG like every invocation.
 
-Hooks come from $CLAUDE_CONFIG_DIR/settings.json hooks.<Event>; commands run via
+Hooks come from $CLAUDE_CONFIG_DIR/settings.json hooks.<Event>. SessionStart runs at boot with
+source "startup" (or "resume" under --resume) and after /clear with source "clear"; a group's
+matcher is matched (re.fullmatch; "" or "*" match all) against the tool name for tool events and
+against the source for SessionStart. Commands run via
 `sh -c` with the JSON payload on stdin and CLAUDE_PROJECT_DIR=<cwd>. PreToolUse deny
 is stdout hookSpecificOutput.permissionDecision == "deny" or exit code 2; additionalContext
 from PreToolUse/PostToolUse is written to the transcript as a system line.
@@ -190,6 +204,7 @@ import select
 import subprocess
 import sys
 import termios
+import threading
 import time
 import tty
 import urllib.error
@@ -232,7 +247,7 @@ def substitute_step(step: dict, groups: dict[str, str]) -> dict:
     return step
 
 
-COMMANDS = ("compact", "reload-plugins", "reload-skills", "mcp", "context")
+COMMANDS = ("compact", "clear", "reload-plugins", "reload-skills", "mcp", "context")
 #: Echo style of a known command without a scenario "echo" (claude 2.1.304 transcripts).
 SYSTEM_ECHO = ("context",)
 #: claude indents the message and args lines of a command echo by 12 spaces.
@@ -500,7 +515,13 @@ class Fake:
         )
 
     # ---- hooks
-    def run_hooks(self, event: str, extra: dict, tool: str | None = None) -> list[dict]:
+    def run_hooks(
+        self, event: str, extra: dict, tool: str | None = None, match: str | None = None
+    ) -> list[dict]:
+        """Run the event's hook commands; `match` (the tool name, or the SessionStart source)
+        filters groups by matcher."""
+        if match is None:
+            match = tool
         payload = {
             "session_id": self.session_id,
             "transcript_path": self.transcript,
@@ -512,7 +533,7 @@ class Fake:
         results = []
         for group in self.settings.get("hooks", {}).get(event, []):
             matcher = group.get("matcher") or ""
-            if tool is not None and matcher not in ("", "*") and not re.fullmatch(matcher, tool):
+            if match is not None and matcher not in ("", "*") and not re.fullmatch(matcher, match):
                 continue
             for h in group.get("hooks", []):
                 if h.get("type", "command") != "command":
@@ -574,6 +595,8 @@ class Fake:
                     break
                 if idx < 0 and b"\r" in buf:
                     raise Exit(1)
+        source = "resume" if self.resume else "startup"
+        self.run_hooks("SessionStart", {"source": source}, match=source)
         self.footer(cfg.get("footer"))
 
     # ---- main loop
@@ -747,6 +770,9 @@ class Fake:
             self.unknown_command(name, args)
             return
         cfg = listed.get(name) or {}
+        if name == "clear":
+            self.clear_command(name, args, cfg)
+            return
         if name != "compact" and cfg.get("prompt"):
             self.prompt_command(name, args, cfg)
             return
@@ -761,6 +787,31 @@ class Fake:
         else:
             self.stdout_command(name, args, cfg)
         self.footer()
+
+    def clear_command(self, name: str, args: str, cfg: dict) -> None:
+        """/clear: SessionEnd, a new session id and transcript path, then SessionStart(clear)."""
+        if cfg.get("unknown"):
+            self.unknown_command(name, args)
+            return
+        self.run_hooks("SessionEnd", {"reason": "clear"})
+        self.session_id = str(uuid.uuid4())
+        self.transcript = os.path.join(self.proj_dir, f"{self.session_id}.jsonl")
+        self.user_prompts = []
+        self.last_text = ""
+        self.out("\n(no content)\n")
+        self.footer()
+        if not cfg.get("session_start_hook", True):
+            return
+        delay = float(cfg.get("hook_delay_seconds", 0))
+        if delay <= 0:
+            self.session_start_clear()
+            return
+        timer = threading.Timer(delay, self.session_start_clear)
+        timer.daemon = True
+        timer.start()
+
+    def session_start_clear(self) -> None:
+        self.run_hooks("SessionStart", {"source": "clear"}, match="clear")
 
     def write_echo(self, name: str, args: str, cfg: dict, style: str | None = None) -> None:
         shown = cfg.get("echo_name", name)
@@ -1183,6 +1234,8 @@ class Fake:
         self.run_hooks("SubagentStart", {"agent_id": aid, "agent_type": atype})
         self.user_line("subagent task", path, sidechain=True)
         self.assistant_line({"type": "text", "text": sub.get("text", "")}, 0, path, True)
+        if sub.get("running"):
+            return  # a background subagent: still running, no SubagentStop
         self.run_hooks(
             "SubagentStop",
             {

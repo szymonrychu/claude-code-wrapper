@@ -40,6 +40,7 @@ def test_event_types_exact():
         "command_failed",
         "compacting",
         "compacted",
+        "session_cleared",
         "context",
         "error",
         "permission_mode_unavailable",

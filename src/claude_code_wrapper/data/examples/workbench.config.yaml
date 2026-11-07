@@ -50,7 +50,8 @@ sessions:
   idle_timeout_seconds: 0     # long-lived sessions
   turn_stall_seconds: 3600
   # The agent may compact and reload plugins itself; API clients may queue any command except
-  # the deny list (sessions.commands.deny, which refuses /exit, /clear, /resume and the like).
+  # the deny list (sessions.commands.deny, which refuses /exit, /reset, /resume and the like) and
+  # the client-only /clear, which "*" does not admit.
   commands:
     agent: [compact, reload-plugins]
     client: ["*"]
