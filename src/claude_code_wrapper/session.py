@@ -1450,6 +1450,18 @@ class Session:
         record.tool_calls += 1
         self._persist(record)
 
+    def adopt_claude_session(self, claude_session_id: str, transcript_path: str | None) -> str:
+        """Follow claude to the new session id `/clear` started; returns the previous id.
+
+        The Stop gate (`stop_target`), the crash relaunch argv (`--resume` when the new
+        transcript exists, else `--session-id`) and `transcript_path` (the hook's path, else the
+        layout path of the new id) all follow the new id from here on.
+        """
+        previous = self.spec.claude_session_id
+        self.spec.claude_session_id = claude_session_id
+        self.transcript_path = transcript_path or transcript_path_for(self.spec)
+        return previous
+
     def stop_target(
         self, payload: Mapping[str, Any], marker_turn_id: str | None = None
     ) -> TurnRecord | None:

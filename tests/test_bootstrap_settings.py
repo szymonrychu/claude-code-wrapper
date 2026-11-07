@@ -3,7 +3,12 @@ import stat
 import sys
 from pathlib import Path
 
-from claude_code_wrapper.bootstrap.settings import RelayTimeouts, relay_timeouts, render_settings
+from claude_code_wrapper.bootstrap.settings import (
+    RELAY_MATCHERS,
+    RelayTimeouts,
+    relay_timeouts,
+    render_settings,
+)
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.hook_relay import CLAUDE_HOOK_EVENTS
 
@@ -22,7 +27,7 @@ def test_relay_hooks_for_every_event(tmp_path):
     doc = _render(tmp_path)
     for event in CLAUDE_HOOK_EVENTS:
         (group,) = doc["hooks"][event]
-        assert group["matcher"] == ""
+        assert group["matcher"] == RELAY_MATCHERS.get(event, "")
         (hook,) = group["hooks"]
         assert hook["type"] == "command"
         assert hook["command"] == f"{RELAY} {event}"

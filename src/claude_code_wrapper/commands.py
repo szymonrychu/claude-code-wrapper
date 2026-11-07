@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from claude_code_wrapper.config import (
+    CLIENT_ONLY_COMMANDS,
     COMMAND_NAME,
     COMMAND_WILDCARD,
     CommandsConfig,
@@ -88,9 +89,13 @@ class CommandQueue:
         self.cfg = cfg
         self._records: list[CommandRecord] = []
 
-    def request(
-        self, name: str, args: str, *, origin: Origin, turn_id: str | None
-    ) -> tuple[CommandRecord, bool]:
+    def authorize(self, name: str, origin: Origin) -> None:
+        """`CommandRejected` (`denied`, `not_allowed`) when `origin` may not run `/name`.
+
+        The deny list wins over both allowlists. A client-only command (`CLIENT_ONLY_COMMANDS`)
+        is denied to the agent and runs for a client only when its allowlist names it
+        literally: a `*` does not admit it. The idle origin runs `compact` only.
+        """
         if origin == "idle":
             allowed = ["compact"]
         else:
@@ -100,12 +105,28 @@ class CommandQueue:
                     f"/{name} is denied (sessions.commands.deny): it would end, replace or move "
                     "the session or change its account or credentials",
                 )
+            client_only = name.lower() in CLIENT_ONLY_COMMANDS
+            if client_only and origin == "agent":
+                raise CommandRejected("denied", f"/{name} is for API clients only")
             allowed = self.cfg.agent if origin == "agent" else self.cfg.client
+            if client_only:
+                if name not in allowed:
+                    raise CommandRejected(
+                        "not_allowed",
+                        f"/{name} runs only when sessions.commands.client names it ('*' does "
+                        "not admit it)",
+                    )
+                return
         if name not in allowed and COMMAND_WILDCARD not in allowed:
             raise CommandRejected(
                 "not_allowed",
                 f"/{name} is not allowed for {origin}; allowed: {', '.join(allowed) or 'none'}",
             )
+
+    def request(
+        self, name: str, args: str, *, origin: Origin, turn_id: str | None
+    ) -> tuple[CommandRecord, bool]:
+        self.authorize(name, origin)
         args = validate(name, args, allow_force=self.cfg.allow_force)
         queued = self.pending()
         for rec in queued:

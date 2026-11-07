@@ -21,6 +21,7 @@ _REJECT = {
     "invalid_command": (422, "invalid_command"),
     "force_not_allowed": (422, "invalid_command"),
     "queue_full": (429, "command_queue_full"),
+    "subagents_running": (409, "subagents_running"),
 }
 
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hmac
 import inspect
 import json
@@ -78,6 +79,7 @@ from .session import (
     allowed_env,
     build_env,
     slash_command,
+    transcript_path_for,
 )
 from .terminals import CLOSE_GRACE_SECONDS, SessionNotActive, ShellTarget, TerminalRegistry
 from .tooling import install_workdir, mise_env
@@ -104,6 +106,8 @@ META_FILE = "session.json"
 BOOTSTRAP_MESSAGE_MAX = 200
 #: Persisted states whose claude died with the previous service process.
 LIVE_STATES = ("creating", "ready", "busy")
+#: Claude session ids a session's `/clear`s left behind, kept in meta (newest last).
+MAX_PREVIOUS_CLAUDE_IDS = 16
 
 
 class ManagerError(Exception):
@@ -773,6 +777,7 @@ class SessionManager:
             ctx.router.notes = self._notes_for(ctx.session_id)
         if self.usage is not None:
             ctx.router.on_rate_limits = self.usage.offer
+        ctx.router.on_claude_session_change = functools.partial(self._on_claude_session_change, ctx)
         spec = SessionSpec(
             session_id=ctx.session_id,
             claude_session_id=str(meta["claude_session_id"]),
@@ -791,9 +796,25 @@ class SessionManager:
             sessions=self.cfg.sessions,
             limits=self.cfg.limits,
         )
+        # After a /clear with no turn since, the new id has no transcript yet: claude starts it
+        # fresh with --session-id (the cleared state), never --resume.
+        spec.resume = resume and Path(transcript_path_for(spec)).is_file()
         # A turn the previous process left running (D5): the resumed session continues it.
         interrupted = ctx.turns.current if resume else None
         ctx.session = Session(spec, ctx.router, turn_store=ctx.turns, resume_turn=interrupted)
+
+    def _on_claude_session_change(
+        self, ctx: _Active, claude_session_id: str, transcript_path: str, previous: str
+    ) -> None:
+        """`/clear` moved claude to a new session id: persist it now, not at teardown, so a
+        kill after the clear resumes the cleared conversation. The snapshot, the manager hook
+        envelopes and `transcript_path()` read it from meta."""
+        meta = ctx.meta
+        meta["claude_session_id"] = claude_session_id
+        meta["transcript_path"] = transcript_path
+        earlier = list(meta.get("previous_claude_session_ids") or [])
+        meta["previous_claude_session_ids"] = [*earlier, previous][-MAX_PREVIOUS_CLAUDE_IDS:]
+        self._save(ctx)
 
     async def _step(self, ctx: _Active, name: str, fn: Callable[..., Any], *args: Any) -> Any:
         """Record `name` as the running step, run it; any failure becomes `_StepFailed`."""
@@ -1146,7 +1167,9 @@ class SessionManager:
         transcript = meta.get("transcript_path") or str(
             config_dir / "projects" / PROJECT_DIR_NAME / f"{meta['claude_session_id']}.jsonl"
         )
-        if not Path(transcript).is_file():
+        # After a /clear claude took turns before; the new id has no transcript until its first
+        # turn, and the resume starts it fresh (`_wire`).
+        if not Path(transcript).is_file() and not meta.get("previous_claude_session_ids"):
             raise ResumeUnavailable(session_id, "no transcript (claude never took a turn)")
         workdir = meta.get("workdir")
         if not workdir or not Path(str(workdir)).is_dir():

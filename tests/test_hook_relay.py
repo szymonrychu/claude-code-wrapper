@@ -92,6 +92,7 @@ def test_constants() -> None:
         "SubagentStop",
         "PreCompact",
         "PostCompact",
+        "SessionStart",
     )
     assert hr.RELAY_PATH == "/internal/hooks/{event}"
     assert hr.HEADER_DELIVERY == "X-CCW-Delivery"

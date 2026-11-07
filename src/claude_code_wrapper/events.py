@@ -50,6 +50,7 @@ EVENT_TYPES: list[str] = [
     "command_failed",
     "compacting",
     "compacted",
+    "session_cleared",
     "context",
     "error",
     "permission_mode_unavailable",

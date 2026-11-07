@@ -369,7 +369,8 @@ action) must be triggered with `DELETE`, not left to shutdown.
 ### `POST /v1/sessions/{id}/resume`
 
 Relaunch a stopped session with `--resume <claude_session_id>` in the same config dir and workdir
-and fire `onResume`.
+and fire `onResume`. After a `/clear` with no turn since, the new `claude_session_id` has no
+transcript yet and the relaunch uses `--session-id <claude_session_id>` instead: the cleared state.
 
 Auth: bearer. Path parameter: `id`. Request body (optional): `{"env": {...}}`, a partial
 `claude.env` override applied over the persisted non-secret one. Secret overrides are never
@@ -674,9 +675,11 @@ when it was queued (`null` when idle), and for a command completed with result `
 runs as (see [Lifecycle](#lifecycle), item 10).
 
 Errors: `401 unauthorized`, `404 not_found` (unknown session), `403 command_denied` (in
-`sessions.commands.deny`, checked first), `403 command_not_allowed` (not in the client allowlist), `422 invalid_command` (an empty or invalid name, invalid `args`, or `--force` in the
+`sessions.commands.deny`, checked first), `403 command_not_allowed` (not in the client allowlist;
+for `clear`, not named there literally), `422 invalid_command` (an empty or invalid name, invalid `args`, or `--force` in the
 args of `reload-plugins` without `commands.allow_force`), `422 invalid_request` (bad body, including
-`args` that is not a string), `429 command_queue_full`, `409 dead`
+`args` that is not a string), `429 command_queue_full`, `409 subagents_running` (`clear` while a
+subagent of the session runs), `409 dead`
 or `409 booting` (the session cannot take commands now).
 
 ### `GET /v1/sessions/{id}/commands`
@@ -751,7 +754,9 @@ The session's main Claude transcript, one JSON object per line, with secrets red
 Auth: bearer. Path parameter: `id`.
 
 Response `200`, `Content-Type: application/x-ndjson` (streamed). Errors: `401 unauthorized`,
-`404 not_found` (unknown session), `404 no_transcript` (nothing written yet).
+`404 not_found` (unknown session), `404 no_transcript` (nothing written yet; also after a
+[`/clear`](#clearing-the-conversation-clear) until claude writes the new conversation's first
+line). Earlier transcripts stay on disk and no endpoint serves them.
 
 ### `GET /v1/sessions/{id}/history`
 
@@ -1238,8 +1243,10 @@ retries idempotent: a repeated delivery id returns the first result without re-r
 handlers.
 
 Path parameter: `event`, a Claude hook event: `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`PostToolUseFailure`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`. Request body: the raw JSON object
-Claude passes the hook on stdin.
+`PostToolUseFailure`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`,
+`SessionStart` (registered with matcher `clear` only, see [Clearing the
+conversation](#clearing-the-conversation-clear); its answer is always empty). Request body: the raw
+JSON object Claude passes the hook on stdin.
 
 Response `200`:
 
@@ -1851,11 +1858,22 @@ Emitted once for every compaction, manual and auto alike, including Claude Code'
 
 `data`: `trigger` (`manual`, `auto` or `unknown`), `pre_tokens`, `post_tokens`, `duration_ms`.
 
+### `session_cleared`
+
+Emitted once when a client `/clear` ran and claude started a new conversation under a new claude
+session id (its SessionStart hook with source `clear`), which the session follows from then on: the
+Stop gate, the transcript tailer, a relaunch and the persisted `claude_session_id` (resume) use the
+new id. Emitted before the command's `command_completed`. A clear that reports the same id
+completes without this event.
+
+`data`: `previous_claude_session_id`, `claude_session_id`, `transcript_path` (the new
+conversation's transcript, which claude creates with its first line).
+
 ### `context`
 
 Emitted when the context usage (see the snapshot field `context`) changes: only when `used_tokens`,
 `window_tokens` or `used_percentage` differ from the previous value, so identical statusline
-updates are silent. After a `compacted` (or when the statusline reports no usage) the context
+updates are silent. After a `compacted` or a `session_cleared` (or when the statusline reports no usage) the context
 becomes `null` and one event with every value `null` is emitted, if it was non-null.
 
 `data`: `used_tokens`, `window_tokens`, `used_percentage`, `model`, `source` (`"statusline"`),
@@ -2626,13 +2644,48 @@ session alive against `idle_timeout_seconds`; `idle_seconds` must be below `idle
 when both are set. Claude Code's own automatic and idle compaction is left as is (disable it with
 `claude.env.disable_auto_compact`); ccw only reports it as a [`compacted`](#compacted) event.
 
+### Clearing the conversation (`/clear`)
+
+`clear` is client-only: it runs only when `sessions.commands.client` names it literally (`*` does
+not admit it), and the agent is always refused it (`403 command_denied`, also through the `ccw`
+tool with an agent allowlist of `*`). Its aliases `reset` and `new` stay in the deny list. A create
+override's `deny` can still deny `clear` for one session. It runs like any client command: at once on
+an idle session, or queued until the running turn's Stop completes that turn.
+
+claude 2.1.304 handles `/clear` by ending the conversation (SessionEnd hooks, reason `clear`),
+minting a new claude session id with a new transcript file, then running the SessionStart hooks
+with source `clear`, possibly in the background. ccw registers its relay for SessionStart with the
+matcher `clear` only, so startup, resume and compact SessionStarts never call it. When that
+SessionStart arrives while the session's `clear` command runs, ccw adopts the new id: the Stop gate
+accepts the new id's Stops only, the transcript tailer and subagent watcher move to the new file,
+the per-conversation state (outstanding subagents, turn marker, usage, `context`) is dropped, the
+session snapshot and the hook envelopes carry the new `claude_session_id`, and `session.json`
+records it at once, with the previous ids in `previous_claude_session_ids` (the newest 16). Then
+[`session_cleared`](#session_cleared) is emitted and the command completes with result `ok`. A
+SessionStart with another source, or with no `clear` command running (a nested `claude`, for
+example), changes nothing. The relay's answer to SessionStart is always empty: nothing is injected
+into the fresh conversation.
+
+- Subagents: claude keeps background subagents running across `/clear`, so their results would land
+  in the cleared conversation. `clear` is refused with `409 subagents_running` while any subagent
+  of the session runs (SubagentStart seen, no SubagentStop yet), and a queued `clear` is checked
+  again just before it is typed and then fails `subagents_running`.
+- No SessionStart within the command's deadline (`timeout_seconds.clear`, else `default`, 60 s)
+  fails the command `timeout` and keeps the old id; a claude that does not know `/clear` fails it
+  `unknown_command`.
+- Resume and relaunch: with a turn taken since the clear, a crash relaunch or a resume uses
+  `--resume <new id>`; with none, the new id has no transcript yet and claude starts with
+  `--session-id <new id>`, which is the cleared state. A stop between the typed `/clear` and its
+  SessionStart keeps the old id, so the resume restores the conversation from before the clear.
+
 ### Limits
 
 - What runs: any command name, with free-text args, from an allowlist that names it or holds `*`
   (project, skill and plugin commands included), except the names in `sessions.commands.deny`. The
-  deny list is checked first and wins over `*`: `/exit`, `/clear`, `/resume`, `/cd`, `/login` and
+  deny list is checked first and wins over `*`: `/exit`, `/reset`, `/resume`, `/cd`, `/login` and
   the rest of the default list are refused with `403 command_denied`, under any alias or letter
-  case, because they would end, replace or move the claude session the service pins. Every other
+  case, because they would end, replace or move the claude session the service pins. `/clear` is
+  the one client-only command (see [Clearing the conversation](#clearing-the-conversation-clear)). Every other
   name runs; claude itself answers a name it does not know ("Unknown command") and ccw fails that
   command `unknown_command` at once, with no ESC.
 - Classes, detected while the command runs, never configured per name: a local command completes
@@ -2957,6 +3010,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `invalid_command` | 422 | an empty or invalid command name, invalid `args`, or `--force` not allowed |
 | `slash_command` | 422 | a turn's or probe's text is a slash command (claude's parser would run it, so it is never typed as a turn or probe); slash commands go to `POST /v1/sessions/{id}/commands` |
 | `command_queue_full` | 429 | the session already has the maximum of queued commands |
+| `subagents_running` | 409 | `POST /v1/sessions/{id}/commands` with `clear` while a subagent of the session runs |
 | `too_many_sessions` | 429 | `sessions.max_sessions` reached |
 | `create_failed` | 500 | a create or resume step failed; the message names the step |
 | `booting` | 503 | the session is still booting (409 for a `regular` or `priority` turn delivery) |
@@ -3675,8 +3729,8 @@ sessions:
 | `sessions.exit_when_last_destroyed` | boolean | `false` | - | Exit 0 through the normal shutdown (hooks drained) when a DELETE or the idle reaper leaves no active session and one was created in this process; the triggering DELETE still returns its full body first. |
 | `sessions.exit_when_dead` | boolean | `false` | - | Exit 3 through the normal shutdown when a session reaches `dead`, after writing `session <id> dead: <last_fatal or "claude exited">` to `/dev/termination-log` when writable. |
 | `sessions.commands.agent` | list of string | `[]` | - | Slash commands the main agent may queue through the ccw MCP tool: names (matching `^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$`) or `*` for every name not in `deny`. Empty allows none. |
-| `sessions.commands.client` | list of string | `[]` | - | Slash commands API clients may queue: names (same pattern as `agent`) or `*` for every name not in `deny`. Empty allows none. |
-| `sessions.commands.deny` | list of string | `["exit", "quit", "clear", "reset", "new", "resume", "continue", "branch", "fork", "cd", "background", "bg", "teleport", "tp", "stop", "remote-control", "rc", "restart", "update", "login", "logout", "upgrade", "setup-bedrock", "setup-vertex", "web-setup", "design-login", "heapdump", "plugin", "plugins", "marketplace", "install", "import", "daemon", "schedule", "routines", "add-dir", "export", "install-github-app", "install-slack-app", "design-consent", "design-revoke", "desktop", "app", "remote-env", "feedback", "bug", "extra-usage", "usage-credits", "terminal-setup", "ide", "memory", "privacy-settings", "ultraplan", "ultrareview", "autofix-pr", "cloud-plugins", "session", "remote", "mcp", "permissions", "allowed-tools", "config", "settings", "hooks"]` | - | Slash commands refused for the agent and API clients (`403 command_denied`) before either allowlist is checked, even when an allowlist names them or holds `*`: they end, replace or move the claude session or process, hand it to another controller, change account identity or credentials, or install, export, reconfigure or report from the agent's account, reach the account's cloud features (`privacy-settings`, `ultraplan`, `ultrareview`, `autofix-pr`, `cloud-plugins`, `session`, `remote`), or rewrite the session's tool and permission settings (`mcp`, `permissions`, `allowed-tools`, `config`, `settings`, `hooks`). Matched case-insensitively (`/EXIT`, `/Clear` are denied); aliases are listed by name. Names match the `agent` pattern (no `*`); a set `sessions.commands.deny` in the server config replaces the default list, while a `deny` in a `POST /v1/sessions` `commands` override only extends the effective list (case-insensitively), so no session can lift a default name. |
+| `sessions.commands.client` | list of string | `[]` | - | Slash commands API clients may queue: names (same pattern as `agent`) or `*` for every name not in `deny`. Empty allows none. `clear` is client-only: it must be listed by name (`*` does not admit it) and is never allowed for the agent. |
+| `sessions.commands.deny` | list of string | `["exit", "quit", "reset", "new", "resume", "continue", "branch", "fork", "cd", "background", "bg", "teleport", "tp", "stop", "remote-control", "rc", "restart", "update", "login", "logout", "upgrade", "setup-bedrock", "setup-vertex", "web-setup", "design-login", "heapdump", "plugin", "plugins", "marketplace", "install", "import", "daemon", "schedule", "routines", "add-dir", "export", "install-github-app", "install-slack-app", "design-consent", "design-revoke", "desktop", "app", "remote-env", "feedback", "bug", "extra-usage", "usage-credits", "terminal-setup", "ide", "memory", "privacy-settings", "ultraplan", "ultrareview", "autofix-pr", "cloud-plugins", "session", "remote", "mcp", "permissions", "allowed-tools", "config", "settings", "hooks"]` | - | Slash commands refused for the agent and API clients (`403 command_denied`) before either allowlist is checked, even when an allowlist names them or holds `*`: they end, replace or move the claude session or process, hand it to another controller, change account identity or credentials, or install, export, reconfigure or report from the agent's account, reach the account's cloud features (`privacy-settings`, `ultraplan`, `ultrareview`, `autofix-pr`, `cloud-plugins`, `session`, `remote`), or rewrite the session's tool and permission settings (`mcp`, `permissions`, `allowed-tools`, `config`, `settings`, `hooks`). Matched case-insensitively (`/EXIT`, `/Reset` are denied); aliases are listed by name. Names match the `agent` pattern (no `*`); a set `sessions.commands.deny` in the server config replaces the default list, while a `deny` in a `POST /v1/sessions` `commands` override only extends the effective list (case-insensitively), so no session can lift a default name. |
 | `sessions.commands.timeout_seconds` | map of number | `{"compact": 600, "default": 60}` | - | Seconds a command may run before it fails with `timeout`; keys are a command name (same pattern as `agent`) or `default`, values > 0. |
 | `sessions.commands.continue_prompt` | string | `"The slash commands you queued have run. Continue the task you were working on."` | - | Non-empty text that resumes the agent after its queued commands ran, followed by a blank line and the `Command results: ...` line (see [`turn_resumed`](#turn_resumed)). |
 | `sessions.commands.allow_force` | boolean | `false` | - | Allow `--force` among the args of `reload-plugins`. |

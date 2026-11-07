@@ -20,6 +20,9 @@ from claude_code_wrapper.statusline import (
 from .claude_json import _deep_merge, _load, atomic_write
 
 PROMPT_HOOK_TIMEOUT = 15
+#: The relay's matcher per hook event (default ""). SessionStart is relayed only for `/clear`
+#: (source "clear"): startup, resume and compact SessionStarts never call the relay.
+RELAY_MATCHERS = {"SessionStart": "clear"}
 CCW_MCP_ALLOW = "mcp__ccw__command"
 PEERS_ALLOW = ("mcp__ccw__peers", "mcp__ccw__send_message")
 PEERS_DENY = ("SendMessage", "ListAgents")
@@ -155,7 +158,7 @@ def render_settings(
     for event in CLAUDE_HOOK_EVENTS:
         timeout = PROMPT_HOOK_TIMEOUT if event == "UserPromptSubmit" else timeouts.hook_timeout
         group = {
-            "matcher": "",
+            "matcher": RELAY_MATCHERS.get(event, ""),
             "hooks": [{"type": "command", "command": f"{relay} {event}", "timeout": timeout}],
         }
         hooks[event] = [group, *_without_relay(hooks.get(event), relay)]

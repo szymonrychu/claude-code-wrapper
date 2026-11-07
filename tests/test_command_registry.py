@@ -49,7 +49,6 @@ def test_commands_config_defaults_off():
 DENY = [
     "exit",
     "quit",
-    "clear",
     "reset",
     "new",
     "resume",
@@ -182,11 +181,11 @@ def test_command_names_free_form_and_wildcard(tmp_path):
 
 
 def test_deny_list_default_and_override(tmp_path):
-    assert len(DENY) == 26 and len(ADDED_DENY) == 25
+    assert len(DENY) == 25 and len(ADDED_DENY) == 25
     assert len(ACCOUNT_SETTINGS_DENY) == 13
     full = DENY + ADDED_DENY + ACCOUNT_SETTINGS_DENY
     assert list(DEFAULT_COMMAND_DENY) == full
-    assert len(DEFAULT_COMMAND_DENY) == len(set(full)) == 64
+    assert len(DEFAULT_COMMAND_DENY) == len(set(full)) == 63
     assert Config().sessions.commands.deny == full
     assert CommandsConfig().deny == full
     # an override only extends: [] and ["exit"] leave every default name, ["foo"] adds foo
@@ -236,11 +235,11 @@ def test_create_override_only_extends_deny():
     for deny in ([], ["exit"], ["EXIT"]):
         out = effective_commands(base, CommandsOverride(deny=deny))
         q = CommandQueue(out)
-        assert code_of(q, "clear") == "denied" and code_of(q, "plugin") == "denied", deny
+        assert code_of(q, "reset") == "denied" and code_of(q, "plugin") == "denied", deny
         assert code_of(q, "compact") is None
     assert effective_commands(base, CommandsOverride(deny=None)).deny == list(DEFAULT_COMMAND_DENY)
     # new names are compared case-insensitively, base order kept, the override's new names after
-    out = effective_commands(base, CommandsOverride(deny=["FOO", "Clear", "foo", "bar"]))
+    out = effective_commands(base, CommandsOverride(deny=["FOO", "Reset", "foo", "bar"]))
     assert out.deny == [*DEFAULT_COMMAND_DENY, "FOO", "bar"]
     assert code_of(CommandQueue(out), "foo") == "denied"
     # a base list that is not the default is extended the same way
@@ -269,7 +268,7 @@ def test_deny_list_covers_aliases_and_session_moving_commands():
 
 def test_deny_is_case_insensitive():
     q = CommandQueue(CommandsConfig(agent=["*"], client=["*"]))
-    for name in ("EXIT", "Clear", "Reset", "ReMoTe-CoNtRoL"):
+    for name in ("EXIT", "Quit", "Reset", "ReMoTe-CoNtRoL"):
         e = rejected(q.request, name, "", origin="client", turn_id=None)
         assert e.code == "denied" and name in e.message
     upper = CommandQueue(CommandsConfig(client=["*"], deny=["EXIT"]))
@@ -277,12 +276,12 @@ def test_deny_is_case_insensitive():
 
 
 def test_deny_checked_before_allowlist():
-    named = CommandQueue(CommandsConfig(agent=["exit", "compact"], client=["clear", "compact"]))
+    named = CommandQueue(CommandsConfig(agent=["exit", "compact"], client=["reset", "compact"]))
     assert code_of(named, "exit", "agent") == "denied"
-    assert code_of(named, "clear", "client") == "denied"
+    assert code_of(named, "reset", "client") == "denied"
     star = CommandQueue(CommandsConfig(agent=["*"], client=["*"]))
     assert code_of(star, "exit", "agent") == "denied"
-    assert code_of(star, "clear", "client") == "denied"
+    assert code_of(star, "reset", "client") == "denied"
     assert star.pending() == []
     rec, new = star.request("context", "", origin="client", turn_id=None)
     assert new and rec.name == "context"

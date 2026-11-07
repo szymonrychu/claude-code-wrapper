@@ -138,6 +138,11 @@ def _compact_done(sig: Signal) -> bool:
     return sig.kind == "command_output" and any(f in _output_text(sig) for f in COMPACT_FAILURES)
 
 
+def _is_clear(name: str) -> bool:
+    """`/clear` (any letter case): the command whose new claude session id the router follows."""
+    return name.lower() == "clear"
+
+
 def _first_signal(sig: Signal) -> bool:
     """Any echo (claude echoes the resolved alias, /cost echoes /usage), an unknown name, or the
     prompt of a command claude sent to the model with no echo (`/tmp`, D8)."""
@@ -308,6 +313,9 @@ class SessionRouter(SessionListener):
     #: Takes `(rate_limits, cli_version)` from every statusLine that carries rate limits; the
     #: manager wires `UsageForwarder.offer` (synchronous, never raises) when `usage.url` is set.
     on_rate_limits: Callable[[Mapping[str, Any], str | None], None] | None = None
+    #: Takes `(claude_session_id, transcript_path, previous_claude_session_id)` once `/clear`
+    #: moved claude to a new session id; the manager persists it at once (resume follows it).
+    on_claude_session_change: Callable[[str, str, str], None] | None = None
 
     def __init__(
         self,
@@ -627,6 +635,8 @@ class SessionRouter(SessionListener):
         self, event_name: str, payload: Mapping[str, Any]
     ) -> RelayResponse:
         try:
+            if event_name == "SessionStart":
+                return self._on_session_start(payload)
             self.session.note_activity()
             self.session.note_hook()
             self._track_path(payload)
@@ -661,6 +671,52 @@ class SessionRouter(SessionListener):
             except Exception:  # noqa: BLE001
                 log.exception("reporting hook relay failure failed")
             return response
+
+    def _on_session_start(self, payload: Mapping[str, Any]) -> RelayResponse:
+        """SessionStart(clear) while a `/clear` command runs: follow claude to its new session id.
+
+        Any other SessionStart (another source, no clear running, a foreign or nested claude)
+        changes nothing. The answer is always empty: nothing is injected into the fresh
+        conversation. The previous conversation's per-session state (subagents, link waits, turn
+        marker, usage, context) is dropped; `session_cleared` completes the command.
+        """
+        current = self._current
+        new_id = payload.get("session_id")
+        if (
+            payload.get("source") != "clear"
+            or current is None
+            or not _is_clear(current.name)
+            or current.state != "running"
+            or not isinstance(new_id, str)
+            or not new_id
+        ):
+            return _allow()
+        path = payload.get("transcript_path")
+        session = self.session
+        previous = session.adopt_claude_session(
+            new_id, path if isinstance(path, str) and path else None
+        )
+        data = {
+            "previous_claude_session_id": previous,
+            "claude_session_id": new_id,
+            "transcript_path": session.transcript_path,
+        }
+        if new_id != previous:
+            self.info.claude_session_id = new_id
+            self.ensure_tailing()
+            self._subagents.clear()
+            for wait in self._link_waits.values():
+                wait.cancel()
+            self._link_waits.clear()
+            self._last_marker = None
+            self._last_context = None
+            self._usage.reset()
+            self.reset_context()
+            self._emit("session_cleared", data)
+            if self.on_claude_session_change is not None:
+                self.on_claude_session_change(new_id, session.transcript_path, previous)
+        self.signals.publish("session_cleared", data)
+        return _allow()
 
     async def _on_compact_hook(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         """PreCompact emits `compacting` and signals; `compacted` comes from the boundary."""
@@ -1494,6 +1550,9 @@ class SessionRouter(SessionListener):
         """
         if self.session.state not in ("ready", "busy"):
             raise CommandRejected("invalid_state", f"session is {self.session.state}")
+        if _is_clear(name):
+            self.commands.authorize(name, origin)
+            self._check_no_subagents(name)
         turn = self.session.current_turn
         record, new = self.commands.request(
             name, args, origin=origin, turn_id=turn.turn_id if turn is not None else None
@@ -1509,6 +1568,15 @@ class SessionRouter(SessionListener):
                 self._emit_command("command_queued", record)
         self._start_idle_runner()
         return record
+
+    def _check_no_subagents(self, name: str) -> None:
+        """`/clear` keeps claude's background subagents alive (claude 2.1.304): their results
+        would land in the cleared conversation, so it is refused while any is outstanding."""
+        if self.outstanding_subagents:
+            raise CommandRejected(
+                "subagents_running",
+                f"/{name} is refused while {self.outstanding_subagents} subagent(s) run",
+            )
 
     @property
     def runner_active(self) -> bool:
@@ -1775,13 +1843,17 @@ class SessionRouter(SessionListener):
                 return
             if record.state != "queued":
                 return  # cancelled while onCommand ran
+            if _is_clear(record.name) and self.outstanding_subagents:
+                await self._finish_command(record, "failed", started, error="subagents_running")
+                return
             self.commands.start(record)
             started = time.monotonic()
             self._emit_command("command_started", record)
             mark = self.signals.mark()
             line = render(record.name, record.args)
-            # compact has its own leg: its progress footer is no dialog.
-            patterns = self.commands_cfg.dialog_patterns if record.name != "compact" else []
+            # compact and clear have their own legs: no dialog dismissal.
+            own_leg = record.name == "compact" or _is_clear(record.name)
+            patterns = [] if own_leg else self.commands_cfg.dialog_patterns
             session.watch_dialogs(patterns, line)
             await session.send_command(line)
             self._emit_user_message(None, "command", line)
@@ -1862,10 +1934,11 @@ class SessionRouter(SessionListener):
 
         The first signal after `mark` wins: an echo of any name then its output completes (stderr
         only fails `command_error`); compact completes on PostCompact or its boundary and fails on
-        a failure text; an unknown name fails `unknown_command` at once. A prompt signal, after an
+        a failure text; clear completes on `session_cleared` (claude's SessionStart(clear) was
+        adopted); an unknown name fails `unknown_command` at once. A prompt signal, after an
         echo or with none, completes with result `turn` at once: claude runs the command as a
-        model turn, which the caller promotes (D8). Meanwhile the dialog leg
-        (D7, never for compact): a dialog footer on screen and `dialog_grace_seconds` without PTY
+        model turn, which the caller promotes (D8). Meanwhile the dialog leg (D7, never for
+        compact or clear): a dialog footer on screen and `dialog_grace_seconds` without PTY
         output send ESC; 1.5 s later, with the footer seen again and no output, ESC again, up to
         `DIALOG_ESC_BUDGET` ESCs. Output after an ESC completes `dismissed`; none 1.5 s after the
         last ESC fails `dialog_stuck`.
@@ -1886,6 +1959,17 @@ class SessionRouter(SessionListener):
                 await self._await_compact_boundary(
                     mark, min(_left(deadline), COMPACT_BOUNDARY_GRACE)
                 )
+            return "completed", "ok", None, None
+        if _is_clear(record.name):
+            sig = await self.signals.wait(
+                lambda s: s.kind in ("session_cleared", "command_unknown"),
+                after=mark,
+                timeout=_left(deadline),
+            )
+            if sig is None:
+                return "failed", None, "timeout", None
+            if sig.kind == "command_unknown":
+                return "failed", None, "unknown_command", None
             return "completed", "ok", None, None
         session = self.session
         grace = self.commands_cfg.dialog_grace_seconds
