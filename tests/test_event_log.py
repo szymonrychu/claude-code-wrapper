@@ -46,6 +46,8 @@ def test_event_types_exact():
         "permission_mode_unavailable",
         "waiting_started",
         "waiting_ended",
+        "permission_requested",
+        "permission_resolved",
         "bootstrap_step",
         "destroy_output",
         "peer_message_received",
