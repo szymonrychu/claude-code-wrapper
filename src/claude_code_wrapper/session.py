@@ -1260,6 +1260,10 @@ class Session:
         """No automatic ESC may be sent: a permission relay is held or a usage-limit waits."""
         return self._permission_pending or self.dialog_kind() == "usage_wait"
 
+    def dismissed(self, since: str) -> bool:
+        """The dialog that began at `since` already got its one ESC."""
+        return self._dismissed_since == since
+
     async def escape_dialog(self, since: str) -> bool:
         """Dismiss the open dialog with one ESC, at most once per `since` (`waiting_since`).
 

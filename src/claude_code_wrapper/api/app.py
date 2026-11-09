@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, FastAPI, Response
 from claude_code_wrapper import peer_auth
 from claude_code_wrapper.api import (
     commands,
+    dialog,
     events,
     files,
     notes,
@@ -83,6 +84,7 @@ def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> Fas
     v1.include_router(sessions.router)
     v1.include_router(turns.router)
     v1.include_router(commands.router)
+    v1.include_router(dialog.router)
     v1.include_router(events.router)
     v1.include_router(files.router)
     v1.include_router(notes.router)

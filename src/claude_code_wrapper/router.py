@@ -28,7 +28,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from .command_signals import Signal, SignalBus
 from .commands import CommandQueue, CommandRecord, CommandRejected, render
@@ -44,6 +44,7 @@ from .permissions import HOLD_DENY_MESSAGE, Behavior, Decision, PendingPermissio
 from .pty_proc import PtyClosed
 from .redact import Redactor
 from .session import (
+    DIALOG_TAIL_CHARS,
     ESC_SPACING_SECONDS,
     QueuedMessage,
     Session,
@@ -112,6 +113,9 @@ QUESTION_DENY_REASON = (
 DEFAULT_DENY_REASON = "Denied by a wrapper hook."
 #: The deny message claude gets when a person denies a held permission without a message.
 OPERATOR_DENY_MESSAGE = "The operator denied this action"
+#: How long a dismiss waits for the dialog to close before it reports `still_open`.
+DISMISS_CONFIRM_SECONDS = 2.0
+DISMISS_POLL_SECONDS = 0.1
 #: Name of the task that watches a held permission's `gone` event (cancelled at every answer).
 HOLD_GONE_WAITER = "ccw-permission-gone-wait"
 DEFAULT_BLOCK_REASON = "A wrapper onStop hook asked you to continue."
@@ -221,6 +225,18 @@ def _parent_tool_use_id(transcript_path: str | Path, agent_id: Any) -> str | Non
         return None
     value = meta.get("toolUseId") if isinstance(meta, dict) else None
     return value if isinstance(value, str) else None
+
+
+class DialogConflict(Exception):
+    """A dialog answer the session's current state refuses (HTTP 409 with this `code`)."""
+
+    def __init__(
+        self,
+        code: Literal["no_dialog", "dialog_changed", "permission_resolved", "not_dismissable"],
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class TurnVetoed(Exception):
@@ -778,6 +794,81 @@ class SessionRouter(SessionListener):
         else:
             decision = Decision("allow", "user")
         return self.permissions.resolve(request_id, decision)
+
+    def dialog_view(self) -> dict[str, Any]:
+        """What the session waits on: the oldest held permission, a dialog the footer scanner
+        sees (with the redacted screen tail) or a usage-limit wait; `none` otherwise. A
+        permission prompt with no held relay (its hook is dead) is `permission` with no
+        `permission` object and a tail: only dismiss answers it."""
+        session = self.session
+        pending = self.permissions.first()
+        if pending is not None:
+            return {
+                "kind": "permission",
+                "since": pending.since,
+                "permission": pending.view(),
+                "tail": None,
+            }
+        kind = session.dialog_kind()
+        if kind is None:
+            return {"kind": "none", "since": None, "permission": None, "tail": None}
+        tail = session.tail(DIALOG_TAIL_CHARS) if kind != "usage_wait" else None
+        return {"kind": kind, "since": session.waiting_since, "permission": None, "tail": tail}
+
+    async def answer_dialog(
+        self,
+        action: Literal["allow", "deny", "dismiss"],
+        request_id: str | None,
+        expect_since: str | None,
+        message: str | None,
+    ) -> dict[str, Any]:
+        """A person answers the open dialog; `DialogConflict` when the state moved or refuses.
+
+        `allow`/`deny` answer the held permission `request_id`; `dismiss` sends one ESC to a
+        dialog (at most one per `since`) and reports whether it closed within
+        `DISMISS_CONFIRM_SECONDS`.
+        """
+        if action != "dismiss":
+            return self._answer_permission_request(action, request_id, message)
+        session = self.session
+        if expect_since is not None and session.dismissed(expect_since):
+            # A repeated dismiss of the dialog that already got its ESC (a double click): no
+            # second ESC, only the confirmation of whether it closed.
+            since, sent = expect_since, False
+        else:
+            view = self.dialog_view()
+            since = view["since"]
+            if view["kind"] == "none" or since is None:
+                raise DialogConflict("no_dialog", "no dialog is open")
+            if expect_since is not None and expect_since != since:
+                raise DialogConflict("dialog_changed", "the dialog changed")
+            if view["permission"] is not None or view["kind"] == "usage_wait":
+                what = "a held permission request" if view["permission"] else "a usage-limit wait"
+                raise DialogConflict("not_dismissable", f"{what} cannot be dismissed")
+            sent = await session.escape_dialog(since)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + DISMISS_CONFIRM_SECONDS
+        while True:
+            if not session.dialog_open() or session.waiting_since != since:
+                return {"status": "dismissed", "escape_sent": sent}
+            if loop.time() >= deadline:
+                return {"status": "still_open", "escape_sent": sent}
+            await asyncio.sleep(DISMISS_POLL_SECONDS)
+
+    def _answer_permission_request(
+        self, action: str, request_id: str | None, message: str | None
+    ) -> dict[str, Any]:
+        broker = self.permissions
+        if request_id is not None and broker.was_resolved(request_id):
+            raise DialogConflict("permission_resolved", "the permission request was resolved")
+        if len(broker) == 0 or request_id is None:
+            raise DialogConflict("no_dialog", "no permission request is open")
+        if broker.get(request_id) is None:
+            raise DialogConflict("dialog_changed", "another permission request is open")
+        behavior: Behavior = "allow" if action == "allow" else "deny"
+        if not self.answer_permission(request_id, behavior, message):
+            raise DialogConflict("permission_resolved", "the permission request was resolved")
+        return {"status": "answered", "request_id": request_id, "behavior": behavior}
 
     def _resolve_pending_by_terminal(
         self, pendings: list[PendingPermission], behavior: Behavior

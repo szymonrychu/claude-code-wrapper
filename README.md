@@ -742,6 +742,51 @@ One command record, showing its current or final state.
 Auth: bearer. Errors: `401 unauthorized`, `404 not_found` (unknown session), `404 command_not_found`,
 `409 dead`.
 
+### `GET /v1/sessions/{id}/dialog`
+
+What the session waits on, if anything: `{"kind", "since", "permission", "tail"}`.
+
+- `kind`: `permission` (a held `PermissionRequest`, see the `permission_requested` event, or a
+  permission prompt drawn in the TUI whose hook is dead), `dialog` (any other dialog footer, such
+  as a slash command dialog), `usage_wait` (a usage-limit wait) or `none`.
+- `since`: when it began (the oldest held permission's `since`, else the session's
+  `waiting_since`); `null` for `none`.
+- `permission`: the oldest held request (`request_id`, `tool_name`, `tool_input`, `truncated`,
+  `suggestions`, `agent_id`, `since`, `expires_at`, as in `permission_requested`); `null` otherwise.
+- `tail`: the redacted end of the screen (about 1.5 KB) for `dialog` and for a `permission` with no
+  held request; `null` otherwise.
+
+```json
+{"kind": "permission", "since": "2026-11-09T10:00:00.000+00:00", "permission": {"request_id": "perm_0a1b2c3d4e5f", "tool_name": "Bash", "tool_input": "{\n  \"command\": \"psql prod\"\n}", "truncated": false, "suggestions": [], "agent_id": null, "since": "2026-11-09T10:00:00.000+00:00", "expires_at": "2026-11-09T10:30:00.000+00:00"}, "tail": null}
+```
+
+Auth: bearer. Errors: `401 unauthorized`, `404 not_found`, `503 dead` (the session is not running).
+
+### `POST /v1/sessions/{id}/dialog`
+
+Answers the open dialog. Body (unknown keys are refused):
+
+| Field | Meaning |
+|---|---|
+| `action` | `allow`, `deny` or `dismiss` |
+| `request_id` | required for `allow` and `deny`: the held request, `perm_` + 12 hex |
+| `expect_since` | `dismiss` only: the `since` the caller saw; a different current `since` is `409 dialog_changed` |
+| `message` | `deny` only: at most 2000 characters, shown to the model; default "The operator denied this action" |
+
+`allow` and `deny` answer the held permission once: `{"status": "answered", "request_id", "behavior"}`.
+`dismiss` sends one ESC to a dialog (at most one per `since`, so a double click sends one), then
+waits up to 2 s for it to close: `{"status": "dismissed" | "still_open", "escape_sent": bool}`.
+A permission prompt whose hook is dead (`permission` with no `permission` object) is answered by
+`dismiss` only; the ESC declines it and ends the turn.
+
+Auth: bearer. Errors: `401 unauthorized`, `404 not_found`, `422 invalid_request` (bad body, or
+`allow` or `deny` without `request_id`), `503 dead`, and `409` with one of:
+
+- `no_dialog`: nothing is open (or, for `allow` and `deny`, no held request)
+- `dialog_changed`: `request_id` is not the held request, or `expect_since` is stale
+- `permission_resolved`: the request was already answered, timed out or withdrawn
+- `not_dismissable`: a held permission request or a usage-limit wait cannot be dismissed
+
 ### `POST /v1/sessions/{id}/interrupt`
 
 Interrupt the running turn: send ESC, resolve on the transcript's interrupt line, or send a second
@@ -3063,6 +3108,10 @@ FastAPI's `{"detail": ...}` body instead.
 | `method_not_allowed` | 405 | the route exists but not for this method |
 | `busy` | 409 | a turn is already running in the session |
 | `dialog_open` | 409 | a `regular` or `priority` turn delivery while a dialog (a permission prompt or a question) is open in claude |
+| `no_dialog` | 409 | `POST /dialog`: no dialog (or, for allow and deny, no held permission request) is open |
+| `dialog_changed` | 409 | `POST /dialog`: the `request_id` is not the held request, or `expect_since` is stale |
+| `permission_resolved` | 409 | `POST /dialog`: the permission request was already answered, timed out or withdrawn |
+| `not_dismissable` | 409 | `POST /dialog` dismiss: a held permission request or a usage-limit wait cannot be dismissed |
 | `session_not_active` | 409 | the session exists but is not running, so it has no terminals (terminal create or attach) |
 | `terminal_limit` | 409 | `limits.terminals_max` terminals already exist in this service process |
 | `terminal_not_found` | 404 | unknown terminal id in the session (terminal delete or attach) |
