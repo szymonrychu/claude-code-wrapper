@@ -53,6 +53,7 @@ from .bootstrap.settings import relay_timeouts, render_settings
 from .claude_env import SECRET_KEY_RE, ClaudeEnv, listed_values, without_secrets
 from .commands import CommandRejected, effective_commands
 from .config import CommandsConfig, CommandsOverride, Config, InitialPromptTemplate
+from .disk_redact import clear_marker, is_marked, redact_session_dir
 from .events import EventLog
 from .hooks import (
     RETRY_BASE_SECONDS,
@@ -675,6 +676,7 @@ class SessionManager:
 
     def _open_session_dir(self, ctx: _Active) -> None:
         ctx.session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        clear_marker(ctx.session_dir)  # claude writes here again: unredacted until it stops
         if ctx.event_log is None:
             ctx.event_log = EventLog(
                 ctx.session_dir / "events.jsonl",
@@ -1074,6 +1076,8 @@ class SessionManager:
             await shells
         except Exception:
             log.exception("session %s: closing the terminals failed", ctx.session_id)
+        if ctx.session is None or ctx.session.state == "stopped":  # claude no longer writes
+            await self._redact_disk(ctx.session_dir)
         if emit_closed:
             self._emit_closed(ctx)
         if self._active.get(ctx.session_id) is ctx:
@@ -1204,6 +1208,7 @@ class SessionManager:
         left running (`interrupted="shutdown"`, D5); a user stop or delete ended its turn, so
         such a session is never resumed here. A create cut short before claude took a turn has
         no transcript, so its resume is refused as unavailable and it stays stopped."""
+        await self._redact_left_dirs()
         to_resume: list[str] = []
         for meta in self._scan():
             session_id = meta["session_id"]
@@ -1226,6 +1231,30 @@ class SessionManager:
                 except Exception:
                     log.exception("session %s: resume on start failed", session_id)
         self._ensure_reaper()
+
+    async def _redact_disk(self, session_dir: Path) -> None:
+        """Claude has stopped: redact its on-disk material and mark the dir (`disk_redact`).
+        Run in a thread; a failure leaves the dir unmarked for the next start to redo."""
+        try:
+            await asyncio.to_thread(redact_session_dir, session_dir, self.redactor)
+        except Exception as exc:
+            log.warning(
+                "session %s: redacting files failed: %s", session_dir.name, type(exc).__name__
+            )
+
+    async def _redact_left_dirs(self) -> None:
+        """A previous process may have died before redacting (SIGKILL, OOM): every session dir
+        without a current marker is redacted before anything resumes."""
+        if not self._root.is_dir():
+            return
+        for path in sorted(self._root.iterdir()):
+            if (
+                SESSION_ID_RE.match(path.name)
+                and path.name not in self._active
+                and (path / "config").is_dir()
+                and not is_marked(path)
+            ):
+                await self._redact_disk(path)
 
     def _shutdown_left_turn(self, session_id: str) -> bool:
         """Whether a graceful service shutdown left this session's turn running for a resume."""

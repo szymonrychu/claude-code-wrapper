@@ -169,6 +169,41 @@ never put it behind a public ingress.
 - The internal hook API (`/internal/...`) is bound to `127.0.0.1` only and additionally requires a
   per-session token; it is not part of the client surface.
 
+### Session files at rest and the `.redacted` marker
+
+Claude writes its own files under the session's config dir, `<sessions_root>/<id>/config`:
+transcripts (`projects/**/*.jsonl`, subagent transcripts included), `file-history/`, `debug/`,
+`todos/`, `shell-snapshots/` and others. Once claude has stopped, the wrapper rewrites every
+text file there through the service redactor (the `claude.secret_env` values, the session's
+secret values and the token patterns), then writes the marker file `<sessions_root>/<id>/.redacted`.
+
+- When: on every stop of claude (delete, idle reap, a dead session's release, a service
+  shutdown), before `onDestroy` runs, and on service start for every session dir that has no
+  marker of the current format (a previous process killed before it could redact), before any
+  session resumes. A create or resume removes the marker before claude starts, so a dir whose
+  claude is running, or was killed while running, carries no marker.
+- Marker content: one JSON object, `{"format": 1, "wrapper_version": "<x.y.z>",
+  "redacted_at": "<ISO-8601 UTC>"}`; no values and nothing derived from them. A marker whose
+  `format` differs from the running wrapper's is treated as absent and the dir is redacted again.
+- Contract for anything that copies session dirs out of the pod (archives, backups): copy a
+  session dir's `config/` material only when `.redacted` is present; treat a dir without it as
+  holding unredacted material and exclude at least `config/projects/`, `config/file-history/`,
+  `config/debug/` and `config/shell-snapshots/`.
+- Rules: regular files only (symlinks are not followed); `config/.credentials.json` and
+  `config/plugins/` are left alone; a file with a NUL byte in its first 8 KiB or that is not
+  UTF-8 is skipped as binary; `.jsonl` files are streamed line by line (other text files are
+  read whole up to 32 MiB, line by line above); a file is replaced atomically and only when it
+  changed, keeping its mode and timestamps; the log carries counts only. JSON documents and
+  lines are redacted string by string (keys and values), so they stay valid JSON, and the identifier and
+  timestamp fields of a line (`uuid`, `parentUuid`, `sessionId`, `timestamp`, ...) are kept.
+  A read or write error leaves the dir unmarked.
+- Resume: a resumed session continues from the redacted transcript; claude sees `***` where a
+  value was, and a file-history restore brings back the masked text. The start pass knows only
+  the values of the running service (and the patterns): a value given only as a per-session
+  override to an earlier process is not known to it.
+- Files outside `config/` (`events.jsonl`, `turns.jsonl`, hook state) are not rewritten; the
+  events and turns are redacted when written.
+
 ## Architecture
 
 ```
