@@ -93,6 +93,7 @@ def test_constants() -> None:
         "PreCompact",
         "PostCompact",
         "SessionStart",
+        "PermissionRequest",
     )
     assert hr.RELAY_PATH == "/internal/hooks/{event}"
     assert hr.HEADER_DELIVERY == "X-CCW-Delivery"
@@ -281,3 +282,96 @@ def test_delivery_id_stable_across_retries(
     s.close()
     ids = [r["headers"]["x-ccw-delivery"] for r in s.requests]
     assert len(ids) == 3 and len(set(ids)) == 1 and ids[0]
+
+
+def _deny_json() -> dict[str, Any]:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": {
+                "behavior": "deny",
+                "message": hr.PERMISSION_FAIL_MESSAGE,
+                "interrupt": False,
+            },
+        }
+    }
+
+
+def test_permission_output_shapes() -> None:
+    assert json.loads(hr.permission_output("allow")) == {
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": {"behavior": "allow"},
+        }
+    }
+    assert json.loads(hr.permission_output("deny", "no")) == {
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": {"behavior": "deny", "message": "no", "interrupt": False},
+        }
+    }
+    assert hr.PERMISSION_FAIL_MESSAGE == (
+        "claude-code-wrapper did not answer the permission request; continue without this action"
+    )
+    assert hr.ENV_PERMISSION_TIMEOUT == "CCW_PERMISSION_TIMEOUT"
+    assert hr.DEFAULT_PERMISSION_TIMEOUT == 1815.0
+
+
+def test_permission_request_is_relayed_once(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    s = _Srv([_ok(hr.permission_output("allow"))])
+    monkeypatch.setenv("CCW_INTERNAL_URL", s.url)
+    rc, out, _ = _run(monkeypatch, capsys, ["ccw-hook", "PermissionRequest"])
+    s.close()
+    assert rc == 0
+    assert out == hr.permission_output("allow")
+    assert [r["path"] for r in s.requests] == ["/internal/hooks/PermissionRequest"]
+
+
+def test_permission_request_fails_closed_on_500(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    s = _Srv([(500, b""), _ok(hr.permission_output("allow"))])
+    monkeypatch.setenv("CCW_INTERNAL_URL", s.url)
+    rc, out, _ = _run(monkeypatch, capsys, ["ccw-hook", "PermissionRequest"])
+    s.close()
+    assert rc == 0
+    assert json.loads(out) == _deny_json()
+    assert len(s.requests) == 1
+
+
+def test_permission_request_fails_closed_on_timeout(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import time
+
+    s = _Srv(["hang"])
+    monkeypatch.setenv("CCW_INTERNAL_URL", s.url)
+    monkeypatch.setenv("CCW_PERMISSION_TIMEOUT", "0.2")
+    t0 = time.monotonic()
+    rc, out, _ = _run(monkeypatch, capsys, ["ccw-hook", "PermissionRequest"])
+    elapsed = time.monotonic() - t0
+    s.close()
+    assert rc == 0
+    assert json.loads(out) == _deny_json()
+    assert elapsed < 1.4
+    assert len(s.requests) == 1
+
+
+def test_permission_request_unreachable_denies(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CCW_INTERNAL_URL", "http://127.0.0.1:1")
+    rc, out, _ = _run(monkeypatch, capsys, ["ccw-hook", "PermissionRequest"])
+    assert rc == 0
+    assert json.loads(out) == _deny_json()
+
+
+def test_permission_request_empty_stdout_passes_through(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    s = _Srv([_ok("")])
+    monkeypatch.setenv("CCW_INTERNAL_URL", s.url)
+    assert _run(monkeypatch, capsys, ["ccw-hook", "PermissionRequest"]) == (0, "", "")
+    s.close()
