@@ -1825,6 +1825,37 @@ event: waiting_ended
 data: {"seq":22,"ts":"2026-10-20T09:31:40.000Z","session_id":"ses_3f9a1c0b7d42","type":"waiting_ended","data":{"reason":"permission"}}
 ```
 
+### `permission_requested`
+
+Emitted when claude's `PermissionRequest` hook is relayed and held for an answer (any tool except
+`AskUserQuestion`, which keeps claude's own question). The session waits with reason
+`permission` until `permission_resolved`. The hold ends at `expires_at`
+(`sessions.commands.permission_hold_seconds` after `since`), well before the hook's own timeout.
+
+`data`: `request_id` (`perm_` + 12 hex), `tool_name`, `tool_input` (redacted JSON text, at most
+4096 bytes), `truncated`, `suggestions` (redacted `permission_suggestions`, `[]` when absent),
+`agent_id` (`null` for the main agent), `since`, `expires_at`.
+
+```
+event: permission_requested
+data: {"seq":31,"ts":"2026-11-09T10:00:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_requested","data":{"request_id":"perm_0a1b2c3d4e5f","tool_name":"Bash","tool_input":"{\n  \"command\": \"psql prod\"\n}","truncated":false,"suggestions":[],"agent_id":null,"since":"2026-11-09T10:00:00.000+00:00","expires_at":"2026-11-09T10:30:00.000+00:00"}}
+```
+
+### `permission_resolved`
+
+Emitted once per `permission_requested`, when the held request is answered and claude gets its
+decision. `by`: `user` (answered through the API), `timeout` (the hold ran out: deny with
+"No operator answered the permission request in time; continue without this action"),
+`terminal` (answered at claude's own prompt first, or its turn, agent or tool ended), `gone`
+(the hook connection dropped or the session closed; nothing reaches claude).
+
+`data`: `request_id`, `by` (`user`, `timeout`, `terminal`, `gone`), `behavior` (`allow`, `deny`).
+
+```
+event: permission_resolved
+data: {"seq":32,"ts":"2026-11-09T10:01:12.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_resolved","data":{"request_id":"perm_0a1b2c3d4e5f","by":"user","behavior":"deny"}}
+```
+
 ### `bootstrap_step`
 
 Emitted when a create or resume step (`prepare_workdir`, `run_setup_commands`,

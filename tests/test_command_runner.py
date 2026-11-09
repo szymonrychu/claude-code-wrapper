@@ -580,6 +580,9 @@ class CommandStub(StubSession):
     async def send_escape(self) -> None:
         self.escapes += 1
 
+    def auto_escape_blocked(self) -> bool:
+        return False
+
     # The dialog surface (design D7): this stub never shows a dialog.
     dialog_hits = 0
     last_output = 0.0

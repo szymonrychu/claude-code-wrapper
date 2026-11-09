@@ -310,3 +310,55 @@ async def test_dialog_config_defaults_and_override(world):
     assert (got.dialog_grace_seconds, got.dialog_patterns) == (0.5, ["press q to quit"])
     base = m.router(plain).commands_cfg
     assert (base.dialog_grace_seconds, base.dialog_patterns) == (2.0, DEFAULT_PATTERNS)
+
+
+#: A usage-limit wait whose line ends like a dialog footer (Review Focus 5).
+USAGE_FOOTER = "Usage limit reached · continuing automatically at 3pm · esc to cancel"
+
+
+async def test_dialog_leg_skips_escape_while_usage_wait(world):
+    m, sid, _ = await start(
+        world,
+        {"commands": {"help": dialog("never", footer=USAGE_FOOTER)}},
+        client=["*"],
+        timeout_seconds=SLOW,
+        dialog_grace_seconds=0.3,
+    )
+    rec = m.router(sid).request_command("help", origin="client")
+    await finished(world, rec, timeout=30)
+    # Without ESCs the leg spends its ESC budget on skipped attempts and ends dialog_stuck.
+    assert (rec.state, rec.result, rec.error) == ("failed", None, "dialog_stuck")
+    assert keys(world, sid) == []
+
+
+async def test_dialog_leg_skips_escape_while_permission_pending(world):
+    m, sid, _ = await start(
+        world,
+        {"commands": {"help": dialog("never")}},
+        client=["*"],
+        timeout_seconds=SLOW,
+        dialog_grace_seconds=1.0,
+    )
+    router = m.router(sid)
+    rec = router.request_command("help", origin="client")
+    await world.until(lambda: rec.state == "running", 10)
+    router.session.set_permission_pending(True)  # a subagent's relayed permission is held
+    try:
+        await finished(world, rec, timeout=30)
+    finally:
+        router.session.set_permission_pending(False)
+    assert (rec.state, rec.result, rec.error) == ("failed", None, "dialog_stuck")
+    assert keys(world, sid) == []
+
+
+async def test_timeout_leg_skips_escape_while_usage_wait(world):
+    m, sid, _ = await start(
+        world,
+        {"commands": {"help": dialog("never", footer=USAGE_FOOTER)}},
+        client=["*"],
+        timeout_seconds={"compact": 30, "default": 30, "help": 1.0},
+    )
+    rec = m.router(sid).request_command("help", origin="client")
+    await finished(world, rec, timeout=15)
+    assert (rec.state, rec.result, rec.error) == ("failed", None, "timeout")
+    assert keys(world, sid) == []

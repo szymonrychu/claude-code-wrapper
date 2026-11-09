@@ -33,6 +33,10 @@ from claude_code_wrapper.mcp_server import (
 )
 
 DEDUPE_LIMIT = 256
+#: How often a held PermissionRequest checks whether its hook relay disconnected.
+GONE_POLL_SECONDS = 0.5
+#: Name of the task that watches a PermissionRequest connection (cancelled with the handler).
+GONE_WATCHER = "ccw-hook-gone-watcher"
 STATUSLINE_MAX_BODY = 16384
 VERSION_MAX_CHARS = 64
 #: At most this many windows are kept (the agents-usage ingest body is capped at 8192 bytes).
@@ -193,6 +197,13 @@ def _authorized_router(manager: SessionManager, request: Request) -> Any:
         raise HTTPException(403, "forbidden") from None
 
 
+async def _watch_disconnect(request: Request, gone: asyncio.Event) -> None:
+    """Set `gone` once the hook relay's client disconnected (polled every 0.5 s)."""
+    while not await request.is_disconnected():
+        await asyncio.sleep(GONE_POLL_SECONDS)
+    gone.set()
+
+
 def create_internal_app(manager: SessionManager) -> FastAPI:
     app = FastAPI(title="ccw-internal", docs_url=None, redoc_url=None, openapi_url=None)
     deliveries: dict[str, OrderedDict[str, asyncio.Task[RelayResponse]]] = {}
@@ -214,26 +225,37 @@ def create_internal_app(manager: SessionManager) -> FastAPI:
         if not isinstance(payload, dict):
             raise HTTPException(400, "body must be a JSON object")
 
-        delivery = request.headers.get(HEADER_DELIVERY)
-        if not delivery:
-            return JSONResponse(await router.handle_claude_hook(event, payload))
-
-        cache = deliveries.setdefault(session_id, OrderedDict())
-        task = cache.get(delivery)
-        if task is None:
-            task = asyncio.ensure_future(router.handle_claude_hook(event, payload))
-            cache[delivery] = task
-            while len(cache) > DEDUPE_LIMIT:
-                cache.popitem(last=False)
-        else:
-            cache.move_to_end(delivery)
+        # A held PermissionRequest learns that its ccw-hook died (connection dropped).
+        gone = asyncio.Event() if event == "PermissionRequest" else None
+        watcher = None
+        if gone is not None:
+            watcher = asyncio.ensure_future(_watch_disconnect(request, gone))
+            watcher.set_name(GONE_WATCHER)
         try:
-            result = await asyncio.shield(task)
-        except Exception:
-            if cache.get(delivery) is task:
-                del cache[delivery]
-            raise
-        return JSONResponse(result)
+            delivery = request.headers.get(HEADER_DELIVERY)
+            if not delivery:
+                return JSONResponse(await router.handle_claude_hook(event, payload, gone=gone))
+
+            cache = deliveries.setdefault(session_id, OrderedDict())
+            task = cache.get(delivery)
+            if task is None:
+                task = asyncio.ensure_future(router.handle_claude_hook(event, payload, gone=gone))
+                cache[delivery] = task
+                while len(cache) > DEDUPE_LIMIT:
+                    cache.popitem(last=False)
+            else:
+                cache.move_to_end(delivery)
+            try:
+                result = await asyncio.shield(task)
+            except Exception:
+                if cache.get(delivery) is task:
+                    del cache[delivery]
+                raise
+            return JSONResponse(result)
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
 
     @app.post("/internal/statusline")
     async def statusline(request: Request) -> Response:
