@@ -9,7 +9,7 @@ past sessions.
 
 ## Layout
 
-Package `src/claude_code_wrapper/`: `claude_env.py`, `redact.py`, `config.py`,
+Package `src/claude_code_wrapper/`: `claude_env.py`, `redact.py`, `disk_redact.py`, `config.py`,
 `interpolation.py`, `ring.py`, `pty_proc.py`, `bootstrap/{claude_json,instructions,settings}.py`,
 `hook_relay.py`, `hooks.py`, `events.py`, `transcript.py`, `workdir.py`, `plugins.py`,
 `tooling.py`, `session.py`, `turns.py`, `router.py`, `prompts.py`, `manager.py`,
