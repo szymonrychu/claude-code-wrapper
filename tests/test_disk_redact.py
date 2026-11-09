@@ -16,7 +16,7 @@ from conftest import World, wait_turn, wait_until
 from test_secret_env import BAR, FOO, _scenario, _session
 from test_terminals import base_service_env
 
-from claude_code_wrapper import __version__
+from claude_code_wrapper import __version__, disk_redact
 from claude_code_wrapper.disk_redact import (
     MARKER_FILE,
     MARKER_FORMAT,
@@ -24,7 +24,7 @@ from claude_code_wrapper.disk_redact import (
     redact_session_dir,
     redact_text,
 )
-from claude_code_wrapper.manager import SessionManager
+from claude_code_wrapper.manager import CreateSessionRequest, SessionManager
 from claude_code_wrapper.redact import Redactor
 
 PEM_LIKE = "CANARY-line-one\nCANARY-line-two"
@@ -136,14 +136,65 @@ def test_redact_session_dir_masks_marks_and_skips(tmp_path: Path) -> None:
     assert is_marked(session_dir)
 
 
-def test_non_utf8_text_is_skipped(tmp_path: Path) -> None:
+def test_nested_id_like_keys_are_redacted() -> None:
+    r = _redactor()
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "uuid": "u-1",
+            "message": {
+                "id": FOO,
+                "content": [
+                    {"type": "tool_use", "id": BAR, "input": {"id": FOO, "version": BAR}},
+                    {"type": "tool_result", "tool_use_id": FOO, "timestamp": FOO},
+                ],
+            },
+        }
+    )
+    doc = json.loads(redact_text(line, r))
+    assert doc["type"] == "assistant" and doc["uuid"] == "u-1"  # top-level record fields kept
+    assert FOO not in json.dumps(doc) and BAR not in json.dumps(doc)
+    assert doc["message"]["content"][0]["input"] == {"id": "***", "version": "***"}
+    # a top-level-only rule: a document that is a list has no kept fields
+    assert json.loads(redact_text(json.dumps([{"id": FOO}]), r)) == [{"id": "***"}]
+
+
+def test_non_utf8_text_is_redacted_bytewise(tmp_path: Path) -> None:
     session_dir = tmp_path / "ses_000000000002"
-    latin = session_dir / "config" / "debug" / "latin1.txt"
-    latin.parent.mkdir(parents=True)
-    latin.write_bytes(b"caf\xe9 " + FOO.encode())
+    debug = session_dir / "config" / "debug"
+    debug.mkdir(parents=True)
+    latin = debug / "latin1.txt"
+    latin.write_bytes(b"caf\xe9 " + FOO.encode() + b" \xff\n")
+    jsonl = debug / "latin1.jsonl"
+    jsonl.write_bytes(b"not json \xe9 " + BAR.encode() + b"\n")
     stats = redact_session_dir(session_dir, _redactor())
-    assert stats.skipped == 1 and latin.read_bytes() == b"caf\xe9 " + FOO.encode()
+    assert latin.read_bytes() == b"caf\xe9 *** \xff\n"  # other bytes kept exactly
+    assert jsonl.read_bytes() == b"not json \xe9 ***\n"
+    assert stats.skipped == 0 and stats.rewritten == 2
     assert is_marked(session_dir)
+
+
+def test_dirs_are_synced_before_the_marker(tmp_path: Path, monkeypatch) -> None:
+    session_dir = tmp_path / "ses_000000000004"
+    files = _plant(session_dir / "config")
+    order: list[object] = []
+    real_sync, real_mark = disk_redact._fsync_dir, disk_redact._write_marker
+    monkeypatch.setattr(disk_redact, "_fsync_dir", lambda p: (order.append(p), real_sync(p)))
+    monkeypatch.setattr(
+        disk_redact, "_write_marker", lambda p: (order.append("marker"), real_mark(p))
+    )
+    redact_session_dir(session_dir, _redactor())
+    synced = order[: order.index("marker")]
+    for name in ("file_history", "debug", "todos", "subagent"):
+        assert files[name].parent in synced, name
+
+
+def test_unmarkable_dir_is_redacted_but_not_marked(tmp_path: Path) -> None:
+    session_dir = tmp_path / "ses_000000000005"
+    files = _plant(session_dir / "config")
+    redact_session_dir(session_dir, _redactor(), mark=False)
+    assert FOO not in files["debug"].read_text() + files["file_history"].read_text()
+    assert not (session_dir / MARKER_FILE).exists()
 
 
 def test_stale_marker_format_is_not_current(tmp_path: Path) -> None:
@@ -232,3 +283,74 @@ async def test_start_redacts_dirs_a_previous_process_left(world: World, tmp_path
     assert files["binary"].read_bytes() == b"\0\1" + FOO.encode() + b"\0"
     assert is_marked(session_dir)
     assert m2.get(sid)["state"] == "stopped"
+
+
+#: Config-level secrets: a typed secret field and an `env.extra` name the pattern matches.
+CFG_TYPED = "CANARY-cfg-typed-value"
+CFG_EXTRA = "CANARY-cfg-extra-value"
+
+
+def _manager(world: World, **claude) -> SessionManager:
+    service_env = {**base_service_env(), "FOO": FOO, "BAR": BAR}
+    section = {"passthrough_env": ["FOO", "BAR"], "secret_env": ["FOO", "BAR"], **claude}
+    cfg = world.cfg(_scenario(), claude=section)
+    m = SessionManager(cfg, internal_url=world.url, service_env=service_env, redactor=Redactor())
+    world.managers.append(m)
+    return m
+
+
+async def _left_dir(world: World, m: SessionManager, sid: str) -> dict[str, Path]:
+    """Shut `m` down and make `sid`'s dir look like a killed process left it."""
+    claude_sid = m.get(sid)["claude_session_id"]
+    await m.shutdown()
+    session_dir = world.session_dir(sid)
+    (session_dir / MARKER_FILE).unlink()
+    files = _plant(session_dir / "config", claude_sid)
+    files["debug"].write_text(f"k={CFG_TYPED} t={CFG_EXTRA} f={FOO}\n")
+    return files
+
+
+async def test_start_redacts_config_level_secret_values(world: World, tmp_path: Path) -> None:
+    def env() -> dict:  # world.cfg consumes the dict it is given
+        return {"anthropic_api_key": CFG_TYPED, "extra": {"SVC_TOKEN": CFG_EXTRA}}
+
+    m1 = _manager(world, env=env())
+    sid = (await m1.create(CreateSessionRequest()))["session_id"]
+    files = await _left_dir(world, m1, sid)
+
+    m2 = _manager(world, env=env())
+    await m2.load_persisted()
+
+    text = files["debug"].read_text()
+    assert CFG_TYPED not in text and CFG_EXTRA not in text and FOO not in text
+    assert is_marked(world.session_dir(sid))
+
+
+async def test_start_leaves_dir_unmarked_when_values_are_unknown(
+    world: World, tmp_path: Path
+) -> None:
+    # a per-session secret override is never persisted: the next process cannot know it
+    m1 = _manager(world)
+    override = {"extra": {"OVR_TOKEN": "CANARY-override-token-7731"}}
+    sid = (await m1.create(CreateSessionRequest(env=override)))["session_id"]
+    assert world.meta(sid)["secret_override"] is True
+    files = await _left_dir(world, m1, sid)
+    # a dir whose session.json is unreadable
+    bad = world.session_dir("ses_0000000000aa")
+    bad_debug = bad / "config" / "debug" / "x.txt"
+    bad_debug.parent.mkdir(parents=True)
+    bad_debug.write_text(f"v={FOO}\n")
+    (bad / "session.json").write_text("not json")
+
+    m2 = _manager(world)
+    await m2.load_persisted()
+
+    assert FOO not in files["debug"].read_text() and FOO not in bad_debug.read_text()
+    assert not (world.session_dir(sid) / MARKER_FILE).exists()
+    assert not (bad / MARKER_FILE).exists()
+
+
+async def test_session_without_secret_override_records_it(world: World, tmp_path: Path) -> None:
+    m = _manager(world)
+    sid = (await m.create(CreateSessionRequest(env={"extra": {"PLAIN_V": "x"}})))["session_id"]
+    assert world.meta(sid)["secret_override"] is False
