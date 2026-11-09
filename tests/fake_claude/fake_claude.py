@@ -72,6 +72,18 @@ Scenario schema
                          Task tool_use id; tool_use_id, else a generated id); "running": true
                          models a background subagent: SubagentStart only, no SubagentStop, and
                          a later /clear keeps it running (claude 2.1.304), firing nothing
+    "permission": {"footer": true}   on a "tool" step (opt-in): after PreToolUse allows, the
+                         TUI permission prompt "Do you want to proceed?" / "1. Yes" / "2. No" is
+                         drawn at once (footer line "Esc to cancel \u00b7 Tab to amend" unless
+                         footer is false) while the PermissionRequest hooks run in a thread
+                         (payload: tool_name, tool_input, permission_mode, agent_id/agent_type;
+                         no tool_use_id). First answer wins: hook behavior allow runs the tool,
+                         deny is the tool_result error with its message (the turn goes on), key
+                         "1" runs the tool, ESC (or "2") writes "[Request interrupted by user for
+                         tool use]" and returns to idle without Stop. A hook timeout, kill or empty
+                         stdout leaves the prompt for keys only; a later hook answer is ignored.
+                         $CLAUDE_CONFIG_DIR/fake-permissions.jsonl gets {by: hook|key, behavior:
+                         allow|deny|interrupt, ts} for the winning answer.
     {"sleep": seconds}   ESC during it writes "[Request interrupted by user]" and
                          returns to idle without a Stop hook
     {"print": s}         raw PTY output, then idle without Stop
@@ -219,6 +231,9 @@ DOWN = b"\x1b[B"
 FOOTER = "? for shortcuts"
 AUTO_FOOTER = "auto mode on"
 INTERRUPT_TEXT = "[Request interrupted by user]"
+PERMISSION_INTERRUPT_TEXT = "[Request interrupted by user for tool use]"
+PERMISSION_PROMPT = "Do you want to proceed?\n> 1. Yes\n  2. No\n"
+PERMISSION_FOOTER = "Esc to cancel \u00b7 Tab to amend"
 VERSION = "0.0.0 (Fake Claude)"
 DEFAULT_BLOCK_CAP = 8
 MCP_PROTOCOL = "2025-11-25"
@@ -720,9 +735,9 @@ class Fake:
         while self.queued:
             self.run_turn(self.queued.pop(0))
 
-    def do_interrupt(self) -> None:
-        self.user_line([{"type": "text", "text": INTERRUPT_TEXT}])
-        self.out(f"\n{INTERRUPT_TEXT}\n")
+    def do_interrupt(self, text: str = INTERRUPT_TEXT) -> None:
+        self.user_line([{"type": "text", "text": text}])
+        self.out(f"\n{text}\n")
         self.footer()
 
     @staticmethod
@@ -998,7 +1013,8 @@ class Fake:
                     {"type": "thinking", "thinking": step["thinking"], "signature": "fake"}, tokens
                 )
             elif "tool" in step:
-                self.tool_step(step, tokens)
+                if not self.tool_step(step, tokens):
+                    return False
             elif "mcp" in step:
                 self.mcp_step(step["mcp"], tokens)
             elif "subagent" in step:
@@ -1070,18 +1086,71 @@ class Fake:
             if not self.run_steps(steps, len(reason.split()), [], {}):
                 return
 
-    def tool_step(self, step: dict, tokens: int) -> None:
+    def tool_step(self, step: dict, tokens: int) -> bool:
         name, tinput = step["tool"], step.get("input", {})
-        self.tool_flow(
+        return self.tool_flow(
             name,
             tinput,
             step.get("agent"),
             tokens,
             lambda: (step.get("result", ""), bool(step.get("fail"))),
+            step.get("permission"),
         )
 
-    def tool_flow(self, name: str, tinput: dict, agent: dict | None, tokens: int, execute) -> None:
-        """tool_use line, PreToolUse (a deny skips execute), tool_result line, Post hooks."""
+    def permission_prompt(
+        self, name: str, tinput: dict, who: dict, footer: bool
+    ) -> tuple[str, str | None]:
+        """Draw the permission prompt and race the PermissionRequest hooks against keys.
+        Returns (behavior, message): behavior allow, deny or interrupt; first answer wins."""
+        self.out("\n" + PERMISSION_PROMPT + (PERMISSION_FOOTER + "\n" if footer else ""))
+        lock = threading.Lock()
+        won: list[tuple[str, str, str | None]] = []
+
+        def decide(by: str, behavior: str, message: str | None = None) -> None:
+            with lock:
+                if not won:
+                    won.append((by, behavior, message))
+
+        def hooks() -> None:
+            results = self.run_hooks(
+                "PermissionRequest",
+                {"tool_name": name, "tool_input": tinput, "permission_mode": "default", **who},
+                tool=name,
+            )
+            for r in results:
+                d = (r["json"].get("hookSpecificOutput") or {}).get("decision") or {}
+                if d.get("behavior") in ("allow", "deny"):
+                    decide("hook", d["behavior"], d.get("message"))
+                    return
+
+        threading.Thread(target=hooks, daemon=True).start()
+        while not won:
+            data = self.read(0.05)
+            if data is None:
+                continue
+            bare = data.replace(PASTE_START, b"").replace(PASTE_END, b"")
+            if b"1" in bare:
+                self.record_key("1")
+                decide("key", "allow")
+            elif b"\x1b" in bare or b"2" in bare:
+                self.record_key("esc" if b"\x1b" in bare else "2")
+                decide("key", "interrupt")
+        by, behavior, message = won[0]
+        with open(os.path.join(config_dir(), "fake-permissions.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"by": by, "behavior": behavior, "ts": now()}) + "\n")
+        return behavior, message
+
+    def tool_flow(
+        self,
+        name: str,
+        tinput: dict,
+        agent: dict | None,
+        tokens: int,
+        execute,
+        permission: dict | None = None,
+    ) -> bool:
+        """tool_use line, PreToolUse (a deny skips execute), optional permission prompt,
+        tool_result line, Post hooks. False when the turn ended (prompt answered by ESC)."""
         tid = "toolu_" + uuid.uuid4().hex[:24]
         who: dict = {}
         path, side = None, False
@@ -1107,6 +1176,15 @@ class Fake:
                 deny = spec.get("permissionDecisionReason") or r["stderr"] or "denied by hook"
             elif r["code"] == 2:
                 deny = r["stderr"] or "denied by hook"
+        if deny is None and permission is not None:
+            behavior, message = self.permission_prompt(
+                name, tinput, who, bool(permission.get("footer", True))
+            )
+            if behavior == "interrupt":
+                self.do_interrupt(PERMISSION_INTERRUPT_TEXT)
+                return False
+            if behavior == "deny":
+                deny = message or "denied by hook"
         result, fail = (deny, True) if deny is not None else execute()
         event = "PostToolUseFailure" if fail else "PostToolUse"
         post = self.run_hooks(
@@ -1127,6 +1205,7 @@ class Fake:
             side,
         )
         self.out(f"\n* {name}({json.dumps(tinput)})\n")
+        return True
 
     def mcp_step(self, spec: dict, tokens: int) -> None:
         server, tool = spec["server"], spec["tool"]
