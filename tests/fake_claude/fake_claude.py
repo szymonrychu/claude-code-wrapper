@@ -1097,6 +1097,13 @@ class Fake:
             step.get("permission"),
         )
 
+    def hook_permission_mode(self) -> str:
+        """The mode hooks report: the real pod runs bypassPermissions unless booted in auto."""
+        boot = self.scenario.get("boot", {})
+        return boot.get("permission_mode") or (
+            "auto" if boot.get("mode") == "auto" else "bypassPermissions"
+        )
+
     def permission_prompt(
         self, name: str, tinput: dict, who: dict, footer: bool
     ) -> tuple[str, str | None]:
@@ -1114,7 +1121,12 @@ class Fake:
         def hooks() -> None:
             results = self.run_hooks(
                 "PermissionRequest",
-                {"tool_name": name, "tool_input": tinput, "permission_mode": "default", **who},
+                {
+                    "tool_name": name,
+                    "tool_input": tinput,
+                    "permission_mode": self.hook_permission_mode(),
+                    **who,
+                },
                 tool=name,
             )
             for r in results:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 
 from claude_code_wrapper.permissions import (
@@ -87,7 +88,8 @@ async def test_was_resolved_bounded():
 async def test_view_redacts_before_truncating():
     b = broker()
     p = b.open(
-        {"tool_name": "Bash", "tool_input": {"command": "x" * 5000 + SECRET, "u": "eé" * 10}}, 10
+        {"tool_name": "Bash", "tool_input": {"command": "x" * 5000 + SECRET, "u": "e\u00e9" * 10}},
+        10,
     )
     v = p.view()
     assert SECRET not in v["tool_input"]
@@ -105,10 +107,10 @@ async def test_view_redacts_secret_straddling_the_cut():
 
 
 async def test_cut_on_utf8_boundary():
-    p = broker().open({"tool_name": "Write", "tool_input": {"text": "é" * 3000}}, 10)
+    p = broker().open({"tool_name": "Write", "tool_input": {"text": "\u00e9" * 3000}}, 10)
     v = p.view()
     assert len(v["tool_input"].encode("utf-8")) <= TOOL_INPUT_MAX_BYTES
-    assert v["tool_input"].endswith("é") and v["truncated"] is True
+    assert v["tool_input"].endswith("\u00e9") and v["truncated"] is True
 
 
 async def test_small_input_not_truncated():
@@ -155,3 +157,26 @@ async def test_of_agent_and_resolve_all():
     assert len(b) == 0
     assert m.future.result() == Decision("deny", "gone", "session ended")
     assert b.resolve_all(Decision("deny", "gone")) == []
+
+
+async def test_secret_straddling_byte_4096_is_redacted_before_the_cut():
+    b = broker()
+    p = b.open(
+        {"tool_name": "Bash", "tool_input": {"command": "x" * 4070 + SECRET + "y" * 200}}, 10
+    )
+    v = p.view()
+    assert v["truncated"] is True
+    assert SECRET[:8] not in v["tool_input"]
+
+
+async def test_cancelled_future_still_records_resolution():
+    b = broker()
+    p = b.open(payload(), 10)
+    waiter = asyncio.ensure_future(p.future)
+    await asyncio.sleep(0)
+    waiter.cancel()
+    await asyncio.sleep(0)
+    assert p.future.cancelled()
+    assert b.resolve(p.request_id, Decision("deny", "gone")) is False
+    assert b.was_resolved(p.request_id)
+    assert b.first() is None

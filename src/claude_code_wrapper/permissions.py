@@ -102,12 +102,15 @@ class PermissionBroker:
 
     def resolve(self, request_id: str, decision: Decision) -> bool:
         pending = self._pending.pop(request_id, None)
-        if pending is None or pending.future.done():
+        if pending is None:
             return False
-        pending.future.set_result(decision)
+        # A future cancelled with its awaiting task is still a resolution: remember the id.
         self._resolved[request_id] = None
         while len(self._resolved) > RESOLVED_MEMORY:
             self._resolved.popitem(last=False)
+        if pending.future.done():
+            return False
+        pending.future.set_result(decision)
         return True
 
     def first(self) -> PendingPermission | None:

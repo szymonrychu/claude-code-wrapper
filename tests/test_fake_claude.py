@@ -948,28 +948,32 @@ def test_auto_boot_has_no_dialog_and_prints_auto_footer(spawn, tmp_path):
     assert "? for shortcuts" not in p.buf
 
 
-def _permission_setup(env, tmp_path, scenario_file, hook_body, timeout=5, permission=None):
+def _permission_setup(
+    env, tmp_path, scenario_file, hook_body, timeout=5, permission=None, stop_out=None
+):
     """A scenario with one permission-gated Bash step and a PermissionRequest hook script."""
     script = tmp_path / "perm.sh"
     script.write_text(hook_body)
     payload = tmp_path / "perm.stdin"
-    hook_settings(
-        env["CLAUDE_CONFIG_DIR"],
-        {
-            "PermissionRequest": [
-                {
-                    "matcher": "Bash",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": f"tee {payload} | sh {script}",
-                            "timeout": timeout,
-                        }
-                    ],
-                }
-            ]
-        },
-    )
+    hooks = {
+        "PermissionRequest": [
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"tee {payload} | sh {script}",
+                        "timeout": timeout,
+                    }
+                ],
+            }
+        ]
+    }
+    if stop_out is not None:
+        hooks["Stop"] = [
+            {"matcher": "", "hooks": [{"type": "command", "command": f"cat >> {stop_out}"}]}
+        ]
+    hook_settings(env["CLAUDE_CONFIG_DIR"], hooks)
     return scenario_file(
         {
             "boot": {"bypass_dialog": False},
@@ -1030,7 +1034,7 @@ def test_permission_hook_allow_runs_tool(spawn, env, work, tmp_path, scenario_fi
     sent = json.loads((tmp_path / "perm.stdin").read_text())
     assert sent["hook_event_name"] == "PermissionRequest"
     assert sent["tool_name"] == "Bash" and sent["tool_input"] == {"command": "echo hi"}
-    assert "permission_mode" in sent and "tool_use_id" not in sent
+    assert sent["permission_mode"] == "bypassPermissions" and "tool_use_id" not in sent
 
 
 def test_permission_hook_deny_continues_turn_with_message(
@@ -1087,7 +1091,10 @@ def test_permission_hook_timeout_falls_back_to_keys(spawn, env, work, tmp_path, 
 
 
 def test_permission_esc_interrupts_without_stop(spawn, env, work, tmp_path, scenario_file):
-    sc = _permission_setup(env, tmp_path, scenario_file, "cat >/dev/null; sleep 5\n")
+    stop_out = tmp_path / "stop.out"
+    sc = _permission_setup(
+        env, tmp_path, scenario_file, "cat >/dev/null; sleep 5\n", stop_out=stop_out
+    )
     p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
     p.wait_for("? for shortcuts")
     since = len(p.buf)
@@ -1101,6 +1108,24 @@ def test_permission_esc_interrupts_without_stop(spawn, env, work, tmp_path, scen
     lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
     assert "interrupted by user for tool use" in json.dumps(lines[-1])
     assert [(x["by"], x["behavior"]) for x in _permission_log(env)] == [("key", "interrupt")]
+    time.sleep(0.5)
+    assert not stop_out.exists() or stop_out.read_text() == ""
+
+
+def test_permission_key_2_interrupts(spawn, env, work, tmp_path, scenario_file):
+    sc = _permission_setup(env, tmp_path, scenario_file, "cat >/dev/null; sleep 5\n")
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    since = len(p.buf)
+    p.send(b"\x1b[200~go\x1b[201~")
+    time.sleep(0.1)
+    p.send(b"\r")
+    p.wait_for("Tab to amend", since=since)
+    time.sleep(0.2)
+    p.send(b"2")
+    p.wait_for("[Request interrupted by user for tool use]", since=since)
+    assert "ran-it" not in json.dumps(_tool_results(env, work))
+    assert [(x["by"], x["behavior"]) for x in _permission_log(env)] == [("key", "interrupt")]
 
 
 def test_permission_footer_printed(spawn, env, work, tmp_path, scenario_file):
@@ -1108,7 +1133,7 @@ def test_permission_footer_printed(spawn, env, work, tmp_path, scenario_file):
     p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
     p.wait_for("? for shortcuts")
     p.submit("go")
-    assert "Esc to cancel · Tab to amend" in p.buf
+    assert "Esc to cancel \u00b7 Tab to amend" in p.buf
     assert "Do you want to proceed?" in p.buf
 
 
