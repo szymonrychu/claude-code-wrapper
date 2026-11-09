@@ -312,6 +312,10 @@ _DENY_MESSAGES = {
 }
 
 
+def _hook_allows(decision: Decision) -> bool:
+    return decision.by == "user" and decision.behavior == "allow"
+
+
 def _hook_answer(decision: Decision) -> str:
     """The JSON a held PermissionRequest hook prints: allow only for a person's answer.
 
@@ -319,7 +323,7 @@ def _hook_answer(decision: Decision) -> str:
     CCW_HOOK_TOKEN is in every Bash tool's env, so it always denies with a fixed message. A real
     terminal keypress already answered claude first, which then ignores this output (probe 3b).
     """
-    if decision.by == "user" and decision.behavior == "allow":
+    if _hook_allows(decision):
         return permission_output("allow")
     if decision.by == "terminal":
         return permission_output("deny", TERMINAL_DENY_MESSAGE)
@@ -781,14 +785,15 @@ class SessionRouter(SessionListener):
                 # The answer closed the TUI prompt drawn in parallel (probe case 1); a dropped
                 # hook leaves it on screen, where the footer scanner must keep seeing it.
                 session.note_hook()
-            self._emit(
-                "permission_resolved",
-                {
-                    "request_id": pending.request_id,
-                    "by": decision.by,
-                    "behavior": decision.behavior,
-                },
-            )
+            # `behavior` is what the hook really answered; the terminal's claim is separate.
+            resolved: dict[str, Any] = {
+                "request_id": pending.request_id,
+                "by": decision.by,
+                "behavior": "allow" if _hook_allows(decision) else "deny",
+            }
+            if decision.by == "terminal":
+                resolved["terminal_observed"] = decision.behavior
+            self._emit("permission_resolved", resolved)
         return _relay(_hook_answer(decision))
 
     async def _hold(
@@ -911,8 +916,8 @@ class SessionRouter(SessionListener):
     ) -> None:
         """The person at the TUI answered these prompts first (probe case 3b): withdraw them.
 
-        `behavior` is only what the hook reported, for `permission_resolved`; the held hook is
-        answered deny (`_hook_answer`), because the reporting hook may be forged by the agent.
+        `behavior` is only what the hook reported (`terminal_observed` in `permission_resolved`);
+        the held hook is answered deny (`_hook_answer`), because the hook may be forged.
         """
         for pending in pendings:
             self.permissions.resolve(pending.request_id, Decision(behavior, "terminal"))

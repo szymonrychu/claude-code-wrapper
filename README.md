@@ -1902,8 +1902,9 @@ claude ignores the hook's later output. While a request is held, nothing the wra
 with a CR (idle turns, probes, slash commands, the continue prompt): they are refused with
 `409 dialog_open` or wait, because a CR would pick the prompt's highlighted "1. Yes".
 
-`data`: `request_id`, `by` (`user`, `timeout`, `terminal`, `gone`), `behavior` (`allow`, `deny`;
-for `terminal`, what the reporting hook said, not what the held hook answered).
+`data`: `request_id`, `by` (`user`, `timeout`, `terminal`, `gone`), `behavior` (`allow`, `deny`:
+what the held hook really answered, so always `deny` for `terminal` and `gone`) and, for
+`terminal` only, `terminal_observed` (`allow`, `deny`: what the reporting hook claimed).
 
 ```
 event: permission_resolved

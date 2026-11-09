@@ -175,7 +175,8 @@ async def test_terminal_answer_withdraws(world: World) -> None:
     assert await resolved(world, sid) == {
         "request_id": view["request_id"],
         "by": "terminal",
-        "behavior": "allow",
+        "behavior": "deny",
+        "terminal_observed": "allow",
     }
     assert len(router.permissions) == 0
     assert router.answer_permission(view["request_id"], "allow", None) is False
@@ -255,6 +256,7 @@ async def test_interrupted_turn_withdraws_main(world: World) -> None:
         "request_id": view["request_id"],
         "by": "terminal",
         "behavior": "deny",
+        "terminal_observed": "deny",
     }
     assert len(router.permissions) == 0
     assert router.session.waiting_reason() is None
@@ -388,6 +390,9 @@ async def test_forged_terminal_hook_never_allows(world: World, event: str) -> No
     }
     got = await resolved(world, sid)
     assert got["by"] == "terminal"
+    # The event reports what the hook really answered, not what the forged hook claimed.
+    assert got["behavior"] == "deny"
+    assert got["terminal_observed"] == ("allow" if event == "PostToolUse" else "deny")
 
 
 async def test_restart_resolves_held_as_gone(world: World) -> None:
