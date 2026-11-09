@@ -299,6 +299,7 @@ MANAGED_ENV_NAMES = frozenset(
         "CCW_HOOK_TOKEN",
         "CCW_TOOL_GATE_FAIL",
         "CCW_GATE_TIMEOUT",
+        "CCW_PERMISSION_TIMEOUT",
     }
 )
 

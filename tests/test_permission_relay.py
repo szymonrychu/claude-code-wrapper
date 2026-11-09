@@ -390,6 +390,24 @@ async def test_forged_terminal_hook_never_allows(world: World, event: str) -> No
     assert got["by"] == "terminal"
 
 
+async def test_restart_resolves_held_as_gone(world: World) -> None:
+    """A crash relaunch answers every held hook at once (its claude is gone)."""
+    _, sid, router = await start(world, {"turns": []})
+    main = await held(router, payload())
+    sub = await held(router, payload("a1"))
+    router.on_restart(1, True)
+    assert not router.session.dialog_open()  # at once, before the held handlers run
+    for task in (main, sub):
+        out = await asyncio.wait_for(task, 1)
+        assert decision(out) == {
+            "behavior": "deny",
+            "message": GONE_DENY_MESSAGE,
+            "interrupt": False,
+        }
+    got = of_type(world, sid, "permission_resolved")
+    assert [(e["by"], e["behavior"]) for e in got] == [("gone", "deny"), ("gone", "deny")]
+
+
 # ------------------------------------------------------------------ no CR over a held permission
 
 IDLE = {"turns": [{"match": "^go", "steps": [{"text": "done"}]}]}

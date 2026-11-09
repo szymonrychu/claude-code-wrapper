@@ -10,9 +10,9 @@ from test_session_turns import SID, Harness, harness, wait_until  # noqa: F401 -
 
 from claude_code_wrapper.session import Session, TurnRejected
 
-PERMISSION = "Do you want to proceed?\n 1. Yes\n 2. No\n Esc to cancel · Tab to amend"
+PERMISSION = "Do you want to proceed?\n 1. Yes\n 2. No\n Esc to cancel \u00b7 Tab to amend"
 MODEL_DIALOG = "Select model\n 1. Default\n Esc to cancel"
-USAGE = "Usage limit reached · continuing automatically at 3pm · esc to cancel"
+USAGE = "Usage limit reached \u00b7 continuing automatically at 3pm \u00b7 esc to cancel"
 
 
 def scenario(text: str) -> dict[str, Any]:

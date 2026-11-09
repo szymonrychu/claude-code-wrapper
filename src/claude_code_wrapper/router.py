@@ -1981,8 +1981,9 @@ class SessionRouter(SessionListener):
 
     def _arm_dialog_dismiss(self, reason: str | None) -> None:
         """A waiting change: (re)arm the one-shot timer for a new footer dialog, cancel it when
-        the dialog closed or changed. Never for a held permission, a usage-limit wait, or while
-        a slash command runs (its dialog leg has its own ESC budget)."""
+        the dialog closed or changed. Only for waiting reason `dialog` (no turn runs): never for
+        `permission` or `question` (an ESC would interrupt the turn), a held permission, a
+        usage-limit wait, or while a slash command runs (its dialog leg has its own ESC budget)."""
         session = self.session
         since = session.waiting_since
         if self._dd_since is not None and (reason is None or self._dd_since != since):
@@ -1991,7 +1992,7 @@ class SessionRouter(SessionListener):
         if (
             delay <= 0
             or self._closed
-            or reason not in ("dialog", "permission")
+            or reason != "dialog"
             or since is None
             or self._dd_since == since
             or session.dismissed(since)
@@ -2021,6 +2022,7 @@ class SessionRouter(SessionListener):
             return
         if (
             session.waiting_since != since
+            or session.waiting_reason() != "dialog"
             or session.dialog_kind() != "dialog"
             or session.auto_escape_blocked()
         ):
@@ -2489,6 +2491,10 @@ class SessionRouter(SessionListener):
         )
 
     def on_restart(self, count: int, resumed: bool) -> None:
+        # The relaunched claude has no prompt for the held hooks: answer them now (gone, deny)
+        # and free the lanes before the crash continuation is typed.
+        self.permissions.resolve_all(Decision("deny", "gone"))
+        self.session.set_permission_pending(False)
         self._cancel_dialog_dismiss()
         self._subagents.clear()
         self._emit(

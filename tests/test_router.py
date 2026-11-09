@@ -66,6 +66,9 @@ class StubSession:
     def note_hook(self):
         """The lanes' dialog clock (not recorded: no test here reads it)."""
 
+    def set_permission_pending(self, pending):
+        self.permission_pending = pending
+
     def set_question_waiting(self):
         self.calls.append(("set_question_waiting",))
 

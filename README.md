@@ -757,7 +757,7 @@ What the session waits on, if anything: `{"kind", "since", "permission", "tail"}
   held request; `null` otherwise.
 
 ```json
-{"kind": "permission", "since": "2026-11-09T10:00:00.000+00:00", "permission": {"request_id": "perm_0a1b2c3d4e5f", "tool_name": "Bash", "tool_input": "{\n  \"command\": \"psql prod\"\n}", "truncated": false, "suggestions": [], "agent_id": null, "since": "2026-11-09T10:00:00.000+00:00", "expires_at": "2026-11-09T10:30:00.000+00:00"}, "tail": null}
+{"kind": "permission", "since": "2026-11-09T10:00:00.000Z", "permission": {"request_id": "perm_0a1b2c3d4e5f", "tool_name": "Bash", "tool_input": "{\n  \"command\": \"psql prod\"\n}", "truncated": false, "suggestions": [], "agent_id": null, "since": "2026-11-09T10:00:00.000Z", "expires_at": "2026-11-09T10:30:00.000Z"}, "tail": null}
 ```
 
 Auth: bearer. Errors: `401 unauthorized`, `404 not_found`, `503 dead` (the session is not running).
@@ -1883,7 +1883,7 @@ Emitted when claude's `PermissionRequest` hook is relayed and held for an answer
 
 ```
 event: permission_requested
-data: {"seq":31,"ts":"2026-11-09T10:00:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_requested","data":{"request_id":"perm_0a1b2c3d4e5f","tool_name":"Bash","tool_input":"{\n  \"command\": \"psql prod\"\n}","truncated":false,"suggestions":[],"agent_id":null,"since":"2026-11-09T10:00:00.000+00:00","expires_at":"2026-11-09T10:30:00.000+00:00"}}
+data: {"seq":31,"ts":"2026-11-09T10:00:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_requested","data":{"request_id":"perm_0a1b2c3d4e5f","tool_name":"Bash","tool_input":"{\n  \"command\": \"psql prod\"\n}","truncated":false,"suggestions":[],"agent_id":null,"since":"2026-11-09T10:00:00.000Z","expires_at":"2026-11-09T10:30:00.000Z"}}
 ```
 
 ### `permission_resolved`

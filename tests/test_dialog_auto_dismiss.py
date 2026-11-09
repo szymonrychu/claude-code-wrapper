@@ -28,15 +28,27 @@ async def start(world: World, scenario: dict, seconds: float | None = SECONDS, *
     return m, sid, m.router(sid)
 
 
-async def open_it(world: World, router: Any) -> str:
-    await router.submit_turn("go")
-    await world.until(lambda: router.session.dialog_open(), 15)
-    await world.until(lambda: router.session.waiting_since is not None, 5)
-    return router.session.waiting_since
+IDLE: dict = {"turns": []}
+
+
+def show(session: Any, text: str) -> None:
+    """Footer text on claude's screen, as the PTY reader hands it over."""
+    data = text.encode()
+    session.pty.ring.append(data)
+    session._on_output(session.pty, data)
+
+
+async def open_it(world: World, router: Any, footer: str = MODEL) -> str:
+    """An idle footer dialog: no turn runs, so the waiting reason is `dialog`."""
+    session = router.session
+    await world.until(lambda: session.state == "ready", 15)
+    show(session, footer)
+    assert session.waiting_reason() == "dialog"
+    return session.waiting_since
 
 
 async def test_fires_once_after_timeout(world: World) -> None:
-    m, sid, router = await start(world, scen(MODEL), seconds=FIRES_ONCE)
+    m, sid, router = await start(world, IDLE, seconds=FIRES_ONCE)
     since = await open_it(world, router)
     assert keys(world, sid) == []
     await world.until(lambda: of_type(world, sid, "dialog_auto_dismissed"), 10)
@@ -47,7 +59,7 @@ async def test_fires_once_after_timeout(world: World) -> None:
 
 
 async def test_rearms_when_runner_active_at_fire_time(world: World, monkeypatch: Any) -> None:
-    m, sid, router = await start(world, scen(MODEL))
+    m, sid, router = await start(world, IDLE)
     active = {"on": True}
     monkeypatch.setattr(type(router), "runner_active", property(lambda self: active["on"]))
     since = await open_it(world, router)
@@ -60,9 +72,9 @@ async def test_rearms_when_runner_active_at_fire_time(world: World, monkeypatch:
 
 
 async def test_not_fired_when_dialog_closed_first(world: World) -> None:
-    m, sid, router = await start(world, scen(MODEL), seconds=1.5)
+    m, sid, router = await start(world, IDLE, seconds=1.5)
     await open_it(world, router)
-    router.session._ui_dialog_at = 0.0  # the footer went away
+    router.session._ui_dialog_at = float("-inf")  # the footer went away
     router.session._sync_waiting()
     assert router._dd_handle is None
     await asyncio.sleep(1.8)
@@ -71,8 +83,23 @@ async def test_not_fired_when_dialog_closed_first(world: World) -> None:
 
 
 async def test_not_fired_for_usage_wait(world: World) -> None:
-    m, sid, router = await start(world, scen(USAGE_FOOTER))
-    await open_it(world, router)
+    m, sid, router = await start(world, IDLE)
+    show(router.session, USAGE_FOOTER)
+    assert router.session.waiting_since is not None
+    await asyncio.sleep(SECONDS + 0.6)
+    assert of_type(world, sid, "dialog_auto_dismissed") == []
+    assert keys(world, sid) == []
+
+
+async def test_not_armed_while_a_turn_runs(world: World) -> None:
+    """A footer while a turn runs is waiting reason `permission` (a TUI prompt or question with
+    no relay): only an idle `dialog` gets the automatic ESC, which would interrupt the turn."""
+    m, sid, router = await start(world, scen(MODEL))
+    await router.submit_turn("go")
+    await world.until(lambda: router.session.dialog_open(), 15)
+    assert router.session.waiting_reason() == "permission"
+    assert router.session.dialog_kind() == "dialog"
+    assert router._dd_handle is None
     await asyncio.sleep(SECONDS + 0.6)
     assert of_type(world, sid, "dialog_auto_dismissed") == []
     assert keys(world, sid) == []
@@ -90,7 +117,7 @@ async def test_not_fired_for_held_permission(world: World) -> None:
 
 
 async def test_zero_disables(world: World) -> None:
-    m, sid, router = await start(world, scen(MODEL), seconds=0)
+    m, sid, router = await start(world, IDLE, seconds=0)
     await open_it(world, router)
     assert router._dd_handle is None
     await asyncio.sleep(0.8)
@@ -99,7 +126,7 @@ async def test_zero_disables(world: World) -> None:
 
 
 async def test_cancelled_on_close(world: World) -> None:
-    m, sid, router = await start(world, scen(MODEL), seconds=1.0)
+    m, sid, router = await start(world, IDLE, seconds=1.0)
     await open_it(world, router)
     assert router._dd_handle is not None
     await router.close()
