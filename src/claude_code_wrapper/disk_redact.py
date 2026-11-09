@@ -10,14 +10,17 @@ again in that dir, and a startup pass redacts every unmarked dir a previous proc
 Rules:
 - Only regular files under the config dir; symlinks are never followed or rewritten.
 - `.credentials.json` (claude's login) and `plugins/` (installed plugin code) are left alone.
-- A file whose first bytes contain NUL, or that is not UTF-8, is binary and left alone.
+- A file whose first 8 KiB contain NUL is binary and left alone. Other files are text: bytes
+  that are not UTF-8 are carried through unchanged (surrogateescape), the rest is redacted.
 - `.jsonl` files stream line by line (memory bounded by the longest line); other text files
   are read whole up to `WHOLE_FILE_MAX_BYTES`, line by line above it.
 - A JSON document or line is redacted by string (keys and values), so escaping inside the JSON
-  never hides a value and the result stays valid JSON; identifier and timestamp fields that
-  claude's resume chain depends on are kept as they are. Other text is redacted as text.
+  never hides a value and the result stays valid JSON; the identifier and timestamp fields of
+  the record's top level that claude's resume chain depends on are kept as they are (nowhere
+  else: nested objects carry arbitrary tool data). Other text is redacted as text.
 - A file is replaced atomically (temp file in the same dir, then rename) and only when its
-  content changed; the mode and the timestamps of the original are kept.
+  content changed; the mode and the timestamps of the original are kept. Every dir holding a
+  replaced file is fsynced before the marker is written.
 - Nothing logged here carries file content: counts and the session dir only.
 """
 
@@ -32,7 +35,7 @@ import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any
+from typing import Any
 
 from . import __version__
 from .redact import Redactor
@@ -47,9 +50,12 @@ SKIP_FILES = frozenset({".credentials.json"})
 SKIP_DIRS = frozenset({"plugins", ".git"})
 SNIFF_BYTES = 8192
 TMP_SUFFIX = ".redact-tmp"
+#: Undecodable bytes round-trip unchanged through str, so a file that is not UTF-8 is still text.
+ENCODING_ERRORS = "surrogateescape"
 WHOLE_FILE_MAX_BYTES = 32 * 1024 * 1024
-#: Machine-generated identifiers and timestamps in claude's JSON: never a secret, and masking
-#: a short listed value inside them would break the uuid chain a resume follows.
+#: Machine-generated identifiers and timestamps at the top level of claude's JSON records: never
+#: a secret, and masking a short listed value inside them would break the uuid chain a resume
+#: follows. Kept only at the top level; nested objects (tool inputs, results) are data.
 KEEP_KEYS = frozenset(
     {
         "uuid",
@@ -81,13 +87,14 @@ class RedactStats:
     errors: int = 0
 
 
-def _redact_value(value: Any, redactor: Redactor) -> Any:
+def _redact_value(value: Any, redactor: Redactor, *, top: bool = False) -> Any:
+    """`value` redacted string by string; `top` keeps the `KEEP_KEYS` fields of a record."""
     if isinstance(value, str):
         return redactor.redact(value)
     if isinstance(value, dict):
         return {
             redactor.redact(k): v
-            if k in KEEP_KEYS and isinstance(v, str)
+            if top and k in KEEP_KEYS and isinstance(v, str)
             else _redact_value(v, redactor)
             for k, v in value.items()
         }
@@ -105,7 +112,7 @@ def redact_text(text: str, redactor: Redactor, *, indent: int | None = None) -> 
         except ValueError:
             doc = None
         if doc is not None:
-            out = _redact_value(doc, redactor)
+            out = _redact_value(doc, redactor, top=True)
             if out == doc:
                 return text
             dumped = json.dumps(
@@ -120,26 +127,28 @@ def _is_binary(path: Path) -> bool:
         return b"\0" in fh.read(SNIFF_BYTES)
 
 
-def _lines(fh: IO[bytes]) -> Iterator[str]:
-    for raw in fh:
-        yield raw.decode("utf-8")  # UnicodeDecodeError: not text, the caller skips the file
+def _decode(raw: bytes) -> str:
+    return raw.decode("utf-8", errors=ENCODING_ERRORS)
 
 
 def _rewrite(path: Path, redactor: Redactor, st: os.stat_result) -> bool:
     """Write the redacted copy next to `path` and swap it in if it differs. Returns whether
-    the file was replaced; raises UnicodeDecodeError for a file that is not UTF-8."""
+    the file was replaced. Bytes that are not UTF-8 are written back as they were."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=TMP_SUFFIX)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as out, path.open("rb") as src:
+        with (
+            os.fdopen(fd, "w", encoding="utf-8", errors=ENCODING_ERRORS, newline="") as out,
+            path.open("rb") as src,
+        ):
             if path.suffix == ".jsonl" or st.st_size > WHOLE_FILE_MAX_BYTES:
                 changed = False
-                for line in _lines(src):
+                for line in map(_decode, src):
                     body = line.rstrip("\r\n")
                     new = redact_text(body, redactor) if body else body
                     changed = changed or new != body
                     out.write(new + line[len(body) :])
             else:
-                text = src.read().decode("utf-8")
+                text = _decode(src.read())
                 new = redact_text(text, redactor, indent=2 if "\n  " in text else None)
                 changed = new != text
                 out.write(new)
@@ -166,11 +175,21 @@ def _files(root: Path) -> Iterator[Path]:
                 yield Path(dirpath) / name
 
 
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def redact_tree(root: Path, redactor: Redactor) -> RedactStats:
-    """Redact every text file under `root` in place (see the module rules)."""
+    """Redact every text file under `root` in place (see the module rules), then fsync every dir
+    a file was replaced in, so the renames are durable before anything marks the tree."""
     stats = RedactStats()
     if not root.is_dir():
         return stats
+    replaced: set[Path] = set()
     for path in _files(root):
         try:
             st = path.lstat()
@@ -182,8 +201,16 @@ def redact_tree(root: Path, redactor: Redactor) -> RedactStats:
                 continue
             if _rewrite(path, redactor, st):
                 stats.rewritten += 1
-        except UnicodeDecodeError:
-            stats.skipped += 1
+                replaced.add(path.parent)
+        except UnicodeError as exc:  # a JSON string escape that cannot be written back
+            stats.errors += 1
+            log.warning("redact: %s under %s", type(exc).__name__, root)
+        except OSError as exc:
+            stats.errors += 1
+            log.warning("redact: %s under %s: %s", type(exc).__name__, root, exc.strerror)
+    for path in sorted(replaced):
+        try:
+            _fsync_dir(path)
         except OSError as exc:
             stats.errors += 1
             log.warning("redact: %s under %s: %s", type(exc).__name__, root, exc.strerror)
@@ -220,17 +247,20 @@ def _write_marker(session_dir: Path) -> None:
             os.fsync(fh.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
+        _fsync_dir(session_dir)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
 
 
-def redact_session_dir(session_dir: Path, redactor: Redactor) -> RedactStats:
+def redact_session_dir(session_dir: Path, redactor: Redactor, *, mark: bool = True) -> RedactStats:
     """Redact the session's config dir, then mark the session dir. The marker is written only
-    when every file was handled (a read or write error leaves the dir unmarked)."""
+    when every file was handled (a read or write error leaves the dir unmarked) and `mark` is
+    set: a caller that cannot hold every value the dir may contain redacts what it knows and
+    leaves the dir unmarked."""
     stats = redact_tree(session_dir / "config", redactor)
-    if stats.errors == 0 and session_dir.is_dir():
+    if mark and stats.errors == 0 and session_dir.is_dir():
         _write_marker(session_dir)
     log.info(
         "redact: %s: %d files, %d rewritten, %d skipped, %d errors",

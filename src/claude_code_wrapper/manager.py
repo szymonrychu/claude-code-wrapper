@@ -253,6 +253,10 @@ class _Active:
         return self.session_dir / "config"
 
 
+def _is_secret_extra(name: str, listed: frozenset[str]) -> bool:
+    return bool(SECRET_KEY_RE.search(name)) or name in listed
+
+
 def _persistable_env(env: Any, secret_env: Iterable[str] = ()) -> dict[str, Any]:
     """The override as stored in session.json: every set field except secret ones (secret-kind
     fields, `extra` names matching `SECRET_KEY_RE` or listed in `claude.secret_env`)."""
@@ -264,10 +268,19 @@ def _persistable_env(env: Any, secret_env: Iterable[str] = ()) -> dict[str, Any]
         if not isinstance(value, SecretStr):
             out[name] = value
     listed = frozenset(secret_env)
-    extra = {k: v for k, v in env.extra.items() if not SECRET_KEY_RE.search(k) and k not in listed}
+    extra = {k: v for k, v in env.extra.items() if not _is_secret_extra(k, listed)}
     if extra:
         out["extra"] = extra
     return out
+
+
+def _has_secret_override(env: Any, secret_env: Iterable[str] = ()) -> bool:
+    """Whether the override holds a value `_persistable_env` leaves out: a later process cannot
+    know it, so it cannot vouch that the session's files are redacted (`secret_override`)."""
+    listed = frozenset(secret_env)
+    return any(isinstance(getattr(env, name), SecretStr) for name in env.model_fields_set) or any(
+        v and _is_secret_extra(k, listed) for k, v in env.extra.items()
+    )
 
 
 def _epoch(ts: str | None) -> float | None:
@@ -312,6 +325,9 @@ class SessionManager:
         self.redactor = redactor
         # `claude.secret_env`: values only the claude child gets, masked at any length.
         self.redactor.add(cfg.claude.listed_secret_values(self.service_env), min_len=1)
+        # The config-level secrets every session gets (`_activate` adds them per session too):
+        # the start pass over dirs a killed process left runs before any session activates.
+        self.redactor.add(cfg.claude.env.secret_values())
         self.started = False
         self._relay_command = relay_command
         self._reaper_interval = reaper_interval
@@ -489,6 +505,7 @@ class SessionManager:
             "model": req.model or self.cfg.claude.model,
             "effort": req.effort or self.cfg.claude.effort,
             "env": _persistable_env(override, self.cfg.claude.secret_env),
+            "secret_override": _has_secret_override(override, self.cfg.claude.secret_env),
             "callbackUrl": req.callback_url,
             "commands": req.commands.model_dump(exclude_none=True) if req.commands else None,
             "created_at": now,
@@ -1150,7 +1167,10 @@ class SessionManager:
         claude_env = self._merge_env(override)
         self._check_capacity()
         meta.update(
-            state="creating", error=None, env=_persistable_env(override, self.cfg.claude.secret_env)
+            state="creating",
+            error=None,
+            env=_persistable_env(override, self.cfg.claude.secret_env),
+            secret_override=_has_secret_override(override, self.cfg.claude.secret_env),
         )
         ctx = self._activate(meta, override, claude_env)
         ctx.workdir = Path(str(meta["workdir"]))
@@ -1232,11 +1252,11 @@ class SessionManager:
                     log.exception("session %s: resume on start failed", session_id)
         self._ensure_reaper()
 
-    async def _redact_disk(self, session_dir: Path) -> None:
+    async def _redact_disk(self, session_dir: Path, *, mark: bool = True) -> None:
         """Claude has stopped: redact its on-disk material and mark the dir (`disk_redact`).
         Run in a thread; a failure leaves the dir unmarked for the next start to redo."""
         try:
-            await asyncio.to_thread(redact_session_dir, session_dir, self.redactor)
+            await asyncio.to_thread(redact_session_dir, session_dir, self.redactor, mark=mark)
         except Exception as exc:
             log.warning(
                 "session %s: redacting files failed: %s", session_dir.name, type(exc).__name__
@@ -1254,7 +1274,22 @@ class SessionManager:
                 and (path / "config").is_dir()
                 and not is_marked(path)
             ):
-                await self._redact_disk(path)
+                await self._redact_disk(path, mark=self._add_left_values(path.name))
+
+    def _add_left_values(self, session_id: str) -> bool:
+        """Add the secret values a left dir's claude held, as far as this process can know them
+        (the config ones merged with the persisted override, as a resume would). False when it
+        cannot know them all: no readable session.json, an override that no longer validates,
+        or an override that held secret values (never persisted). Such a dir is redacted with
+        the known values and left unmarked."""
+        try:
+            meta = self._read_meta(session_id)
+            claude_env = self.cfg.claude.env.merged(ClaudeEnv.model_validate(meta.get("env") or {}))
+        except (SessionNotFound, ValidationError):
+            return False
+        self.redactor.add(claude_env.secret_values())
+        self.redactor.add(listed_values(claude_env.to_env(), self.cfg.claude.secret_env), min_len=1)
+        return meta.get("secret_override") is False
 
     def _shutdown_left_turn(self, session_id: str) -> bool:
         """Whether a graceful service shutdown left this session's turn running for a resume."""

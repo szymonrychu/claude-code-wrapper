@@ -181,26 +181,35 @@ secret values and the token patterns), then writes the marker file `<sessions_ro
   shutdown), before `onDestroy` runs, and on service start for every session dir that has no
   marker of the current format (a previous process killed before it could redact), before any
   session resumes. A create or resume removes the marker before claude starts, so a dir whose
-  claude is running, or was killed while running, carries no marker.
+  claude is running, or was killed while running, carries no marker. The start pass marks a
+  dir only when it holds every secret value that dir's claude had (see Resume below).
 - Marker content: one JSON object, `{"format": 1, "wrapper_version": "<x.y.z>",
   "redacted_at": "<ISO-8601 UTC>"}`; no values and nothing derived from them. A marker whose
   `format` differs from the running wrapper's is treated as absent and the dir is redacted again.
 - Contract for anything that copies session dirs out of the pod (archives, backups): copy a
   session dir's `config/` material only when `.redacted` is present; treat a dir without it as
   holding unredacted material and exclude at least `config/projects/`, `config/file-history/`,
-  `config/debug/` and `config/shell-snapshots/`.
+  `config/debug/` and `config/shell-snapshots/`. Always exclude `config/.credentials.json`
+  (claude's login), marker or not: it is never redacted.
 - Rules: regular files only (symlinks are not followed); `config/.credentials.json` and
-  `config/plugins/` are left alone; a file with a NUL byte in its first 8 KiB or that is not
-  UTF-8 is skipped as binary; `.jsonl` files are streamed line by line (other text files are
+  `config/plugins/` are left alone; a file with a NUL byte in its first 8 KiB is skipped as
+  binary; any other file is text, and bytes that are not UTF-8 are kept as they are while the
+  rest is redacted; `.jsonl` files are streamed line by line (other text files are
   read whole up to 32 MiB, line by line above); a file is replaced atomically and only when it
   changed, keeping its mode and timestamps; the log carries counts only. JSON documents and
-  lines are redacted string by string (keys and values), so they stay valid JSON, and the identifier and
-  timestamp fields of a line (`uuid`, `parentUuid`, `sessionId`, `timestamp`, ...) are kept.
-  A read or write error leaves the dir unmarked.
+  lines are redacted string by string (keys and values), so they stay valid JSON, and the
+  identifier and timestamp fields at the top level of a record (`uuid`, `parentUuid`,
+  `sessionId`, `timestamp`, ...) are kept; nested fields of the same names are redacted like
+  any other. Every dir a file was replaced in is fsynced before the marker is written. A read
+  or write error leaves the dir unmarked. A value only in JSON-escaped form inside plain
+  (non-JSON) text is not matched.
 - Resume: a resumed session continues from the redacted transcript; claude sees `***` where a
-  value was, and a file-history restore brings back the masked text. The start pass knows only
-  the values of the running service (and the patterns): a value given only as a per-session
-  override to an earlier process is not known to it.
+  value was, and a file-history restore brings back the masked text. The start pass redacts
+  with the values of the running service (`claude.secret_env`, the `claude.env` secret fields
+  and secret-named `extra` entries, each dir's persisted override) and the patterns. A secret
+  value given as a per-session override is never persisted, so a dir whose last create or
+  resume carried one (`secret_override` in `session.json`), or whose `session.json` is
+  unreadable or predates this field, is redacted with the known values and left unmarked.
 - Files outside `config/` (`events.jsonl`, `turns.jsonl`, hook state) are not rewritten; the
   events and turns are redacted when written.
 
