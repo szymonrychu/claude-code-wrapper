@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -895,3 +895,68 @@ async def test_user_allow_lock_lifts_on_settle(world: World, monkeypatch: Any) -
     await world.until(lambda: not router.session.permission_prompt_open(), 3, "lock lifted")
     await asyncio.sleep(1.2)
     assert keys(world, sid) == []
+
+
+# ------------------------------------------------------------------ grace and mixed order
+
+
+async def test_deny_escape_waits_out_grace_with_lock_held(world: World) -> None:
+    """A user deny locks the writers at once, but its ESC only lands after the grace that lets
+    a live hook's deny reach claude first."""
+    m, sid, router, task = await stopped_hook(world)
+    session = router.session
+    view = router.permissions.first()
+    assert view is not None
+    start_at = datetime.now(UTC)
+    assert router.answer_permission(view.request_id, "deny", None) is True
+    assert decision(await asyncio.wait_for(task, 2))["behavior"] == "deny"
+    assert session.permission_prompt_open() is True
+    with pytest.raises(session_mod.TurnRejected):
+        session.check_no_permission()
+    await asyncio.sleep(session_mod.PERMISSION_ESC_GRACE_SECONDS * 0.5)
+    assert keys(world, sid) == []  # still inside the grace
+    assert session.permission_prompt_open() is True
+    assert typed(world, sid) == []
+    await world.until(lambda: keys(world, sid) == ["esc"], 3, "deny ESC")
+    (esc,) = esc_times(world, sid)
+    assert (esc - start_at).total_seconds() >= session_mod.PERMISSION_ESC_GRACE_SECONDS - 0.15
+    assert session.permission_prompt_open() is True
+
+
+async def mixed_pair(world: World, monkeypatch: Any, first: str, second: str) -> None:
+    """Two held relays resolved in sequence, each by `deny` (a person) or `gone` (a dropped
+    hook): one spaced ESC each, writers locked until both are sent."""
+    settle_fast(monkeypatch)
+    m, sid, router = await start(world, IDLE)
+    session = router.session
+    await world.until(lambda: session.state == "ready", 15)
+    gones = {"a1": asyncio.Event(), "a2": asyncio.Event()}
+    tasks = {a: await held(router, payload(a), gone=gones[a]) for a in ("a1", "a2")}
+    draw_prompt(session)
+    for agent, how in (("a1", first), ("a2", second)):
+        if how == "deny":
+            (view,) = router.permissions.of_agent(agent)
+            assert router.answer_permission(view.request_id, "deny", None) is True
+        else:
+            gones[agent].set()
+        assert decision(await asyncio.wait_for(tasks[agent], 2))["behavior"] == "deny"
+        assert session.permission_prompt_open() is True
+    await world.until(lambda: keys(world, sid) == ["esc"], 5, "first ESC")
+    assert session.permission_prompt_open() is True
+    with pytest.raises(session_mod.TurnRejected):
+        session.check_no_permission()
+    await world.until(lambda: keys(world, sid) == ["esc", "esc"], 5, "second ESC")
+    one, two = esc_times(world, sid)
+    assert (two - one).total_seconds() >= session_mod.ESC_SPACING_SECONDS - 0.05
+    assert typed(world, sid) == []
+    await world.until(lambda: not session.permission_prompt_open(), 3, "lock lifted")
+    await asyncio.sleep(1.2)
+    assert keys(world, sid) == ["esc", "esc"]  # exactly one ESC per resolution
+
+
+async def test_deny_then_orphan_get_spaced_escapes(world: World, monkeypatch: Any) -> None:
+    await mixed_pair(world, monkeypatch, "deny", "gone")
+
+
+async def test_orphan_then_deny_get_spaced_escapes(world: World, monkeypatch: Any) -> None:
+    await mixed_pair(world, monkeypatch, "gone", "deny")
