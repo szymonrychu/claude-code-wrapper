@@ -135,10 +135,11 @@ never put it behind a public ingress.
   environment: the base vars, `claude.passthrough_env`, the claude env without its secret-kind
   variables (the Claude credentials; other `claude.env.extra` names stay), the mise vars, `CLAUDE_CONFIG_DIR` and
   `GIT_CONFIG_GLOBAL`. They never get a `CCW_*` variable (`CCW_AUTH_TOKEN`, `CCW_PEER_TOKEN`,
-  `CCW_HOOK_TOKEN`, `CCW_USAGE_TOKEN`) or a Claude credential such as `CLAUDE_CODE_OAUTH_TOKEN`,
-  even when `claude.passthrough_env` selects one (`*`, `CLAUDE_*`): only the claude child gets those. The global `mise install` at start gets the base vars,
-  `claude.passthrough_env` and the mise vars, so a proxy or `GITHUB_TOKEN` mise needs is listed in
-  `claude.passthrough_env`. As with terminals, a same-uid process can still read
+  `CCW_HOOK_TOKEN`, `CCW_USAGE_TOKEN`), a Claude credential such as `CLAUDE_CODE_OAUTH_TOKEN` or a
+  `claude.secret_env` name, even when `claude.passthrough_env` selects one (`*`, `CLAUDE_*`): only
+  the claude child gets those. The global `mise install` at start gets the base vars,
+  `claude.passthrough_env` (minus `claude.secret_env`) and the mise vars, so a proxy or
+  `GITHUB_TOKEN` mise needs is listed in `claude.passthrough_env` and not in `claude.secret_env`. As with terminals, a same-uid process can still read
   `/proc/<pid>/environ` of claude and the wrapper.
 - Terminals (`/v1/sessions/{id}/terminals`) are interactive login shells (`/bin/bash -l`, or
   `/bin/sh -l` without bash) running as the agent uid in the session workdir, so a client holding
@@ -157,10 +158,11 @@ never put it behind a public ingress.
   - File reads open the final path component with `O_NOFOLLOW`, which guards that last component
     only: a parent directory swapped for a symlink between the containment check and the open
     can redirect the read. The reader is a trusted bearer holder, so the wrapper allows this.
-  - Passthrough and extra env names that do not match the secret pattern reach the shell:
-    names in `claude.passthrough_env` or `claude.env.extra` such as `GITHUB_PAT` or
-    `NETRC_LOGIN` carry a credential but do not match, so they stay in its environment (a name
-    like `GIT_TOKEN` is removed because it matches). Name secrets so they match, or leave them out
+  - Passthrough and extra env names that do not match the secret pattern reach the shell unless
+    they are listed in `claude.secret_env`: names in `claude.passthrough_env` or
+    `claude.env.extra` such as `GITHUB_PAT` or `NETRC_LOGIN` carry a credential but do not
+    match, so they stay in its environment (a name like `GIT_TOKEN` is removed because it
+    matches). List such names in `claude.secret_env`, name them so they match, or leave them out
     of passthrough.
   - Closing a terminal whose shell already exited signals nothing when its pid now belongs to
     another process (the shell's start time is compared first).
@@ -3131,6 +3133,7 @@ claude:
     extra:
       MY_VAR: value
   passthrough_env: [GH_TOKEN, SSH_AUTH_SOCK]
+  secret_env: [GH_TOKEN]
   permissions:
     allow: ["Bash(git status:*)"]
     deny: [EnterPlanMode, ExitPlanMode]
@@ -3157,6 +3160,7 @@ claude:
 | `claude.extra_args` | list | `[]` | - | Extra argv appended after the service flags. `--dangerously-skip-permissions` is rejected (it adds a boot dialog). |
 | `claude.passthrough_env` | list | `[]` | - | List of env var name patterns (`fnmatch`, case-sensitive; a plain name matches only itself, `GH_*` matches by prefix) copied from the service environment into Claude's environment and the setup-command environment when present. `CCW_*` names and service-managed names are never passed, even through `*` (the refusal is logged). Warning: `*` hands every service secret to Claude; use explicit globs plus `passthrough_env_exclude`. |
 | `claude.passthrough_env_exclude` | list | `[]` | - | List of `fnmatch` patterns removing names matched by `claude.passthrough_env`, for example `["*_SECRET*", "AWS_*"]`. |
+| `claude.secret_env` | list | `[]` | - | List of exact env var names (`[A-Z_][A-Z0-9_]*`) whose values are secret whatever the name looks like. Only the claude child gets them (through `claude.passthrough_env` or `claude.env.extra`; listing a name does not select it): web-terminal shells, git, `init.setup_commands`, the global and per-workdir `mise` runs and plugin installs never do. Their values (from the service env, `claude.env.extra` and a create override's `extra`) are redacted by value at any length, on top of the name-pattern redaction, in events, screen tails, hook output, turn records, logs and API responses; a listed `extra` name is masked in `GET /v1/config` and session views and never stored in `session.json`. |
 | `claude.main_agent_only_tools` | list | `[]` | - | List of `fnmatch` globs (case-sensitive) of tool names that PreToolUse denies when the call comes from a subagent (hook payload carries `agent_id`), for example `["mcp__any-mcp__orchestrator_*"]`. Main-agent calls pass. Best-effort guard, not a security boundary: subagents share the pod and trust domain with the main agent. |
 | `claude.permissions.allow` | list | `[]` | - | List of allow rules, for example `Bash(git status:*)`. |
 | `claude.permissions.deny` | list | `["EnterPlanMode", "ExitPlanMode"]` | - | List of deny rules. Plan-mode tools are denied by default. |

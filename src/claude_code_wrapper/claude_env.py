@@ -12,7 +12,7 @@ are reserved and cannot be passed through `extra`.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -2324,10 +2324,17 @@ CREDENTIAL_ENV = frozenset(s.env for s in _SPECS if s.secret)
 _MODELLED_ENV = frozenset(s.env for s in _SPECS)
 
 
-def without_secrets(env: Mapping[str, str]) -> dict[str, str]:
-    """`env` without a `CCW_*` name (the wrapper's tokens and plumbing) or a `CREDENTIAL_ENV`
-    name: the last filter on the env of every child that runs repo-controlled code."""
-    return {k: v for k, v in env.items() if not k.startswith("CCW_") and k not in CREDENTIAL_ENV}
+def without_secrets(env: Mapping[str, str], secret_env: Iterable[str] = ()) -> dict[str, str]:
+    """`env` without a `CCW_*` name (the wrapper's tokens and plumbing), a `CREDENTIAL_ENV`
+    name or a `secret_env` name (`claude.secret_env`): the last filter on the env of every child
+    that runs repo-controlled code."""
+    drop = CREDENTIAL_ENV | frozenset(secret_env)
+    return {k: v for k, v in env.items() if not k.startswith("CCW_") and k not in drop}
+
+
+def listed_values(env: Mapping[str, str], secret_env: Iterable[str]) -> list[str]:
+    """The non-empty values `env` holds under the `secret_env` names."""
+    return [v for name in secret_env if (v := env.get(name))]
 
 
 class _ClaudeEnvBase(BaseModel):
@@ -2401,14 +2408,18 @@ class _ClaudeEnvBase(BaseModel):
         data["extra"] = {**self.extra, **override.extra}
         return type(self)(**data)
 
-    def redacted(self) -> dict[str, Any]:
+    def redacted(self, secret_env: Iterable[str] = ()) -> dict[str, Any]:
+        """Set fields with secret values masked: the secret-kind fields, `extra` names matching
+        `SECRET_KEY_RE` and `extra` names listed in `secret_env`."""
         out: dict[str, Any] = {
             name: MASK if isinstance(value, SecretStr) else value
             for name, value in self._set_values().items()
         }
         if self.extra:
+            listed = frozenset(secret_env)
             out["extra"] = {
-                k: MASK if SECRET_KEY_RE.search(k) else v for k, v in self.extra.items()
+                k: MASK if SECRET_KEY_RE.search(k) or k in listed else v
+                for k, v in self.extra.items()
             }
         return out
 
