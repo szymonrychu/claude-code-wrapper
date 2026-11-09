@@ -233,6 +233,15 @@ class PtyProcess:
         async with self._lock:
             await self._write_locked(data)
 
+    async def write_guarded(self, data: bytes, guard: Callable[[], bool]) -> bool:
+        """Write `data` only when `guard()` holds, checked under the write lock (no other writer
+        in between); returns whether it wrote. Raises `PtyClosed` like `write`."""
+        async with self._lock:
+            if not guard():
+                return False
+            await self._write_locked(data)
+            return True
+
     async def paste(self, text: str) -> None:
         """Write `text` as one bracketed paste. No CR: submitting is `send_prompt`'s job."""
         async with self._lock:

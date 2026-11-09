@@ -108,6 +108,19 @@ StopCause = Literal["stop", "shutdown"]
 SERVICE_SHUTDOWN = "service_shutdown"
 #: Minimum gap between two ESCs: a double ESC at an empty prompt opens the rewind menu.
 ESC_SPACING_SECONDS = 1.0
+#: Screen tail characters scanned to tell what kind of dialog is open.
+DIALOG_TAIL_CHARS = 1500
+#: A usage-limit wait (squashed, case-insensitive): never dismissed with ESC.
+USAGE_WAIT_PATTERNS = (
+    "usage limit reached",
+    "continuing automatically",
+    "continuing shortly",
+    "usage limit has reset",
+    "press enter to continue",
+)
+#: A permission prompt's own text next to its footer (the footer-only case: no hook relay).
+PERMISSION_FOOTER_PATTERNS = ("tab to amend", "do you want to proceed")
+DialogKind = Literal["permission", "dialog", "usage_wait"]
 
 
 def default_probe_text(token: str) -> str:
@@ -576,6 +589,10 @@ class Session:
         self._last_hook = float("-inf")
         #: The agent asked the user a question (AskUserQuestion, forwarded) and nothing answered.
         self._question = False
+        #: A relayed PermissionRequest is held (`set_permission_pending`): authoritative over the
+        #: footer scanner, and the `since` an ESC already dismissed (`escape_dialog`).
+        self._permission_pending = False
+        self._dismissed_since: str | None = None
         #: What the session waits on the user for (`waiting_reason`), and since when.
         self._waiting: str | None = None
         self.waiting_since: str | None = None
@@ -1185,12 +1202,20 @@ class Session:
         self._question = True
         self._sync_waiting()
 
+    def set_permission_pending(self, pending: bool) -> None:
+        """A relayed permission request is held (or no longer): the session waits on the user
+        (`permission`) and the lanes see an open dialog, whatever the screen shows."""
+        self._permission_pending = pending
+        self._sync_waiting()
+
     def waiting_reason(self) -> str | None:
         """Why the session waits on the user: `question` (asked, not answered), `permission` (a
         dialog footer on screen while a turn runs: a permission prompt) or `dialog` (a footer
         with no turn running: a slash command dialog); None otherwise."""
         if self._question:
             return "question"
+        if self._permission_pending:
+            return "permission"
         if not self.dialog_open():
             return None
         return "permission" if self._turn is not None else "dialog"
@@ -1210,9 +1235,70 @@ class Session:
         Typing into it would pick an answer, and an ESC would decline it, so the lanes refuse
         to write while it is open. Footers that the last typed text quotes are its echo.
         """
+        if self._permission_pending:
+            return True
         return self.state in ("ready", "busy") and self._ui_dialog_at > max(
             self._last_hook, self._last_escape
         )
+
+    def dialog_kind(self) -> DialogKind | None:
+        """What is open: `permission` (a relay is held, or the footer shows a permission prompt
+        with no relay), `usage_wait` (a usage-limit wait), `dialog` (any other footer); None
+        when nothing is open. A held relay wins over the footer scanner."""
+        if self._permission_pending:
+            return "permission"
+        if not self.dialog_open():
+            return None
+        text = _squash(self.tail(DIALOG_TAIL_CHARS))
+        if any(_squash(p) in text for p in USAGE_WAIT_PATTERNS):
+            return "usage_wait"
+        if any(_squash(p) in text for p in PERMISSION_FOOTER_PATTERNS):
+            return "permission"
+        return "dialog"
+
+    def auto_escape_blocked(self) -> bool:
+        """No automatic ESC may be sent: a permission relay is held or a usage-limit waits."""
+        return self._permission_pending or self.dialog_kind() == "usage_wait"
+
+    async def escape_dialog(self, since: str) -> bool:
+        """Dismiss the open dialog with one ESC, at most once per `since` (`waiting_since`).
+
+        The ESC keeps `ESC_SPACING_SECONDS` from the previous one and is written under the PTY
+        lock only if the dialog is still open, still the one at `since`, no relay is held and it
+        is not a usage-limit wait. Returns whether the ESC was written.
+        """
+        if self._dismissed_since == since:
+            return False
+        self._dismissed_since = since
+        pty = self.pty
+        written = False
+        try:
+            wait = self._last_escape + ESC_SPACING_SECONDS - self.clock()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            pty = self.pty
+            if pty is None or self.state not in ("ready", "busy"):
+                return False
+
+            def guard() -> bool:
+                return (
+                    self.dialog_open()
+                    and self.waiting_since == since
+                    and not self._permission_pending
+                    and self.dialog_kind() in ("dialog", "permission")
+                )
+
+            with contextlib.suppress(PtyClosed):
+                written = await pty.write_guarded(ESC, guard)
+            if written:
+                self.last_input = self.clock()
+                self._last_escape = self.last_input
+                self._hits_at_escape = self._dialog_hits
+                self._sync_waiting()
+            return written
+        finally:
+            if not written:
+                self._dismissed_since = None
 
     def check_no_dialog(self) -> None:
         """Raise `TurnRejected("dialog_open")` while `dialog_open` (no side effects)."""
