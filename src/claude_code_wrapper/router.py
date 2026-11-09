@@ -1492,7 +1492,7 @@ class SessionRouter(SessionListener):
     async def _priority(
         self, text: str, kw: dict[str, Any], message_id: str | None = None
     ) -> TurnRecord:
-        """onTurn first (a veto must not cost the running turn), then the spaced interrupt,
+        """onTurn first (a veto must not cost the running turn), then the interrupt,
         then the new turn with that hook outcome.
 
         The turn is listed `pending` (with its metadata) from the start: the interrupt can
@@ -1555,7 +1555,7 @@ class SessionRouter(SessionListener):
             while running is not None:
                 session.check_queueable(reserved=True)
                 pending = session.undelivered(running.turn_id)
-                await self.interrupt(spaced=True)
+                await self.interrupt()
                 running = await self._flushed_turn(running, pending)
             return await self.submit_turn(text, **kw, vetted=(turn_id, outcome))
 
@@ -1639,14 +1639,14 @@ class SessionRouter(SessionListener):
         )
         return message
 
-    async def interrupt(self, *, spaced: bool = False) -> str | None:
-        """Interrupt the running turn (or the idle command run); `spaced`: see Session."""
+    async def interrupt(self) -> str | None:
+        """Interrupt the running turn (or the idle command run)."""
         session = self.session
         if session.command_active and self.runner_active:
             return await self._interrupt_command()
         runner = self._runner if self.runner_active else None
         # A plain interrupt calls the session exactly as before the lanes.
-        turn_id = await (session.interrupt(spaced=True) if spaced else session.interrupt())
+        turn_id = await session.interrupt()
         if runner is not None and turn_id is not None:
             # The turn's commands: on_turn_end aborted the runner; let it settle the records.
             await asyncio.wait({runner}, timeout=CLOSE_DRAIN_SECONDS)

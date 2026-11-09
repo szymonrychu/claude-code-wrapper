@@ -13,6 +13,7 @@ from test_permission_relay import (
     hold_back_escape,
     requested,
     resolved,
+    settle_fast,
     start,
     tool_results,
 )
@@ -199,7 +200,9 @@ async def test_unknown_session_404(world: World) -> None:
 async def test_allow_footer_only_permission_no_dialog(world: World, monkeypatch: Any) -> None:
     """The hook is dead and the TUI prompt is still drawn: the view shows it with a tail and
     nothing answers it allow; the wrapper's own one ESC (No) closes it, so a dismiss meanwhile
-    sends no second ESC."""
+    sends no second ESC. Premise changed (fix round 4): the orphan lock now lifts
+    ORPHAN_SETTLE_SECONDS after that ESC, so the test shortens the settle to see it close."""
+    settle_fast(monkeypatch)
     m, sid, router = await start(world, GATED)
     gone = asyncio.Event()
     real = router.handle_claude_hook
