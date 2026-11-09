@@ -157,6 +157,8 @@ async def test_session_state_event_carries_since(make_session) -> None:
         router.peer_inbox = None
         router.commands = type("C", (), {"pending": staticmethod(list)})()
         router._subagents = set()
+        router._dd_handle = None
+        router._dd_since = None
         router._metrics = None
         router._spawn = lambda coro: coro.close()  # type: ignore[method-assign]
         router._fire = lambda *a, **k: asyncio.sleep(0)  # type: ignore[method-assign]
