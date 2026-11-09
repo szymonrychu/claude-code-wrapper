@@ -13,7 +13,7 @@ from claude_code_wrapper.permissions import (
 )
 from claude_code_wrapper.redact import Redactor
 
-SECRET = "s3cr3t-value-123"
+SECRET = "CANARY-perm-0001"
 
 
 def broker() -> PermissionBroker:
