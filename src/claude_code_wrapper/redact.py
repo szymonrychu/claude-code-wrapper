@@ -29,8 +29,12 @@ class Redactor:
         self._patterns = [re.compile(p) for p in patterns]
         self.add(values)
 
-    def add(self, values: Iterable[str]) -> None:
-        self._values.update(v for v in values if isinstance(v, str) and len(v) >= MIN_VALUE_LEN)
+    def add(self, values: Iterable[str], *, min_len: int = MIN_VALUE_LEN) -> None:
+        """Redact `values` from now on. Values shorter than `min_len` are skipped (the floor
+        keeps a short value of a name that merely looks secret from masking common text);
+        `min_len=1` adds every non-empty value, for values known to be secret."""
+        floor = max(min_len, 1)
+        self._values.update(v for v in values if isinstance(v, str) and len(v) >= floor)
 
     def redact(self, text: Any) -> Any:
         if not isinstance(text, str):

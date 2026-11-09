@@ -67,7 +67,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-from .claude_env import SECRET_KEY_RE, ClaudeEnv
+from .claude_env import SECRET_KEY_RE, ClaudeEnv, listed_values
 from .config import COMMAND_NAME, BootConfig, BootDialog, LimitsConfig, SessionsConfig
 from .pty_proc import PtyClosed, PtyProcess
 from .redact import Redactor
@@ -249,6 +249,8 @@ class SessionSpec:
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
     #: Turn limits: `turn_max_seconds`.
     limits: LimitsConfig = field(default_factory=LimitsConfig)
+    #: `claude.secret_env`: names in `env` whose values the screen tail masks at any length.
+    secret_env: tuple[str, ...] = ()
 
 
 def transcript_path_for(spec: SessionSpec) -> str:
@@ -465,8 +467,12 @@ def _split_partial_escape(text: str) -> tuple[str, str]:
     return text[:i], text[i:]
 
 
-def _redactor_for(env: Mapping[str, str]) -> Redactor:
-    return Redactor(value for name, value in env.items() if SECRET_KEY_RE.search(name))
+def _redactor_for(env: Mapping[str, str], secret_env: Iterable[str] = ()) -> Redactor:
+    """Masks the values of `env` names matching `SECRET_KEY_RE` and, with no length floor, the
+    values of the `secret_env` names."""
+    redactor = Redactor(value for name, value in env.items() if SECRET_KEY_RE.search(name))
+    redactor.add(listed_values(env, secret_env), min_len=1)
+    return redactor
 
 
 def _age_seconds(record: TurnRecord) -> float:
@@ -546,7 +552,7 @@ class Session:
         self.state_since: str | None = None  # when the public state last changed
         self.idle_since: str | None = None  # state_since while public state is ready, else None
         self.boot_error: BootError | None = None
-        self._redactor = _redactor_for(spec.env)
+        self._redactor = _redactor_for(spec.env, spec.secret_env)
         self._scanner = FatalScanner(spec.boot.fatal_patterns)
         #: Armed in auto mode only: claude then prompts for every tool call and the turn would
         #: sit on the prompt until `turn_stall`, so the first unavailable text fails it at once.
@@ -1514,7 +1520,8 @@ class Session:
         if record is None:
             return None
         message = payload.get("last_assistant_message")
-        record.final_text = message if isinstance(message, str) else None
+        # stored redacted: turns.jsonl outlives the session and is served as is
+        record.final_text = self._redactor.redact(message) if isinstance(message, str) else None
         record.stop_reason = "end_turn"
         record.usage = usage
         record.model_tokens = model_tokens

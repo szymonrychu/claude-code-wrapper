@@ -19,6 +19,7 @@ import uvicorn
 
 from claude_code_wrapper import tooling
 from claude_code_wrapper.api.app import create_app
+from claude_code_wrapper.claude_env import without_secrets
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.hooks import fire_instance, instance_dispatcher
 from claude_code_wrapper.internal_api import create_internal_app
@@ -214,8 +215,10 @@ async def _run(
     stop: asyncio.Event,
     handle: ServiceHandle,
 ) -> None:
+    redactor.add(cfg.claude.listed_secret_values(os.environ), min_len=1)
     tooling.render_global_mise(cfg.mise)
     base = allowed_env(os.environ, cfg.claude.passthrough_env, cfg.claude.passthrough_env_exclude)
+    base = without_secrets(base, cfg.claude.secret_env)
     await tooling.install_global(cfg.mise, {**base, **tooling.mise_env(cfg.mise)})
     if not await _fire_on_start(cfg, redactor, handle):
         return

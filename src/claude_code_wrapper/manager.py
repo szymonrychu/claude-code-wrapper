@@ -33,7 +33,7 @@ import secrets
 import shutil
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -50,7 +50,7 @@ from .bootstrap import (
     write_instructions,
 )
 from .bootstrap.settings import relay_timeouts, render_settings
-from .claude_env import SECRET_KEY_RE, ClaudeEnv, without_secrets
+from .claude_env import SECRET_KEY_RE, ClaudeEnv, listed_values, without_secrets
 from .commands import CommandRejected, effective_commands
 from .config import CommandsConfig, CommandsOverride, Config, InitialPromptTemplate
 from .events import EventLog
@@ -252,8 +252,9 @@ class _Active:
         return self.session_dir / "config"
 
 
-def _persistable_env(env: Any) -> dict[str, Any]:
-    """The override as stored in session.json: every set field except secret ones."""
+def _persistable_env(env: Any, secret_env: Iterable[str] = ()) -> dict[str, Any]:
+    """The override as stored in session.json: every set field except secret ones (secret-kind
+    fields, `extra` names matching `SECRET_KEY_RE` or listed in `claude.secret_env`)."""
     out: dict[str, Any] = {}
     for name in sorted(env.model_fields_set):
         if name == "extra":
@@ -261,7 +262,8 @@ def _persistable_env(env: Any) -> dict[str, Any]:
         value = getattr(env, name)
         if not isinstance(value, SecretStr):
             out[name] = value
-    extra = {k: v for k, v in env.extra.items() if not SECRET_KEY_RE.search(k)}
+    listed = frozenset(secret_env)
+    extra = {k: v for k, v in env.extra.items() if not SECRET_KEY_RE.search(k) and k not in listed}
     if extra:
         out["extra"] = extra
     return out
@@ -307,6 +309,8 @@ class SessionManager:
         self.service_env = dict(service_env)
         self.api_url = api_url
         self.redactor = redactor
+        # `claude.secret_env`: values only the claude child gets, masked at any length.
+        self.redactor.add(cfg.claude.listed_secret_values(self.service_env), min_len=1)
         self.started = False
         self._relay_command = relay_command
         self._reaper_interval = reaper_interval
@@ -483,7 +487,7 @@ class SessionManager:
             "workdir_mode": self.cfg.init.workdir.mode,
             "model": req.model or self.cfg.claude.model,
             "effort": req.effort or self.cfg.claude.effort,
-            "env": _persistable_env(override),
+            "env": _persistable_env(override, self.cfg.claude.secret_env),
             "callbackUrl": req.callback_url,
             "commands": req.commands.model_dump(exclude_none=True) if req.commands else None,
             "created_at": now,
@@ -708,9 +712,10 @@ class SessionManager:
     def _tool_env(self, ctx: _Active, gitconfig: Path | None) -> dict[str, str]:
         """Env for git, setup commands, mise and plugin installs: what the child gets from the
         service and config (base vars, passthrough, claude env, mise), without the CCW_* relay
-        plumbing and without the Claude credentials, which only the claude child gets. These
-        children run repo-controlled code (a cloned repo's mise.toml, setup commands in it), so
-        the result drops those names even when `claude.passthrough_env` or `claude.env` set them."""
+        plumbing, the Claude credentials and the `claude.secret_env` names, which only the claude
+        child gets. These children run repo-controlled code (a cloned repo's mise.toml, setup
+        commands in it), so the result drops those names even when `claude.passthrough_env` or
+        `claude.env` set them."""
         env = allowed_env(
             self.service_env,
             self.cfg.claude.passthrough_env,
@@ -721,17 +726,19 @@ class SessionManager:
         env["CLAUDE_CONFIG_DIR"] = str(ctx.config_dir)
         if gitconfig is not None and gitconfig.is_file():
             env["GIT_CONFIG_GLOBAL"] = str(gitconfig)
-        return without_secrets(env)
+        return without_secrets(env, self.cfg.claude.secret_env)
 
     def _terminal_target(self, session_id: str) -> ShellTarget:
-        """Workdir and env of a running session's shells: the env claude gets (the registry
-        scrubs its secrets). `SessionNotFound` when unknown, `SessionNotActive` otherwise."""
+        """Workdir and env of a running session's shells: the env claude gets without the
+        `claude.secret_env` names (the registry scrubs the other secrets). `SessionNotFound` when
+        unknown, `SessionNotActive` otherwise."""
         ctx = self._active.get(session_id)
         if ctx is None:
             raise SessionNotActive(session_id, str(self._read_meta(session_id).get("state")))
         if self._closing or ctx.phase != "running" or ctx.workdir is None:
             raise SessionNotActive(session_id, self._snapshot(ctx)["state"])
-        return ShellTarget(workdir=str(ctx.workdir), env=self._child_env(ctx))
+        env = {k: v for k, v in self._child_env(ctx).items() if k not in self.cfg.claude.secret_env}
+        return ShellTarget(workdir=str(ctx.workdir), env=env)
 
     def _gate_fail(self) -> str:
         return gate_fail_mode(self.cfg.hooks)
@@ -795,6 +802,7 @@ class SessionManager:
             permission_mode=self.cfg.claude.permission_mode,
             sessions=self.cfg.sessions,
             limits=self.cfg.limits,
+            secret_env=tuple(self.cfg.claude.secret_env),
         )
         # After a /clear with no turn since, the new id has no transcript yet: claude starts it
         # fresh with --session-id (the cleared state), never --resume.
@@ -1137,7 +1145,9 @@ class SessionManager:
         override = persisted.merged(resend) if resend is not None else persisted
         claude_env = self._merge_env(override)
         self._check_capacity()
-        meta.update(state="creating", error=None, env=_persistable_env(override))
+        meta.update(
+            state="creating", error=None, env=_persistable_env(override, self.cfg.claude.secret_env)
+        )
         ctx = self._activate(meta, override, claude_env)
         ctx.workdir = Path(str(meta["workdir"]))
         try:
@@ -1383,6 +1393,7 @@ class SessionManager:
             hook_token=secrets.token_urlsafe(32),
         )
         self.redactor.add([*claude_env.secret_values(), ctx.hook_token])
+        self.redactor.add(listed_values(claude_env.to_env(), self.cfg.claude.secret_env), min_len=1)
         ctx.task = asyncio.current_task()
         self._active[ctx.session_id] = ctx
         if self.metrics is not None:
@@ -1546,7 +1557,7 @@ class SessionManager:
         return self._compose(
             ctx.meta,
             state=state,
-            env=ctx.claude_env.redacted(),
+            env=ctx.claude_env.redacted(self.cfg.claude.secret_env),
             turns_completed=sum(t.state == "completed" for t in turns),
             current=current,
             live=live,
@@ -1562,7 +1573,7 @@ class SessionManager:
         try:
             env = self.cfg.claude.env.merged(
                 ClaudeEnv.model_validate(meta.get("env") or {})
-            ).redacted()
+            ).redacted(self.cfg.claude.secret_env)
         except ValidationError:
             env = dict(meta.get("env") or {})
         turns = TurnStore(self._session_dir(session_id) / "turns.jsonl", readonly=True).list()

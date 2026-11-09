@@ -31,6 +31,7 @@ claude:
     # extra:                  # any other env var, uppercase names only
     #   MY_VAR: value
   passthrough_env: []        # names copied from the service env when present, e.g. [GH_TOKEN, SSH_AUTH_SOCK]
+  secret_env: []             # exact names only the claude child gets; values redacted at any length
   permissions:
     allow: []                # e.g. ["Bash(git status:*)"]
     deny: [EnterPlanMode, ExitPlanMode]

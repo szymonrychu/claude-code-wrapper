@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
@@ -23,7 +24,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
-from claude_code_wrapper.claude_env import SECRET_KEY_RE, ClaudeEnv
+from claude_code_wrapper.claude_env import EXTRA_KEY_RE, SECRET_KEY_RE, ClaudeEnv, listed_values
 from claude_code_wrapper.interpolation import InterpolationError, interpolate
 
 MASK = "***"
@@ -215,6 +216,9 @@ class ClaudeConfig(_Model):
     env: ClaudeEnv = Field(default_factory=ClaudeEnv)  # type: ignore[valid-type]
     passthrough_env: list[str] = Field(default_factory=list)
     passthrough_env_exclude: list[str] = Field(default_factory=list)
+    #: Env names whose values are secret whatever the name: only the claude child gets them,
+    #: and their values are redacted everywhere (no length floor).
+    secret_env: list[str] = Field(default_factory=list)
     main_agent_only_tools: list[str] = Field(default_factory=list)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     settings: dict[str, Any] = Field(default_factory=dict)
@@ -233,6 +237,21 @@ class ClaudeConfig(_Model):
         if isinstance(out.get("extra"), dict):
             out["extra"] = {k: v for k, v in out["extra"].items() if v != ""}
         return out
+
+    @field_validator("secret_env")
+    @classmethod
+    def _check_secret_env(cls, value: list[str]) -> list[str]:
+        for name in value:
+            if not EXTRA_KEY_RE.match(name):
+                raise ValueError(f"secret_env name {name!r} must match ^[A-Z_][A-Z0-9_]*$")
+        return value
+
+    def listed_secret_values(self, service_env: Mapping[str, str]) -> list[str]:
+        """The values of the `secret_env` names in the service env and in `env.extra`."""
+        return [
+            *listed_values(service_env, self.secret_env),
+            *listed_values(self.env.to_env(), self.secret_env),
+        ]
 
     @field_validator("extra_args")
     @classmethod
@@ -945,14 +964,16 @@ class Config(_Model):
         for section in ("peers", "usage"):
             if out[section]["token"]:
                 out[section]["token"] = MASK
-        out["claude"]["env"] = self.claude.env.redacted()  # type: ignore[attr-defined]
+        listed = frozenset(self.claude.secret_env)
+        out["claude"]["env"] = self.claude.env.redacted(listed)  # type: ignore[attr-defined]
         for name, server in self.claude.mcp_servers.items():
             dumped = out["claude"]["mcp_servers"][name]
             if isinstance(server, McpHttp):
                 dumped["headers"] = dict.fromkeys(server.headers, MASK)
             else:
                 dumped["env"] = {
-                    k: MASK if SECRET_KEY_RE.search(k.upper()) else v for k, v in server.env.items()
+                    k: MASK if SECRET_KEY_RE.search(k.upper()) or k in listed else v
+                    for k, v in server.env.items()
                 }
         for event in HOOK_EVENTS:
             for dumped in out["hooks"][event]:

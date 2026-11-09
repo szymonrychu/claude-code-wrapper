@@ -157,15 +157,18 @@ async def test_compact_boundary_resets_context_and_emits_null_event(tmp_path: Pa
 def test_manager_snapshot_carries_router_context(tmp_path: Path) -> None:
     from types import SimpleNamespace
 
+    from claude_code_wrapper.config import Config
+
     router = make_router(tmp_path)
     router._subagents = {}
     router.on_statusline(payload())
     manager = SessionManager.__new__(SessionManager)
+    manager.cfg = Config()
     ctx = SimpleNamespace(
         session=None,
         phase="ready",
         meta={"session_id": "s", "state": "ready"},
-        claude_env=SimpleNamespace(redacted=lambda: {}),
+        claude_env=SimpleNamespace(redacted=lambda secret_env=(): {}),
         turns=None,
         event_log=None,
         router=router,
