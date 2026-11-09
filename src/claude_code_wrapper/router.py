@@ -40,7 +40,15 @@ from .hook_relay import PERMISSION_FAIL_MESSAGE, RelayResponse, deny_output, per
 from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
 from .notes import NoteStore, render_block
-from .permissions import HOLD_DENY_MESSAGE, Behavior, Decision, PendingPermission, PermissionBroker
+from .permissions import (
+    GONE_DENY_MESSAGE,
+    HOLD_DENY_MESSAGE,
+    TERMINAL_DENY_MESSAGE,
+    Behavior,
+    Decision,
+    PendingPermission,
+    PermissionBroker,
+)
 from .pty_proc import PtyClosed
 from .redact import Redactor
 from .session import (
@@ -113,6 +121,8 @@ QUESTION_DENY_REASON = (
 DEFAULT_DENY_REASON = "Denied by a wrapper hook."
 #: The deny message claude gets when a person denies a held permission without a message.
 OPERATOR_DENY_MESSAGE = "The operator denied this action"
+#: How often a writer of text plus CR looks again whether a held permission was resolved.
+PERMISSION_POLL_SECONDS = 0.05
 #: How long a dismiss waits for the dialog to close before it reports `still_open`.
 DISMISS_CONFIRM_SECONDS = 2.0
 DISMISS_POLL_SECONDS = 0.1
@@ -291,6 +301,29 @@ def _attribution(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _allow() -> RelayResponse:
     return {"stdout": "", "stderr": "", "exit_code": 0}
+
+
+#: The deny text per resolution source when the decision carries none (never a null message).
+_DENY_MESSAGES = {
+    "user": OPERATOR_DENY_MESSAGE,
+    "timeout": HOLD_DENY_MESSAGE,
+    "gone": GONE_DENY_MESSAGE,
+    "terminal": TERMINAL_DENY_MESSAGE,
+}
+
+
+def _hook_answer(decision: Decision) -> str:
+    """The JSON a held PermissionRequest hook prints: allow only for a person's answer.
+
+    Every hook-derived resolution (terminal, gone) is forgeable by the agent, since
+    CCW_HOOK_TOKEN is in every Bash tool's env, so it always denies with a fixed message. A real
+    terminal keypress already answered claude first, which then ignores this output (probe 3b).
+    """
+    if decision.by == "user" and decision.behavior == "allow":
+        return permission_output("allow")
+    if decision.by == "terminal":
+        return permission_output("deny", TERMINAL_DENY_MESSAGE)
+    return permission_output("deny", decision.message or _DENY_MESSAGES[decision.by])
 
 
 def _relay(stdout: str) -> RelayResponse:
@@ -756,7 +789,7 @@ class SessionRouter(SessionListener):
                     "behavior": decision.behavior,
                 },
             )
-        return _relay(permission_output(decision.behavior, decision.message))
+        return _relay(_hook_answer(decision))
 
     async def _hold(
         self, pending: PendingPermission, deadline: float, gone: asyncio.Event | None
@@ -876,7 +909,11 @@ class SessionRouter(SessionListener):
     def _resolve_pending_by_terminal(
         self, pendings: list[PendingPermission], behavior: Behavior
     ) -> None:
-        """The person at the TUI answered these prompts first (probe case 3b): withdraw them."""
+        """The person at the TUI answered these prompts first (probe case 3b): withdraw them.
+
+        `behavior` is only what the hook reported, for `permission_resolved`; the held hook is
+        answered deny (`_hook_answer`), because the reporting hook may be forged by the agent.
+        """
         for pending in pendings:
             self.permissions.resolve(pending.request_id, Decision(behavior, "terminal"))
 
@@ -1865,17 +1902,29 @@ class SessionRouter(SessionListener):
             return  # the turn goes on as the prompt command's turn (D8): no continue prompt
         # Typed at a quiet prompt, like a command; a screen that never settles still gets it
         # (claude queues input typed while it responds) rather than leaving the turn hanging.
+        # Never over a held permission (a background subagent's): its CR would pick "1. Yes".
         quiet = self.commands_cfg.quiet_seconds
-        await session.wait_quiet(quiet, self._command_timeout("default"))
-        if self._closed or record.terminal or record is not session.current_turn:
-            return
-        self._commands_turn = None  # from here on a Stop is the continuation's
         ids = [r.id for r in done]
         text = f"{self.commands_cfg.continue_prompt}\n\n{_results_line(done)}"
-        self._last_marker = record.turn_id  # the continuation's Stop completes this record
-        self._emit("turn_resumed", {"turn_id": record.turn_id, "cause": "command", "commands": ids})
-        if await session.continue_turn(record, text):
-            self._emit_user_message(record.turn_id, record.origin, text)
+        resumed = False
+        while True:
+            await session.wait_quiet(quiet, self._command_timeout("default"))
+            if self._closed or record.terminal or record is not session.current_turn:
+                return
+            if session.permission_pending:
+                await asyncio.sleep(PERMISSION_POLL_SECONDS)
+                continue
+            self._commands_turn = None  # from here on a Stop is the continuation's
+            self._last_marker = record.turn_id  # the continuation's Stop completes this record
+            if not resumed:
+                resumed = True
+                data = {"turn_id": record.turn_id, "cause": "command", "commands": ids}
+                self._emit("turn_resumed", data)
+            if await session.continue_turn(record, text):
+                self._emit_user_message(record.turn_id, record.origin, text)
+                return
+            if not session.permission_pending:
+                return
 
     def _end_turn_commands(self, record: TurnRecord) -> None:
         """A turn ended without completing: its commands never resume it (D4.5-D4.7).
@@ -2077,6 +2126,15 @@ class SessionRouter(SessionListener):
     def _emit_command(self, type: str, record: CommandRecord) -> LogEvent:
         return self._emit(type, {"record": record.model_dump(mode="json")})
 
+    async def _permission_cleared(self, deadline: float) -> bool:
+        """Wait until no relayed permission is held, since typing a line plus CR over its prompt
+        would approve it; False at the monotonic `deadline` or when the router closes."""
+        while self.session.permission_pending:
+            if self._closed or time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(min(PERMISSION_POLL_SECONDS, _left(deadline)))
+        return True
+
     def _command_timeout(self, name: str) -> float:
         timeouts = self.commands_cfg.timeout_seconds
         return float(timeouts.get(name, timeouts.get("default", 60)))
@@ -2094,6 +2152,11 @@ class SessionRouter(SessionListener):
         started = time.monotonic()
         self._current = record
         try:
+            if not await self._permission_cleared(deadline):
+                await self._finish_command(
+                    record, "failed", started, error="timeout", output="a permission stayed held"
+                )
+                return
             if not await session.wait_quiet(self.commands_cfg.quiet_seconds, _left(deadline)):
                 await self._finish_command(
                     record, "failed", started, error="timeout", output="the screen never settled"
@@ -2142,8 +2205,10 @@ class SessionRouter(SessionListener):
             ) and not session.auto_escape_blocked():
                 # A held permission or a usage wait must outlive the leg: no relaunch over it.
                 await self._restart_for_dialog()
-        except (PtyClosed, TurnRejected):
-            state, result, error, output = "failed", None, "claude_exited", None
+        except (PtyClosed, TurnRejected) as exc:
+            held = isinstance(exc, TurnRejected) and exc.reason == "dialog_open"
+            error = "dialog_open" if held else "claude_exited"
+            state, result, output = "failed", None, None
         except Exception as exc:  # noqa: BLE001 - one command never wedges the queue
             log.exception("command %s failed", record.id)
             self._report_error("command", f"/{record.name}: {type(exc).__name__}: {exc}")

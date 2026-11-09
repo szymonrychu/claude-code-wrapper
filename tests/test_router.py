@@ -51,6 +51,7 @@ class StubSession:
         self.state_since: str | None = None
         self.submitted_turn_ids: list[str | None] = []
         self.command_active = False
+        self.permission_pending = False
 
     @property
     def current_turn(self):

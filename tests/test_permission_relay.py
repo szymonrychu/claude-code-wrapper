@@ -14,15 +14,21 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 from conftest import World, jsonl
 from test_api_turns import TOKEN
+from test_command_runner import commands_cfg
 
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.bootstrap.settings import permission_timeouts
 from claude_code_wrapper.config import CommandsOverride
 from claude_code_wrapper.hook_relay import PERMISSION_FAIL_MESSAGE, permission_output
 from claude_code_wrapper.manager import CreateSessionRequest
-from claude_code_wrapper.permissions import HOLD_DENY_MESSAGE
+from claude_code_wrapper.permissions import (
+    GONE_DENY_MESSAGE,
+    HOLD_DENY_MESSAGE,
+    TERMINAL_DENY_MESSAGE,
+)
 from claude_code_wrapper.router import HOLD_GONE_WAITER, OPERATOR_DENY_MESSAGE
 
 BASH = {"command": "echo probe"}
@@ -259,7 +265,7 @@ async def test_close_resolves_pending_as_gone(world: World) -> None:
     main = await held(router, payload())
     await router.close()
     out = await asyncio.wait_for(main, 1)
-    assert decision(out) == {"behavior": "deny", "message": None, "interrupt": False}
+    assert decision(out) == {"behavior": "deny", "message": GONE_DENY_MESSAGE, "interrupt": False}
     got = of_type(world, sid, "permission_resolved")
     assert [(e["by"], e["behavior"]) for e in got] == [("gone", "deny")]
 
@@ -270,7 +276,7 @@ async def test_dropped_connection_resolves_as_gone(world: World) -> None:
     main = await held(router, payload(), gone=gone)
     gone.set()
     out = await asyncio.wait_for(main, 1)
-    assert decision(out)["behavior"] == "deny"
+    assert decision(out) == {"behavior": "deny", "message": GONE_DENY_MESSAGE, "interrupt": False}
     got = await resolved(world, sid)
     assert (got["by"], got["behavior"]) == ("gone", "deny")
     assert router.session.waiting_reason() is None
@@ -360,3 +366,118 @@ def test_hold_deadline_strictly_below_hook_timeouts() -> None:
     for hold in (0.5, 30.0, 1800.0, 86400.0):
         t = permission_timeouts(hold)
         assert hold < t.relay_timeout < t.hook_timeout
+
+
+# ------------------------------------------------------------------ no agent self-approval
+
+
+@pytest.mark.parametrize("event", ["PostToolUse", "PostToolUseFailure", "Stop"])
+async def test_forged_terminal_hook_never_allows(world: World, event: str) -> None:
+    """CCW_HOOK_TOKEN is in every Bash tool's env, so an agent can post any hook: a terminal
+    resolution answers the held hook with a fixed deny, never allow. A real keypress already
+    answered claude first (probe case 3b), so claude ignores this later output anyway."""
+    _, sid, router = await start(world, {"turns": []})
+    main = await held(router, payload())
+    body = {} if event == "Stop" else {**payload(), "tool_use_id": "toolu_x", "tool_response": "ok"}
+    await router.handle_claude_hook(event, body)
+    out = await asyncio.wait_for(main, 2)
+    assert decision(out) == {
+        "behavior": "deny",
+        "message": TERMINAL_DENY_MESSAGE,
+        "interrupt": False,
+    }
+    got = await resolved(world, sid)
+    assert got["by"] == "terminal"
+
+
+# ------------------------------------------------------------------ no CR over a held permission
+
+IDLE = {"turns": [{"match": "^go", "steps": [{"text": "done"}]}]}
+CONTINUE = "Resume after commands"
+GO = {"match": "^go", "steps": [{"sleep": 0.8}, {"text": "part one"}]}
+RESUMED = {"match": "^Resume after commands", "steps": [{"text": "part two"}]}
+
+
+def typed(world: World, sid: str) -> list[str]:
+    return [i["text"] for i in jsonl(world.session_dir(sid) / "config" / "fake-inputs.jsonl")]
+
+
+async def held_subagent(world: World, scen: dict = IDLE, **sections: Any):
+    """A ready session with a background subagent's permission held (the main Stop is done)."""
+    m, sid, router = await start(world, scen, **sections)
+    await world.until(lambda: router.session.state == "ready", 15)
+    sub = await held(router, payload("a1"))
+    return m, sid, router, sub
+
+
+async def release(router: Any, sub: asyncio.Task) -> None:
+    await router.handle_claude_hook("SubagentStop", {"agent_id": "a1"})
+    await asyncio.wait_for(sub, 2)
+
+
+async def test_idle_lane_refused_while_permission_held(world: World) -> None:
+    m, sid, router, sub = await held_subagent(world)
+    app = create_app(m, m.cfg)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t", headers=headers) as c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": "idle"})
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "dialog_open"
+        assert typed(world, sid) == []
+        await release(router, sub)
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": "idle"})
+        assert r.status_code == 202, r.text
+        await world.wait_turn(m, sid)
+
+
+async def test_probe_refused_while_permission_held(world: World) -> None:
+    m, sid, router, sub = await held_subagent(world)
+    app = create_app(m, m.cfg)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t", headers=headers) as c:
+        r = await c.post(f"/v1/sessions/{sid}/probe")
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "dialog_open"
+    assert typed(world, sid) == []
+    await release(router, sub)
+
+
+async def test_command_runner_waits_for_held_permission(world: World) -> None:
+    m, sid, router, sub = await held_subagent(world, sessions={"commands": commands_cfg()})
+    rec = router.request_command("compact", origin="client")
+    await asyncio.sleep(1.0)
+    assert rec.state == "queued"
+    assert typed(world, sid) == []
+    await release(router, sub)
+    await world.until(lambda: rec.state in ("completed", "failed", "cancelled"), 15)
+    assert (rec.state, rec.result) == ("completed", "ok")
+    assert typed(world, sid) == ["/compact"]
+
+
+async def test_continuation_waits_for_held_permission(world: World, monkeypatch: Any) -> None:
+    cmds = commands_cfg(continue_prompt=CONTINUE, agent=["*"])
+    m, sid, router = await start(world, {"turns": [GO, RESUMED]}, sessions={"commands": cmds})
+    session = router.session
+    real = session.wait_quiet
+    subs: list[asyncio.Task] = []
+    recs: list[Any] = []
+
+    async def quiet(seconds: float, timeout: float) -> bool:
+        # the command ran; a background subagent's prompt opens before the continuation
+        if recs and recs[0].state == "completed" and not subs:
+            subs.append(await held(router, payload("a1")))
+        return await real(seconds, timeout)
+
+    monkeypatch.setattr(session, "wait_quiet", quiet)
+    turn = await router.submit_turn("go")
+    recs.append(router.request_command("compact", origin="agent"))
+    await world.until(lambda: subs, 15)
+    await asyncio.sleep(1.0)
+    assert turn.state == "running"
+    assert [t for t in typed(world, sid) if t.startswith(CONTINUE)] == []
+    await release(router, subs[0])
+    done = await world.wait_turn(m, sid)
+    assert done.turn_id == turn.turn_id and done.final_text == "part two"
+    assert len([t for t in typed(world, sid) if t.startswith(CONTINUE)]) == 1

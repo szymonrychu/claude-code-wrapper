@@ -1004,6 +1004,7 @@ class Session:
             or record.terminal
             or record is not self._turn
             or self.state not in ("ready", "busy")
+            or self._permission_pending
         ):
             return False
         if self._commands_turn is record:
@@ -1011,8 +1012,10 @@ class Session:
         self._set_state("busy")
         try:
             self._typed = _squash(text)
-            await pty.send_prompt(
-                self._with_marker(text, record), self.spec.boot.submit_delay_seconds
+            return await pty.send_prompt(
+                self._with_marker(text, record),
+                self.spec.boot.submit_delay_seconds,
+                self._no_permission,
             )
         except PtyClosed:
             self._end_turn(
@@ -1021,7 +1024,6 @@ class Session:
             return False
         finally:
             self.last_input = self.clock()
-        return True
 
     # -- stop ------------------------------------------------------------------------------
 
@@ -1098,13 +1100,15 @@ class Session:
         return self.pty
 
     def check_submittable(self, *, reserved: bool = False) -> PtyProcess:
-        """Raise `TurnRejected(booting|dead|busy)` if a turn cannot start now (no side effects).
+        """Raise `TurnRejected(booting|dead|busy|dialog_open)` if a turn cannot start now (no
+        side effects).
 
         While the slot is reserved (`reserve`) only the holder (`reserved=True`) may start one.
         """
         pty = self._writable_pty()
         if self.state == "busy" or self._turn is not None or (self._reserved and not reserved):
             raise TurnRejected("busy")
+        self.check_no_permission()
         return pty
 
     @property
@@ -1176,9 +1180,13 @@ class Session:
         log.info("session %s: turn %s submitted (%s)", self.spec.session_id, record.turn_id, origin)
         try:
             self._typed = _squash(text)
-            await pty.send_prompt(
-                self._with_marker(text, record), self.spec.boot.submit_delay_seconds
+            written = await pty.send_prompt(
+                self._with_marker(text, record),
+                self.spec.boot.submit_delay_seconds,
+                self._no_permission,
             )
+            if not written:  # a permission was relayed while waiting for the PTY lock
+                self._end_turn(record, "failed", error="dialog_open", next_state="ready")
         except PtyClosed:
             # A claude that died is handled by the exit path (relaunch or dead); a live one
             # whose write failed gets its slot back here.
@@ -1207,6 +1215,21 @@ class Session:
         (`permission`) and the lanes see an open dialog, whatever the screen shows."""
         self._permission_pending = pending
         self._sync_waiting()
+
+    @property
+    def permission_pending(self) -> bool:
+        """A relayed permission request is held (`set_permission_pending`)."""
+        return self._permission_pending
+
+    def _no_permission(self) -> bool:
+        return not self._permission_pending
+
+    def check_no_permission(self) -> None:
+        """Raise `TurnRejected("dialog_open")` while a relayed permission is held: its TUI prompt
+        has focus and a CR picks the highlighted "1. Yes", an approval no person gave. Every
+        writer of text plus CR checks this, and passes `_no_permission` as the write guard."""
+        if self._permission_pending:
+            raise TurnRejected("dialog_open")
 
     def waiting_reason(self) -> str | None:
         """Why the session waits on the user: `question` (asked, not answered), `permission` (a
@@ -1371,12 +1394,17 @@ class Session:
         prompt = f"{text}\n\n<!-- ccw message: {message.message_id} -->"
         try:
             self._typed = _squash(prompt)
-            await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
+            written = await pty.send_prompt(
+                prompt, self.spec.boot.submit_delay_seconds, self._no_permission
+            )
         except PtyClosed as exc:
             self._queued.pop(message.message_id, None)
             raise TurnRejected("dead") from exc
         finally:
             self.last_input = self.clock()
+        if not written:
+            self._queued.pop(message.message_id, None)
+            raise TurnRejected("dialog_open")
         log.info(
             "session %s: message %s queued into %s (%s)",
             self.spec.session_id,
@@ -1756,15 +1784,20 @@ class Session:
     async def send_command(self, line: str) -> None:
         """Type a slash command line: paste then CR, no turn marker, under the PTY write lock.
 
-        Raises `TurnRejected(booting|dead)` or `PtyClosed`.
+        Raises `TurnRejected(booting|dead|dialog_open)` or `PtyClosed`.
         """
         pty = self._writable_pty()
+        self.check_no_permission()
         log.info("session %s: typing %r", self.spec.session_id, line)
         try:
             self._typed = _squash(line)
-            await pty.send_prompt(line, self.spec.boot.submit_delay_seconds)
+            written = await pty.send_prompt(
+                line, self.spec.boot.submit_delay_seconds, self._no_permission
+            )
         finally:
             self.last_input = self.clock()
+        if not written:
+            raise TurnRejected("dialog_open")
 
     async def send_escape(self) -> None:
         """One ESC for a slash command (a dialog, a timeout, an interrupt), never within
@@ -1947,11 +1980,13 @@ class Session:
         The probe is pending until the router sees its marker in the transcript
         (`probe_delivered`) and answered once assistant text with the alive token follows
         (`probe_answered`, which records the answer text). Raises `TurnRejected` (slash_command
-        first, for text claude would run as a command, then booting, dead); nothing is pasted.
+        first, for text claude would run as a command, then booting, dead, dialog_open while a
+        permission is held); nothing is pasted.
         """
         if text is not None and slash_command(text) is not None:
             raise TurnRejected("slash_command")
         pty = self._writable_pty()
+        self.check_no_permission()
         probe = Probe(
             probe_id=new_probe_id(),
             text=text or default_probe_text(self.spec.sessions.probe_alive_token),
@@ -1963,10 +1998,15 @@ class Session:
         prompt = f"{probe.text}\n\n<!-- ccw probe: {probe.probe_id} -->"
         try:
             self._typed = _squash(prompt)
-            await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
+            written = await pty.send_prompt(
+                prompt, self.spec.boot.submit_delay_seconds, self._no_permission
+            )
         except PtyClosed as exc:
             self._probes.pop(probe.probe_id, None)
             raise TurnRejected("dead") from exc
+        if not written:
+            self._probes.pop(probe.probe_id, None)
+            raise TurnRejected("dialog_open")
         log.info("session %s: probe %s written", self.spec.session_id, probe.probe_id)
         return probe
 

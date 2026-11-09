@@ -343,7 +343,8 @@ async def test_dialog_leg_skips_escape_while_permission_pending(world):
     )
     router = m.router(sid)
     rec = router.request_command("help", origin="client")
-    await world.until(lambda: rec.state == "running", 10)
+    # the line is typed first: nothing is typed over a held permission
+    await world.until(lambda: any(i["text"] == "/help" for i in inputs(world, sid)), 10)
     router.session.set_permission_pending(True)  # a subagent's relayed permission is held
     try:
         await finished(world, rec, timeout=30)

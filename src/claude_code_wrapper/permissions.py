@@ -25,6 +25,9 @@ TOOL_INPUT_MAX_BYTES = 4096
 HOLD_DENY_MESSAGE = (
     "No operator answered the permission request in time; continue without this action"
 )
+#: Fixed deny texts for resolutions no person made: never null, never an allow (see router).
+TERMINAL_DENY_MESSAGE = "The permission prompt was answered outside the relay"
+GONE_DENY_MESSAGE = "The permission request was withdrawn"
 RESOLVED_MEMORY = 256
 
 

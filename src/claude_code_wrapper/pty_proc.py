@@ -247,16 +247,25 @@ class PtyProcess:
         async with self._lock:
             await self._write_locked(paste_bytes(text))
 
-    async def send_prompt(self, text: str, delay: float) -> None:
+    async def send_prompt(
+        self, text: str, delay: float, guard: Callable[[], bool] | None = None
+    ) -> bool:
         """Paste `text`, wait `delay`, then CR as a second write, all under one lock hold.
 
         The CR must arrive in a later read than the paste end or the TUI takes it as a
         newline inside the paste; holding the lock keeps any other writer out of the gap.
+        `guard`, when given, is checked under the lock before the paste and again before the
+        CR; returns False (nothing more written) as soon as it fails.
         """
         async with self._lock:
+            if guard is not None and not guard():
+                return False
             await self._write_locked(paste_bytes(text))
             await asyncio.sleep(delay)
+            if guard is not None and not guard():
+                return False
             await self._write_locked(b"\r")
+            return True
 
     def _check_writable(self) -> int:
         if self._closed or self._exit_fired or self._fd is None or self._proc is None:

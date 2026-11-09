@@ -1892,9 +1892,18 @@ Emitted once per `permission_requested`, when the held request is answered and c
 decision. `by`: `user` (answered through the API), `timeout` (the hold ran out: deny with
 "No operator answered the permission request in time; continue without this action"),
 `terminal` (answered at claude's own prompt first, or its turn, agent or tool ended), `gone`
-(the hook connection dropped or the session closed; nothing reaches claude).
+(the hook connection dropped, the session closed or claude was relaunched).
 
-`data`: `request_id`, `by` (`user`, `timeout`, `terminal`, `gone`), `behavior` (`allow`, `deny`).
+Only `user` ever answers the hook `allow`. A `terminal` or `gone` resolution always answers the
+hook with a deny and a fixed message ("The permission prompt was answered outside the relay",
+"The permission request was withdrawn"): the hook token is in every tool's env, so an agent could
+forge the hook that reports a terminal answer. A real terminal answer reached claude first, and
+claude ignores the hook's later output. While a request is held, nothing the wrapper types ends
+with a CR (idle turns, probes, slash commands, the continue prompt): they are refused with
+`409 dialog_open` or wait, because a CR would pick the prompt's highlighted "1. Yes".
+
+`data`: `request_id`, `by` (`user`, `timeout`, `terminal`, `gone`), `behavior` (`allow`, `deny`;
+for `terminal`, what the reporting hook said, not what the held hook answered).
 
 ```
 event: permission_resolved
