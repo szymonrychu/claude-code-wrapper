@@ -285,7 +285,7 @@ Request body (all fields optional):
 | `template` | string | name of a configured prompt template to use as the initial prompt (instead of `prompt`) |
 | `variables` | object of string | values for the template's `{{name}}` placeholders |
 | `callbackUrl` | string | `http`/`https` URL that receives turn-terminal and question callbacks for this session (a turn's own `callbackUrl` wins) |
-| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `deny`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`, `dialog_grace_seconds`, `dialog_patterns`; all optional, unset fields inherit, a set `deny` only extends the effective list, it never replaces or empties it); command names outside the name pattern are rejected; stored with the session and reapplied on resume |
+| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `deny`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`, `dialog_grace_seconds`, `dialog_patterns`, `permission_hold_seconds`, `dialog_auto_dismiss_seconds`; all optional, unset fields inherit, a set `deny` only extends the effective list, it never replaces or empties it); command names outside the name pattern are rejected; stored with the session and reapplied on resume |
 
 When neither `prompt` nor `template` is given, `prompts.initial_prompt` (if configured) is used.
 Secret `env` overrides are never persisted; resend them on resume.
@@ -2659,6 +2659,8 @@ sessions:
     quiet_seconds: 1.5
     dialog_grace_seconds: 2.0
     dialog_patterns: ["esc to cancel", "esc to close", "esc to clear", "esc to exit", "enter to confirm"]
+    permission_hold_seconds: 1800          # a relayed PermissionRequest waits this long, then is denied
+    dialog_auto_dismiss_seconds: 0         # reserved for stage 2; 0 = off
   auto_compact:
     idle_seconds: 1800
     instructions: "keep the current plan, open decisions and file paths"
@@ -3785,6 +3787,8 @@ sessions:
 | `sessions.commands.quiet_seconds` | number | `1.5` | - | Seconds of PTY silence to wait for before typing a command, >= 0. |
 | `sessions.commands.dialog_grace_seconds` | number | `2.0` | - | Seconds without PTY output, after a dialog footer appeared and no completion signal came, before a command's dialog is dismissed with ESC, >= 0. See [Lifecycle](#lifecycle). |
 | `sessions.commands.dialog_patterns` | list of string | `["esc to cancel", "esc to close", "esc to clear", "esc to exit", "enter to confirm"]` | - | Dialog footers looked for on screen while a command other than `compact` runs, matched ignoring case, whitespace and escapes; none blank. Empty disables dialog dismissal. |
+| `sessions.commands.permission_hold_seconds` | number | `1800` | - | How long a relayed PermissionRequest waits for an answer before it is denied, > 0 and <= 86400; the hook timeout is this + 30 s. |
+| `sessions.commands.dialog_auto_dismiss_seconds` | number | `0` | - | Reserved for stage 2 auto dismiss of idle dialogs; 0 = off, >= 0. |
 | `sessions.auto_compact.idle_seconds` | number | `0` | - | Run `/compact` after the session stayed idle this long following a turn; 0 is off. Must be below `idle_timeout_seconds` when both are set. |
 | `sessions.auto_compact.instructions` | string | `""` | - | One-line focus instructions passed to the automatic `/compact` (max 2000 characters, no control characters); empty sends none. |
 | `sessions.auto_compact.min_context_tokens` | integer | `0` | - | Skip the automatic compact while the last main-chain context (input + cache read + cache creation tokens) is below this many tokens, >= 0; 0 compacts whatever the size. |

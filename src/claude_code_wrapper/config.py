@@ -622,6 +622,10 @@ DEFAULT_DIALOG_PATTERNS: tuple[str, ...] = (
     "esc to exit",
     "enter to confirm",
 )
+#: Seconds a relayed PermissionRequest waits for a human answer before it is denied.
+DEFAULT_PERMISSION_HOLD_SECONDS: float = 1800
+#: Reserved for stage 2: auto dismiss of idle dialogs after this many seconds; 0 = off.
+DEFAULT_DIALOG_AUTO_DISMISS_SECONDS: float = 0
 
 
 def _check_name(path: str, name: str, *, wildcard: bool) -> None:
@@ -674,6 +678,8 @@ class CommandsConfig(_Model):
     quiet_seconds: float = Field(1.5, ge=0)
     dialog_grace_seconds: float = Field(2.0, ge=0)
     dialog_patterns: list[str] = Field(default_factory=lambda: list(DEFAULT_DIALOG_PATTERNS))
+    permission_hold_seconds: float = Field(DEFAULT_PERMISSION_HOLD_SECONDS, gt=0, le=86400)
+    dialog_auto_dismiss_seconds: float = Field(DEFAULT_DIALOG_AUTO_DISMISS_SECONDS, ge=0)
 
     _agent = field_validator("agent")(_check_command_names)
     _client = field_validator("client")(_check_command_names)
@@ -694,6 +700,8 @@ class CommandsOverride(_Model):
     quiet_seconds: float | None = Field(None, ge=0)
     dialog_grace_seconds: float | None = Field(None, ge=0)
     dialog_patterns: list[str] | None = None
+    permission_hold_seconds: float | None = Field(None, gt=0, le=86400)
+    dialog_auto_dismiss_seconds: float | None = Field(None, ge=0)
 
     @field_validator("agent", "client")
     @classmethod
