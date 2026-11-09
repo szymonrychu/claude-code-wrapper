@@ -35,7 +35,8 @@ boot.footer replaces the boot footer text (the first footer only), e.g. an "auto
 unavailable ..." line.
 Input: bracketed paste ESC[200~ ... ESC[201~; a CR in a later read than the paste end
 submits; a CR in the same read as the paste end is a newline. A lone ESC during a turn
-interrupts it. Byte 0x03 at idle exits 0.
+interrupts it. Byte 0x03 at idle exits 0. A paste with no CR stays in the input box and the
+next paste appends to it; ctrl+l (0x0c, chat:clearInput) empties the input box.
 
 Scenario schema
     {"boot": {"bypass_dialog": true, "min_seconds": 0.3},
@@ -79,9 +80,10 @@ Scenario schema
                          (payload: tool_name, tool_input, permission_mode, agent_id/agent_type;
                          no tool_use_id). First answer wins: hook behavior allow runs the tool,
                          deny is the tool_result error with its message (the turn goes on), key
-                         "1" runs the tool, ESC (or "2") writes "[Request interrupted by user for
-                         tool use]" and returns to idle without Stop. A hook timeout, kill or empty
-                         stdout leaves the prompt for keys only; a later hook answer is ignored.
+                         "1" or CR (the highlighted "1. Yes") runs the tool, ESC (or "2")
+                         writes "[Request interrupted by user for tool use]" and returns to
+                         idle without Stop. A hook timeout, kill or empty stdout leaves the
+                         prompt for keys only; a later hook answer is ignored.
                          $CLAUDE_CONFIG_DIR/fake-permissions.jsonl gets {by: hook|key, behavior:
                          allow|deny|interrupt, ts} for the winning answer.
     {"sleep": seconds}   ESC during it writes "[Request interrupted by user]" and
@@ -228,6 +230,7 @@ from typing import Any
 PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
 DOWN = b"\x1b[B"
+CLEAR_INPUT = b"\x0c"  # ctrl+l, chat:clearInput in claude 2.1.304
 FOOTER = "? for shortcuts"
 AUTO_FOOTER = "auto mode on"
 INTERRUPT_TEXT = "[Request interrupted by user]"
@@ -644,7 +647,8 @@ class Fake:
                     in_paste, pasted, ended_here = False, True, True
                 elif data.startswith(PASTE_START):
                     data = data[len(PASTE_START) :]
-                    in_paste, paste, pasted = True, b"", False
+                    # a paste with no CR stays in the input box: the next one appends to it
+                    in_paste, pasted = True, False
                 else:
                     ch, data = data[:1], data[1:]
                     if ch in (b"\r", b"\n"):
@@ -657,6 +661,9 @@ class Fake:
                             data = b""
                     elif ch == b"\x1b" and not data.startswith(b"["):
                         self.record_key("esc")
+                    elif ch == CLEAR_INPUT:
+                        self.record_key("clear_input")
+                        paste, pasted, typed = b"", False, b""
                     elif not pasted:
                         typed += ch
 
@@ -1147,6 +1154,9 @@ class Fake:
             elif b"\x1b" in bare or b"2" in bare:
                 self.record_key("esc" if b"\x1b" in bare else "2")
                 decide("key", "interrupt")
+            elif b"\r" in bare:  # Enter picks the highlighted "1. Yes"
+                self.record_key("enter")
+                decide("key", "allow")
         by, behavior, message = won[0]
         with open(os.path.join(config_dir(), "fake-permissions.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({"by": by, "behavior": behavior, "ts": now()}) + "\n")

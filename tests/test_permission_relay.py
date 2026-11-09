@@ -19,6 +19,7 @@ from conftest import World, jsonl
 from test_api_turns import TOKEN
 from test_command_runner import commands_cfg
 
+from claude_code_wrapper import session as session_mod
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.bootstrap.settings import permission_timeouts
 from claude_code_wrapper.config import CommandsOverride
@@ -284,9 +285,20 @@ async def test_dropped_connection_resolves_as_gone(world: World) -> None:
     assert router.session.waiting_reason() is None
 
 
-async def test_gone_leaves_drawn_prompt_visible(world: World, monkeypatch: Any) -> None:
-    """The ccw-hook of a held PermissionRequest dies while the TUI prompt it raced is still
-    drawn: the hook's arrival must not hide that prompt, so it shows as an open dialog."""
+def keys(world: World, sid: str) -> list[str]:
+    return [k["key"] for k in jsonl(world.session_dir(sid) / "config" / "fake-keys.jsonl")]
+
+
+def hold_back_escape(router: Any, monkeypatch: Any) -> None:
+    """Delay the next ESC by ~1.5 s, so writers meet the orphaned prompt before it closes."""
+    monkeypatch.setattr(session_mod, "ESC_SPACING_SECONDS", 1.5)
+    router.session._last_escape = router.session.clock()
+
+
+async def test_dropped_hook_denies_fallback_prompt_once(world: World, monkeypatch: Any) -> None:
+    """The ccw-hook of a held PermissionRequest dies (an agent can kill it): claude falls back
+    to its TUI prompt with "1. Yes" highlighted (probe case 5). Nothing types a CR over it, the
+    wrapper answers it with exactly one ESC (No), and the prompt closes."""
     m, sid, router = await start(world, GATED)
     gone = asyncio.Event()
     real = router.handle_claude_hook
@@ -307,24 +319,63 @@ async def test_gone_leaves_drawn_prompt_visible(world: World, monkeypatch: Any) 
         r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go"})
         assert r.status_code == 202, r.text
         await requested(world, sid)
+        session = router.session
+        hold_back_escape(router, monkeypatch)
         gone.set()
         got = await resolved(world, sid)
         assert (got["by"], got["behavior"]) == ("gone", "deny")
-        session = router.session
         assert len(router.permissions) == 0
-        assert session.dialog_open() is True
+        assert session.permission_prompt_open() is True
         assert session.dialog_kind() == "permission"
         assert session.waiting_reason() == "permission"
         r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "more", "lane": "regular"})
         assert r.status_code == 409, r.text
         assert r.json()["error"]["code"] == "dialog_open"
-        assert jsonl(world.session_dir(sid) / "config" / "fake-keys.jsonl") == []
-        # Dismiss is the way out: ESC answers No on the still-drawn prompt.
-        assert session.waiting_since is not None
-        assert await session.escape_dialog(session.waiting_since) is True
+        r = await c.post(f"/v1/sessions/{sid}/probe")
+        assert r.status_code == 409, r.text
+        assert keys(world, sid) == []
         await world.wait_turn(m, sid, "interrupted")
+    assert keys(world, sid) == ["esc"]
     (won,) = jsonl(world.session_dir(sid) / "config" / "fake-permissions.jsonl")
     assert (won["by"], won["behavior"]) == ("key", "interrupt")
+    assert [t for t in typed(world, sid) if not t.startswith("go")] == []
+    assert session.permission_prompt_open() is False
+    assert session.dialog_open() is False
+
+
+async def test_orphaned_prompt_blocks_writers_until_its_escape(
+    world: World, monkeypatch: Any
+) -> None:
+    """A background subagent's hook is dropped at an idle session: the idle lane and the probe
+    are refused and a queued command waits until the one ESC has closed the prompt."""
+    m, sid, router = await start(world, IDLE, sessions={"commands": commands_cfg()})
+    await world.until(lambda: router.session.state == "ready", 15)
+    gone = asyncio.Event()
+    sub = await held(router, payload("a1"), gone=gone)
+    hold_back_escape(router, monkeypatch)
+    gone.set()
+    out = await asyncio.wait_for(sub, 2)
+    assert decision(out)["behavior"] == "deny"
+    app = create_app(m, m.cfg)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t", headers=headers) as c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": "idle"})
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "dialog_open"
+        r = await c.post(f"/v1/sessions/{sid}/probe")
+        assert r.status_code == 409, r.text
+    rec = router.request_command("compact", origin="client")
+    await asyncio.sleep(0.5)
+    assert rec.state == "queued"
+    assert typed(world, sid) == [] and keys(world, sid) == []
+    await world.until(lambda: rec.state in ("completed", "failed", "cancelled"), 15)
+    assert (rec.state, rec.result) == ("completed", "ok")
+    assert keys(world, sid) == ["esc"]
+    assert typed(world, sid) == ["/compact"]
+    esc = jsonl(world.session_dir(sid) / "config" / "fake-keys.jsonl")[0]["ts"]
+    line = jsonl(world.session_dir(sid) / "config" / "fake-inputs.jsonl")[0]["ts"]
+    assert esc < line
 
 
 async def test_ask_user_question_passes_through(world: World) -> None:
@@ -411,6 +462,10 @@ async def test_restart_resolves_held_as_gone(world: World) -> None:
         }
     got = of_type(world, sid, "permission_resolved")
     assert [(e["by"], e["behavior"]) for e in got] == [("gone", "deny"), ("gone", "deny")]
+    # The relaunched claude shows no prompt of the old one: nothing is left to deny.
+    assert router.session.permission_prompt_open() is False
+    await asyncio.sleep(1.2)
+    assert keys(world, sid) == []
 
 
 # ------------------------------------------------------------------ no CR over a held permission

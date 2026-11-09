@@ -1900,7 +1900,10 @@ hook with a deny and a fixed message ("The permission prompt was answered outsid
 forge the hook that reports a terminal answer. A real terminal answer reached claude first, and
 claude ignores the hook's later output. While a request is held, nothing the wrapper types ends
 with a CR (idle turns, probes, slash commands, the continue prompt): they are refused with
-`409 dialog_open` or wait, because a CR would pick the prompt's highlighted "1. Yes".
+`409 dialog_open` or wait, because a CR would pick the prompt's highlighted "1. Yes". The same
+holds after a `gone` resolution while the same claude runs: a dropped hook leaves claude's TUI
+prompt on screen, so the wrapper keeps the CR writers locked and answers that prompt with one ESC
+(No); the lock lifts once the ESC is written, or when claude is relaunched.
 
 `data`: `request_id`, `by` (`user`, `timeout`, `terminal`, `gone`), `behavior` (`allow`, `deny`:
 what the held hook really answered, so always `deny` for `terminal` and `gone`) and, for

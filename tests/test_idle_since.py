@@ -157,6 +157,7 @@ async def test_session_state_event_carries_since(make_session) -> None:
         router.peer_inbox = None
         router.commands = type("C", (), {"pending": staticmethod(list)})()
         router._subagents = set()
+        router._restarts = 0
         router.permissions = type("P", (), {"resolve_all": staticmethod(lambda _d: [])})()
         router._dd_handle = None
         router._dd_since = None

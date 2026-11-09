@@ -390,6 +390,35 @@ async def test_write_guarded(spawn, monkeypatch):
     assert writes[-3:] in (prompt + [b"E"], [b"E"] + prompt)
 
 
+async def test_send_prompt_refused_after_paste_clears_it_first(spawn, monkeypatch):
+    """A guard that fails between the paste and the CR leaves the paste in claude's input box;
+    the next prompt clears the input (ctrl+l) before its own paste, so the stale text is never
+    sent with it."""
+    p = await spawn(["/bin/cat"])
+    master = p._fd
+    writes: list[bytes] = []
+    real_write = os.write
+
+    def write(fd, data):
+        if fd == master:
+            writes.append(bytes(data))
+        return real_write(fd, data)
+
+    monkeypatch.setattr(pty_proc.os, "write", write)
+    calls: list[int] = []
+
+    def flips() -> bool:
+        calls.append(1)
+        return len(calls) == 1  # passes before the paste, fails before the CR
+
+    assert await p.send_prompt("stale", 0, flips) is False
+    assert writes == [b"\x1b[200~stale\x1b[201~"]
+    assert await p.send_prompt("fresh", 0, lambda: True) is True
+    assert writes[1:] == [b"\x0c", b"\x1b[200~fresh\x1b[201~", b"\r"]
+    assert await p.send_prompt("next", 0, lambda: True) is True
+    assert writes[4:] == [b"\x1b[200~next\x1b[201~", b"\r"]
+
+
 async def test_fake_claude_boots_under_pty(spawn, fake_claude_bin, claude_config_dir, tmp_path):
     env = {
         "PATH": os.environ["PATH"],

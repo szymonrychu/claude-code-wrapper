@@ -35,6 +35,8 @@ log = logging.getLogger(__name__)
 
 PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
+#: ctrl+l: claude's `chat:clearInput` key (2.1.304), which empties the input box.
+CLEAR_INPUT = b"\x0c"
 READ_SIZE = 65536
 #: Largest rows or cols `resize` accepts.
 MAX_DIMENSION = 1000
@@ -84,6 +86,8 @@ class PtyProcess:
         self._fd: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = asyncio.Lock()
+        #: A refused `send_prompt` left its paste in claude's input box (not submitted).
+        self._stale_input = False
         self._reading = False
         self._closed = False
         self._exit_fired = False
@@ -255,14 +259,20 @@ class PtyProcess:
         The CR must arrive in a later read than the paste end or the TUI takes it as a
         newline inside the paste; holding the lock keeps any other writer out of the gap.
         `guard`, when given, is checked under the lock before the paste and again before the
-        CR; returns False (nothing more written) as soon as it fails.
+        CR; returns False (nothing more written) as soon as it fails. A refusal before the CR
+        leaves the paste in claude's input box, where keys now reach a prompt instead: the next
+        prompt clears the input (`CLEAR_INPUT`) before its own paste.
         """
         async with self._lock:
             if guard is not None and not guard():
                 return False
+            if self._stale_input:
+                await self._write_locked(CLEAR_INPUT)
+                self._stale_input = False
             await self._write_locked(paste_bytes(text))
             await asyncio.sleep(delay)
             if guard is not None and not guard():
+                self._stale_input = True
                 return False
             await self._write_locked(b"\r")
             return True

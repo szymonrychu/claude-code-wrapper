@@ -8,7 +8,14 @@ from typing import Any
 import httpx
 from conftest import World, jsonl
 from test_api_turns import TOKEN
-from test_permission_relay import GATED, requested, resolved, start, tool_results
+from test_permission_relay import (
+    GATED,
+    hold_back_escape,
+    requested,
+    resolved,
+    start,
+    tool_results,
+)
 
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.manager import CreateSessionRequest
@@ -190,8 +197,9 @@ async def test_unknown_session_404(world: World) -> None:
 
 
 async def test_allow_footer_only_permission_no_dialog(world: World, monkeypatch: Any) -> None:
-    """The hook is dead and the TUI prompt is still drawn: the view shows it with a tail, but
-    only dismiss answers it."""
+    """The hook is dead and the TUI prompt is still drawn: the view shows it with a tail and
+    nothing answers it allow; the wrapper's own one ESC (No) closes it, so a dismiss meanwhile
+    sends no second ESC."""
     m, sid, router = await start(world, GATED)
     gone = asyncio.Event()
     real = router.handle_claude_hook
@@ -209,6 +217,7 @@ async def test_allow_footer_only_permission_no_dialog(world: World, monkeypatch:
         view = None
         await router.submit_turn("go")
         view = await requested(world, sid)
+        hold_back_escape(router, monkeypatch)
         gone.set()
         await resolved(world, sid)
         body = (await c.get(url)).json()
@@ -221,8 +230,9 @@ async def test_allow_footer_only_permission_no_dialog(world: World, monkeypatch:
         assert keys(world, sid) == []
         r = await c.post(url, json={"action": "dismiss", "expect_since": body["since"]})
         assert r.status_code == 200, r.text
-        assert r.json()["escape_sent"] is True
+        assert r.json() == {"status": "dismissed", "escape_sent": False}
         await world.wait_turn(m, sid, "interrupted")
+    assert len(keys(world, sid)) == 1
 
 
 async def test_dismiss_dialog_closes(world: World) -> None:

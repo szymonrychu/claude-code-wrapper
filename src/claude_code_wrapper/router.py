@@ -456,6 +456,8 @@ class SessionRouter(SessionListener):
         self._notes_tool_results = 0
         #: Relayed PermissionRequest hooks held for an answer (`_on_permission_request`).
         self.permissions = PermissionBroker(redactor)
+        #: Crash relaunches seen (`on_restart`): a hold from an older claude orphans no prompt.
+        self._restarts = 0
         # The dispatcher is built before the router; route its per-action results here.
         if getattr(dispatcher, "_on_result", None) is None:
             dispatcher._on_result = self.on_hook_result
@@ -770,6 +772,7 @@ class SessionRouter(SessionListener):
         deadline = asyncio.get_running_loop().time() + hold
         pending = self.permissions.open(payload, hold)
         session = self.session
+        pty, restarts = session.pty, self._restarts
         try:
             session.set_permission_pending(True)
             self._emit("permission_requested", pending.view())
@@ -779,12 +782,15 @@ class SessionRouter(SessionListener):
         finally:
             # Cancelled or failed while held: nobody answers this hook any more.
             self.permissions.resolve(pending.request_id, Decision("deny", "gone"))
-            session.set_permission_pending(len(self.permissions) > 0)
             decision = pending.future.result()
             if decision.by != "gone":
-                # The answer closed the TUI prompt drawn in parallel (probe case 1); a dropped
-                # hook leaves it on screen, where the footer scanner must keep seeing it.
+                # The answer closed the TUI prompt drawn in parallel (probe case 1).
                 session.note_hook()
+            elif not self._closed and restarts == self._restarts and session.pty is pty:
+                # A dropped hook leaves the TUI prompt on screen with "1. Yes" highlighted
+                # (probe case 5): lock the CR writers before the hold lifts, then ESC it.
+                session.deny_orphaned_prompt()
+            session.set_permission_pending(len(self.permissions) > 0)
             # `behavior` is what the hook really answered; the terminal's claim is separate.
             resolved: dict[str, Any] = {
                 "request_id": pending.request_id,
@@ -1907,7 +1913,8 @@ class SessionRouter(SessionListener):
             return  # the turn goes on as the prompt command's turn (D8): no continue prompt
         # Typed at a quiet prompt, like a command; a screen that never settles still gets it
         # (claude queues input typed while it responds) rather than leaving the turn hanging.
-        # Never over a held permission (a background subagent's): its CR would pick "1. Yes".
+        # Never over an open permission prompt (a background subagent's): its CR would pick
+        # "1. Yes".
         quiet = self.commands_cfg.quiet_seconds
         ids = [r.id for r in done]
         text = f"{self.commands_cfg.continue_prompt}\n\n{_results_line(done)}"
@@ -1916,7 +1923,7 @@ class SessionRouter(SessionListener):
             await session.wait_quiet(quiet, self._command_timeout("default"))
             if self._closed or record.terminal or record is not session.current_turn:
                 return
-            if session.permission_pending:
+            if session.permission_prompt_open():
                 await asyncio.sleep(PERMISSION_POLL_SECONDS)
                 continue
             self._commands_turn = None  # from here on a Stop is the continuation's
@@ -1928,7 +1935,7 @@ class SessionRouter(SessionListener):
             if await session.continue_turn(record, text):
                 self._emit_user_message(record.turn_id, record.origin, text)
                 return
-            if not session.permission_pending:
+            if not session.permission_prompt_open():
                 return
 
     def _end_turn_commands(self, record: TurnRecord) -> None:
@@ -2134,9 +2141,10 @@ class SessionRouter(SessionListener):
         return self._emit(type, {"record": record.model_dump(mode="json")})
 
     async def _permission_cleared(self, deadline: float) -> bool:
-        """Wait until no relayed permission is held, since typing a line plus CR over its prompt
-        would approve it; False at the monotonic `deadline` or when the router closes."""
-        while self.session.permission_pending:
+        """Wait until no permission prompt is open (`Session.permission_prompt_open`), since
+        typing a line plus CR over it would approve it; False at the monotonic `deadline` or
+        when the router closes."""
+        while self.session.permission_prompt_open():
             if self._closed or time.monotonic() >= deadline:
                 return False
             await asyncio.sleep(min(PERMISSION_POLL_SECONDS, _left(deadline)))
@@ -2498,6 +2506,7 @@ class SessionRouter(SessionListener):
     def on_restart(self, count: int, resumed: bool) -> None:
         # The relaunched claude has no prompt for the held hooks: answer them now (gone, deny)
         # and free the lanes before the crash continuation is typed.
+        self._restarts += 1  # the held hooks' prompts went with the old claude
         self.permissions.resolve_all(Decision("deny", "gone"))
         self.session.set_permission_pending(False)
         self._cancel_dialog_dismiss()
