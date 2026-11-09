@@ -1964,9 +1964,14 @@ class SessionRouter(SessionListener):
 
     async def _dialog_dismiss(self, since: str) -> None:
         session = self.session
+        if self.runner_active and session.waiting_since == since and not self._closed:
+            # a command runner owns the dialog leg right now; look again later
+            self._dd_handle = asyncio.get_running_loop().call_later(
+                self.commands_cfg.dialog_auto_dismiss_seconds, self._dialog_dismiss_due, since
+            )
+            return
         if (
-            self.runner_active
-            or session.waiting_since != since
+            session.waiting_since != since
             or session.dialog_kind() != "dialog"
             or session.auto_escape_blocked()
         ):

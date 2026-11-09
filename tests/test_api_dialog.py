@@ -15,7 +15,7 @@ from claude_code_wrapper.manager import CreateSessionRequest
 
 H = {"Authorization": f"Bearer {TOKEN}"}
 RID = "perm_0123456789ab"
-USAGE_FOOTER = "Usage limit reached · continuing automatically at 3pm · esc to cancel"
+USAGE_FOOTER = "Usage limit reached \u00b7 continuing automatically at 3pm \u00b7 esc to cancel"
 NONE = {"kind": "none", "since": None, "permission": None, "tail": None}
 
 
@@ -260,6 +260,7 @@ async def test_dismiss_twice_sends_one_escape(world: World) -> None:
         body = {"action": "dismiss", "expect_since": since}
         first, second = await asyncio.gather(c.post(url, json=body), c.post(url, json=body))
     answers = sorted([first.json(), second.json()], key=lambda a: a["escape_sent"])
+    assert [a["status"] for a in answers] == ["dismissed", "dismissed"]
     assert answers[0]["escape_sent"] is False
     assert answers[1]["escape_sent"] is True
     assert len(keys(world, sid)) == 1

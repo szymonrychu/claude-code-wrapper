@@ -13,6 +13,7 @@ from claude_code_wrapper.manager import CommandsOverride, CreateSessionRequest
 
 MODEL = "Select model\n 1. Default\n Esc to cancel"
 SECONDS = 0.4
+FIRES_ONCE = 1.0
 
 
 def scen(footer: str, sleep: float = 30) -> dict:
@@ -35,7 +36,7 @@ async def open_it(world: World, router: Any) -> str:
 
 
 async def test_fires_once_after_timeout(world: World) -> None:
-    m, sid, router = await start(world, scen(MODEL))
+    m, sid, router = await start(world, scen(MODEL), seconds=FIRES_ONCE)
     since = await open_it(world, router)
     assert keys(world, sid) == []
     await world.until(lambda: of_type(world, sid, "dialog_auto_dismissed"), 10)
@@ -43,6 +44,19 @@ async def test_fires_once_after_timeout(world: World) -> None:
     assert of_type(world, sid, "dialog_auto_dismissed") == [{"since": since, "escape_sent": True}]
     assert len(keys(world, sid)) == 1
     assert router.session.dismissed(since)
+
+
+async def test_rearms_when_runner_active_at_fire_time(world: World, monkeypatch: Any) -> None:
+    m, sid, router = await start(world, scen(MODEL))
+    active = {"on": True}
+    monkeypatch.setattr(type(router), "runner_active", property(lambda self: active["on"]))
+    since = await open_it(world, router)
+    await asyncio.sleep(SECONDS + 0.3)
+    assert of_type(world, sid, "dialog_auto_dismissed") == []
+    assert router._dd_handle is not None  # re-armed, not dropped
+    active["on"] = False
+    await world.until(lambda: of_type(world, sid, "dialog_auto_dismissed"), 10)
+    assert of_type(world, sid, "dialog_auto_dismissed")[0]["since"] == since
 
 
 async def test_not_fired_when_dialog_closed_first(world: World) -> None:
