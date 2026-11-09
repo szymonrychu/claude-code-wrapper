@@ -398,10 +398,12 @@ async def test_send_prompt_refused_after_paste_clears_it_first(spawn, monkeypatc
     master = p._fd
     writes: list[bytes] = []
     real_write = os.write
+    stamps: list[float] = []
 
     def write(fd, data):
         if fd == master:
             writes.append(bytes(data))
+            stamps.append(time.monotonic())
         return real_write(fd, data)
 
     monkeypatch.setattr(pty_proc.os, "write", write)
@@ -415,6 +417,8 @@ async def test_send_prompt_refused_after_paste_clears_it_first(spawn, monkeypatc
     assert writes == [b"\x1b[200~stale\x1b[201~"]
     assert await p.send_prompt("fresh", 0, lambda: True) is True
     assert writes[1:] == [b"\x0c", b"\x1b[200~fresh\x1b[201~", b"\r"]
+    # ctrl+l and the paste land in separate reads, like the CR (the KEY_GAP_SECONDS gap).
+    assert stamps[2] - stamps[1] >= 0.2
     assert await p.send_prompt("next", 0, lambda: True) is True
     assert writes[4:] == [b"\x1b[200~next\x1b[201~", b"\r"]
 

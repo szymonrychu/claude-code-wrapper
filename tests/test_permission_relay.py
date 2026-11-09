@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -273,7 +274,8 @@ async def test_close_resolves_pending_as_gone(world: World) -> None:
     assert [(e["by"], e["behavior"]) for e in got] == [("gone", "deny")]
 
 
-async def test_dropped_connection_resolves_as_gone(world: World) -> None:
+async def test_dropped_connection_resolves_as_gone(world: World, monkeypatch: Any) -> None:
+    monkeypatch.setattr(session_mod, "ORPHAN_PROMPT_WAIT_SECONDS", 0.3)
     _, sid, router = await start(world, {"turns": []})
     gone = asyncio.Event()
     main = await held(router, payload(), gone=gone)
@@ -282,7 +284,8 @@ async def test_dropped_connection_resolves_as_gone(world: World) -> None:
     assert decision(out) == {"behavior": "deny", "message": GONE_DENY_MESSAGE, "interrupt": False}
     got = await resolved(world, sid)
     assert (got["by"], got["behavior"]) == ("gone", "deny")
-    assert router.session.waiting_reason() is None
+    # No prompt was drawn: the orphan lock lifts after the bounded wait, with no ESC.
+    await world.until(lambda: router.session.waiting_reason() is None, 3, "lock lifted")
 
 
 def keys(world: World, sid: str) -> list[str]:
@@ -290,9 +293,12 @@ def keys(world: World, sid: str) -> list[str]:
 
 
 def hold_back_escape(router: Any, monkeypatch: Any) -> None:
-    """Delay the next ESC by ~1.5 s, so writers meet the orphaned prompt before it closes."""
+    """Delay the next ESC by ~1.5 s, so writers meet the orphaned prompt before it closes. The
+    pretend last ESC sits just before the prompt's footer, which stays on screen after it."""
     monkeypatch.setattr(session_mod, "ESC_SPACING_SECONDS", 1.5)
-    router.session._last_escape = router.session.clock()
+    shown = router.session._ui_dialog_at
+    assert shown > float("-inf"), "the prompt is drawn first"
+    router.session._last_escape = shown - 0.001
 
 
 async def test_dropped_hook_denies_fallback_prompt_once(world: World, monkeypatch: Any) -> None:
@@ -352,6 +358,7 @@ async def test_orphaned_prompt_blocks_writers_until_its_escape(
     await world.until(lambda: router.session.state == "ready", 15)
     gone = asyncio.Event()
     sub = await held(router, payload("a1"), gone=gone)
+    draw_prompt(router.session)
     hold_back_escape(router, monkeypatch)
     gone.set()
     out = await asyncio.wait_for(sub, 2)
@@ -376,6 +383,74 @@ async def test_orphaned_prompt_blocks_writers_until_its_escape(
     esc = jsonl(world.session_dir(sid) / "config" / "fake-keys.jsonl")[0]["ts"]
     line = jsonl(world.session_dir(sid) / "config" / "fake-inputs.jsonl")[0]["ts"]
     assert esc < line
+
+
+def draw_prompt(session: Any) -> None:
+    """The TUI permission prompt claude draws in parallel with the hook (probe case 1), for a
+    background subagent the fake cannot prompt for at idle."""
+    prompt = (
+        "Do you want to proceed?\r\n> 1. Yes\r\n  2. No\r\nEsc to cancel \u00b7 Tab to amend\r\n"
+    )
+    session._on_output(session.pty, prompt.encode())
+
+
+async def test_orphans_dropped_together_get_one_escape_each(world: World) -> None:
+    """Two background subagents' hooks are killed at once (one gone event): claude shows its
+    queued prompts one at a time. Each orphan gets its own spaced ESC, the writers stay locked
+    until both are closed, and a hook in between does not lift the lock."""
+    m, sid, router = await start(world, IDLE, sessions={"commands": commands_cfg()})
+    session = router.session
+    await world.until(lambda: session.state == "ready", 15)
+    gone = asyncio.Event()
+    subs = [await held(router, payload(a), gone=gone) for a in ("a1", "a2")]
+    draw_prompt(session)
+    gone.set()
+    for sub in subs:
+        assert decision(await asyncio.wait_for(sub, 2))["behavior"] == "deny"
+    await world.until(lambda: keys(world, sid) == ["esc"], 5, "first ESC")
+    # A hook from another agent (or a forged one) arrives before the second prompt is drawn.
+    await router.handle_claude_hook("PostToolUse", {**payload(), "tool_response": "ok"})
+    assert session.permission_prompt_open() is True
+    with pytest.raises(session_mod.TurnRejected):
+        session.check_no_permission()
+    app = create_app(m, m.cfg)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t", headers=headers) as c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": "idle"})
+        assert r.status_code == 409, r.text
+        r = await c.post(f"/v1/sessions/{sid}/probe")
+        assert r.status_code == 409, r.text
+    draw_prompt(session)  # the second, queued prompt ("1. Yes" highlighted)
+    await world.until(lambda: keys(world, sid) == ["esc", "esc"], 5, "second ESC")
+    first, second = (
+        datetime.fromisoformat(k["ts"])
+        for k in jsonl(world.session_dir(sid) / "config" / "fake-keys.jsonl")
+    )
+    assert (second - first).total_seconds() >= session_mod.ESC_SPACING_SECONDS - 0.05
+    assert typed(world, sid) == []
+    await world.until(lambda: not session.permission_prompt_open(), 2, "lock lifted")
+    await asyncio.sleep(1.2)
+    assert keys(world, sid) == ["esc", "esc"]  # exactly one ESC per orphan
+    assert typed(world, sid) == []
+
+
+async def test_orphan_without_prompt_on_screen_gets_no_escape(
+    world: World, monkeypatch: Any
+) -> None:
+    """A dropped hook whose prompt never shows (a forged PermissionRequest whose curl was
+    killed): no ESC lands on the session, and the lock lifts after the bounded wait."""
+    monkeypatch.setattr(session_mod, "ORPHAN_PROMPT_WAIT_SECONDS", 0.5)
+    m, sid, router = await start(world, IDLE)
+    session = router.session
+    await world.until(lambda: session.state == "ready", 15)
+    gone = asyncio.Event()
+    sub = await held(router, payload("a1"), gone=gone)
+    gone.set()
+    await asyncio.wait_for(sub, 2)
+    assert session.permission_prompt_open() is True
+    await world.until(lambda: not session.permission_prompt_open(), 3, "lock lifted")
+    assert keys(world, sid) == []
 
 
 async def test_ask_user_question_passes_through(world: World) -> None:

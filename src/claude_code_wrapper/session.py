@@ -108,6 +108,11 @@ StopCause = Literal["stop", "shutdown"]
 SERVICE_SHUTDOWN = "service_shutdown"
 #: Minimum gap between two ESCs: a double ESC at an empty prompt opens the rewind menu.
 ESC_SPACING_SECONDS = 1.0
+#: How long an orphaned permission prompt (`deny_orphaned_prompt`) may take to show on screen
+#: before its orphan is dropped without an ESC (no prompt: a forged request, nothing to deny).
+ORPHAN_PROMPT_WAIT_SECONDS = 5.0
+#: How often the orphan ESC writer re-checks for the prompt on screen.
+ORPHAN_POLL_SECONDS = 0.05
 #: Screen tail characters scanned to tell what kind of dialog is open.
 DIALOG_TAIL_CHARS = 1500
 #: A usage-limit wait (squashed, case-insensitive): never dismissed with ESC.
@@ -594,10 +599,12 @@ class Session:
         #: footer scanner, and the `since` an ESC already dismissed (`escape_dialog`).
         self._permission_pending = False
         self._dismissed_since: str | None = None
-        #: A dropped hook left claude's TUI permission prompt on screen ("1. Yes" highlighted,
-        #: probe case 5): the token of `deny_orphaned_prompt`, until its one ESC is written or
-        #: claude is relaunched. Not cleared by hooks: any Bash tool can forge one.
-        self._orphaned_prompt: object | None = None
+        #: Dropped hooks left claude's TUI permission prompts on screen ("1. Yes" highlighted,
+        #: probe case 5), shown one at a time: how many `deny_orphaned_prompt` still has to ESC,
+        #: until each ESC is written or claude is relaunched. Not cleared by hooks: any Bash tool
+        #: can forge one. The writer task answers them in order.
+        self._orphans = 0
+        self._orphan_task: asyncio.Future[Any] | None = None
         #: What the session waits on the user for (`waiting_reason`), and since when.
         self._waiting: str | None = None
         self.waiting_since: str | None = None
@@ -793,7 +800,8 @@ class Session:
         self._ui_dialogs.reset()
         self._ui_dialog_at = float("-inf")
         self._question = False
-        self._orphaned_prompt = None  # the new claude shows no prompt of the old one
+        # The new claude shows no prompt of the old one; the old writer task sees the new pty.
+        self._orphans, self._orphan_task = 0, None
         self._sync_waiting()
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._exited = asyncio.Event()
@@ -1206,7 +1214,10 @@ class Session:
         self._writable_pty()
 
     def note_hook(self) -> None:
-        """A claude hook was relayed: claude is past any dialog it showed before it."""
+        """A claude hook was relayed: claude is past any dialog it showed before it. Not while
+        orphaned prompts remain: they are on screen whatever the hooks say (forgeable)."""
+        if self._orphans:
+            return
         self._last_hook = self.clock()
         self._sync_waiting()
 
@@ -1232,11 +1243,7 @@ class Session:
         approval no person gave: a relayed permission is held, a dropped hook left the TUI
         prompt on screen (`deny_orphaned_prompt`), or the footer scanner sees a permission
         prompt. The one predicate every writer of text plus CR obeys."""
-        return (
-            self._permission_pending
-            or self._orphaned_prompt is not None
-            or self.dialog_kind() == "permission"
-        )
+        return self._permission_pending or self._orphans > 0 or self.dialog_kind() == "permission"
 
     def _no_permission(self) -> bool:
         return not self.permission_prompt_open()
@@ -1249,34 +1256,63 @@ class Session:
 
     def deny_orphaned_prompt(self) -> None:
         """A held hook was dropped (`gone`) while its claude lives: claude falls back to the TUI
-        prompt. Lock every text plus CR writer at once, then answer the prompt No with one ESC
-        (`_escape_orphaned_prompt`), so gone denies on screen too."""
-        token = self._orphaned_prompt = object()
+        prompt. Lock every text plus CR writer at once, then answer each orphaned prompt No with
+        its own ESC (`_escape_orphaned_prompts`), so gone denies on screen too. Hooks dropped
+        together (a `pkill`) leave several prompts, which claude shows one at a time."""
+        self._orphans += 1
         self._sync_waiting()
-        self._track(asyncio.ensure_future(self._escape_orphaned_prompt(token)))
+        if self._orphan_task is None or self._orphan_task.done():
+            self._orphan_task = self._track(
+                asyncio.ensure_future(self._escape_orphaned_prompts(self.pty))
+            )
 
-    async def _escape_orphaned_prompt(self, token: object) -> None:
-        pty = self.pty
-        wait = self._last_escape + ESC_SPACING_SECONDS - self.clock()
-        if wait > 0:
-            await asyncio.sleep(wait)
-        if pty is None or pty is not self.pty:
-            return
+    def _orphan_prompt_shown(self) -> bool:
+        """A dialog footer was seen since the last ESC: a prompt is on screen to answer."""
+        return self.state in ("ready", "busy") and self._ui_dialog_at > self._last_escape
 
-        def guard() -> bool:
-            return self._orphaned_prompt is token and self.pty is pty and self.dialog_open()
+    async def _escape_orphaned_prompts(self, pty: PtyProcess | None) -> None:
+        """One guarded ESC per orphan, each `ESC_SPACING_SECONDS` from the last ESC (checked
+        under the PTY lock, so no two ESCs land back to back and open rewind), and only while a
+        prompt is on screen. An orphan whose prompt never shows within
+        `ORPHAN_PROMPT_WAIT_SECONDS` is dropped without an ESC. Ends on a relaunch."""
+        deadline = self.clock() + ORPHAN_PROMPT_WAIT_SECONDS
+        while pty is not None and self.pty is pty and self._orphans > 0:
+            wait = self._last_escape + ESC_SPACING_SECONDS - self.clock()
+            if wait > 0:
+                await asyncio.sleep(wait)
+                continue
 
-        written = False
-        with contextlib.suppress(PtyClosed):  # a dead claude: the relaunch clears the lock
-            written = await pty.write_guarded(ESC, guard)
-        if not written:
-            return
-        log.info("session %s: orphaned permission prompt denied (ESC)", self.spec.session_id)
-        self.last_input = self._last_escape = self.clock()
-        self._hits_at_escape = self._dialog_hits
-        if self._orphaned_prompt is token:
-            self._orphaned_prompt = None
-        self._sync_waiting()
+            def guard() -> bool:
+                return (
+                    self.pty is pty
+                    and self._orphans > 0
+                    and self.clock() - self._last_escape >= ESC_SPACING_SECONDS
+                    and self._orphan_prompt_shown()
+                )
+
+            try:
+                written = await pty.write_guarded(ESC, guard)
+            except PtyClosed:  # a dead claude: the relaunch clears the lock
+                return
+            if written:
+                log.info(
+                    "session %s: orphaned permission prompt denied (ESC)", self.spec.session_id
+                )
+                self.last_input = self._last_escape = self.clock()
+                self._hits_at_escape = self._dialog_hits
+            elif self.pty is pty and self.clock() >= deadline:
+                log.warning(
+                    "session %s: orphaned permission prompt never shown, no ESC",
+                    self.spec.session_id,
+                )
+            else:
+                await asyncio.sleep(ORPHAN_POLL_SECONDS)
+                continue
+            if self.pty is not pty:
+                return
+            self._orphans -= 1
+            deadline = self.clock() + ORPHAN_PROMPT_WAIT_SECONDS
+            self._sync_waiting()
 
     def waiting_reason(self) -> str | None:
         """Why the session waits on the user: `question` (asked, not answered), `permission` (a
@@ -1284,7 +1320,7 @@ class Session:
         with no turn running: a slash command dialog); None otherwise."""
         if self._question:
             return "question"
-        if self._permission_pending or self._orphaned_prompt is not None:
+        if self._permission_pending or self._orphans > 0:
             return "permission"
         if not self.dialog_open():
             return None
@@ -1305,7 +1341,7 @@ class Session:
         Typing into it would pick an answer, and an ESC would decline it, so the lanes refuse
         to write while it is open. Footers that the last typed text quotes are its echo.
         """
-        if self._permission_pending or self._orphaned_prompt is not None:
+        if self._permission_pending or self._orphans > 0:
             return True
         return self.state in ("ready", "busy") and self._ui_dialog_at > max(
             self._last_hook, self._last_escape
@@ -1315,7 +1351,7 @@ class Session:
         """What is open: `permission` (a relay is held, or the footer shows a permission prompt
         with no relay), `usage_wait` (a usage-limit wait), `dialog` (any other footer); None
         when nothing is open. A held relay wins over the footer scanner."""
-        if self._permission_pending or self._orphaned_prompt is not None:
+        if self._permission_pending or self._orphans > 0:
             return "permission"
         if not self.dialog_open():
             return None
@@ -1329,11 +1365,7 @@ class Session:
     def auto_escape_blocked(self) -> bool:
         """No automatic ESC may be sent: a permission relay is held, an orphaned prompt gets its
         own one ESC (`deny_orphaned_prompt`), or a usage-limit waits."""
-        return (
-            self._permission_pending
-            or self._orphaned_prompt is not None
-            or self.dialog_kind() == "usage_wait"
-        )
+        return self._permission_pending or self._orphans > 0 or self.dialog_kind() == "usage_wait"
 
     def dismissed(self, since: str) -> bool:
         """The dialog that began at `since` already got its one ESC."""
@@ -1364,7 +1396,7 @@ class Session:
                     self.dialog_open()
                     and self.waiting_since == since
                     and not self._permission_pending
-                    and self._orphaned_prompt is None
+                    and not self._orphans
                     and self.dialog_kind() in ("dialog", "permission")
                 )
 

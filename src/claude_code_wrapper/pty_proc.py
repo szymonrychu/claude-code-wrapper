@@ -37,6 +37,9 @@ PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
 #: ctrl+l: claude's `chat:clearInput` key (2.1.304), which empties the input box.
 CLEAR_INPUT = b"\x0c"
+#: The gap after `CLEAR_INPUT`, so the paste that follows lands in a later read (as
+#: session.KEY_GAP_SECONDS spaces keys).
+CLEAR_INPUT_GAP_SECONDS = 0.25
 READ_SIZE = 65536
 #: Largest rows or cols `resize` accepts.
 MAX_DIMENSION = 1000
@@ -269,6 +272,7 @@ class PtyProcess:
             if self._stale_input:
                 await self._write_locked(CLEAR_INPUT)
                 self._stale_input = False
+                await asyncio.sleep(CLEAR_INPUT_GAP_SECONDS)
             await self._write_locked(paste_bytes(text))
             await asyncio.sleep(delay)
             if guard is not None and not guard():
