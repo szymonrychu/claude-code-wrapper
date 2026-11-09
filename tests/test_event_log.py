@@ -48,6 +48,7 @@ def test_event_types_exact():
         "waiting_ended",
         "permission_requested",
         "permission_resolved",
+        "dialog_auto_dismissed",
         "bootstrap_step",
         "destroy_output",
         "peer_message_received",

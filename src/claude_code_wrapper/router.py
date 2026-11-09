@@ -391,6 +391,9 @@ class SessionRouter(SessionListener):
         #: Idle auto-compact (D6): the pending timer, whether this idle gap may still fire, and
         #: the context size (input + cache tokens) of the last main-chain Usage.
         self._ac_handle: asyncio.TimerHandle | None = None
+        #: the one-shot idle-dialog dismiss timer and the `since` it was armed for.
+        self._dd_handle: asyncio.TimerHandle | None = None
+        self._dd_since: str | None = None
         self._ac_armed = False
         self._last_context: int | None = None
         #: Latest statusLine values relayed by `ccw statusline` (see `on_statusline`).
@@ -1919,6 +1922,59 @@ class SessionRouter(SessionListener):
             ranges.append((self._idle_start, sys.maxsize))
         return ranges
 
+    # ------------------------------------------------------- idle dialog auto-dismiss
+
+    def _cancel_dialog_dismiss(self) -> None:
+        self._dd_since = None
+        if self._dd_handle is not None:
+            self._dd_handle.cancel()
+            self._dd_handle = None
+
+    def _arm_dialog_dismiss(self, reason: str | None) -> None:
+        """A waiting change: (re)arm the one-shot timer for a new footer dialog, cancel it when
+        the dialog closed or changed. Never for a held permission, a usage-limit wait, or while
+        a slash command runs (its dialog leg has its own ESC budget)."""
+        session = self.session
+        since = session.waiting_since
+        if self._dd_since is not None and (reason is None or self._dd_since != since):
+            self._cancel_dialog_dismiss()
+        delay = self.commands_cfg.dialog_auto_dismiss_seconds
+        if (
+            delay <= 0
+            or self._closed
+            or reason not in ("dialog", "permission")
+            or since is None
+            or self._dd_since == since
+            or session.dismissed(since)
+            or session.auto_escape_blocked()
+            or session.dialog_kind() != "dialog"
+        ):
+            return
+        self._cancel_dialog_dismiss()
+        self._dd_since = since
+        self._dd_handle = asyncio.get_running_loop().call_later(
+            delay, self._dialog_dismiss_due, since
+        )
+
+    def _dialog_dismiss_due(self, since: str) -> None:
+        self._dd_handle = None
+        if self._dd_since != since or self._closed:
+            return
+        self._spawn(self._dialog_dismiss(since))
+
+    async def _dialog_dismiss(self, since: str) -> None:
+        session = self.session
+        if (
+            self.runner_active
+            or session.waiting_since != since
+            or session.dialog_kind() != "dialog"
+            or session.auto_escape_blocked()
+        ):
+            return
+        sent = await session.escape_dialog(since)  # guarded under the PTY lock, once per since
+        log.info("dialog auto-dismissed since=%s escape_sent=%s", since, sent)
+        self._emit("dialog_auto_dismissed", {"since": since, "escape_sent": sent})
+
     # ------------------------------------------------------------------ idle auto-compact
 
     def _arm_auto_compact(self) -> None:
@@ -2347,6 +2403,7 @@ class SessionRouter(SessionListener):
         self._spawn(self._fire("onError", data))
 
     def on_waiting(self, reason: str | None, previous: str | None) -> None:
+        self._arm_dialog_dismiss(reason)
         if previous is not None:
             self._emit("waiting_ended", {"reason": previous})
         if reason is not None:
@@ -2362,6 +2419,7 @@ class SessionRouter(SessionListener):
         )
 
     def on_restart(self, count: int, resumed: bool) -> None:
+        self._cancel_dialog_dismiss()
         self._subagents.clear()
         self._emit(
             "session_state",
@@ -2447,6 +2505,7 @@ class SessionRouter(SessionListener):
         self._closed = True
         self.permissions.resolve_all(Decision("deny", "gone"))  # held hooks answer at once
         self._cancel_auto_compact()
+        self._cancel_dialog_dismiss()
         if self.peer_inbox is not None:
             self.peer_inbox.close()  # nothing more is delivered; dropped before session_closed
         self._subagents.clear()

@@ -624,8 +624,8 @@ DEFAULT_DIALOG_PATTERNS: tuple[str, ...] = (
 )
 #: Seconds a relayed PermissionRequest waits for a human answer before it is denied.
 DEFAULT_PERMISSION_HOLD_SECONDS: float = 1800
-#: Reserved for stage 2: auto dismiss of idle dialogs after this many seconds; 0 = off.
-DEFAULT_DIALOG_AUTO_DISMISS_SECONDS: float = 0
+#: Seconds an idle footer dialog may stay open before the wrapper sends it one ESC; 0 = off.
+DEFAULT_DIALOG_AUTO_DISMISS_SECONDS: float = 300
 
 
 def _check_name(path: str, name: str, *, wildcard: bool) -> None:

@@ -476,7 +476,7 @@ def test_attachment_limit_defaults() -> None:
 def test_permission_hold_defaults():
     cmds = Config().sessions.commands
     assert cmds.permission_hold_seconds == 1800
-    assert cmds.dialog_auto_dismiss_seconds == 0
+    assert cmds.dialog_auto_dismiss_seconds == 300
 
 
 def test_permission_hold_bounds():

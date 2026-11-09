@@ -1901,6 +1901,13 @@ event: permission_resolved
 data: {"seq":32,"ts":"2026-11-09T10:01:12.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_resolved","data":{"request_id":"perm_0a1b2c3d4e5f","by":"user","behavior":"deny"}}
 ```
 
+### `dialog_auto_dismissed`
+
+Emitted once per idle footer dialog (`GET /dialog` kind `dialog`) that stayed open for
+`sessions.commands.dialog_auto_dismiss_seconds` (default 300; 0 is off) when the wrapper sent it
+its one guarded ESC. `data`: `since` (the dialog's `since`), `escape_sent` (false when the
+dialog changed or closed first, or a dismiss already sent the ESC for that `since`).
+
 ### `bootstrap_step`
 
 Emitted when a create or resume step (`prepare_workdir`, `run_setup_commands`,
@@ -2736,7 +2743,7 @@ sessions:
     dialog_grace_seconds: 2.0
     dialog_patterns: ["esc to cancel", "esc to close", "esc to clear", "esc to exit", "enter to confirm"]
     permission_hold_seconds: 1800          # a relayed PermissionRequest waits this long, then is denied
-    dialog_auto_dismiss_seconds: 0         # reserved for stage 2; 0 = off
+    dialog_auto_dismiss_seconds: 300       # an idle footer dialog open this long gets one ESC; 0 = off
   auto_compact:
     idle_seconds: 1800
     instructions: "keep the current plan, open decisions and file paths"
@@ -3868,7 +3875,7 @@ sessions:
 | `sessions.commands.dialog_grace_seconds` | number | `2.0` | - | Seconds without PTY output, after a dialog footer appeared and no completion signal came, before a command's dialog is dismissed with ESC, >= 0. See [Lifecycle](#lifecycle). |
 | `sessions.commands.dialog_patterns` | list of string | `["esc to cancel", "esc to close", "esc to clear", "esc to exit", "enter to confirm"]` | - | Dialog footers looked for on screen while a command other than `compact` runs, matched ignoring case, whitespace and escapes; none blank. Empty disables dialog dismissal. |
 | `sessions.commands.permission_hold_seconds` | number | `1800` | - | How long a relayed PermissionRequest waits for an answer before it is denied, > 0 and <= 86400; the hook timeout is this + 30 s. |
-| `sessions.commands.dialog_auto_dismiss_seconds` | number | `0` | - | Reserved for stage 2 auto dismiss of idle dialogs; 0 = off, >= 0. |
+| `sessions.commands.dialog_auto_dismiss_seconds` | number | `300` | - | An idle footer dialog (kind `dialog`; never a permission or a usage-limit wait, never a slash command's own dialog leg) that stayed open this long gets one guarded ESC and a `dialog_auto_dismissed` event; 0 = off, >= 0. |
 | `sessions.auto_compact.idle_seconds` | number | `0` | - | Run `/compact` after the session stayed idle this long following a turn; 0 is off. Must be below `idle_timeout_seconds` when both are set. |
 | `sessions.auto_compact.instructions` | string | `""` | - | One-line focus instructions passed to the automatic `/compact` (max 2000 characters, no control characters); empty sends none. |
 | `sessions.auto_compact.min_context_tokens` | integer | `0` | - | Skip the automatic compact while the last main-chain context (input + cache read + cache creation tokens) is below this many tokens, >= 0; 0 compacts whatever the size. |
