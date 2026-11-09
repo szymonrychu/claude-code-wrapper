@@ -185,8 +185,6 @@ sessions:
   #   dialog_patterns: ["esc to cancel", "esc to close", "esc to clear", "esc to exit", "enter to confirm"]   # dialog footers, matched ignoring case; empty disables dismissal
   #   permission_hold_seconds: 1800   # a relayed PermissionRequest waits this long for an answer, then is denied; the hook timeout is this + 30 s
   #   dialog_auto_dismiss_seconds: 0   # reserved for stage 2: auto dismiss of idle dialogs; 0 = off
-  #   permission_hold_seconds: 1800   # a relayed PermissionRequest waits this long for an answer, then is denied; the hook timeout is this + 30 s
-  #   dialog_auto_dismiss_seconds: 0   # reserved for stage 2: auto dismiss of idle dialogs; 0 = off
   # Idle auto-compact: queue one /compact after the session stayed idle (README "Idle auto-compact").
   # auto_compact:
   #   idle_seconds: 0          # idle time after a turn before compacting (0 = off; must be below idle_timeout_seconds)
