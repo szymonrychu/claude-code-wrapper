@@ -22,6 +22,7 @@ def _env(**kw):
         "hook_token": "tok",
         "gate_fail": "deny",
         "gate_timeout": 14.0,
+        "permission_timeout": 1815.0,
         "mise_env": {},
         "passthrough": ["CLAUDE_CODE_HARBOR_KITE"],
     }

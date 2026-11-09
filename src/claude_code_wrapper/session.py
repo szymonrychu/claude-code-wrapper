@@ -334,6 +334,7 @@ def build_env(
     hook_token: str,
     gate_fail: str,
     gate_timeout: float,
+    permission_timeout: float,
     mise_env: Mapping[str, str] | None,
     passthrough: Iterable[str],
     passthrough_exclude: Iterable[str] = (),
@@ -358,6 +359,7 @@ def build_env(
         "CCW_HOOK_TOKEN": hook_token,
         "CCW_TOOL_GATE_FAIL": gate_fail,
         "CCW_GATE_TIMEOUT": f"{gate_timeout:g}",
+        "CCW_PERMISSION_TIMEOUT": f"{permission_timeout:g}",
     }
     if peers:
         managed["CLAUDE_CODE_HARBOR_KITE"] = "0"

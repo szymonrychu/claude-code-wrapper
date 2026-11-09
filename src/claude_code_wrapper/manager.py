@@ -49,7 +49,7 @@ from .bootstrap import (
     seed_claude_json,
     write_instructions,
 )
-from .bootstrap.settings import relay_timeouts, render_settings
+from .bootstrap.settings import permission_timeouts, relay_timeouts, render_settings
 from .claude_env import SECRET_KEY_RE, ClaudeEnv, listed_values, without_secrets
 from .commands import CommandRejected, effective_commands
 from .config import CommandsConfig, CommandsOverride, Config, InitialPromptTemplate
@@ -651,6 +651,7 @@ class SessionManager:
             self._relay_command,
             ccw_mcp,
             peers,
+            self._commands_for(ctx.meta).permission_hold_seconds,
         )
 
     async def _launch(self, ctx: _Active, *, resume: bool) -> None:
@@ -773,6 +774,9 @@ class SessionManager:
             hook_token=ctx.hook_token,
             gate_fail=self._gate_fail(),
             gate_timeout=relay_timeouts(self.cfg).attempt_timeout,
+            permission_timeout=permission_timeouts(
+                self._commands_for(ctx.meta).permission_hold_seconds
+            ).relay_timeout,
             mise_env=mise_env(self.cfg.mise),
             passthrough=self.cfg.claude.passthrough_env,
             passthrough_exclude=self.cfg.claude.passthrough_env_exclude,

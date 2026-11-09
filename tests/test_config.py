@@ -457,6 +457,7 @@ def test_claude_env_never_carries_usage_token(tmp_path, monkeypatch):
         hook_token="hook-token-0123456789",
         gate_fail="allow",
         gate_timeout=14,
+        permission_timeout=1815.0,
         mise_env=None,
         passthrough=cfg.claude.passthrough_env,
         passthrough_exclude=cfg.claude.passthrough_env_exclude,

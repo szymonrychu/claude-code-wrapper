@@ -124,6 +124,7 @@ def make_spec(tmp_path: Path, fake_claude_bin: Path, scenario_file):
             hook_token=hook_token,
             gate_fail="allow",
             gate_timeout=14.0,
+            permission_timeout=1815.0,
             mise_env={},
             passthrough=[],
         )
@@ -269,11 +270,16 @@ def _env(**kw) -> dict[str, str]:
         "hook_token": "hook-token-abcdef",
         "gate_fail": "deny",
         "gate_timeout": 14.0,
+        "permission_timeout": 1815.0,
         "mise_env": {"PATH": "/mise/shims:/usr/bin", "MISE_DATA_DIR": "/mise"},
         "passthrough": ["MY_TOOL_HOME", "NOT_SET_ANYWHERE"],
     }
     base.update(kw)
     return build_env(**base)
+
+
+def test_permission_timeout_env() -> None:
+    assert _env(permission_timeout=75)["CCW_PERMISSION_TIMEOUT"] == "75"
 
 
 def test_env_minimal_and_managed_vars() -> None:
@@ -297,6 +303,7 @@ def test_env_minimal_and_managed_vars() -> None:
         "CCW_HOOK_TOKEN": "hook-token-abcdef",
         "CCW_TOOL_GATE_FAIL": "deny",
         "CCW_GATE_TIMEOUT": "14",
+        "CCW_PERMISSION_TIMEOUT": "1815",
         "MISE_DATA_DIR": "/mise",
         "MY_TOOL_HOME": "/opt/tool",
     }
