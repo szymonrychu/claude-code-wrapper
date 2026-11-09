@@ -97,7 +97,10 @@ async def test_get_permission_view(world: World) -> None:
     await world.wait_turn(m, sid)
 
 
-async def test_allow_and_deny_round_trip(world: World) -> None:
+async def test_allow_and_deny_round_trip(world: World, monkeypatch: Any) -> None:
+    # Fix round 5: after a person's allow the writer lock (dialog kind permission) holds until
+    # the footer leaves the screen or the settle rule, with no ESC.
+    settle_fast(monkeypatch)
     m, sid, router = await start(world, GATED)
     async with api(m) as c:
         await router.submit_turn("go")
@@ -113,7 +116,9 @@ async def test_allow_and_deny_round_trip(world: World) -> None:
         await world.wait_turn(m, sid)
         (result,) = tool_results(router)
         assert result["content"] == "probe" and result["is_error"] is False
+        await world.until(lambda: not router.session.permission_prompt_open(), 3, "lifted")
         assert (await c.get(url)).json() == NONE
+        assert keys(world, sid) == []
 
 
 async def test_deny_message_reaches_model(world: World) -> None:

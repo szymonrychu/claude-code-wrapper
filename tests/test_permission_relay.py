@@ -109,7 +109,10 @@ def decision(response: dict) -> dict:
 # ------------------------------------------------------------------ end to end (fake claude)
 
 
-async def test_user_allow_runs_tool(world: World) -> None:
+async def test_user_allow_runs_tool(world: World, monkeypatch: Any) -> None:
+    # Fix round 5: a person's allow sends no ESC, but the writers stay locked until the footer
+    # leaves the screen or the settle rule lifts it.
+    settle_fast(monkeypatch)
     m, sid, router = await start(world, GATED)
     await router.submit_turn("go")
     view = await requested(world, sid)
@@ -124,8 +127,9 @@ async def test_user_allow_runs_tool(world: World) -> None:
         "by": "user",
         "behavior": "allow",
     }
-    assert router.session.waiting_reason() is None
+    await world.until(lambda: router.session.waiting_reason() is None, 3, "lock lifted")
     assert len(router.permissions) == 0
+    assert keys(world, sid) == []
 
 
 async def test_user_deny_message_reaches_model(world: World) -> None:
@@ -138,6 +142,10 @@ async def test_user_deny_message_reaches_model(world: World) -> None:
     assert result["content"] == "use the staging db" and result["is_error"] is True
     got = await resolved(world, sid)
     assert (got["by"], got["behavior"]) == ("user", "deny")
+    # Fix round 5: every non-allow resolution also gets one ESC, after the grace that lets a
+    # live hook's deny reach claude first, and the writers stay locked meanwhile.
+    await world.until(lambda: keys(world, sid) == ["esc"], 3, "deny ESC")
+    assert router.session.permission_prompt_open() is True
 
 
 async def test_user_deny_without_message_uses_operator_text(world: World) -> None:
@@ -148,9 +156,14 @@ async def test_user_deny_without_message_uses_operator_text(world: World) -> Non
     await world.wait_turn(m, sid)
     (result,) = tool_results(router)
     assert result["content"] == OPERATOR_DENY_MESSAGE == "The operator denied this action"
+    # Fix round 5: one ESC after the deny.
+    await world.until(lambda: keys(world, sid) == ["esc"], 3, "deny ESC")
 
 
-async def test_hold_timeout_denies_with_spec_message(world: World) -> None:
+async def test_hold_timeout_denies_with_spec_message(world: World, monkeypatch: Any) -> None:
+    # Fix round 5: the timeout also gets one ESC, and the waiting reason clears only when the
+    # writer lock lifts (settle rule).
+    settle_fast(monkeypatch)
     m, sid, router = await start(world, GATED, hold=0.5)
     await router.submit_turn("go")
     view = await requested(world, sid)
@@ -163,7 +176,8 @@ async def test_hold_timeout_denies_with_spec_message(world: World) -> None:
         "behavior": "deny",
     }
     assert router.answer_permission(view["request_id"], "allow", None) is False
-    assert router.session.waiting_reason() is None
+    await world.until(lambda: keys(world, sid) == ["esc"], 3, "timeout ESC")
+    await world.until(lambda: router.session.waiting_reason() is None, 3, "lock lifted")
 
 
 async def test_terminal_answer_withdraws(world: World) -> None:
@@ -184,6 +198,8 @@ async def test_terminal_answer_withdraws(world: World) -> None:
     assert router.answer_permission(view["request_id"], "allow", None) is False
     (won,) = jsonl(world.session_dir(sid) / "config" / "fake-permissions.jsonl")
     assert (won["by"], won["behavior"]) == ("key", "allow")
+    # Fix round 5: a terminal resolution is forgeable, so it gets one ESC too.
+    await world.until(lambda: keys(world, sid) == ["1", "esc"], 3, "terminal ESC")
 
 
 async def test_pending_blocks_regular_lane(world: World) -> None:
@@ -247,8 +263,10 @@ async def test_stop_leaves_subagent_pending(world: World) -> None:
     await asyncio.wait_for(sub, 2)
 
 
-async def test_interrupted_turn_withdraws_main(world: World) -> None:
-    """ "2. No" at the TUI interrupts the turn without PostToolUse or Stop: its end withdraws."""
+async def test_interrupted_turn_withdraws_main(world: World, monkeypatch: Any) -> None:
+    """ "2. No" at the TUI interrupts the turn without PostToolUse or Stop: its end withdraws.
+    Fix round 5: the terminal resolution gets one ESC and the lock lifts on the settle rule."""
+    settle_fast(monkeypatch)
     m, sid, router = await start(world, GATED)
     await router.submit_turn("go")
     view = await requested(world, sid)
@@ -261,7 +279,8 @@ async def test_interrupted_turn_withdraws_main(world: World) -> None:
         "terminal_observed": "deny",
     }
     assert len(router.permissions) == 0
-    assert router.session.waiting_reason() is None
+    await world.until(lambda: keys(world, sid) == ["2", "esc"], 3, "terminal ESC")
+    await world.until(lambda: router.session.waiting_reason() is None, 3, "lock lifted")
 
 
 async def test_close_resolves_pending_as_gone(world: World) -> None:
@@ -706,7 +725,9 @@ async def release(router: Any, sub: asyncio.Task) -> None:
     await asyncio.wait_for(sub, 2)
 
 
-async def test_idle_lane_refused_while_permission_held(world: World) -> None:
+async def test_idle_lane_refused_while_permission_held(world: World, monkeypatch: Any) -> None:
+    # Fix round 5: the release (terminal) gets one ESC; the lane opens once the lock lifts.
+    settle_fast(monkeypatch)
     m, sid, router, sub = await held_subagent(world)
     app = create_app(m, m.cfg)
     headers = {"Authorization": f"Bearer {TOKEN}"}
@@ -717,6 +738,10 @@ async def test_idle_lane_refused_while_permission_held(world: World) -> None:
         assert r.json()["error"]["code"] == "dialog_open"
         assert typed(world, sid) == []
         await release(router, sub)
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": "idle"})
+        assert r.status_code == 409, r.text  # locked until the ESC and the settle
+        await world.until(lambda: keys(world, sid) == ["esc"], 3, "release ESC")
+        await world.until(lambda: not router.session.permission_prompt_open(), 3, "lifted")
         r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": "idle"})
         assert r.status_code == 202, r.text
         await world.wait_turn(m, sid)
@@ -735,7 +760,9 @@ async def test_probe_refused_while_permission_held(world: World) -> None:
     await release(router, sub)
 
 
-async def test_command_runner_waits_for_held_permission(world: World) -> None:
+async def test_command_runner_waits_for_held_permission(world: World, monkeypatch: Any) -> None:
+    # Fix round 5: the release gets one ESC, then the lock settles before the command types.
+    settle_fast(monkeypatch)
     m, sid, router, sub = await held_subagent(world, sessions={"commands": commands_cfg()})
     rec = router.request_command("compact", origin="client")
     await asyncio.sleep(1.0)
@@ -745,9 +772,12 @@ async def test_command_runner_waits_for_held_permission(world: World) -> None:
     await world.until(lambda: rec.state in ("completed", "failed", "cancelled"), 15)
     assert (rec.state, rec.result) == ("completed", "ok")
     assert typed(world, sid) == ["/compact"]
+    assert keys(world, sid) == ["esc"]
 
 
 async def test_continuation_waits_for_held_permission(world: World, monkeypatch: Any) -> None:
+    # Fix round 5: the release gets one ESC and a settled lock before the continuation.
+    settle_fast(monkeypatch)
     cmds = commands_cfg(continue_prompt=CONTINUE, agent=["*"])
     m, sid, router = await start(world, {"turns": [GO, RESUMED]}, sessions={"commands": cmds})
     session = router.session
@@ -772,3 +802,96 @@ async def test_continuation_waits_for_held_permission(world: World, monkeypatch:
     done = await world.wait_turn(m, sid)
     assert done.turn_id == turn.turn_id and done.final_text == "part two"
     assert len([t for t in typed(world, sid) if t.startswith(CONTINUE)]) == 1
+
+
+# ------------------------------------------------------------------ stopped hook (fix round 5)
+
+
+def show(session: Any, text: str) -> None:
+    """Output claude writes, through the ring as the PTY reader does."""
+    session.pty.ring.append(text.encode())
+    session._on_output(session.pty, text.encode())
+
+
+async def stopped_hook(world: World, hold: float = 30.0):
+    """A ready session holding a main-agent relay whose ccw-hook is stopped (SIGSTOP): its
+    connection stays open, so no `gone`, and whatever answer the relay writes never reaches
+    claude. The TUI prompt drawn in parallel stays live with "1. Yes" highlighted."""
+    m, sid, router = await start(world, IDLE, hold=hold)
+    await world.until(lambda: router.session.state == "ready", 15)
+    task = await held(router, payload(), gone=asyncio.Event())
+    draw_prompt(router.session)
+    return m, sid, router, task
+
+
+async def assert_escaped_and_locked(world: World, sid: str, session: Any) -> None:
+    assert session.permission_prompt_open() is True
+    with pytest.raises(session_mod.TurnRejected):
+        session.check_no_permission()
+    await world.until(lambda: keys(world, sid) == ["esc"], 3, "one ESC")
+    await asyncio.sleep(1.2)
+    assert keys(world, sid) == ["esc"]
+    assert session.permission_prompt_open() is True
+    assert typed(world, sid) == []
+
+
+async def test_stopped_hook_forged_terminal_escapes_and_locks(world: World) -> None:
+    """S1: the agent stops its hook and forges a PostToolUse. The terminal resolution denies,
+    but the hook never prints it: the wrapper sends one ESC and the writers stay locked."""
+    m, sid, router, task = await stopped_hook(world)
+    body = {**payload(), "tool_use_id": "toolu_x", "tool_response": "ok"}
+    await router.handle_claude_hook("PostToolUse", body)
+    assert decision(await asyncio.wait_for(task, 2))["behavior"] == "deny"
+    await assert_escaped_and_locked(world, sid, router.session)
+
+
+async def test_stopped_hook_user_deny_escapes_and_locks(world: World) -> None:
+    m, sid, router, task = await stopped_hook(world)
+    view = router.permissions.first()
+    assert view is not None
+    assert router.answer_permission(view.request_id, "deny", None) is True
+    assert decision(await asyncio.wait_for(task, 2))["behavior"] == "deny"
+    await assert_escaped_and_locked(world, sid, router.session)
+
+
+async def test_stopped_hook_timeout_escapes_and_locks(world: World) -> None:
+    m, sid, router, task = await stopped_hook(world, hold=0.5)
+    assert decision(await asyncio.wait_for(task, 3))["behavior"] == "deny"
+    assert (await resolved(world, sid))["by"] == "timeout"
+    await assert_escaped_and_locked(world, sid, router.session)
+
+
+async def test_user_allow_sends_no_escape_and_locks_until_footer_gone(world: World) -> None:
+    """A person's allow is the one answer the live "1. Yes" may carry out: no ESC. The writers
+    stay locked until the footer is gone from the screen (or the settle rule)."""
+    m, sid, router, task = await stopped_hook(world)
+    session = router.session
+    show(session, "Do you want to proceed?\r\nEsc to cancel \u00b7 Tab to amend\r\n")
+    view = router.permissions.first()
+    assert view is not None
+    assert router.answer_permission(view.request_id, "allow", None) is True
+    assert decision(await asyncio.wait_for(task, 2)) == {"behavior": "allow"}
+    assert session.permission_prompt_open() is True
+    show(session, "Running the tool\r\n")  # the footer is still in the screen tail
+    assert session.permission_prompt_open() is True
+    await asyncio.sleep(1.2)
+    assert keys(world, sid) == []
+    assert session.permission_prompt_open() is True
+    show(session, "tool output " * (session_mod.DIALOG_TAIL_CHARS // 10))
+    assert session.permission_prompt_open() is False
+    await asyncio.sleep(0.2)
+    assert keys(world, sid) == []
+
+
+async def test_user_allow_lock_lifts_on_settle(world: World, monkeypatch: Any) -> None:
+    """No output after a person's allow: the lock lifts on the settle rule, with no ESC."""
+    settle_fast(monkeypatch)
+    m, sid, router, task = await stopped_hook(world)
+    view = router.permissions.first()
+    assert view is not None
+    router.answer_permission(view.request_id, "allow", None)
+    await asyncio.wait_for(task, 2)
+    assert router.session.permission_prompt_open() is True
+    await world.until(lambda: not router.session.permission_prompt_open(), 3, "lock lifted")
+    await asyncio.sleep(1.2)
+    assert keys(world, sid) == []

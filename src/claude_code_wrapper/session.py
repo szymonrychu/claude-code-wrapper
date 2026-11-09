@@ -108,10 +108,14 @@ StopCause = Literal["stop", "shutdown"]
 SERVICE_SHUTDOWN = "service_shutdown"
 #: Minimum gap between two ESCs: a double ESC at an empty prompt opens the rewind menu.
 ESC_SPACING_SECONDS = 1.0
-#: After the last orphan ESC (`deny_orphaned_prompt`), how long the screen must show no dialog
-#: footer before the writer lock lifts; a footer in that time keeps it until a relaunch or a
-#: person's dismiss. A prompt drawn after it is the footer scanner's again.
+#: After the last permission ESC (`escape_permission_prompt`) or a person's allow
+#: (`hold_permission_prompt`), how long the screen must show no dialog footer before the writer
+#: lock lifts; a footer in that time keeps it until a relaunch or a person's dismiss. A prompt
+#: drawn after it is the footer scanner's again.
 ORPHAN_SETTLE_SECONDS = 30.0
+#: A resolved relay's ESC waits this long after the resolution (writers locked meanwhile), so a
+#: live hook's deny reaches claude first and the model sees its message (probe case 2).
+PERMISSION_ESC_GRACE_SECONDS = 1.0
 #: Screen tail characters scanned to tell what kind of dialog is open.
 DIALOG_TAIL_CHARS = 1500
 #: A usage-limit wait (squashed, case-insensitive): never dismissed with ESC.
@@ -598,14 +602,18 @@ class Session:
         #: footer scanner, and the `since` an ESC already dismissed (`escape_dialog`).
         self._permission_pending = False
         self._dismissed_since: str | None = None
-        #: Dropped hooks left claude's TUI permission prompts on screen ("1. Yes" highlighted,
-        #: probe case 5), shown one at a time: `_orphans` is how many ESCs the writer task still
-        #: owes, `_orphan_lock` locks every text plus CR writer until they are all sent and no
-        #: footer follows the last one (`_orphan_esc_at`), a relaunch, or a person's dismiss.
-        #: Hooks never lift it: any Bash tool can forge one.
+        #: A resolved relay may leave claude's TUI permission prompt live ("1. Yes" highlighted,
+        #: probe cases 3b and 5): its hook can be stopped or killed, so its answer may never
+        #: reach claude. Such prompts show one at a time: `_orphans` is how many ESCs the writer
+        #: task still owes, `_orphan_lock` locks every text plus CR writer until they are all
+        #: sent and no footer follows the last one (`_orphan_esc_at`), a relaunch, or a person's
+        #: dismiss. `_allow_lock`: only a person's allows hold the lock, so the footer leaving
+        #: the screen also lifts it. Hooks never lift it: any Bash tool can forge one.
         self._orphans = 0
         self._orphan_lock = False
+        self._allow_lock = False
         self._orphan_esc_at = float("-inf")
+        self._orphan_due = float("-inf")
         self._orphan_wake = asyncio.Event()
         self._orphan_task: asyncio.Future[Any] | None = None
         #: What the session waits on the user for (`waiting_reason`), and since when.
@@ -805,6 +813,7 @@ class Session:
         self._question = False
         # The new claude shows no prompt of the old one; the old writer task sees the new pty.
         self._orphans, self._orphan_lock, self._orphan_task = 0, False, None
+        self._allow_lock = False
         self._sync_waiting()
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._exited = asyncio.Event()
@@ -880,6 +889,8 @@ class Session:
             self._footer_at = self.last_output
             if _squash(pattern) not in self._typed:
                 self._ui_dialog_at = self.last_output
+        if self._allow_lock and not self._ring_shows_permission():
+            self._lift_lock()  # the allowed prompt closed: its footer left the screen
         self._sync_waiting()
         for pattern in self._scanner.feed(text):
             self.last_fatal = pattern
@@ -1218,7 +1229,7 @@ class Session:
         self._writable_pty()
 
     def note_hook(self) -> None:
-        """A claude hook was relayed: claude is past any dialog it showed before it. The orphan
+        """A claude hook was relayed: claude is past any dialog it showed before it. The writer
         lock ignores hooks (forgeable)."""
         self._last_hook = self.clock()
         self._sync_waiting()
@@ -1242,8 +1253,9 @@ class Session:
 
     def permission_prompt_open(self) -> bool:
         """A permission prompt has focus, so a CR would pick its highlighted "1. Yes", an
-        approval no person gave: a relayed permission is held, a dropped hook left the TUI
-        prompt on screen (`deny_orphaned_prompt`), or the footer scanner sees a permission
+        approval no person gave: a relayed permission is held, a resolved one may have left the
+        TUI prompt on screen (`escape_permission_prompt`, `hold_permission_prompt`), or the footer
+        scanner sees a permission
         prompt. The one predicate every writer of text plus CR obeys."""
         return self._permission_pending or self._orphan_lock or self.dialog_kind() == "permission"
 
@@ -1256,13 +1268,27 @@ class Session:
         if self.permission_prompt_open():
             raise TurnRejected("dialog_open")
 
-    def deny_orphaned_prompt(self) -> None:
-        """A held hook was dropped (`gone`) while its claude lives: claude falls back to the TUI
-        prompt. Lock every text plus CR writer at once, then answer the orphan No with exactly
-        one spaced ESC (`_escape_orphaned_prompts`), whatever the screen shows: an ESC with no
-        prompt is harmless when spaced. Hooks dropped together (a `pkill`) leave several
-        prompts, which claude shows one at a time: one ESC each."""
+    def escape_permission_prompt(self) -> None:
+        """A held relay resolved with anything but a person's allow (deny, timeout, terminal,
+        gone) while its claude lives. The hook may never deliver the deny (stopped, killed),
+        leaving the TUI prompt live. Lock every text plus CR writer at once, then answer the
+        prompt No with exactly one spaced ESC (`_escape_orphaned_prompts`) after
+        `PERMISSION_ESC_GRACE_SECONDS`, whatever the screen
+        shows: an ESC with no prompt is harmless when spaced. Several such prompts (a `pkill`)
+        show one at a time: one ESC each."""
         self._orphans += 1
+        self._orphan_due = self.clock() + PERMISSION_ESC_GRACE_SECONDS
+        self._lock_writers(allow=False)
+
+    def hold_permission_prompt(self) -> None:
+        """A person allowed a held relay: "1. Yes" is what they chose, so no ESC, but the
+        writers stay locked until the footer leaves the screen (`_on_output`) or the settle
+        rule, as after an ESC."""
+        self._orphan_esc_at = max(self._orphan_esc_at, self.clock())
+        self._lock_writers(allow=True)
+
+    def _lock_writers(self, *, allow: bool) -> None:
+        self._allow_lock = allow and (self._allow_lock or not self._orphan_lock)
         self._orphan_lock = True
         self._orphan_wake.set()
         self._sync_waiting()
@@ -1272,17 +1298,21 @@ class Session:
             )
 
     async def _escape_orphaned_prompts(self, pty: PtyProcess | None) -> None:
-        """Send the ESCs owed to orphans, then lift the lock once `ORPHAN_SETTLE_SECONDS` pass
-        after the last one with no dialog footer (unfiltered: an echo keeps it locked). Ends on
-        a relaunch, which clears everything."""
+        """Send the ESCs owed, then lift the lock once `ORPHAN_SETTLE_SECONDS` pass after the
+        last one (or allow) with no dialog footer (unfiltered: an echo keeps it locked). Ends on
+        a relaunch, which clears everything, or when the lock lifted otherwise."""
         with contextlib.suppress(PtyClosed):  # a dead claude: the relaunch clears the lock
-            while pty is not None and self.pty is pty:
+            while pty is not None and self.pty is pty and self._orphan_lock:
                 if self._orphans:
+                    grace = self._orphan_due - self.clock()
+                    if grace > 0:
+                        await asyncio.sleep(grace)
+                        continue
                     if await self._write_escape(pty, lambda: self._orphans > 0):
                         self._orphans -= 1
                         self._orphan_esc_at = self._last_escape
                         log.info(
-                            "session %s: orphaned permission prompt denied (ESC)",
+                            "session %s: unanswered permission prompt denied (ESC)",
                             self.spec.session_id,
                         )
                     continue
@@ -1294,14 +1324,23 @@ class Session:
                     continue
                 if self._footer_at > self._orphan_esc_at:
                     log.warning(
-                        "session %s: a dialog footer after the last orphan ESC, writers stay "
-                        "locked until a relaunch or a dismiss",
+                        "session %s: a dialog footer after the last permission ESC, writers "
+                        "stay locked until a relaunch or a dismiss",
                         self.spec.session_id,
                     )
                 else:
-                    self._orphan_lock = False
-                    self._sync_waiting()
+                    self._lift_lock()
                 return
+
+    def _lift_lock(self) -> None:
+        self._orphan_lock = self._allow_lock = False
+        self._orphan_wake.set()
+        self._sync_waiting()
+
+    def _ring_shows_permission(self) -> bool:
+        """A permission footer is in the screen tail (unfiltered: an echo keeps it)."""
+        text = _squash(self.ring.tail(DIALOG_TAIL_CHARS))
+        return any(_squash(p) in text for p in PERMISSION_FOOTER_PATTERNS)
 
     def waiting_reason(self) -> str | None:
         """Why the session waits on the user: `question` (asked, not answered), `permission` (a
@@ -1352,8 +1391,8 @@ class Session:
         return "dialog"
 
     def auto_escape_blocked(self) -> bool:
-        """No automatic ESC may be sent: a permission relay is held, an orphaned prompt gets its
-        own one ESC (`deny_orphaned_prompt`), or a usage-limit waits."""
+        """No automatic ESC may be sent: a permission relay is held, a resolved one holds the
+        writer lock (`escape_permission_prompt`), or a usage-limit waits."""
         return self._permission_pending or self._orphan_lock or self.dialog_kind() == "usage_wait"
 
     def dismissed(self, since: str) -> bool:
@@ -1388,9 +1427,8 @@ class Session:
                 with contextlib.suppress(PtyClosed):
                     written = await self._write_escape(pty, guard)
             if written and self._orphan_lock:
-                # A person dismissed what the orphan lock still guards: their ESC denies it.
-                self._orphan_lock = False
-                self._sync_waiting()
+                # A person dismissed what the writer lock still guards: their ESC denies it.
+                self._lift_lock()
             return written
         finally:
             if not written:

@@ -783,13 +783,15 @@ class SessionRouter(SessionListener):
             # Cancelled or failed while held: nobody answers this hook any more.
             self.permissions.resolve(pending.request_id, Decision("deny", "gone"))
             decision = pending.future.result()
-            if decision.by != "gone":
-                # The answer closed the TUI prompt drawn in parallel (probe case 1).
-                session.note_hook()
-            elif not self._closed and restarts == self._restarts and session.pty is pty:
-                # A dropped hook leaves the TUI prompt on screen with "1. Yes" highlighted
-                # (probe case 5): lock the CR writers before the hold lifts, then ESC it.
-                session.deny_orphaned_prompt()
+            if not self._closed and restarts == self._restarts and session.pty is pty:
+                # The TUI prompt drawn in parallel (probe case 1) keeps "1. Yes" highlighted
+                # until the hook's answer reaches claude, which a stopped or killed hook never
+                # delivers (probe cases 3b and 5). Lock the CR writers before the hold lifts;
+                # only a person's allow may stand, anything else gets one ESC (No).
+                if _hook_allows(decision):
+                    session.hold_permission_prompt()
+                else:
+                    session.escape_permission_prompt()
             session.set_permission_pending(len(self.permissions) > 0)
             # `behavior` is what the hook really answered; the terminal's claim is separate.
             resolved: dict[str, Any] = {
