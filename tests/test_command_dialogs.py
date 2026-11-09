@@ -313,7 +313,7 @@ async def test_dialog_config_defaults_and_override(world):
 
 
 #: A usage-limit wait whose line ends like a dialog footer (Review Focus 5).
-USAGE_FOOTER = "Usage limit reached · continuing automatically at 3pm · esc to cancel"
+USAGE_FOOTER = "Usage limit reached \u00b7 continuing automatically at 3pm \u00b7 esc to cancel"
 
 
 async def test_dialog_leg_skips_escape_while_usage_wait(world):
@@ -329,6 +329,8 @@ async def test_dialog_leg_skips_escape_while_usage_wait(world):
     # Without ESCs the leg spends its ESC budget on skipped attempts and ends dialog_stuck.
     assert (rec.state, rec.result, rec.error) == ("failed", None, "dialog_stuck")
     assert keys(world, sid) == []
+    assert len(world.interactive_argvs()) == 1  # no relaunch over the held wait
+    assert m.router(sid).session.restarts == 0
 
 
 async def test_dialog_leg_skips_escape_while_permission_pending(world):
@@ -349,6 +351,8 @@ async def test_dialog_leg_skips_escape_while_permission_pending(world):
         router.session.set_permission_pending(False)
     assert (rec.state, rec.result, rec.error) == ("failed", None, "dialog_stuck")
     assert keys(world, sid) == []
+    assert len(world.interactive_argvs()) == 1  # no relaunch over the held wait
+    assert m.router(sid).session.restarts == 0
 
 
 async def test_timeout_leg_skips_escape_while_usage_wait(world):
@@ -362,3 +366,5 @@ async def test_timeout_leg_skips_escape_while_usage_wait(world):
     await finished(world, rec, timeout=15)
     assert (rec.state, rec.result, rec.error) == ("failed", None, "timeout")
     assert keys(world, sid) == []
+    assert len(world.interactive_argvs()) == 1  # no relaunch over the held wait
+    assert m.router(sid).session.restarts == 0

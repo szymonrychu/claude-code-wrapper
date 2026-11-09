@@ -651,7 +651,9 @@ class SessionRouter(SessionListener):
             if event_name == "SessionStart":
                 return self._on_session_start(payload)
             self.session.note_activity()
-            self.session.note_hook()
+            if event_name != "PermissionRequest":
+                # Its start means a prompt was just drawn, not that claude moved past one.
+                self.session.note_hook()
             self._track_path(payload)
             handler = {
                 "UserPromptSubmit": self._on_user_prompt_submit,
@@ -1983,7 +1985,10 @@ class SessionRouter(SessionListener):
                 self._promote(record, line)
             if error == "timeout":
                 await self._escape_at_timeout(deadline)
-            if error == "dialog_stuck" or (error == "timeout" and session.dialog_on_screen()):
+            if (
+                error == "dialog_stuck" or (error == "timeout" and session.dialog_on_screen())
+            ) and not session.auto_escape_blocked():
+                # A held permission or a usage wait must outlive the leg: no relaunch over it.
                 await self._restart_for_dialog()
         except (PtyClosed, TurnRejected):
             state, result, error, output = "failed", None, "claude_exited", None

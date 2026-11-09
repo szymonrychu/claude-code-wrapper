@@ -276,6 +276,49 @@ async def test_dropped_connection_resolves_as_gone(world: World) -> None:
     assert router.session.waiting_reason() is None
 
 
+async def test_gone_leaves_drawn_prompt_visible(world: World, monkeypatch: Any) -> None:
+    """The ccw-hook of a held PermissionRequest dies while the TUI prompt it raced is still
+    drawn: the hook's arrival must not hide that prompt, so it shows as an open dialog."""
+    m, sid, router = await start(world, GATED)
+    gone = asyncio.Event()
+    real = router.handle_claude_hook
+
+    async def relay(event: str, body: Any, gone: Any = None) -> Any:
+        if event != "PermissionRequest":
+            return await real(event, body, gone)
+        await real(event, body, gone=ev)
+        return {"stdout": "", "exit_code": 0}  # the dead ccw-hook answers nothing
+
+    ev = gone
+    monkeypatch.setattr(router, "handle_claude_hook", relay)
+    app = create_app(m, m.cfg)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://t", headers=headers
+    ) as c:
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go"})
+        assert r.status_code == 202, r.text
+        await requested(world, sid)
+        gone.set()
+        got = await resolved(world, sid)
+        assert (got["by"], got["behavior"]) == ("gone", "deny")
+        session = router.session
+        assert len(router.permissions) == 0
+        assert session.dialog_open() is True
+        assert session.dialog_kind() == "permission"
+        assert session.waiting_reason() == "permission"
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "more", "lane": "regular"})
+        assert r.status_code == 409, r.text
+        assert r.json()["error"]["code"] == "dialog_open"
+        assert jsonl(world.session_dir(sid) / "config" / "fake-keys.jsonl") == []
+        # Dismiss is the way out: ESC answers No on the still-drawn prompt.
+        assert session.waiting_since is not None
+        assert await session.escape_dialog(session.waiting_since) is True
+        await world.wait_turn(m, sid, "interrupted")
+    (won,) = jsonl(world.session_dir(sid) / "config" / "fake-permissions.jsonl")
+    assert (won["by"], won["behavior"]) == ("key", "interrupt")
+
+
 async def test_ask_user_question_passes_through(world: World) -> None:
     _, sid, router = await start(world, {"turns": []})
     body = payload(tool="AskUserQuestion", tinput={"questions": []})
