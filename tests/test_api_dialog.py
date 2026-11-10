@@ -10,7 +10,7 @@ from conftest import World, jsonl
 from test_api_turns import TOKEN
 from test_permission_relay import (
     GATED,
-    hold_back_escape,
+    EscGate,
     requested,
     resolved,
     settle_fast,
@@ -18,6 +18,7 @@ from test_permission_relay import (
     tool_results,
 )
 
+from claude_code_wrapper import router as router_mod
 from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.manager import CreateSessionRequest
 
@@ -206,8 +207,11 @@ async def test_allow_footer_only_permission_no_dialog(world: World, monkeypatch:
     """The hook is dead and the TUI prompt is still drawn: the view shows it with a tail and
     nothing answers it allow; the wrapper's own one ESC (No) closes it, so a dismiss meanwhile
     sends no second ESC. Premise changed (fix round 4): the orphan lock now lifts
-    ORPHAN_SETTLE_SECONDS after that ESC, so the test shortens the settle to see it close."""
+    ORPHAN_SETTLE_SECONDS after that ESC, so the test shortens the settle to see it close.
+    The orphan ESC is parked at a gate until the dismiss has decided, so "no second ESC" does
+    not race the orphan ESC on a slow runner."""
     settle_fast(monkeypatch)
+    monkeypatch.setattr(router_mod, "DISMISS_CONFIRM_SECONDS", 10.0)
     m, sid, router = await start(world, GATED)
     gone = asyncio.Event()
     real = router.handle_claude_hook
@@ -225,7 +229,17 @@ async def test_allow_footer_only_permission_no_dialog(world: World, monkeypatch:
         view = None
         await router.submit_turn("go")
         view = await requested(world, sid)
-        hold_back_escape(router, monkeypatch)
+        session = router.session
+        gate = EscGate(session, monkeypatch)
+        real_escape = session.escape_dialog
+
+        async def dismiss_then_release(since: str) -> bool:
+            try:
+                return await real_escape(since)
+            finally:
+                gate.release()  # the orphan ESC goes once the dismiss has decided
+
+        monkeypatch.setattr(session, "escape_dialog", dismiss_then_release)
         gone.set()
         await resolved(world, sid)
         body = (await c.get(url)).json()

@@ -313,17 +313,45 @@ def keys(world: World, sid: str) -> list[str]:
     return [k["key"] for k in jsonl(world.session_dir(sid) / "config" / "fake-keys.jsonl")]
 
 
-def hold_back_escape(router: Any, monkeypatch: Any) -> None:
-    """Delay the next ESC by ~1.5 s (a pretend ESC just now), so writers meet the orphaned
-    prompt before its ESC. Premise changed (fix round 4): no footer precondition any more, so
-    the pretend ESC no longer has to sit before the drawn footer."""
-    monkeypatch.setattr(session_mod, "ESC_SPACING_SECONDS", 1.5)
-    router.session._last_escape = router.session.clock()
-
-
 def settle_fast(monkeypatch: Any) -> None:
-    """Lift the orphan lock 0.3 s after the last orphan ESC when no footer follows it."""
+    """Lift the orphan lock 0.3 s after the last orphan ESC when no footer follows it. Only for
+    tests that wait for the lift; a test asserting the lock still holds keeps the 30 s default
+    and ends the window itself with `settle_now`, so a slow runner cannot lift it early."""
     monkeypatch.setattr(session_mod, "ORPHAN_SETTLE_SECONDS", 0.3)
+
+
+async def settle_now(session: Any, monkeypatch: Any) -> None:
+    """End the settle window at once and wait for the writer task's decision: lift the lock, or
+    keep it because a footer was seen after the last ESC. No real-time window to race."""
+    monkeypatch.setattr(session_mod, "ORPHAN_SETTLE_SECONDS", 0.0)
+    session._orphan_wake.set()
+    await asyncio.wait_for(asyncio.shield(session._orphan_task), 5)
+
+
+class EscGate:
+    """Parks every ESC the session writes (`_write_escape`) until the test lets it through, so
+    "not sent yet" and "still locked" checks do not race a grace or spacing window."""
+
+    def __init__(self, session: Any, monkeypatch: Any) -> None:
+        self.parked = 0
+        self._tokens = asyncio.Semaphore(0)
+        real = session._write_escape
+
+        async def gated(pty: Any, guard: Any) -> bool:
+            self.parked += 1
+            await self._tokens.acquire()
+            return await real(pty, guard)
+
+        monkeypatch.setattr(session, "_write_escape", gated)
+
+    def release(self, n: int = 1) -> None:
+        for _ in range(n):
+            self._tokens.release()
+
+
+def esc_done(session: Any) -> bool:
+    """Every ESC owed is written and recorded as the last one (the settle window's start)."""
+    return session._orphans == 0 and session._orphan_esc_at == session.last_escape
 
 
 async def test_dropped_hook_denies_fallback_prompt_once(world: World, monkeypatch: Any) -> None:
@@ -352,7 +380,7 @@ async def test_dropped_hook_denies_fallback_prompt_once(world: World, monkeypatc
         assert r.status_code == 202, r.text
         await requested(world, sid)
         session = router.session
-        hold_back_escape(router, monkeypatch)
+        gate = EscGate(session, monkeypatch)  # writers meet the orphaned prompt before its ESC
         gone.set()
         got = await resolved(world, sid)
         assert (got["by"], got["behavior"]) == ("gone", "deny")
@@ -366,6 +394,7 @@ async def test_dropped_hook_denies_fallback_prompt_once(world: World, monkeypatc
         r = await c.post(f"/v1/sessions/{sid}/probe")
         assert r.status_code == 409, r.text
         assert keys(world, sid) == []
+        gate.release()
         await world.wait_turn(m, sid, "interrupted")
     assert keys(world, sid) == ["esc"]
     (won,) = jsonl(world.session_dir(sid) / "config" / "fake-permissions.jsonl")
@@ -386,7 +415,7 @@ async def test_orphaned_prompt_blocks_writers_until_its_escape(
     gone = asyncio.Event()
     sub = await held(router, payload("a1"), gone=gone)
     draw_prompt(router.session)
-    hold_back_escape(router, monkeypatch)
+    gate = EscGate(router.session, monkeypatch)
     gone.set()
     out = await asyncio.wait_for(sub, 2)
     assert decision(out)["behavior"] == "deny"
@@ -403,6 +432,7 @@ async def test_orphaned_prompt_blocks_writers_until_its_escape(
     await asyncio.sleep(0.5)
     assert rec.state == "queued"
     assert typed(world, sid) == [] and keys(world, sid) == []
+    gate.release()
     await world.until(lambda: rec.state in ("completed", "failed", "cancelled"), 15)
     assert (rec.state, rec.result) == ("completed", "ok")
     assert keys(world, sid) == ["esc"]
@@ -440,22 +470,43 @@ def esc_times(world: World, sid: str) -> list[datetime]:
     ]
 
 
+class EscWrites:
+    """Session-clock times of the ESCs the wrapper really wrote to the PTY. Spacing is measured
+    here: the fake's own timestamps are when it read a key, which a loaded runner delays."""
+
+    def __init__(self, session: Any, monkeypatch: Any) -> None:
+        self.at: list[float] = []
+        real = session.pty.write_guarded
+
+        async def spy(data: bytes, guard: Any) -> bool:
+            wrote = await real(data, guard)
+            if wrote and data == session_mod.ESC:
+                self.at.append(session.clock())
+            return wrote
+
+        monkeypatch.setattr(session.pty, "write_guarded", spy)
+
+    def assert_spaced(self) -> None:
+        for one, two in zip(self.at, self.at[1:], strict=False):
+            assert two - one >= session_mod.ESC_SPACING_SECONDS
+
+
 async def test_orphans_dropped_together_get_one_escape_each(world: World, monkeypatch: Any) -> None:
     """Two background subagents' hooks are killed at once (one gone event): claude shows its
     queued prompts one at a time. Each orphan gets its own spaced ESC, the writers stay locked
     until both are sent, and a hook in between does not lift the lock. Premise changed (fix
     round 4): the second ESC no longer waits for its prompt to be drawn."""
-    settle_fast(monkeypatch)
     m, sid, router = await start(world, IDLE, sessions={"commands": commands_cfg()})
     session = router.session
     await world.until(lambda: session.state == "ready", 15)
+    escs = EscWrites(session, monkeypatch)
     gone = asyncio.Event()
     subs = [await held(router, payload(a), gone=gone) for a in ("a1", "a2")]
     draw_prompt(session)
     gone.set()
     for sub in subs:
         assert decision(await asyncio.wait_for(sub, 2))["behavior"] == "deny"
-    await world.until(lambda: keys(world, sid) == ["esc"], 5, "first ESC")
+    await world.until(lambda: len(escs.at) >= 1, 5, "first ESC")
     # A hook from another agent (or a forged one) arrives between the two ESCs.
     await router.handle_claude_hook("PostToolUse", {**payload(), "tool_response": "ok"})
     assert session.permission_prompt_open() is True
@@ -470,10 +521,11 @@ async def test_orphans_dropped_together_get_one_escape_each(world: World, monkey
         r = await c.post(f"/v1/sessions/{sid}/probe")
         assert r.status_code == 409, r.text
     await world.until(lambda: keys(world, sid) == ["esc", "esc"], 5, "second ESC")
-    first, second = esc_times(world, sid)
-    assert (second - first).total_seconds() >= session_mod.ESC_SPACING_SECONDS - 0.05
+    escs.assert_spaced()
     assert typed(world, sid) == []
-    await world.until(lambda: not session.permission_prompt_open(), 2, "lock lifted")
+    await world.until(lambda: esc_done(session), 5, "ESCs recorded")
+    await settle_now(session, monkeypatch)
+    assert not session.permission_prompt_open()
     await asyncio.sleep(1.2)
     assert keys(world, sid) == ["esc", "esc"]  # exactly one ESC per orphan
     assert typed(world, sid) == []
@@ -485,19 +537,19 @@ async def test_orphan_whose_prompt_never_shows_still_gets_one_escape(
     """No footer is ever seen (the scanner missed it, or the prompt is not drawn yet): the
     orphan still gets exactly one ESC, and the writers stay locked until it is sent."""
     settle_fast(monkeypatch)
-    monkeypatch.setattr(session_mod, "ESC_SPACING_SECONDS", 1.5)
     m, sid, router = await start(world, IDLE)
     session = router.session
     await world.until(lambda: session.state == "ready", 15)
-    session._last_escape = session.clock()  # hold the ESC back ~1.5 s
+    gate = EscGate(session, monkeypatch)
     gone = asyncio.Event()
     sub = await held(router, payload("a1"), gone=gone)
     gone.set()
     await asyncio.wait_for(sub, 2)
-    await asyncio.sleep(1.0)
+    await world.until(lambda: gate.parked == 1, 5, "orphan ESC due")
     assert keys(world, sid) == []
     assert session.permission_prompt_open() is True
-    await world.until(lambda: keys(world, sid) == ["esc"], 3, "orphan ESC")
+    gate.release()
+    await world.until(lambda: keys(world, sid) == ["esc"], 5, "orphan ESC")
     await world.until(lambda: not session.permission_prompt_open(), 3, "lock lifted")
     await asyncio.sleep(1.6)
     assert keys(world, sid) == ["esc"]
@@ -509,11 +561,13 @@ async def test_typed_footer_echo_neither_skips_escape_nor_unlocks(
 ) -> None:
     """The last typed text quotes the permission footer, so the echo filter hides the real
     footer from the dialog scanner. The orphan still gets its ESC, and a footer after it keeps
-    the lock (the scanner cannot tell an echo from a prompt), until a person dismisses it."""
-    settle_fast(monkeypatch)
+    the lock (the scanner cannot tell an echo from a prompt), until a person dismisses it.
+    The settle window stays at its 30 s default until the footer is drawn and `settle_now`
+    ends it: a slow runner can no longer lift the lock before the footer lands (CI flake)."""
     m, sid, router = await start(world, IDLE)
     session = router.session
     await world.until(lambda: session.state == "ready", 15)
+    escs = EscWrites(session, monkeypatch)
     await router.submit_turn("go: press Esc to cancel \u00b7 Tab to amend")
     await world.wait_turn(m, sid)
     gone = asyncio.Event()
@@ -522,9 +576,11 @@ async def test_typed_footer_echo_neither_skips_escape_nor_unlocks(
     gone.set()
     await asyncio.wait_for(sub, 2)
     assert session.permission_prompt_open() is True
-    await world.until(lambda: keys(world, sid) == ["esc"], 3, "orphan ESC")
+    await world.until(lambda: keys(world, sid) == ["esc"], 5, "orphan ESC")
+    await world.until(lambda: esc_done(session), 5, "orphan ESC recorded")
     draw_prompt(session)  # a prompt (or an echo) drawn after the last orphan ESC
-    await asyncio.sleep(1.0)
+    await settle_now(session, monkeypatch)  # the settle window ended with the footer seen
+    assert session._orphan_lock is True
     assert session.permission_prompt_open() is True
     with pytest.raises(session_mod.TurnRejected):
         session.check_no_permission()
@@ -534,8 +590,9 @@ async def test_typed_footer_echo_neither_skips_escape_nor_unlocks(
     out = await router.answer_dialog("dismiss", None, None, None)
     assert out == {"status": "dismissed", "escape_sent": True}
     assert session.permission_prompt_open() is False
-    first, second = esc_times(world, sid)
-    assert (second - first).total_seconds() >= session_mod.ESC_SPACING_SECONDS - 0.05
+    await world.until(lambda: keys(world, sid) == ["esc", "esc"], 5, "dismiss ESC")
+    assert len(escs.at) == 2
+    escs.assert_spaced()
 
 
 async def test_late_prompt_is_escaped_and_stays_locked(world: World) -> None:
@@ -587,7 +644,9 @@ async def test_relaunch_clears_orphan_lock(world: World) -> None:
     assert session.dialog_open() is False
 
 
-async def test_interrupt_escape_keeps_spacing_after_orphan_escape(world: World) -> None:
+async def test_interrupt_escape_keeps_spacing_after_orphan_escape(
+    world: World, monkeypatch: Any
+) -> None:
     """An interrupt ESC queued on the PTY lock behind an orphan ESC is re-spaced under the
     lock, so the two never land back to back (a double ESC opens rewind)."""
     slow = {"turns": [{"match": "^go", "steps": [{"sleep": 5}, {"text": "done"}]}]}
@@ -596,6 +655,7 @@ async def test_interrupt_escape_keeps_spacing_after_orphan_escape(world: World) 
     await world.until(lambda: session.state == "ready", 15)
     await router.submit_turn("go")
     await world.until(lambda: session.state == "busy", 5)
+    escs = EscWrites(session, monkeypatch)
     gone = asyncio.Event()
     sub = await held(router, payload("a1"), gone=gone)
     async with session.pty._lock:  # both ESC writers queue on the lock
@@ -605,9 +665,8 @@ async def test_interrupt_escape_keeps_spacing_after_orphan_escape(world: World) 
         interrupt = asyncio.ensure_future(router.interrupt())
         await asyncio.sleep(0.05)
     await asyncio.wait_for(interrupt, 10)
-    await world.until(lambda: len(keys(world, sid)) >= 2, 5, "two ESCs")
-    first, second = esc_times(world, sid)[:2]
-    assert (second - first).total_seconds() >= session_mod.ESC_SPACING_SECONDS - 0.05
+    await world.until(lambda: len(escs.at) >= 2, 5, "two ESCs")
+    escs.assert_spaced()
 
 
 async def test_ask_user_question_passes_through(world: World) -> None:
@@ -727,7 +786,6 @@ async def release(router: Any, sub: asyncio.Task) -> None:
 
 async def test_idle_lane_refused_while_permission_held(world: World, monkeypatch: Any) -> None:
     # Fix round 5: the release (terminal) gets one ESC; the lane opens once the lock lifts.
-    settle_fast(monkeypatch)
     m, sid, router, sub = await held_subagent(world)
     app = create_app(m, m.cfg)
     headers = {"Authorization": f"Bearer {TOKEN}"}
@@ -740,8 +798,10 @@ async def test_idle_lane_refused_while_permission_held(world: World, monkeypatch
         await release(router, sub)
         r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": "idle"})
         assert r.status_code == 409, r.text  # locked until the ESC and the settle
-        await world.until(lambda: keys(world, sid) == ["esc"], 3, "release ESC")
-        await world.until(lambda: not router.session.permission_prompt_open(), 3, "lifted")
+        await world.until(lambda: keys(world, sid) == ["esc"], 5, "release ESC")
+        await world.until(lambda: esc_done(router.session), 5, "release ESC recorded")
+        await settle_now(router.session, monkeypatch)
+        assert not router.session.permission_prompt_open()
         r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": "idle"})
         assert r.status_code == 202, r.text
         await world.wait_turn(m, sid)
@@ -900,24 +960,30 @@ async def test_user_allow_lock_lifts_on_settle(world: World, monkeypatch: Any) -
 # ------------------------------------------------------------------ grace and mixed order
 
 
-async def test_deny_escape_waits_out_grace_with_lock_held(world: World) -> None:
+async def test_deny_escape_waits_out_grace_with_lock_held(world: World, monkeypatch: Any) -> None:
     """A user deny locks the writers at once, but its ESC only lands after the grace that lets
-    a live hook's deny reach claude first."""
+    a live hook's deny reach claude first. The ESC is parked at a gate, so the "not sent yet,
+    still locked" checks hold however slow the runner is."""
     m, sid, router, task = await stopped_hook(world)
     session = router.session
+    gate = EscGate(session, monkeypatch)
     view = router.permissions.first()
     assert view is not None
     start_at = datetime.now(UTC)
+    resolved_at = session.clock()
     assert router.answer_permission(view.request_id, "deny", None) is True
     assert decision(await asyncio.wait_for(task, 2))["behavior"] == "deny"
     assert session.permission_prompt_open() is True
     with pytest.raises(session_mod.TurnRejected):
         session.check_no_permission()
-    await asyncio.sleep(session_mod.PERMISSION_ESC_GRACE_SECONDS * 0.5)
-    assert keys(world, sid) == []  # still inside the grace
+    await world.until(lambda: gate.parked == 1, 5, "deny ESC due")
+    # the writer only tries its ESC once the grace is over
+    assert session.clock() - resolved_at >= session_mod.PERMISSION_ESC_GRACE_SECONDS
+    assert keys(world, sid) == []
     assert session.permission_prompt_open() is True
     assert typed(world, sid) == []
-    await world.until(lambda: keys(world, sid) == ["esc"], 3, "deny ESC")
+    gate.release()
+    await world.until(lambda: keys(world, sid) == ["esc"], 5, "deny ESC")
     (esc,) = esc_times(world, sid)
     assert (esc - start_at).total_seconds() >= session_mod.PERMISSION_ESC_GRACE_SECONDS - 0.15
     assert session.permission_prompt_open() is True
@@ -925,11 +991,12 @@ async def test_deny_escape_waits_out_grace_with_lock_held(world: World) -> None:
 
 async def mixed_pair(world: World, monkeypatch: Any, first: str, second: str) -> None:
     """Two held relays resolved in sequence, each by `deny` (a person) or `gone` (a dropped
-    hook): one spaced ESC each, writers locked until both are sent."""
-    settle_fast(monkeypatch)
+    hook): one spaced ESC each, writers locked until both are sent. The settle window keeps
+    its 30 s default until `settle_now`, so the lock checks cannot race it."""
     m, sid, router = await start(world, IDLE)
     session = router.session
     await world.until(lambda: session.state == "ready", 15)
+    escs = EscWrites(session, monkeypatch)
     gones = {"a1": asyncio.Event(), "a2": asyncio.Event()}
     tasks = {a: await held(router, payload(a), gone=gones[a]) for a in ("a1", "a2")}
     draw_prompt(session)
@@ -941,15 +1008,18 @@ async def mixed_pair(world: World, monkeypatch: Any, first: str, second: str) ->
             gones[agent].set()
         assert decision(await asyncio.wait_for(tasks[agent], 2))["behavior"] == "deny"
         assert session.permission_prompt_open() is True
-    await world.until(lambda: keys(world, sid) == ["esc"], 5, "first ESC")
+    await world.until(lambda: len(escs.at) >= 1, 5, "first ESC")
     assert session.permission_prompt_open() is True
     with pytest.raises(session_mod.TurnRejected):
         session.check_no_permission()
     await world.until(lambda: keys(world, sid) == ["esc", "esc"], 5, "second ESC")
-    one, two = esc_times(world, sid)
-    assert (two - one).total_seconds() >= session_mod.ESC_SPACING_SECONDS - 0.05
+    assert len(escs.at) == 2
+    escs.assert_spaced()
     assert typed(world, sid) == []
-    await world.until(lambda: not session.permission_prompt_open(), 3, "lock lifted")
+    assert session.permission_prompt_open() is True
+    await world.until(lambda: esc_done(session), 5, "ESCs recorded")
+    await settle_now(session, monkeypatch)
+    assert not session.permission_prompt_open()
     await asyncio.sleep(1.2)
     assert keys(world, sid) == ["esc", "esc"]  # exactly one ESC per resolution
 
