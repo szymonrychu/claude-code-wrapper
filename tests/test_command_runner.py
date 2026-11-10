@@ -215,6 +215,16 @@ async def test_command_timeout_sends_esc(world):
         await write(data)
 
     pty.write = recording
+    write_guarded = pty.write_guarded
+
+    async def recording_guarded(data: bytes, guard: Any) -> bool:
+        # Every ESC now goes through write_guarded (fix round 4: spacing re-checked under lock).
+        written = await write_guarded(data, guard)
+        if written:
+            sent.append(bytes(data))
+        return written
+
+    pty.write_guarded = recording_guarded
     rec = router.request_command("reload-skills", origin="client")
     await finished(world, rec)
     assert (rec.state, rec.error) == ("failed", "timeout")
@@ -579,6 +589,9 @@ class CommandStub(StubSession):
 
     async def send_escape(self) -> None:
         self.escapes += 1
+
+    def auto_escape_blocked(self) -> bool:
+        return False
 
     # The dialog surface (design D7): this stub never shows a dialog.
     dialog_hits = 0

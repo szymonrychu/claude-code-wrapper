@@ -35,6 +35,11 @@ log = logging.getLogger(__name__)
 
 PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
+#: ctrl+l: claude's `chat:clearInput` key (2.1.304), which empties the input box.
+CLEAR_INPUT = b"\x0c"
+#: The gap after `CLEAR_INPUT`, so the paste that follows lands in a later read (as
+#: session.KEY_GAP_SECONDS spaces keys).
+CLEAR_INPUT_GAP_SECONDS = 0.25
 READ_SIZE = 65536
 #: Largest rows or cols `resize` accepts.
 MAX_DIMENSION = 1000
@@ -84,6 +89,8 @@ class PtyProcess:
         self._fd: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = asyncio.Lock()
+        #: A refused `send_prompt` left its paste in claude's input box (not submitted).
+        self._stale_input = False
         self._reading = False
         self._closed = False
         self._exit_fired = False
@@ -233,21 +240,46 @@ class PtyProcess:
         async with self._lock:
             await self._write_locked(data)
 
+    async def write_guarded(self, data: bytes, guard: Callable[[], bool]) -> bool:
+        """Write `data` only when `guard()` holds, checked under the write lock (no other writer
+        in between); returns whether it wrote. Raises `PtyClosed` like `write`."""
+        async with self._lock:
+            if not guard():
+                return False
+            await self._write_locked(data)
+            return True
+
     async def paste(self, text: str) -> None:
         """Write `text` as one bracketed paste. No CR: submitting is `send_prompt`'s job."""
         async with self._lock:
             await self._write_locked(paste_bytes(text))
 
-    async def send_prompt(self, text: str, delay: float) -> None:
+    async def send_prompt(
+        self, text: str, delay: float, guard: Callable[[], bool] | None = None
+    ) -> bool:
         """Paste `text`, wait `delay`, then CR as a second write, all under one lock hold.
 
         The CR must arrive in a later read than the paste end or the TUI takes it as a
         newline inside the paste; holding the lock keeps any other writer out of the gap.
+        `guard`, when given, is checked under the lock before the paste and again before the
+        CR; returns False (nothing more written) as soon as it fails. A refusal before the CR
+        leaves the paste in claude's input box, where keys now reach a prompt instead: the next
+        prompt clears the input (`CLEAR_INPUT`) before its own paste.
         """
         async with self._lock:
+            if guard is not None and not guard():
+                return False
+            if self._stale_input:
+                await self._write_locked(CLEAR_INPUT)
+                self._stale_input = False
+                await asyncio.sleep(CLEAR_INPUT_GAP_SECONDS)
             await self._write_locked(paste_bytes(text))
             await asyncio.sleep(delay)
+            if guard is not None and not guard():
+                self._stale_input = True
+                return False
             await self._write_locked(b"\r")
+            return True
 
     def _check_writable(self) -> int:
         if self._closed or self._exit_fired or self._fd is None or self._proc is None:

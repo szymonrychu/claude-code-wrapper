@@ -28,7 +28,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from .command_signals import Signal, SignalBus
 from .commands import CommandQueue, CommandRecord, CommandRejected, render
@@ -36,13 +36,23 @@ from .commands import Origin as CommandOrigin
 from .config import CommandsConfig, Config
 from .events import Event as LogEvent
 from .events import EventLog
-from .hook_relay import RelayResponse, deny_output
+from .hook_relay import PERMISSION_FAIL_MESSAGE, RelayResponse, deny_output, permission_output
 from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
 from .notes import NoteStore, render_block
+from .permissions import (
+    GONE_DENY_MESSAGE,
+    HOLD_DENY_MESSAGE,
+    TERMINAL_DENY_MESSAGE,
+    Behavior,
+    Decision,
+    PendingPermission,
+    PermissionBroker,
+)
 from .pty_proc import PtyClosed
 from .redact import Redactor
 from .session import (
+    DIALOG_TAIL_CHARS,
     ESC_SPACING_SECONDS,
     QueuedMessage,
     Session,
@@ -109,6 +119,15 @@ QUESTION_DENY_REASON = (
     "end your turn now and wait for their reply in the next message."
 )
 DEFAULT_DENY_REASON = "Denied by a wrapper hook."
+#: The deny message claude gets when a person denies a held permission without a message.
+OPERATOR_DENY_MESSAGE = "The operator denied this action"
+#: How often a writer of text plus CR looks again whether a held permission was resolved.
+PERMISSION_POLL_SECONDS = 0.05
+#: How long a dismiss waits for the dialog to close before it reports `still_open`.
+DISMISS_CONFIRM_SECONDS = 2.0
+DISMISS_POLL_SECONDS = 0.1
+#: Name of the task that watches a held permission's `gone` event (cancelled at every answer).
+HOLD_GONE_WAITER = "ccw-permission-gone-wait"
 DEFAULT_BLOCK_REASON = "A wrapper onStop hook asked you to continue."
 #: Seconds `close()` waits for background hooks and callbacks before cancelling them.
 CLOSE_DRAIN_SECONDS = 5.0
@@ -218,6 +237,18 @@ def _parent_tool_use_id(transcript_path: str | Path, agent_id: Any) -> str | Non
     return value if isinstance(value, str) else None
 
 
+class DialogConflict(Exception):
+    """A dialog answer the session's current state refuses (HTTP 409 with this `code`)."""
+
+    def __init__(
+        self,
+        code: Literal["no_dialog", "dialog_changed", "permission_resolved", "not_dismissable"],
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class TurnVetoed(Exception):
     """An `onTurn` hook denied the turn."""
 
@@ -270,6 +301,37 @@ def _attribution(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _allow() -> RelayResponse:
     return {"stdout": "", "stderr": "", "exit_code": 0}
+
+
+#: The deny text per resolution source when the decision carries none (never a null message).
+_DENY_MESSAGES = {
+    "user": OPERATOR_DENY_MESSAGE,
+    "timeout": HOLD_DENY_MESSAGE,
+    "gone": GONE_DENY_MESSAGE,
+    "terminal": TERMINAL_DENY_MESSAGE,
+}
+
+
+def _hook_allows(decision: Decision) -> bool:
+    return decision.by == "user" and decision.behavior == "allow"
+
+
+def _hook_answer(decision: Decision) -> str:
+    """The JSON a held PermissionRequest hook prints: allow only for a person's answer.
+
+    Every hook-derived resolution (terminal, gone) is forgeable by the agent, since
+    CCW_HOOK_TOKEN is in every Bash tool's env, so it always denies with a fixed message. A real
+    terminal keypress already answered claude first, which then ignores this output (probe 3b).
+    """
+    if _hook_allows(decision):
+        return permission_output("allow")
+    if decision.by == "terminal":
+        return permission_output("deny", TERMINAL_DENY_MESSAGE)
+    return permission_output("deny", decision.message or _DENY_MESSAGES[decision.by])
+
+
+def _relay(stdout: str) -> RelayResponse:
+    return {"stdout": stdout, "stderr": "", "exit_code": 0}
 
 
 def _additional_context(event_name: str, context: str) -> str:
@@ -366,6 +428,9 @@ class SessionRouter(SessionListener):
         #: Idle auto-compact (D6): the pending timer, whether this idle gap may still fire, and
         #: the context size (input + cache tokens) of the last main-chain Usage.
         self._ac_handle: asyncio.TimerHandle | None = None
+        #: the one-shot idle-dialog dismiss timer and the `since` it was armed for.
+        self._dd_handle: asyncio.TimerHandle | None = None
+        self._dd_since: str | None = None
         self._ac_armed = False
         self._last_context: int | None = None
         #: Latest statusLine values relayed by `ccw statusline` (see `on_statusline`).
@@ -389,6 +454,10 @@ class SessionRouter(SessionListener):
         #: results seen since.
         self._notes_last = time.monotonic()
         self._notes_tool_results = 0
+        #: Relayed PermissionRequest hooks held for an answer (`_on_permission_request`).
+        self.permissions = PermissionBroker(redactor)
+        #: Crash relaunches seen (`on_restart`): a hold from an older claude orphans no prompt.
+        self._restarts = 0
         # The dispatcher is built before the router; route its per-action results here.
         if getattr(dispatcher, "_on_result", None) is None:
             dispatcher._on_result = self.on_hook_result
@@ -632,13 +701,17 @@ class SessionRouter(SessionListener):
     # ------------------------------------------------------------------ claude hooks
 
     async def handle_claude_hook(
-        self, event_name: str, payload: Mapping[str, Any]
+        self, event_name: str, payload: Mapping[str, Any], gone: asyncio.Event | None = None
     ) -> RelayResponse:
+        """Answer one relayed claude hook. `gone` (PermissionRequest only) is set by the internal
+        API once the hook's connection dropped: a held permission then resolves `gone`."""
         try:
             if event_name == "SessionStart":
                 return self._on_session_start(payload)
             self.session.note_activity()
-            self.session.note_hook()
+            if event_name != "PermissionRequest":
+                # Its start means a prompt was just drawn, not that claude moved past one.
+                self.session.note_hook()
             self._track_path(payload)
             handler = {
                 "UserPromptSubmit": self._on_user_prompt_submit,
@@ -651,6 +724,8 @@ class SessionRouter(SessionListener):
                 "PreCompact": self._on_compact_hook,
                 "PostCompact": self._on_compact_hook,
             }.get(event_name)
+            if event_name == "PermissionRequest":
+                return await self._on_permission_request(payload, gone)
             if handler is None:
                 return _allow()
             return await handler(event_name, payload)
@@ -662,7 +737,13 @@ class SessionRouter(SessionListener):
                 event_name == "PreToolUse"
                 and gate_fail_mode(self._cfg.hooks, tool_name or None) == "deny"
             )
-            response = self._fail_closed(exc, tool_name, payload) if closed else _allow()
+            if event_name == "PermissionRequest":
+                # Never an empty answer: that would leave the TUI prompt waiting on keys.
+                response = _relay(permission_output("deny", PERMISSION_FAIL_MESSAGE))
+            elif closed:
+                response = self._fail_closed(exc, tool_name, payload)
+            else:
+                response = _allow()
             try:
                 data = self._report_error(
                     "hook_relay", f"{event_name}: {type(exc).__name__}: {exc}"
@@ -671,6 +752,183 @@ class SessionRouter(SessionListener):
             except Exception:  # noqa: BLE001
                 log.exception("reporting hook relay failure failed")
             return response
+
+    # ------------------------------------------------------------------ permission relay
+
+    async def _on_permission_request(
+        self, payload: Mapping[str, Any], gone: asyncio.Event | None
+    ) -> RelayResponse:
+        """Hold a relayed PermissionRequest until it is resolved, then answer claude with JSON.
+
+        Whoever resolves the broker's single-assignment future first wins: a person
+        (`answer_permission`), the hold deadline (deny with `HOLD_DENY_MESSAGE`), the hook's
+        connection dropping (`gone`), the terminal answering the TUI prompt drawn in parallel
+        (`_resolve_pending_by_terminal`) or `close()`. AskUserQuestion gets no decision (plan
+        ruling 1). The answer goes out exactly once, with one `permission_resolved`.
+        """
+        if payload.get("tool_name") == "AskUserQuestion":
+            return _allow()
+        hold = self.commands_cfg.permission_hold_seconds
+        deadline = asyncio.get_running_loop().time() + hold
+        pending = self.permissions.open(payload, hold)
+        session = self.session
+        pty, restarts = session.pty, self._restarts
+        try:
+            session.set_permission_pending(True)
+            self._emit("permission_requested", pending.view())
+            if self._closed:
+                self.permissions.resolve(pending.request_id, Decision("deny", "gone"))
+            await self._hold(pending, deadline, gone)
+        finally:
+            # Cancelled or failed while held: nobody answers this hook any more.
+            self.permissions.resolve(pending.request_id, Decision("deny", "gone"))
+            decision = pending.future.result()
+            if not self._closed and restarts == self._restarts and session.pty is pty:
+                # The TUI prompt drawn in parallel (probe case 1) keeps "1. Yes" highlighted
+                # until the hook's answer reaches claude, which a stopped or killed hook never
+                # delivers (probe cases 3b and 5). Lock the CR writers before the hold lifts;
+                # only a person's allow may stand, anything else gets one ESC (No).
+                if _hook_allows(decision):
+                    session.hold_permission_prompt()
+                else:
+                    session.escape_permission_prompt()
+            session.set_permission_pending(len(self.permissions) > 0)
+            # `behavior` is what the hook really answered; the terminal's claim is separate.
+            resolved: dict[str, Any] = {
+                "request_id": pending.request_id,
+                "by": decision.by,
+                "behavior": "allow" if _hook_allows(decision) else "deny",
+            }
+            if decision.by == "terminal":
+                resolved["terminal_observed"] = decision.behavior
+            self._emit("permission_resolved", resolved)
+        return _relay(_hook_answer(decision))
+
+    async def _hold(
+        self, pending: PendingPermission, deadline: float, gone: asyncio.Event | None
+    ) -> None:
+        """Wait for `pending` to be resolved, `gone` or the monotonic `deadline` (the hold from
+        its start), resolving it on the last two. The deadline is below the ccw-hook HTTP
+        timeout (hold + 15) and claude's hook timeout (hold + 30), so claude never falls back to
+        its TUI prompt on a hook timeout (probe case 4)."""
+        loop = asyncio.get_running_loop()
+        waits: set[asyncio.Future[Any]] = {pending.future}
+        watcher: asyncio.Task[Any] | None = None
+        if gone is not None:
+            watcher = asyncio.ensure_future(gone.wait())
+            watcher.set_name(HOLD_GONE_WAITER)
+            waits.add(watcher)
+        try:
+            await asyncio.wait(
+                waits,
+                timeout=max(deadline - loop.time(), 0.0),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
+        if pending.future.done():
+            return
+        if gone is not None and gone.is_set():
+            self.permissions.resolve(pending.request_id, Decision("deny", "gone"))
+        else:
+            decision = Decision("deny", "timeout", HOLD_DENY_MESSAGE)
+            self.permissions.resolve(pending.request_id, decision)
+
+    def answer_permission(self, request_id: str, behavior: Behavior, message: str | None) -> bool:
+        """A person answers a held permission; False when it is unknown or already resolved."""
+        if behavior == "deny":
+            decision = Decision("deny", "user", message or OPERATOR_DENY_MESSAGE)
+        else:
+            decision = Decision("allow", "user")
+        return self.permissions.resolve(request_id, decision)
+
+    def dialog_view(self) -> dict[str, Any]:
+        """What the session waits on: the oldest held permission, a dialog the footer scanner
+        sees (with the redacted screen tail) or a usage-limit wait; `none` otherwise. A
+        permission prompt with no held relay (its hook is dead) is `permission` with no
+        `permission` object and a tail: only dismiss answers it."""
+        session = self.session
+        pending = self.permissions.first()
+        if pending is not None:
+            return {
+                "kind": "permission",
+                "since": pending.since,
+                "permission": pending.view(),
+                "tail": None,
+            }
+        kind = session.dialog_kind()
+        if kind is None:
+            return {"kind": "none", "since": None, "permission": None, "tail": None}
+        tail = session.tail(DIALOG_TAIL_CHARS) if kind != "usage_wait" else None
+        return {"kind": kind, "since": session.waiting_since, "permission": None, "tail": tail}
+
+    async def answer_dialog(
+        self,
+        action: Literal["allow", "deny", "dismiss"],
+        request_id: str | None,
+        expect_since: str | None,
+        message: str | None,
+    ) -> dict[str, Any]:
+        """A person answers the open dialog; `DialogConflict` when the state moved or refuses.
+
+        `allow`/`deny` answer the held permission `request_id`; `dismiss` sends one ESC to a
+        dialog (at most one per `since`) and reports whether it closed within
+        `DISMISS_CONFIRM_SECONDS`.
+        """
+        if action != "dismiss":
+            return self._answer_permission_request(action, request_id, message)
+        session = self.session
+        if expect_since is not None and session.dismissed(expect_since):
+            # A repeated dismiss of the dialog that already got its ESC (a double click): no
+            # second ESC, only the confirmation of whether it closed.
+            since, sent = expect_since, False
+        else:
+            view = self.dialog_view()
+            since = view["since"]
+            if view["kind"] == "none" or since is None:
+                raise DialogConflict("no_dialog", "no dialog is open")
+            if expect_since is not None and expect_since != since:
+                raise DialogConflict("dialog_changed", "the dialog changed")
+            if view["permission"] is not None or view["kind"] == "usage_wait":
+                what = "a held permission request" if view["permission"] else "a usage-limit wait"
+                raise DialogConflict("not_dismissable", f"{what} cannot be dismissed")
+            sent = await session.escape_dialog(since)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + DISMISS_CONFIRM_SECONDS
+        while True:
+            if not session.dialog_open() or session.waiting_since != since:
+                return {"status": "dismissed", "escape_sent": sent}
+            if loop.time() >= deadline:
+                return {"status": "still_open", "escape_sent": sent}
+            await asyncio.sleep(DISMISS_POLL_SECONDS)
+
+    def _answer_permission_request(
+        self, action: str, request_id: str | None, message: str | None
+    ) -> dict[str, Any]:
+        broker = self.permissions
+        if request_id is not None and broker.was_resolved(request_id):
+            raise DialogConflict("permission_resolved", "the permission request was resolved")
+        if len(broker) == 0 or request_id is None:
+            raise DialogConflict("no_dialog", "no permission request is open")
+        if broker.get(request_id) is None:
+            raise DialogConflict("dialog_changed", "another permission request is open")
+        behavior: Behavior = "allow" if action == "allow" else "deny"
+        if not self.answer_permission(request_id, behavior, message):
+            raise DialogConflict("permission_resolved", "the permission request was resolved")
+        return {"status": "answered", "request_id": request_id, "behavior": behavior}
+
+    def _resolve_pending_by_terminal(
+        self, pendings: list[PendingPermission], behavior: Behavior
+    ) -> None:
+        """The person at the TUI answered these prompts first (probe case 3b): withdraw them.
+
+        `behavior` is only what the hook reported (`terminal_observed` in `permission_resolved`);
+        the held hook is answered deny (`_hook_answer`), because the hook may be forged.
+        """
+        for pending in pendings:
+            self.permissions.resolve(pending.request_id, Decision(behavior, "terminal"))
 
     def _on_session_start(self, payload: Mapping[str, Any]) -> RelayResponse:
         """SessionStart(clear) while a `/clear` command runs: follow claude to its new session id.
@@ -878,6 +1136,13 @@ class SessionRouter(SessionListener):
 
     async def _on_post_tool_use(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         tool_name = str(payload.get("tool_name") or "")
+        agent_id = payload.get("agent_id")
+        answered = self.permissions.match_tool(
+            tool_name, payload.get("tool_input"), agent_id if isinstance(agent_id, str) else None
+        )
+        if answered is not None:
+            behavior: Behavior = "allow" if event_name == "PostToolUse" else "deny"
+            self._resolve_pending_by_terminal([answered], behavior)
         data = {
             "tool_use_id": payload.get("tool_use_id"),
             "tool_name": tool_name,
@@ -892,6 +1157,7 @@ class SessionRouter(SessionListener):
         return self._with_notes(event_name, payload, outcome.additional_context)
 
     async def _on_stop(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
+        self._resolve_pending_by_terminal(self.permissions.of_agent(None), "deny")
         await self._flush_transcripts()
         held = await self._stop_gate(payload)
         if held is not None:
@@ -1013,6 +1279,7 @@ class SessionRouter(SessionListener):
                 self._subagents.add(agent_id)
             else:
                 self._subagents.discard(agent_id)
+                self._resolve_pending_by_terminal(self.permissions.of_agent(agent_id), "deny")
         data: dict[str, Any] = {
             "agent_id": payload.get("agent_id"),
             "agent_type": payload.get("agent_type"),
@@ -1227,7 +1494,7 @@ class SessionRouter(SessionListener):
     async def _priority(
         self, text: str, kw: dict[str, Any], message_id: str | None = None
     ) -> TurnRecord:
-        """onTurn first (a veto must not cost the running turn), then the spaced interrupt,
+        """onTurn first (a veto must not cost the running turn), then the interrupt,
         then the new turn with that hook outcome.
 
         The turn is listed `pending` (with its metadata) from the start: the interrupt can
@@ -1290,7 +1557,7 @@ class SessionRouter(SessionListener):
             while running is not None:
                 session.check_queueable(reserved=True)
                 pending = session.undelivered(running.turn_id)
-                await self.interrupt(spaced=True)
+                await self.interrupt()
                 running = await self._flushed_turn(running, pending)
             return await self.submit_turn(text, **kw, vetted=(turn_id, outcome))
 
@@ -1374,14 +1641,14 @@ class SessionRouter(SessionListener):
         )
         return message
 
-    async def interrupt(self, *, spaced: bool = False) -> str | None:
-        """Interrupt the running turn (or the idle command run); `spaced`: see Session."""
+    async def interrupt(self) -> str | None:
+        """Interrupt the running turn (or the idle command run)."""
         session = self.session
         if session.command_active and self.runner_active:
             return await self._interrupt_command()
         runner = self._runner if self.runner_active else None
         # A plain interrupt calls the session exactly as before the lanes.
-        turn_id = await (session.interrupt(spaced=True) if spaced else session.interrupt())
+        turn_id = await session.interrupt()
         if runner is not None and turn_id is not None:
             # The turn's commands: on_turn_end aborted the runner; let it settle the records.
             await asyncio.wait({runner}, timeout=CLOSE_DRAIN_SECONDS)
@@ -1648,17 +1915,30 @@ class SessionRouter(SessionListener):
             return  # the turn goes on as the prompt command's turn (D8): no continue prompt
         # Typed at a quiet prompt, like a command; a screen that never settles still gets it
         # (claude queues input typed while it responds) rather than leaving the turn hanging.
+        # Never over an open permission prompt (a background subagent's): its CR would pick
+        # "1. Yes".
         quiet = self.commands_cfg.quiet_seconds
-        await session.wait_quiet(quiet, self._command_timeout("default"))
-        if self._closed or record.terminal or record is not session.current_turn:
-            return
-        self._commands_turn = None  # from here on a Stop is the continuation's
         ids = [r.id for r in done]
         text = f"{self.commands_cfg.continue_prompt}\n\n{_results_line(done)}"
-        self._last_marker = record.turn_id  # the continuation's Stop completes this record
-        self._emit("turn_resumed", {"turn_id": record.turn_id, "cause": "command", "commands": ids})
-        if await session.continue_turn(record, text):
-            self._emit_user_message(record.turn_id, record.origin, text)
+        resumed = False
+        while True:
+            await session.wait_quiet(quiet, self._command_timeout("default"))
+            if self._closed or record.terminal or record is not session.current_turn:
+                return
+            if session.permission_prompt_open():
+                await asyncio.sleep(PERMISSION_POLL_SECONDS)
+                continue
+            self._commands_turn = None  # from here on a Stop is the continuation's
+            self._last_marker = record.turn_id  # the continuation's Stop completes this record
+            if not resumed:
+                resumed = True
+                data = {"turn_id": record.turn_id, "cause": "command", "commands": ids}
+                self._emit("turn_resumed", data)
+            if await session.continue_turn(record, text):
+                self._emit_user_message(record.turn_id, record.origin, text)
+                return
+            if not session.permission_prompt_open():
+                return
 
     def _end_turn_commands(self, record: TurnRecord) -> None:
         """A turn ended without completing: its commands never resume it (D4.5-D4.7).
@@ -1704,6 +1984,66 @@ class SessionRouter(SessionListener):
         if self._idle_start is not None and self._idle_only:
             ranges.append((self._idle_start, sys.maxsize))
         return ranges
+
+    # ------------------------------------------------------- idle dialog auto-dismiss
+
+    def _cancel_dialog_dismiss(self) -> None:
+        self._dd_since = None
+        if self._dd_handle is not None:
+            self._dd_handle.cancel()
+            self._dd_handle = None
+
+    def _arm_dialog_dismiss(self, reason: str | None) -> None:
+        """A waiting change: (re)arm the one-shot timer for a new footer dialog, cancel it when
+        the dialog closed or changed. Only for waiting reason `dialog` (no turn runs): never for
+        `permission` or `question` (an ESC would interrupt the turn), a held permission, a
+        usage-limit wait, or while a slash command runs (its dialog leg has its own ESC budget)."""
+        session = self.session
+        since = session.waiting_since
+        if self._dd_since is not None and (reason is None or self._dd_since != since):
+            self._cancel_dialog_dismiss()
+        delay = self.commands_cfg.dialog_auto_dismiss_seconds
+        if (
+            delay <= 0
+            or self._closed
+            or reason != "dialog"
+            or since is None
+            or self._dd_since == since
+            or session.dismissed(since)
+            or session.auto_escape_blocked()
+            or session.dialog_kind() != "dialog"
+        ):
+            return
+        self._cancel_dialog_dismiss()
+        self._dd_since = since
+        self._dd_handle = asyncio.get_running_loop().call_later(
+            delay, self._dialog_dismiss_due, since
+        )
+
+    def _dialog_dismiss_due(self, since: str) -> None:
+        self._dd_handle = None
+        if self._dd_since != since or self._closed:
+            return
+        self._spawn(self._dialog_dismiss(since))
+
+    async def _dialog_dismiss(self, since: str) -> None:
+        session = self.session
+        if self.runner_active and session.waiting_since == since and not self._closed:
+            # a command runner owns the dialog leg right now; look again later
+            self._dd_handle = asyncio.get_running_loop().call_later(
+                self.commands_cfg.dialog_auto_dismiss_seconds, self._dialog_dismiss_due, since
+            )
+            return
+        if (
+            session.waiting_since != since
+            or session.waiting_reason() != "dialog"
+            or session.dialog_kind() != "dialog"
+            or session.auto_escape_blocked()
+        ):
+            return
+        sent = await session.escape_dialog(since)  # guarded under the PTY lock, once per since
+        log.info("dialog auto-dismissed since=%s escape_sent=%s", since, sent)
+        self._emit("dialog_auto_dismissed", {"since": since, "escape_sent": sent})
 
     # ------------------------------------------------------------------ idle auto-compact
 
@@ -1802,6 +2142,16 @@ class SessionRouter(SessionListener):
     def _emit_command(self, type: str, record: CommandRecord) -> LogEvent:
         return self._emit(type, {"record": record.model_dump(mode="json")})
 
+    async def _permission_cleared(self, deadline: float) -> bool:
+        """Wait until no permission prompt is open (`Session.permission_prompt_open`), since
+        typing a line plus CR over it would approve it; False at the monotonic `deadline` or
+        when the router closes."""
+        while self.session.permission_prompt_open():
+            if self._closed or time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(min(PERMISSION_POLL_SECONDS, _left(deadline)))
+        return True
+
     def _command_timeout(self, name: str) -> float:
         timeouts = self.commands_cfg.timeout_seconds
         return float(timeouts.get(name, timeouts.get("default", 60)))
@@ -1819,6 +2169,11 @@ class SessionRouter(SessionListener):
         started = time.monotonic()
         self._current = record
         try:
+            if not await self._permission_cleared(deadline):
+                await self._finish_command(
+                    record, "failed", started, error="timeout", output="a permission stayed held"
+                )
+                return
             if not await session.wait_quiet(self.commands_cfg.quiet_seconds, _left(deadline)):
                 await self._finish_command(
                     record, "failed", started, error="timeout", output="the screen never settled"
@@ -1862,10 +2217,15 @@ class SessionRouter(SessionListener):
                 self._promote(record, line)
             if error == "timeout":
                 await self._escape_at_timeout(deadline)
-            if error == "dialog_stuck" or (error == "timeout" and session.dialog_on_screen()):
+            if (
+                error == "dialog_stuck" or (error == "timeout" and session.dialog_on_screen())
+            ) and not session.auto_escape_blocked():
+                # A held permission or a usage wait must outlive the leg: no relaunch over it.
                 await self._restart_for_dialog()
-        except (PtyClosed, TurnRejected):
-            state, result, error, output = "failed", None, "claude_exited", None
+        except (PtyClosed, TurnRejected) as exc:
+            held = isinstance(exc, TurnRejected) and exc.reason == "dialog_open"
+            error = "dialog_open" if held else "claude_exited"
+            state, result, output = "failed", None, None
         except Exception as exc:  # noqa: BLE001 - one command never wedges the queue
             log.exception("command %s failed", record.id)
             self._report_error("command", f"/{record.name}: {type(exc).__name__}: {exc}")
@@ -1912,11 +2272,21 @@ class SessionRouter(SessionListener):
         """
         session = self.session
         if session.clock() - session.last_escape >= ESC_SPACING_SECONDS:
-            await session.send_escape()
+            await self._dialog_escape()
         await asyncio.sleep(max(session.last_escape + ESC_SPACING_SECONDS - session.clock(), 0.0))
         if session.dialog_on_screen():
-            await session.send_escape()
+            await self._dialog_escape()
         await asyncio.sleep(_left(deadline + DIALOG_ESC_INTERVAL))
+
+    async def _dialog_escape(self) -> None:
+        """One automatic dialog-leg ESC, skipped while a permission relay is held or a usage-limit
+        wait shows (`auto_escape_blocked`): an ESC would decline the prompt and interrupt the
+        turn, or cancel the wait. Checked after the ESC spacing, right before the write.
+        A skipped ESC still counts against the leg's budget, so the leg ends as without ESCs."""
+        session = self.session
+        await asyncio.sleep(max(session.last_escape + ESC_SPACING_SECONDS - session.clock(), 0.0))
+        if not session.auto_escape_blocked():
+            await session.send_escape()
 
     async def _restart_for_dialog(self) -> None:
         """Relaunch claude over the dialog left open; its booting does not abort this runner,
@@ -1994,14 +2364,14 @@ class SessionRouter(SessionListener):
                 continue
             elif not escapes:
                 if session.clock() - session.last_output >= grace:
-                    await session.send_escape()
+                    await self._dialog_escape()
                     escapes, escaped_at = 1, time.monotonic()
             elif time.monotonic() - escaped_at < DIALOG_ESC_INTERVAL:
                 continue
             elif escapes >= DIALOG_ESC_BUDGET:
                 return "failed", None, "dialog_stuck", None
             elif session.dialog_on_screen():
-                await session.send_escape()
+                await self._dialog_escape()
                 escapes, escaped_at = escapes + 1, time.monotonic()
         return "failed", None, "timeout", None
 
@@ -2120,6 +2490,7 @@ class SessionRouter(SessionListener):
         self._spawn(self._fire("onError", data))
 
     def on_waiting(self, reason: str | None, previous: str | None) -> None:
+        self._arm_dialog_dismiss(reason)
         if previous is not None:
             self._emit("waiting_ended", {"reason": previous})
         if reason is not None:
@@ -2135,6 +2506,12 @@ class SessionRouter(SessionListener):
         )
 
     def on_restart(self, count: int, resumed: bool) -> None:
+        # The relaunched claude has no prompt for the held hooks: answer them now (gone, deny)
+        # and free the lanes before the crash continuation is typed.
+        self._restarts += 1  # the held hooks' prompts went with the old claude
+        self.permissions.resolve_all(Decision("deny", "gone"))
+        self.session.set_permission_pending(False)
+        self._cancel_dialog_dismiss()
         self._subagents.clear()
         self._emit(
             "session_state",
@@ -2177,6 +2554,7 @@ class SessionRouter(SessionListener):
         # Completed turns are finished by the Stop hook handler, which also has the usage.
         if record.state == "completed" or record.state not in TERMINAL_STATES:
             return
+        self._resolve_pending_by_terminal(self.permissions.of_agent(None), "deny")
         self._end_turn_commands(record)
         if self._metrics is not None:
             self._metrics.turn_finished(record)
@@ -2217,7 +2595,9 @@ class SessionRouter(SessionListener):
         with contextlib.suppress(Exception):
             await self._flush_transcripts()
         self._closed = True
+        self.permissions.resolve_all(Decision("deny", "gone"))  # held hooks answer at once
         self._cancel_auto_compact()
+        self._cancel_dialog_dismiss()
         if self.peer_inbox is not None:
             self.peer_inbox.close()  # nothing more is delivered; dropped before session_closed
         self._subagents.clear()

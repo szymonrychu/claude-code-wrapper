@@ -62,6 +62,7 @@ def make_session(tmp_path: Path, fake_claude_bin: Path, scenario_file):
             hook_token="hook-token-0123456789",
             gate_fail="allow",
             gate_timeout=14.0,
+            permission_timeout=1815.0,
             mise_env={},
             passthrough=[],
         )
@@ -156,6 +157,10 @@ async def test_session_state_event_carries_since(make_session) -> None:
         router.peer_inbox = None
         router.commands = type("C", (), {"pending": staticmethod(list)})()
         router._subagents = set()
+        router._restarts = 0
+        router.permissions = type("P", (), {"resolve_all": staticmethod(lambda _d: [])})()
+        router._dd_handle = None
+        router._dd_since = None
         router._metrics = None
         router._spawn = lambda coro: coro.close()  # type: ignore[method-assign]
         router._fire = lambda *a, **k: asyncio.sleep(0)  # type: ignore[method-assign]

@@ -108,6 +108,27 @@ StopCause = Literal["stop", "shutdown"]
 SERVICE_SHUTDOWN = "service_shutdown"
 #: Minimum gap between two ESCs: a double ESC at an empty prompt opens the rewind menu.
 ESC_SPACING_SECONDS = 1.0
+#: After the last permission ESC (`escape_permission_prompt`) or a person's allow
+#: (`hold_permission_prompt`), how long the screen must show no dialog footer before the writer
+#: lock lifts; a footer in that time keeps it until a relaunch or a person's dismiss. A prompt
+#: drawn after it is the footer scanner's again.
+ORPHAN_SETTLE_SECONDS = 30.0
+#: A resolved relay's ESC waits this long after the resolution (writers locked meanwhile), so a
+#: live hook's deny reaches claude first and the model sees its message (probe case 2).
+PERMISSION_ESC_GRACE_SECONDS = 1.0
+#: Screen tail characters scanned to tell what kind of dialog is open.
+DIALOG_TAIL_CHARS = 1500
+#: A usage-limit wait (squashed, case-insensitive): never dismissed with ESC.
+USAGE_WAIT_PATTERNS = (
+    "usage limit reached",
+    "continuing automatically",
+    "continuing shortly",
+    "usage limit has reset",
+    "press enter to continue",
+)
+#: A permission prompt's own text next to its footer (the footer-only case: no hook relay).
+PERMISSION_FOOTER_PATTERNS = ("tab to amend", "do you want to proceed")
+DialogKind = Literal["permission", "dialog", "usage_wait"]
 
 
 def default_probe_text(token: str) -> str:
@@ -286,6 +307,7 @@ MANAGED_ENV_NAMES = frozenset(
         "CCW_HOOK_TOKEN",
         "CCW_TOOL_GATE_FAIL",
         "CCW_GATE_TIMEOUT",
+        "CCW_PERMISSION_TIMEOUT",
     }
 )
 
@@ -334,6 +356,7 @@ def build_env(
     hook_token: str,
     gate_fail: str,
     gate_timeout: float,
+    permission_timeout: float,
     mise_env: Mapping[str, str] | None,
     passthrough: Iterable[str],
     passthrough_exclude: Iterable[str] = (),
@@ -358,6 +381,7 @@ def build_env(
         "CCW_HOOK_TOKEN": hook_token,
         "CCW_TOOL_GATE_FAIL": gate_fail,
         "CCW_GATE_TIMEOUT": f"{gate_timeout:g}",
+        "CCW_PERMISSION_TIMEOUT": f"{permission_timeout:g}",
     }
     if peers:
         managed["CLAUDE_CODE_HARBOR_KITE"] = "0"
@@ -511,8 +535,6 @@ class _PendingInterrupt:
 
     record: TurnRecord
     final: TurnState
-    #: Every ESC keeps `ESC_SPACING_SECONDS` from the previous one (a priority delivery).
-    spaced: bool = False
     done: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Future[None] | None = None
 
@@ -571,9 +593,29 @@ class Session:
         #: its echo is not a dialog).
         self._ui_dialogs = FatalScanner(spec.sessions.commands.dialog_patterns)
         self._ui_dialog_at = float("-inf")
+        #: The same footers with no echo filter: the orphan lock prefers a false prompt.
+        self._footer_at = float("-inf")
         self._last_hook = float("-inf")
         #: The agent asked the user a question (AskUserQuestion, forwarded) and nothing answered.
         self._question = False
+        #: A relayed PermissionRequest is held (`set_permission_pending`): authoritative over the
+        #: footer scanner, and the `since` an ESC already dismissed (`escape_dialog`).
+        self._permission_pending = False
+        self._dismissed_since: str | None = None
+        #: A resolved relay may leave claude's TUI permission prompt live ("1. Yes" highlighted,
+        #: probe cases 3b and 5): its hook can be stopped or killed, so its answer may never
+        #: reach claude. Such prompts show one at a time: `_orphans` is how many ESCs the writer
+        #: task still owes, `_orphan_lock` locks every text plus CR writer until they are all
+        #: sent and no footer follows the last one (`_orphan_esc_at`), a relaunch, or a person's
+        #: dismiss. `_allow_lock`: only a person's allows hold the lock, so the footer leaving
+        #: the screen also lifts it. Hooks never lift it: any Bash tool can forge one.
+        self._orphans = 0
+        self._orphan_lock = False
+        self._allow_lock = False
+        self._orphan_esc_at = float("-inf")
+        self._orphan_due = float("-inf")
+        self._orphan_wake = asyncio.Event()
+        self._orphan_task: asyncio.Future[Any] | None = None
         #: What the session waits on the user for (`waiting_reason`), and since when.
         self._waiting: str | None = None
         self.waiting_since: str | None = None
@@ -769,6 +811,9 @@ class Session:
         self._ui_dialogs.reset()
         self._ui_dialog_at = float("-inf")
         self._question = False
+        # The new claude shows no prompt of the old one; the old writer task sees the new pty.
+        self._orphans, self._orphan_lock, self._orphan_task = 0, False, None
+        self._allow_lock = False
         self._sync_waiting()
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._exited = asyncio.Event()
@@ -841,8 +886,11 @@ class Session:
         self._notify("on_output", text)
         self._dialog_hits += len(self._dialogs.feed(text))
         for pattern in self._ui_dialogs.feed(text):
+            self._footer_at = self.last_output
             if _squash(pattern) not in self._typed:
                 self._ui_dialog_at = self.last_output
+        if self._allow_lock and not self._ring_shows_permission():
+            self._lift_lock()  # the allowed prompt closed: its footer left the screen
         self._sync_waiting()
         for pattern in self._scanner.feed(text):
             self.last_fatal = pattern
@@ -985,6 +1033,7 @@ class Session:
             or record.terminal
             or record is not self._turn
             or self.state not in ("ready", "busy")
+            or self.permission_prompt_open()
         ):
             return False
         if self._commands_turn is record:
@@ -992,8 +1041,10 @@ class Session:
         self._set_state("busy")
         try:
             self._typed = _squash(text)
-            await pty.send_prompt(
-                self._with_marker(text, record), self.spec.boot.submit_delay_seconds
+            return await pty.send_prompt(
+                self._with_marker(text, record),
+                self.spec.boot.submit_delay_seconds,
+                self._no_permission,
             )
         except PtyClosed:
             self._end_turn(
@@ -1002,7 +1053,6 @@ class Session:
             return False
         finally:
             self.last_input = self.clock()
-        return True
 
     # -- stop ------------------------------------------------------------------------------
 
@@ -1079,13 +1129,15 @@ class Session:
         return self.pty
 
     def check_submittable(self, *, reserved: bool = False) -> PtyProcess:
-        """Raise `TurnRejected(booting|dead|busy)` if a turn cannot start now (no side effects).
+        """Raise `TurnRejected(booting|dead|busy|dialog_open)` if a turn cannot start now (no
+        side effects).
 
         While the slot is reserved (`reserve`) only the holder (`reserved=True`) may start one.
         """
         pty = self._writable_pty()
         if self.state == "busy" or self._turn is not None or (self._reserved and not reserved):
             raise TurnRejected("busy")
+        self.check_no_permission()
         return pty
 
     @property
@@ -1157,9 +1209,13 @@ class Session:
         log.info("session %s: turn %s submitted (%s)", self.spec.session_id, record.turn_id, origin)
         try:
             self._typed = _squash(text)
-            await pty.send_prompt(
-                self._with_marker(text, record), self.spec.boot.submit_delay_seconds
+            written = await pty.send_prompt(
+                self._with_marker(text, record),
+                self.spec.boot.submit_delay_seconds,
+                self._no_permission,
             )
+            if not written:  # a permission was relayed while waiting for the PTY lock
+                self._end_turn(record, "failed", error="dialog_open", next_state="ready")
         except PtyClosed:
             # A claude that died is handled by the exit path (relaunch or dead); a live one
             # whose write failed gets its slot back here.
@@ -1173,7 +1229,8 @@ class Session:
         self._writable_pty()
 
     def note_hook(self) -> None:
-        """A claude hook was relayed: claude is past any dialog it showed before it."""
+        """A claude hook was relayed: claude is past any dialog it showed before it. The writer
+        lock ignores hooks (forgeable)."""
         self._last_hook = self.clock()
         self._sync_waiting()
 
@@ -1183,12 +1240,116 @@ class Session:
         self._question = True
         self._sync_waiting()
 
+    def set_permission_pending(self, pending: bool) -> None:
+        """A relayed permission request is held (or no longer): the session waits on the user
+        (`permission`) and the lanes see an open dialog, whatever the screen shows."""
+        self._permission_pending = pending
+        self._sync_waiting()
+
+    @property
+    def permission_pending(self) -> bool:
+        """A relayed permission request is held (`set_permission_pending`)."""
+        return self._permission_pending
+
+    def permission_prompt_open(self) -> bool:
+        """A permission prompt has focus, so a CR would pick its highlighted "1. Yes", an
+        approval no person gave: a relayed permission is held, a resolved one may have left the
+        TUI prompt on screen (`escape_permission_prompt`, `hold_permission_prompt`), or the footer
+        scanner sees a permission
+        prompt. The one predicate every writer of text plus CR obeys."""
+        return self._permission_pending or self._orphan_lock or self.dialog_kind() == "permission"
+
+    def _no_permission(self) -> bool:
+        return not self.permission_prompt_open()
+
+    def check_no_permission(self) -> None:
+        """Raise `TurnRejected("dialog_open")` while `permission_prompt_open`. Every writer of
+        text plus CR checks this, and passes `_no_permission` as the write guard."""
+        if self.permission_prompt_open():
+            raise TurnRejected("dialog_open")
+
+    def escape_permission_prompt(self) -> None:
+        """A held relay resolved with anything but a person's allow (deny, timeout, terminal,
+        gone) while its claude lives. The hook may never deliver the deny (stopped, killed),
+        leaving the TUI prompt live. Lock every text plus CR writer at once, then answer the
+        prompt No with exactly one spaced ESC (`_escape_orphaned_prompts`) after
+        `PERMISSION_ESC_GRACE_SECONDS`, whatever the screen
+        shows: an ESC with no prompt is harmless when spaced. Several such prompts (a `pkill`)
+        show one at a time: one ESC each."""
+        self._orphans += 1
+        self._orphan_due = self.clock() + PERMISSION_ESC_GRACE_SECONDS
+        self._lock_writers(allow=False)
+
+    def hold_permission_prompt(self) -> None:
+        """A person allowed a held relay: "1. Yes" is what they chose, so no ESC, but the
+        writers stay locked until the footer leaves the screen (`_on_output`) or the settle
+        rule, as after an ESC."""
+        self._orphan_esc_at = max(self._orphan_esc_at, self.clock())
+        self._lock_writers(allow=True)
+
+    def _lock_writers(self, *, allow: bool) -> None:
+        self._allow_lock = allow and (self._allow_lock or not self._orphan_lock)
+        self._orphan_lock = True
+        self._orphan_wake.set()
+        self._sync_waiting()
+        if self._orphan_task is None or self._orphan_task.done():
+            self._orphan_task = self._track(
+                asyncio.ensure_future(self._escape_orphaned_prompts(self.pty))
+            )
+
+    async def _escape_orphaned_prompts(self, pty: PtyProcess | None) -> None:
+        """Send the ESCs owed, then lift the lock once `ORPHAN_SETTLE_SECONDS` pass after the
+        last one (or allow) with no dialog footer (unfiltered: an echo keeps it locked). Ends on
+        a relaunch, which clears everything, or when the lock lifted otherwise."""
+        with contextlib.suppress(PtyClosed):  # a dead claude: the relaunch clears the lock
+            while pty is not None and self.pty is pty and self._orphan_lock:
+                if self._orphans:
+                    grace = self._orphan_due - self.clock()
+                    if grace > 0:
+                        await asyncio.sleep(grace)
+                        continue
+                    if await self._write_escape(pty, lambda: self._orphans > 0):
+                        self._orphans -= 1
+                        self._orphan_esc_at = self._last_escape
+                        log.info(
+                            "session %s: unanswered permission prompt denied (ESC)",
+                            self.spec.session_id,
+                        )
+                    continue
+                left = self._orphan_esc_at + ORPHAN_SETTLE_SECONDS - self.clock()
+                if left > 0:
+                    self._orphan_wake.clear()
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(self._orphan_wake.wait(), left)
+                    continue
+                if self._footer_at > self._orphan_esc_at:
+                    log.warning(
+                        "session %s: a dialog footer after the last permission ESC, writers "
+                        "stay locked until a relaunch or a dismiss",
+                        self.spec.session_id,
+                    )
+                else:
+                    self._lift_lock()
+                return
+
+    def _lift_lock(self) -> None:
+        self._orphan_lock = self._allow_lock = False
+        self._orphan_wake.set()
+        self._sync_waiting()
+
+    def _ring_shows_permission(self) -> bool:
+        """A permission footer is in the screen tail (unfiltered: an echo keeps it)."""
+        text = _squash(self.ring.tail(DIALOG_TAIL_CHARS))
+        return any(_squash(p) in text for p in PERMISSION_FOOTER_PATTERNS)
+
     def waiting_reason(self) -> str | None:
         """Why the session waits on the user: `question` (asked, not answered), `permission` (a
         dialog footer on screen while a turn runs: a permission prompt) or `dialog` (a footer
         with no turn running: a slash command dialog); None otherwise."""
         if self._question:
             return "question"
+        if self._permission_pending or self._orphan_lock:
+            return "permission"
         if not self.dialog_open():
             return None
         return "permission" if self._turn is not None else "dialog"
@@ -1208,9 +1369,70 @@ class Session:
         Typing into it would pick an answer, and an ESC would decline it, so the lanes refuse
         to write while it is open. Footers that the last typed text quotes are its echo.
         """
+        if self._permission_pending or self._orphan_lock:
+            return True
         return self.state in ("ready", "busy") and self._ui_dialog_at > max(
             self._last_hook, self._last_escape
         )
+
+    def dialog_kind(self) -> DialogKind | None:
+        """What is open: `permission` (a relay is held, or the footer shows a permission prompt
+        with no relay), `usage_wait` (a usage-limit wait), `dialog` (any other footer); None
+        when nothing is open. A held relay wins over the footer scanner."""
+        if self._permission_pending or self._orphan_lock:
+            return "permission"
+        if not self.dialog_open():
+            return None
+        text = _squash(self.tail(DIALOG_TAIL_CHARS))
+        if any(_squash(p) in text for p in USAGE_WAIT_PATTERNS):
+            return "usage_wait"
+        if any(_squash(p) in text for p in PERMISSION_FOOTER_PATTERNS):
+            return "permission"
+        return "dialog"
+
+    def auto_escape_blocked(self) -> bool:
+        """No automatic ESC may be sent: a permission relay is held, a resolved one holds the
+        writer lock (`escape_permission_prompt`), or a usage-limit waits."""
+        return self._permission_pending or self._orphan_lock or self.dialog_kind() == "usage_wait"
+
+    def dismissed(self, since: str) -> bool:
+        """The dialog that began at `since` already got its one ESC."""
+        return self._dismissed_since == since
+
+    async def escape_dialog(self, since: str) -> bool:
+        """Dismiss the open dialog with one ESC, at most once per `since` (`waiting_since`).
+
+        The ESC keeps `ESC_SPACING_SECONDS` from the previous one and is written under the PTY
+        lock only if the dialog is still open, still the one at `since`, no relay is held and it
+        is not a usage-limit wait. Returns whether the ESC was written.
+        """
+        if self._dismissed_since == since:
+            return False
+        self._dismissed_since = since
+        pty = self.pty
+        written = False
+        try:
+
+            def guard() -> bool:
+                return (
+                    self.state in ("ready", "busy")
+                    and self.dialog_open()
+                    and self.waiting_since == since
+                    and not self._permission_pending
+                    and not self._orphans
+                    and self.dialog_kind() in ("dialog", "permission")
+                )
+
+            if pty is not None and guard():  # e.g. orphan ESCs still owed: no second ESC
+                with contextlib.suppress(PtyClosed):
+                    written = await self._write_escape(pty, guard)
+            if written and self._orphan_lock:
+                # A person dismissed what the writer lock still guards: their ESC denies it.
+                self._lift_lock()
+            return written
+        finally:
+            if not written:
+                self._dismissed_since = None
 
     def check_no_dialog(self) -> None:
         """Raise `TurnRejected("dialog_open")` while `dialog_open` (no side effects)."""
@@ -1279,12 +1501,17 @@ class Session:
         prompt = f"{text}\n\n<!-- ccw message: {message.message_id} -->"
         try:
             self._typed = _squash(prompt)
-            await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
+            written = await pty.send_prompt(
+                prompt, self.spec.boot.submit_delay_seconds, self._no_permission
+            )
         except PtyClosed as exc:
             self._queued.pop(message.message_id, None)
             raise TurnRejected("dead") from exc
         finally:
             self.last_input = self.clock()
+        if not written:
+            self._queued.pop(message.message_id, None)
+            raise TurnRejected("dialog_open")
         log.info(
             "session %s: message %s queued into %s (%s)",
             self.spec.session_id,
@@ -1664,24 +1891,54 @@ class Session:
     async def send_command(self, line: str) -> None:
         """Type a slash command line: paste then CR, no turn marker, under the PTY write lock.
 
-        Raises `TurnRejected(booting|dead)` or `PtyClosed`.
+        Raises `TurnRejected(booting|dead|dialog_open)` or `PtyClosed`.
         """
         pty = self._writable_pty()
+        self.check_no_permission()
         log.info("session %s: typing %r", self.spec.session_id, line)
         try:
             self._typed = _squash(line)
-            await pty.send_prompt(line, self.spec.boot.submit_delay_seconds)
+            written = await pty.send_prompt(
+                line, self.spec.boot.submit_delay_seconds, self._no_permission
+            )
         finally:
             self.last_input = self.clock()
+        if not written:
+            raise TurnRejected("dialog_open")
 
     async def send_escape(self) -> None:
-        """One ESC for a slash command (a dialog, a timeout, an interrupt), never within
-        `ESC_SPACING_SECONDS` of the previous ESC; nothing while claude is not live."""
-        wait = self._last_escape + ESC_SPACING_SECONDS - self.clock()
-        if wait > 0:
-            await asyncio.sleep(wait)
-        if self.state in ("ready", "busy"):
-            await self._send_key(ESC)
+        """One ESC for a slash command or an interrupt (`_write_escape`); nothing while claude
+        is not live."""
+        pty = self.pty
+        if pty is not None:
+            with contextlib.suppress(PtyClosed):  # the exit path ends the turn
+                await self._write_escape(pty, lambda: self.state in ("ready", "busy"))
+
+    async def _write_escape(self, pty: PtyProcess, guard: Callable[[], bool]) -> bool:
+        """Write one ESC to `pty` while it is claude's and `guard()` holds, at least
+        `ESC_SPACING_SECONDS` after the previous ESC, re-checked under the PTY write lock, so no
+        two ESCs from any writer land back to back (a double ESC opens rewind). Returns whether
+        it wrote; raises `PtyClosed`."""
+        while self.pty is pty:
+            wait = self._last_escape + ESC_SPACING_SECONDS - self.clock()
+            if wait > 0:
+                await asyncio.sleep(wait)
+                continue
+            spaced = False
+
+            def spaced_guard() -> bool:
+                nonlocal spaced
+                spaced = self.clock() - self._last_escape >= ESC_SPACING_SECONDS
+                return spaced and self.pty is pty and guard()
+
+            if await pty.write_guarded(ESC, spaced_guard):
+                self.last_input = self._last_escape = self.clock()
+                self._hits_at_escape = self._dialog_hits
+                self._sync_waiting()
+                return True
+            if spaced:  # the guard refused, not another ESC in between
+                return False
+        return False
 
     def watch_dialogs(self, patterns: Iterable[str], typed: str = "") -> None:
         """Scan the PTY output from now on for these dialog footers (none: stop scanning).
@@ -1759,14 +2016,14 @@ class Session:
 
     # -- interrupt -------------------------------------------------------------------------
 
-    async def interrupt(self, *, spaced: bool = False) -> str | None:
+    async def interrupt(self) -> str | None:
         """Interrupt the running turn; its id once it has ended, None when idle.
 
         One ESC, then up to `interrupt_settle_seconds` for the transcript interrupt line
         (`on_interrupted`); without it a second ESC. claude runs no Stop hook for an
         interrupted turn, so the turn is ended here either way and the slot freed. A turn held
         across a crash ends at once: there is no claude to send ESC to, and nothing is pasted.
-        `spaced` (a priority delivery) keeps every ESC `ESC_SPACING_SECONDS` from the last one.
+        Every ESC keeps `ESC_SPACING_SECONDS` from the last one (`send_escape`).
         """
         record = self._turn
         if record is not None and self._held is record:
@@ -1774,14 +2031,12 @@ class Session:
             return record.turn_id
         if record is None or self.state != "busy":
             return None
-        return await self._interrupt(record, "interrupted", spaced=spaced)
+        return await self._interrupt(record, "interrupted")
 
-    async def _interrupt(
-        self, record: TurnRecord, final: TurnState, *, spaced: bool = False
-    ) -> str:
+    async def _interrupt(self, record: TurnRecord, final: TurnState) -> str:
         pending = self._interrupting
         if pending is None or pending.record is not record:
-            pending = _PendingInterrupt(record, final, spaced)
+            pending = _PendingInterrupt(record, final)
             self._interrupting = pending
             pending.task = self._track(asyncio.ensure_future(self._run_interrupt(pending)))
         assert pending.task is not None
@@ -1796,7 +2051,7 @@ class Session:
                 # claude runs no turn: there is no interrupt line to wait for.
                 self._end_turn(record, pending.final)
                 return
-            await self._interrupt_key(pending)
+            await self.send_escape()
             try:
                 await asyncio.wait_for(
                     pending.done.wait(), self.spec.sessions.interrupt_settle_seconds
@@ -1810,29 +2065,11 @@ class Session:
                         record.turn_id,
                         self.spec.sessions.interrupt_settle_seconds,
                     )
-                    await self._interrupt_key(pending)
+                    await self.send_escape()
             self._end_turn(record, pending.final)
         finally:
             if self._interrupting is pending:
                 self._interrupting = None
-
-    async def _interrupt_key(self, pending: _PendingInterrupt) -> None:
-        if pending.spaced:
-            await self.send_escape()
-        else:
-            await self._send_key(ESC)
-
-    async def _send_key(self, key: bytes) -> None:
-        pty = self.pty
-        if pty is None:
-            return
-        with contextlib.suppress(PtyClosed):  # the exit path ends the turn
-            await pty.write(key)
-        self.last_input = self.clock()
-        if key == ESC:
-            self._last_escape = self.last_input
-            self._hits_at_escape = self._dialog_hits
-            self._sync_waiting()
 
     def on_interrupted(self) -> None:
         """The transcript shows an interrupt: end the running turn (pending or unprompted)."""
@@ -1855,11 +2092,13 @@ class Session:
         The probe is pending until the router sees its marker in the transcript
         (`probe_delivered`) and answered once assistant text with the alive token follows
         (`probe_answered`, which records the answer text). Raises `TurnRejected` (slash_command
-        first, for text claude would run as a command, then booting, dead); nothing is pasted.
+        first, for text claude would run as a command, then booting, dead, dialog_open while a
+        permission is held); nothing is pasted.
         """
         if text is not None and slash_command(text) is not None:
             raise TurnRejected("slash_command")
         pty = self._writable_pty()
+        self.check_no_permission()
         probe = Probe(
             probe_id=new_probe_id(),
             text=text or default_probe_text(self.spec.sessions.probe_alive_token),
@@ -1871,10 +2110,15 @@ class Session:
         prompt = f"{probe.text}\n\n<!-- ccw probe: {probe.probe_id} -->"
         try:
             self._typed = _squash(prompt)
-            await pty.send_prompt(prompt, self.spec.boot.submit_delay_seconds)
+            written = await pty.send_prompt(
+                prompt, self.spec.boot.submit_delay_seconds, self._no_permission
+            )
         except PtyClosed as exc:
             self._probes.pop(probe.probe_id, None)
             raise TurnRejected("dead") from exc
+        if not written:
+            self._probes.pop(probe.probe_id, None)
+            raise TurnRejected("dialog_open")
         log.info("session %s: probe %s written", self.spec.session_id, probe.probe_id)
         return probe
 

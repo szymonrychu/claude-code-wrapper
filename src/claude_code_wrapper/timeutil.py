@@ -5,10 +5,11 @@ from __future__ import annotations
 import datetime
 
 
+def iso(moment: datetime.datetime) -> str:
+    """A UTC datetime as RFC 3339 with milliseconds and a `Z` suffix."""
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def now_iso() -> str:
     """UTC now as RFC 3339 with milliseconds, the timestamp format of every record and event."""
-    return (
-        datetime.datetime.now(datetime.UTC)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
+    return iso(datetime.datetime.now(datetime.UTC))

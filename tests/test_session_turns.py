@@ -127,6 +127,7 @@ class Harness:
             hook_token="hook-token-0123456789",
             gate_fail="allow",
             gate_timeout=14.0,
+            permission_timeout=1815.0,
             mise_env={},
             passthrough=[],
         )

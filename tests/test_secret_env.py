@@ -8,20 +8,28 @@ listed name.
 
 from __future__ import annotations
 
+import base64
 import json
+import logging
 import os
 import re
 from pathlib import Path
 
+import httpx
 import pytest
 from conftest import World
 from pydantic import ValidationError
+from test_api_turns import TOKEN
+from test_dialog_auto_dismiss import show
+from test_permission_relay import of_type
 from test_terminals import base_service_env, run
 
 from claude_code_wrapper import service as service_mod
+from claude_code_wrapper import session as session_mod
 from claude_code_wrapper import tooling
+from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.claude_env import ClaudeEnv, without_secrets
-from claude_code_wrapper.config import Config
+from claude_code_wrapper.config import CommandsOverride, Config
 from claude_code_wrapper.manager import CreateSessionRequest, SessionManager
 from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.session import _redactor_for
@@ -227,3 +235,91 @@ async def test_global_mise_install_drops_listed_names(tmp_path, monkeypatch) -> 
         await service_mod.run_service(cfg)
     assert seen.get("PLAIN_PASS") == "plain-pass" and "FOO" not in seen
     assert os.environ["FOO"] == FOO
+
+
+#: The canary of the permission relay and dialog surface (T-98): a listed secret_env value.
+RELAY = "CANARY-t98-relay-0001"
+
+
+def _relay_scenario() -> dict:
+    """A gated Bash call whose input and permission suggestions hold the listed value."""
+    rule = {"toolName": "Bash", "ruleContent": f"echo {RELAY}"}
+    suggestion = {"type": "addRules", "rules": [rule], "behavior": "allow"}
+    step = {
+        "tool": "Bash",
+        "input": {"command": f"echo {RELAY}"},
+        "result": "ok",
+        "permission": {"suggestions": [suggestion]},
+    }
+    return {"turns": [{"match": "^go", "steps": [step, {"text": "after the tool"}]}]}
+
+
+async def test_permission_relay_and_dialog_never_show_a_listed_value(
+    world: World, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Canary: GET /v1/sessions/{id}/dialog (permission.tool_input, suggestions, the dialog
+    tail), permission_requested / permission_resolved (with terminal_observed) /
+    dialog_auto_dismissed, and the relay and API logs never carry a secret_env value, plain or
+    base64."""
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr(session_mod, "ORPHAN_SETTLE_SECONDS", 0.3)
+    service_env = {**base_service_env(), "RELAYV": RELAY}
+    cfg = world.cfg(
+        _relay_scenario(),
+        server={"auth_token": TOKEN},
+        claude={"passthrough_env": ["RELAYV"], "secret_env": ["RELAYV"]},
+    )
+    m = SessionManager(cfg, internal_url=world.url, service_env=service_env, redactor=Redactor())
+    world.managers.append(m)
+    over = CommandsOverride(dialog_auto_dismiss_seconds=0.4)
+    sid = (await m.create(CreateSessionRequest(commands=over)))["session_id"]
+    router = m.router(sid)
+    session = router.session
+    bodies: list[str] = []
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    transport = httpx.ASGITransport(app=create_app(m, m.cfg))
+    async with httpx.AsyncClient(transport=transport, base_url="http://t", headers=headers) as c:
+        await world.until(lambda: session.state == "ready", 15)
+        r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go"})
+        assert r.status_code == 202, r.text
+        await world.until(lambda: of_type(world, sid, "permission_requested"), 15)
+        r = await c.get(f"/v1/sessions/{sid}/dialog")
+        bodies.append(r.text)
+        view = r.json()
+        assert view["kind"] == "permission"
+        assert "***" in view["permission"]["tool_input"]
+        assert "***" in json.dumps(view["permission"]["suggestions"])
+        # The person at the terminal picks "1. Yes": a terminal resolution (terminal_observed).
+        await session.pty.write(b"1")
+        await world.wait_turn(m, sid)
+        await world.until(lambda: of_type(world, sid, "permission_resolved"), 15)
+        (got,) = of_type(world, sid, "permission_resolved")
+        assert (got["by"], got["terminal_observed"]) == ("terminal", "allow")
+        await world.until(lambda: not session.permission_prompt_open(), 10, "lock lifted")
+        # An idle footer dialog whose screen tail holds the value (the permission prompt
+        # scrolled out of the tail first, so it is a plain dialog the idle timer dismisses).
+        show(session, "tool output\r\n" * (session_mod.DIALOG_TAIL_CHARS // 10))
+        show(session, f"Select model\r\n {RELAY}\r\n 1. Default\r\n Esc to cancel\r\n")
+        assert RELAY in session.ring.text()  # the screen really shows it
+        r = await c.get(f"/v1/sessions/{sid}/dialog")
+        bodies.append(r.text)
+        view = r.json()
+        assert view["kind"] == "dialog" and "***" in view["tail"]
+        await world.until(lambda: of_type(world, sid, "dialog_auto_dismissed"), 10)
+        r = await c.get(f"/v1/sessions/{sid}")
+        bodies.append(r.text)
+
+    types = {e["type"] for e in world.events(sid)}
+    assert {"permission_requested", "permission_resolved", "dialog_auto_dismissed"} <= types
+    requested = of_type(world, sid, "permission_requested")[0]
+    assert "***" in requested["tool_input"] and "***" in json.dumps(requested["suggestions"])
+    haystacks = {
+        "events": (world.session_dir(sid) / "events.jsonl").read_text(),
+        "turns": (world.session_dir(sid) / "turns.jsonl").read_text(),
+        "responses": "\n".join(bodies),
+        "logs": caplog.text,
+    }
+    b64 = base64.b64encode(RELAY.encode()).decode().rstrip("=")
+    for where, text in haystacks.items():
+        assert RELAY not in text, where
+        assert b64 not in text, where

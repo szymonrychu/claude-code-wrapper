@@ -285,7 +285,7 @@ Request body (all fields optional):
 | `template` | string | name of a configured prompt template to use as the initial prompt (instead of `prompt`) |
 | `variables` | object of string | values for the template's `{{name}}` placeholders |
 | `callbackUrl` | string | `http`/`https` URL that receives turn-terminal and question callbacks for this session (a turn's own `callbackUrl` wins) |
-| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `deny`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`, `dialog_grace_seconds`, `dialog_patterns`; all optional, unset fields inherit, a set `deny` only extends the effective list, it never replaces or empties it); command names outside the name pattern are rejected; stored with the session and reapplied on resume |
+| `commands` | object | per-session override of `sessions.commands` (`agent`, `client`, `deny`, `timeout_seconds`, `continue_prompt`, `allow_force`, `quiet_seconds`, `dialog_grace_seconds`, `dialog_patterns`, `permission_hold_seconds`, `dialog_auto_dismiss_seconds`; all optional, unset fields inherit, a set `deny` only extends the effective list, it never replaces or empties it); command names outside the name pattern are rejected; stored with the session and reapplied on resume |
 
 When neither `prompt` nor `template` is given, `prompts.initial_prompt` (if configured) is used.
 Secret `env` overrides are never persisted; resend them on resume.
@@ -741,6 +741,51 @@ One command record, showing its current or final state.
 
 Auth: bearer. Errors: `401 unauthorized`, `404 not_found` (unknown session), `404 command_not_found`,
 `409 dead`.
+
+### `GET /v1/sessions/{id}/dialog`
+
+What the session waits on, if anything: `{"kind", "since", "permission", "tail"}`.
+
+- `kind`: `permission` (a held `PermissionRequest`, see the `permission_requested` event, or a
+  permission prompt drawn in the TUI whose hook is dead), `dialog` (any other dialog footer, such
+  as a slash command dialog), `usage_wait` (a usage-limit wait) or `none`.
+- `since`: when it began (the oldest held permission's `since`, else the session's
+  `waiting_since`); `null` for `none`.
+- `permission`: the oldest held request (`request_id`, `tool_name`, `tool_input`, `truncated`,
+  `suggestions`, `agent_id`, `since`, `expires_at`, as in `permission_requested`); `null` otherwise.
+- `tail`: the redacted end of the screen (about 1.5 KB) for `dialog` and for a `permission` with no
+  held request; `null` otherwise.
+
+```json
+{"kind": "permission", "since": "2026-11-09T10:00:00.000Z", "permission": {"request_id": "perm_0a1b2c3d4e5f", "tool_name": "Bash", "tool_input": "{\n  \"command\": \"psql prod\"\n}", "truncated": false, "suggestions": [], "agent_id": null, "since": "2026-11-09T10:00:00.000Z", "expires_at": "2026-11-09T10:30:00.000Z"}, "tail": null}
+```
+
+Auth: bearer. Errors: `401 unauthorized`, `404 not_found`, `503 dead` (the session is not running).
+
+### `POST /v1/sessions/{id}/dialog`
+
+Answers the open dialog. Body (unknown keys are refused):
+
+| Field | Meaning |
+|---|---|
+| `action` | `allow`, `deny` or `dismiss` |
+| `request_id` | required for `allow` and `deny`: the held request, `perm_` + 12 hex |
+| `expect_since` | `dismiss` only: the `since` the caller saw; a different current `since` is `409 dialog_changed` |
+| `message` | `deny` only: at most 2000 characters, shown to the model; default "The operator denied this action" |
+
+`allow` and `deny` answer the held permission once: `{"status": "answered", "request_id", "behavior"}`.
+`dismiss` sends one ESC to a dialog (at most one per `since`, so a double click sends one), then
+waits up to 2 s for it to close: `{"status": "dismissed" | "still_open", "escape_sent": bool}`.
+A permission prompt whose hook is dead (`permission` with no `permission` object) is answered by
+`dismiss` only; the ESC declines it and ends the turn.
+
+Auth: bearer. Errors: `401 unauthorized`, `404 not_found`, `422 invalid_request` (bad body, or
+`allow` or `deny` without `request_id`), `503 dead`, and `409` with one of:
+
+- `no_dialog`: nothing is open (or, for `allow` and `deny`, no held request)
+- `dialog_changed`: `request_id` is not the held request, or `expect_since` is stale
+- `permission_resolved`: the request was already answered, timed out or withdrawn
+- `not_dismissable`: a held permission request or a usage-limit wait cannot be dismissed
 
 ### `POST /v1/sessions/{id}/interrupt`
 
@@ -1825,6 +1870,57 @@ event: waiting_ended
 data: {"seq":22,"ts":"2026-10-20T09:31:40.000Z","session_id":"ses_3f9a1c0b7d42","type":"waiting_ended","data":{"reason":"permission"}}
 ```
 
+### `permission_requested`
+
+Emitted when claude's `PermissionRequest` hook is relayed and held for an answer (any tool except
+`AskUserQuestion`, which keeps claude's own question). The session waits with reason
+`permission` until `permission_resolved`. The hold ends at `expires_at`
+(`sessions.commands.permission_hold_seconds` after `since`), well before the hook's own timeout.
+
+`data`: `request_id` (`perm_` + 12 hex), `tool_name`, `tool_input` (redacted JSON text, at most
+4096 bytes), `truncated`, `suggestions` (redacted `permission_suggestions`, `[]` when absent),
+`agent_id` (`null` for the main agent), `since`, `expires_at`.
+
+```
+event: permission_requested
+data: {"seq":31,"ts":"2026-11-09T10:00:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_requested","data":{"request_id":"perm_0a1b2c3d4e5f","tool_name":"Bash","tool_input":"{\n  \"command\": \"psql prod\"\n}","truncated":false,"suggestions":[],"agent_id":null,"since":"2026-11-09T10:00:00.000Z","expires_at":"2026-11-09T10:30:00.000Z"}}
+```
+
+### `permission_resolved`
+
+Emitted once per `permission_requested`, when the held request is answered and claude gets its
+decision. `by`: `user` (answered through the API), `timeout` (the hold ran out: deny with
+"No operator answered the permission request in time; continue without this action"),
+`terminal` (answered at claude's own prompt first, or its turn, agent or tool ended), `gone`
+(the hook connection dropped, the session closed or claude was relaunched).
+
+Only `user` ever answers the hook `allow`. A `terminal` or `gone` resolution always answers the
+hook with a deny and a fixed message ("The permission prompt was answered outside the relay",
+"The permission request was withdrawn"): the hook token is in every tool's env, so an agent could
+forge the hook that reports a terminal answer. A real terminal answer reached claude first, and
+claude ignores the hook's later output. While a request is held, nothing the wrapper types ends
+with a CR (idle turns, probes, slash commands, the continue prompt): they are refused with
+`409 dialog_open` or wait, because a CR would pick the prompt's highlighted "1. Yes". The same
+holds after a `gone` resolution while the same claude runs: a dropped hook leaves claude's TUI
+prompt on screen, so the wrapper keeps the CR writers locked and answers that prompt with one ESC
+(No); the lock lifts once the ESC is written, or when claude is relaunched.
+
+`data`: `request_id`, `by` (`user`, `timeout`, `terminal`, `gone`), `behavior` (`allow`, `deny`:
+what the held hook really answered, so always `deny` for `terminal` and `gone`) and, for
+`terminal` only, `terminal_observed` (`allow`, `deny`: what the reporting hook claimed).
+
+```
+event: permission_resolved
+data: {"seq":32,"ts":"2026-11-09T10:01:12.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_resolved","data":{"request_id":"perm_0a1b2c3d4e5f","by":"user","behavior":"deny"}}
+```
+
+### `dialog_auto_dismissed`
+
+Emitted once per idle footer dialog (`GET /dialog` kind `dialog`) that stayed open for
+`sessions.commands.dialog_auto_dismiss_seconds` (default 300; 0 is off) when the wrapper sent it
+its one guarded ESC. `data`: `since` (the dialog's `since`), `escape_sent` (false when the
+dialog changed or closed first, or a dismiss already sent the ESC for that `since`).
+
 ### `bootstrap_step`
 
 Emitted when a create or resume step (`prepare_workdir`, `run_setup_commands`,
@@ -2659,6 +2755,8 @@ sessions:
     quiet_seconds: 1.5
     dialog_grace_seconds: 2.0
     dialog_patterns: ["esc to cancel", "esc to close", "esc to clear", "esc to exit", "enter to confirm"]
+    permission_hold_seconds: 1800          # a relayed PermissionRequest waits this long, then is denied
+    dialog_auto_dismiss_seconds: 300       # an idle footer dialog open this long gets one ESC; 0 = off
   auto_compact:
     idle_seconds: 1800
     instructions: "keep the current plan, open decisions and file paths"
@@ -3030,6 +3128,10 @@ FastAPI's `{"detail": ...}` body instead.
 | `method_not_allowed` | 405 | the route exists but not for this method |
 | `busy` | 409 | a turn is already running in the session |
 | `dialog_open` | 409 | a `regular` or `priority` turn delivery while a dialog (a permission prompt or a question) is open in claude |
+| `no_dialog` | 409 | `POST /dialog`: no dialog (or, for allow and deny, no held permission request) is open |
+| `dialog_changed` | 409 | `POST /dialog`: the `request_id` is not the held request, or `expect_since` is stale |
+| `permission_resolved` | 409 | `POST /dialog`: the permission request was already answered, timed out or withdrawn |
+| `not_dismissable` | 409 | `POST /dialog` dismiss: a held permission request or a usage-limit wait cannot be dismissed |
 | `session_not_active` | 409 | the session exists but is not running, so it has no terminals (terminal create or attach) |
 | `terminal_limit` | 409 | `limits.terminals_max` terminals already exist in this service process |
 | `terminal_not_found` | 404 | unknown terminal id in the session (terminal delete or attach) |
@@ -3785,6 +3887,8 @@ sessions:
 | `sessions.commands.quiet_seconds` | number | `1.5` | - | Seconds of PTY silence to wait for before typing a command, >= 0. |
 | `sessions.commands.dialog_grace_seconds` | number | `2.0` | - | Seconds without PTY output, after a dialog footer appeared and no completion signal came, before a command's dialog is dismissed with ESC, >= 0. See [Lifecycle](#lifecycle). |
 | `sessions.commands.dialog_patterns` | list of string | `["esc to cancel", "esc to close", "esc to clear", "esc to exit", "enter to confirm"]` | - | Dialog footers looked for on screen while a command other than `compact` runs, matched ignoring case, whitespace and escapes; none blank. Empty disables dialog dismissal. |
+| `sessions.commands.permission_hold_seconds` | number | `1800` | - | How long a relayed PermissionRequest waits for an answer before it is denied, > 0 and <= 86400; the hook timeout is this + 30 s. |
+| `sessions.commands.dialog_auto_dismiss_seconds` | number | `300` | - | An idle footer dialog (kind `dialog`; never a permission or a usage-limit wait, never a slash command's own dialog leg) that stayed open this long gets one guarded ESC and a `dialog_auto_dismissed` event; 0 = off, >= 0. |
 | `sessions.auto_compact.idle_seconds` | number | `0` | - | Run `/compact` after the session stayed idle this long following a turn; 0 is off. Must be below `idle_timeout_seconds` when both are set. |
 | `sessions.auto_compact.instructions` | string | `""` | - | One-line focus instructions passed to the automatic `/compact` (max 2000 characters, no control characters); empty sends none. |
 | `sessions.auto_compact.min_context_tokens` | integer | `0` | - | Skip the automatic compact while the last main-chain context (input + cache read + cache creation tokens) is below this many tokens, >= 0; 0 compacts whatever the size. |

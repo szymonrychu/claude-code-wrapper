@@ -7,6 +7,8 @@ Environment:
     CCW_INTERNAL_URL, CCW_SESSION_ID, CCW_HOOK_TOKEN  service address and identity
     CCW_TOOL_GATE_FAIL=deny   PreToolUse prints a deny when the service is unreachable
     CCW_GATE_TIMEOUT          per-attempt timeout seconds for all but UserPromptSubmit (14)
+    CCW_PERMISSION_TIMEOUT    timeout seconds of the single PermissionRequest attempt (1815);
+                              a failure or timeout prints a deny, whatever CCW_TOOL_GATE_FAIL says
     CCW_RELAY_BACKOFF         initial retry backoff seconds (default 0.5, doubles);
                               tests set it small to stay fast
 """
@@ -19,7 +21,7 @@ import sys
 import time
 import urllib.request
 import uuid
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 CLAUDE_HOOK_EVENTS = (
     "UserPromptSubmit",
@@ -32,6 +34,7 @@ CLAUDE_HOOK_EVENTS = (
     "PreCompact",
     "PostCompact",
     "SessionStart",
+    "PermissionRequest",
 )
 RELAY_PATH = "/internal/hooks/{event}"
 HEADER_SESSION = "X-CCW-Session"
@@ -43,10 +46,15 @@ ENV_TOKEN = "CCW_HOOK_TOKEN"
 ENV_GATE_FAIL = "CCW_TOOL_GATE_FAIL"
 ENV_GATE_TIMEOUT = "CCW_GATE_TIMEOUT"
 ENV_BACKOFF = "CCW_RELAY_BACKOFF"
+ENV_PERMISSION_TIMEOUT = "CCW_PERMISSION_TIMEOUT"
 
 MAX_STDIN = 8 * 1024 * 1024
 DEFAULT_GATE_TIMEOUT = 14.0
 DEFAULT_BACKOFF = 0.5
+DEFAULT_PERMISSION_TIMEOUT = 1815.0
+PERMISSION_FAIL_MESSAGE = (
+    "claude-code-wrapper did not answer the permission request; continue without this action"
+)
 
 
 class RelayResponse(TypedDict):
@@ -64,6 +72,16 @@ def deny_output(reason: str) -> str:
                 "permissionDecisionReason": reason,
             }
         }
+    )
+
+
+def permission_output(behavior: Literal["allow", "deny"], message: str | None = None) -> str:
+    decision: dict[str, object] = {"behavior": behavior}
+    if behavior == "deny":
+        decision["message"] = message
+        decision["interrupt"] = False
+    return json.dumps(
+        {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
     )
 
 
@@ -110,6 +128,8 @@ def _relay(event: str) -> int:
     url = base.rstrip("/") + RELAY_PATH.format(event=event)
     if event == "UserPromptSubmit":
         attempts, timeout = 3, 5.0
+    elif event == "PermissionRequest":
+        attempts, timeout = 1, _float_env(ENV_PERMISSION_TIMEOUT, DEFAULT_PERMISSION_TIMEOUT)
     else:
         attempts, timeout = 2, _float_env(ENV_GATE_TIMEOUT, DEFAULT_GATE_TIMEOUT)
     delay = _float_env(ENV_BACKOFF, DEFAULT_BACKOFF)
@@ -128,6 +148,10 @@ def _relay(event: str) -> int:
 
 
 def _failure(event: str) -> int:
+    if event == "PermissionRequest":
+        sys.stdout.write(permission_output("deny", PERMISSION_FAIL_MESSAGE))
+        sys.stdout.flush()
+        return 0
     if event == "PreToolUse" and os.environ.get(ENV_GATE_FAIL) == "deny":
         sys.stdout.write(deny_output("claude-code-wrapper is unreachable"))
         sys.stdout.flush()

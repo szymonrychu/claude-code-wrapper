@@ -457,6 +457,7 @@ def test_claude_env_never_carries_usage_token(tmp_path, monkeypatch):
         hook_token="hook-token-0123456789",
         gate_fail="allow",
         gate_timeout=14,
+        permission_timeout=1815.0,
         mise_env=None,
         passthrough=cfg.claude.passthrough_env,
         passthrough_exclude=cfg.claude.passthrough_env_exclude,
@@ -470,3 +471,32 @@ def test_attachment_limit_defaults() -> None:
     assert limits.max_attachment_bytes == 6291456
     assert limits.max_attachments_total_bytes == 8388608
     assert limits.max_attachments_per_turn == 8
+
+
+def test_permission_hold_defaults():
+    cmds = Config().sessions.commands
+    assert cmds.permission_hold_seconds == 1800
+    assert cmds.dialog_auto_dismiss_seconds == 300
+
+
+def test_permission_hold_bounds():
+    from pydantic import ValidationError
+
+    from claude_code_wrapper.config import CommandsConfig
+
+    for bad in (
+        {"permission_hold_seconds": 0},
+        {"permission_hold_seconds": 86401},
+        {"dialog_auto_dismiss_seconds": -1},
+    ):
+        with pytest.raises(ValidationError):
+            CommandsConfig(**bad)
+
+
+def test_commands_override_hold():
+    from claude_code_wrapper.commands import effective_commands
+    from claude_code_wrapper.config import CommandsConfig, CommandsOverride
+
+    eff = effective_commands(CommandsConfig(), CommandsOverride(permission_hold_seconds=60))
+    assert eff.permission_hold_seconds == 60
+    assert effective_commands(CommandsConfig(), CommandsOverride()).permission_hold_seconds == 1800

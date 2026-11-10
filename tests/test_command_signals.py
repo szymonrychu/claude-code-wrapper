@@ -151,7 +151,7 @@ async def test_compact_relays_installed_and_accepted(tmp_path):
     seen = []
 
     class R:
-        async def handle_claude_hook(self, event, payload):
+        async def handle_claude_hook(self, event, payload, gone=None):
             seen.append(event)
             return {"stdout": "", "stderr": "", "exit_code": 0}
 

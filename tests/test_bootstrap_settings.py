@@ -5,7 +5,9 @@ from pathlib import Path
 
 from claude_code_wrapper.bootstrap.settings import (
     RELAY_MATCHERS,
+    PermissionTimeouts,
     RelayTimeouts,
+    permission_timeouts,
     relay_timeouts,
     render_settings,
 )
@@ -31,7 +33,8 @@ def test_relay_hooks_for_every_event(tmp_path):
         (hook,) = group["hooks"]
         assert hook["type"] == "command"
         assert hook["command"] == f"{RELAY} {event}"
-        assert hook["timeout"] == (15 if event == "UserPromptSubmit" else 30)
+        expected = {"UserPromptSubmit": 15, "PermissionRequest": 1830}.get(event, 30)
+        assert hook["timeout"] == expected
     assert json.loads((tmp_path / "settings.json").read_text()) == doc
 
 
@@ -120,7 +123,7 @@ def test_overlay_merged_hooks_appended(tmp_path):
     doc = _render(tmp_path, cfg)
     assert doc["enableAllProjectMcpServers"] is False
     assert doc["enabledPlugins"]["p@m"] is False
-    assert doc["env"] == {"A": "1"}
+    assert doc["env"] == {"A": "1", "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1"}
     stop = [h["command"] for g in doc["hooks"]["Stop"] for h in g["hooks"]]
     assert stop == [f"{RELAY} Stop", "mine"]
     assert "Notification" in doc["hooks"]
@@ -187,7 +190,45 @@ def test_auto_mode_seeds_skip_auto_permission_prompt(tmp_path):
     assert doc["skipAutoPermissionPrompt"] is True
 
 
-def test_bypass_mode_does_not_seed_skip_auto_permission_prompt(tmp_path):
+def test_bypass_mode_seeds_skip_auto_permission_prompt(tmp_path):
     doc = _render(tmp_path)
     assert doc["permissions"]["defaultMode"] == "bypassPermissions"
-    assert "skipAutoPermissionPrompt" not in doc
+    assert doc["skipAutoPermissionPrompt"] is True
+
+
+def test_permission_timeouts_formula():
+    assert permission_timeouts(1800) == PermissionTimeouts(1830, 1815)
+    t = permission_timeouts(60)
+    assert t.relay_timeout < t.hook_timeout
+
+
+def test_default_permission_timeout_ties_to_formula():
+    from claude_code_wrapper.config import DEFAULT_PERMISSION_HOLD_SECONDS
+    from claude_code_wrapper.hook_relay import DEFAULT_PERMISSION_TIMEOUT
+
+    default = permission_timeouts(DEFAULT_PERMISSION_HOLD_SECONDS)
+    assert default.relay_timeout == DEFAULT_PERMISSION_TIMEOUT
+    assert Config().sessions.commands.permission_hold_seconds == DEFAULT_PERMISSION_HOLD_SECONDS
+
+
+def test_permission_hook_timeout_follows_override(tmp_path):
+    doc = _render(tmp_path, permission_hold_seconds=60)
+    assert doc["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"] == 90
+
+
+def test_prevention_settings_written(tmp_path):
+    doc = _render(tmp_path)
+    assert doc["permissions"]["defaultMode"] == "bypassPermissions"
+    assert doc["skipDangerousModePermissionPrompt"] is True
+    assert doc["skipAutoPermissionPrompt"] is True
+    assert doc["feedbackSurveyRate"] == 0
+    assert doc["feedbackDrafts"] == "off"
+    assert doc["env"]["CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"] == "1"
+
+
+def test_prevention_env_merges_and_overlay_wins(tmp_path):
+    cfg = _cfg(claude={"settings": {"env": {"FOO": "1"}, "feedbackDrafts": "quiet"}})
+    doc = _render(tmp_path, cfg)
+    assert doc["env"]["FOO"] == "1"
+    assert doc["env"]["CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"] == "1"
+    assert doc["feedbackDrafts"] == "quiet"

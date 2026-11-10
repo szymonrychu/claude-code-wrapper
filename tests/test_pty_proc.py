@@ -360,6 +360,69 @@ async def test_send_prompt_two_writes_under_one_lock(spawn, monkeypatch):
     assert writes[1][0] - writes[0][0] >= 0.29
 
 
+async def test_write_guarded(spawn, monkeypatch):
+    p = await spawn(["/bin/cat"])
+    master = p._fd
+    writes: list[bytes] = []
+    real_write = os.write
+
+    def write(fd, data):
+        if fd == master:
+            writes.append(bytes(data))
+        return real_write(fd, data)
+
+    monkeypatch.setattr(pty_proc.os, "write", write)
+    assert await p.write_guarded(b"A", lambda: False) is False
+    assert writes == []
+    assert await p.write_guarded(b"B", lambda: True) is True
+    assert writes == [b"B"]
+
+    # The guard runs under the lock: a concurrent send_prompt gap is not interleaved.
+    seen: list[bool] = []
+
+    def guard() -> bool:
+        seen.append(p._lock.locked())
+        return True
+
+    await asyncio.gather(p.send_prompt("x", 0.2), p.write_guarded(b"E", guard))
+    assert seen == [True]
+    prompt = [b"\x1b[200~x\x1b[201~", b"\r"]
+    assert writes[-3:] in (prompt + [b"E"], [b"E"] + prompt)
+
+
+async def test_send_prompt_refused_after_paste_clears_it_first(spawn, monkeypatch):
+    """A guard that fails between the paste and the CR leaves the paste in claude's input box;
+    the next prompt clears the input (ctrl+l) before its own paste, so the stale text is never
+    sent with it."""
+    p = await spawn(["/bin/cat"])
+    master = p._fd
+    writes: list[bytes] = []
+    real_write = os.write
+    stamps: list[float] = []
+
+    def write(fd, data):
+        if fd == master:
+            writes.append(bytes(data))
+            stamps.append(time.monotonic())
+        return real_write(fd, data)
+
+    monkeypatch.setattr(pty_proc.os, "write", write)
+    calls: list[int] = []
+
+    def flips() -> bool:
+        calls.append(1)
+        return len(calls) == 1  # passes before the paste, fails before the CR
+
+    assert await p.send_prompt("stale", 0, flips) is False
+    assert writes == [b"\x1b[200~stale\x1b[201~"]
+    assert await p.send_prompt("fresh", 0, lambda: True) is True
+    assert writes[1:] == [b"\x0c", b"\x1b[200~fresh\x1b[201~", b"\r"]
+    # ctrl+l and the paste land in separate reads, like the CR (the KEY_GAP_SECONDS gap).
+    assert stamps[2] - stamps[1] >= 0.2
+    assert await p.send_prompt("next", 0, lambda: True) is True
+    assert writes[4:] == [b"\x1b[200~next\x1b[201~", b"\r"]
+
+
 async def test_fake_claude_boots_under_pty(spawn, fake_claude_bin, claude_config_dir, tmp_path):
     env = {
         "PATH": os.environ["PATH"],

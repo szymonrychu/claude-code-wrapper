@@ -183,6 +183,8 @@ sessions:
   #   quiet_seconds: 1.5       # PTY silence to wait for before typing a command
   #   dialog_grace_seconds: 2.0   # after a dialog footer shows and no result came, wait this long (restarted by any output), then dismiss it with ESC
   #   dialog_patterns: ["esc to cancel", "esc to close", "esc to clear", "esc to exit", "enter to confirm"]   # dialog footers, matched ignoring case; empty disables dismissal
+  #   permission_hold_seconds: 1800   # a relayed PermissionRequest waits this long for an answer, then is denied; the hook timeout is this + 30 s; the turn_max_seconds hard cap still interrupts (Esc) a turn with a held permission, so a hold longer than turn_max is cut short by the cap
+  #   dialog_auto_dismiss_seconds: 300   # an idle footer dialog (never a permission or a usage-limit wait) open this long gets one guarded ESC; 0 = off
   # Idle auto-compact: queue one /compact after the session stayed idle (README "Idle auto-compact").
   # auto_compact:
   #   idle_seconds: 0          # idle time after a turn before compacting (0 = off; must be below idle_timeout_seconds)

@@ -51,6 +51,7 @@ class StubSession:
         self.state_since: str | None = None
         self.submitted_turn_ids: list[str | None] = []
         self.command_active = False
+        self.permission_pending = False
 
     @property
     def current_turn(self):
@@ -64,6 +65,12 @@ class StubSession:
 
     def note_hook(self):
         """The lanes' dialog clock (not recorded: no test here reads it)."""
+
+    def set_permission_pending(self, pending):
+        self.permission_pending = pending
+
+    def permission_prompt_open(self):
+        return self.permission_pending
 
     def set_question_waiting(self):
         self.calls.append(("set_question_waiting",))

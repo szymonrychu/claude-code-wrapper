@@ -27,6 +27,9 @@ CCW_MCP_ALLOW = "mcp__ccw__command"
 PEERS_ALLOW = ("mcp__ccw__peers", "mcp__ccw__send_message")
 PEERS_DENY = ("SendMessage", "ListAgents")
 MIN_HOOK_TIMEOUT = 30
+#: claude's hook timeout and ccw-hook's HTTP timeout outlast the server-side hold by these.
+PERMISSION_HOOK_MARGIN = 30
+PERMISSION_RELAY_MARGIN = 15
 _GATED_EVENTS = (
     "onAgentToolCall",
     "onToolResult",
@@ -52,6 +55,18 @@ def relay_timeouts(cfg: Config) -> RelayTimeouts:
     ]
     hook_timeout = max(MIN_HOOK_TIMEOUT, max(blocking, default=0) + 5)
     return RelayTimeouts(hook_timeout, (hook_timeout - 2) / 2)
+
+
+class PermissionTimeouts(NamedTuple):
+    hook_timeout: float
+    relay_timeout: float
+
+
+def permission_timeouts(hold_seconds: float) -> PermissionTimeouts:
+    """The one place the PermissionRequest timeout formula lives."""
+    return PermissionTimeouts(
+        hold_seconds + PERMISSION_HOOK_MARGIN, hold_seconds + PERMISSION_RELAY_MARGIN
+    )
 
 
 def _installed_script(script: str, module: str) -> str:
@@ -148,15 +163,26 @@ def render_settings(
     relay_command: str | None = None,
     ccw_mcp: bool = False,
     peers: bool = False,
+    permission_hold_seconds: float | None = None,
 ) -> dict[str, Any]:
     path = Path(config_dir) / "settings.json"
     relay = relay_command or default_relay_command()
     doc = _load(path)
     timeouts = relay_timeouts(cfg)
+    hold = (
+        cfg.sessions.commands.permission_hold_seconds
+        if permission_hold_seconds is None
+        else permission_hold_seconds
+    )
 
     hooks = doc.get("hooks") if isinstance(doc.get("hooks"), dict) else {}
     for event in CLAUDE_HOOK_EVENTS:
-        timeout = PROMPT_HOOK_TIMEOUT if event == "UserPromptSubmit" else timeouts.hook_timeout
+        if event == "UserPromptSubmit":
+            timeout = PROMPT_HOOK_TIMEOUT
+        elif event == "PermissionRequest":
+            timeout = permission_timeouts(hold).hook_timeout
+        else:
+            timeout = timeouts.hook_timeout
         group = {
             "matcher": RELAY_MATCHERS.get(event, ""),
             "hooks": [{"type": "command", "command": f"{relay} {event}", "timeout": timeout}],
@@ -181,9 +207,14 @@ def render_settings(
         deny=deny,
     )
     doc["permissions"] = permissions
-    if cfg.claude.permission_mode == "auto":
-        # Suppresses claude's auto mode opt-in dialog (user setting, nothing to answer at boot).
-        doc["skipAutoPermissionPrompt"] = True
+    # Dialog prevention: nothing may ask a person at boot or mid-session (user settings).
+    doc["skipDangerousModePermissionPrompt"] = True
+    doc["skipAutoPermissionPrompt"] = True
+    doc["feedbackSurveyRate"] = 0
+    doc["feedbackDrafts"] = "off"
+    env = doc.get("env") if isinstance(doc.get("env"), dict) else {}
+    env["CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"] = "1"
+    doc["env"] = env
     doc["enableAllProjectMcpServers"] = True
 
     if cfg.plugins.disable:

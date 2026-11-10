@@ -81,6 +81,7 @@ def test_tool_env_uses_same_rule():
         hook_token="t",
         gate_fail="allow",
         gate_timeout=1.0,
+        permission_timeout=1815.0,
         mise_env=None,
         passthrough=PATTERNS,
         passthrough_exclude=EXCLUDES,

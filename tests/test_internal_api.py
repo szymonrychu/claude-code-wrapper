@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from claude_code_wrapper.internal_api import (
+    GONE_WATCHER,
     MAX_RATE_LIMIT_WINDOWS,
     create_internal_app,
     parse_statusline,
@@ -24,14 +25,22 @@ class FakeRouter:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.gate: asyncio.Event | None = None
         self.statuslines: list[dict[str, Any]] = []
+        self.gones: list[asyncio.Event | None] = []
+        #: PermissionRequest only: hold until the relay's connection is gone.
+        self.hold_until_gone = False
 
     def on_statusline(self, values: dict[str, Any]) -> None:
         self.statuslines.append(values)
 
-    async def handle_claude_hook(self, event: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def handle_claude_hook(
+        self, event: str, payload: dict[str, Any], gone: asyncio.Event | None = None
+    ) -> dict[str, Any]:
         self.calls.append((event, payload))
+        self.gones.append(gone)
         if self.gate is not None:
             await self.gate.wait()
+        if self.hold_until_gone and gone is not None:
+            await gone.wait()
         return {"stdout": f"ok-{len(self.calls)}", "stderr": "", "exit_code": 0}
 
 
@@ -188,7 +197,9 @@ async def test_pretooluse_deny_round_trip_through_relay() -> None:
     from claude_code_wrapper.hook_relay import deny_output
 
     class DenyRouter(FakeRouter):
-        async def handle_claude_hook(self, event: str, payload: dict[str, Any]) -> dict[str, Any]:
+        async def handle_claude_hook(
+            self, event: str, payload: dict[str, Any], gone: asyncio.Event | None = None
+        ) -> dict[str, Any]:
             self.calls.append((event, payload))
             return {"stdout": deny_output("blocked by test"), "stderr": "", "exit_code": 0}
 
@@ -491,3 +502,79 @@ async def test_route_no_forwarder(tmp_path: Path) -> None:
         assert mgr.h.router.on_rate_limits is None
     finally:
         await mgr.h.router.close()
+
+
+async def _asgi_hook(
+    app: Any, event: str, headers: dict[str, str], drop: asyncio.Event
+) -> list[dict[str, Any]]:
+    """Drive the ASGI app directly, so the client can disconnect mid-request (`drop`)."""
+    body = json.dumps({"tool_name": "Bash", "tool_input": {}}).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": f"/internal/hooks/{event}",
+        "raw_path": f"/internal/hooks/{event}".encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()]
+        + [(b"content-type", b"application/json")],
+        "client": ("127.0.0.1", 1),
+        "server": ("t", 80),
+    }
+    sent_body = False
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal sent_body
+        if not sent_body:
+            sent_body = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await drop.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    await app(scope, receive, send)
+    return sent
+
+
+@pytest.mark.parametrize("delivery", [None, "d-perm"])
+async def test_permission_request_disconnect_sets_gone(delivery: str | None) -> None:
+    mgr = FakeManager()
+    mgr.r.hold_until_gone = True
+    app = create_internal_app(mgr)  # type: ignore[arg-type]
+    headers = dict(H) if delivery is None else {**H, "X-CCW-Delivery": delivery}
+    drop = asyncio.Event()
+    call = asyncio.ensure_future(_asgi_hook(app, "PermissionRequest", headers, drop))
+    for _ in range(100):
+        if mgr.r.calls:
+            break
+        await asyncio.sleep(0.01)
+    (gone,) = mgr.r.gones
+    assert gone is not None and not gone.is_set()
+    drop.set()  # the ccw-hook process died: its connection drops
+    await asyncio.wait_for(call, 3)
+    assert gone.is_set()
+    assert [t for t in asyncio.all_tasks() if t.get_name() == GONE_WATCHER] == []
+
+
+async def test_permission_request_watcher_cancelled_on_answer() -> None:
+    mgr = FakeManager()
+    async with client(mgr) as c:
+        r = await c.post("/internal/hooks/PermissionRequest", json={}, headers=H)
+        assert r.status_code == 200
+    (gone,) = mgr.r.gones
+    assert gone is not None and not gone.is_set()
+    await asyncio.sleep(0)
+    assert [t for t in asyncio.all_tasks() if t.get_name() == GONE_WATCHER] == []
+
+
+async def test_other_events_get_no_gone() -> None:
+    mgr = FakeManager()
+    async with client(mgr) as c:
+        await c.post("/internal/hooks/PreToolUse", json={}, headers=H)
+    assert mgr.r.gones == [None]

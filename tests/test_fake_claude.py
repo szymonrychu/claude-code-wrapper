@@ -946,3 +946,200 @@ def test_auto_boot_has_no_dialog_and_prints_auto_footer(spawn, tmp_path):
     p.wait_for("auto mode on")
     assert "Bypass Permissions mode" not in p.buf
     assert "? for shortcuts" not in p.buf
+
+
+def _permission_setup(
+    env, tmp_path, scenario_file, hook_body, timeout=5, permission=None, stop_out=None
+):
+    """A scenario with one permission-gated Bash step and a PermissionRequest hook script."""
+    script = tmp_path / "perm.sh"
+    script.write_text(hook_body)
+    payload = tmp_path / "perm.stdin"
+    hooks = {
+        "PermissionRequest": [
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"tee {payload} | sh {script}",
+                        "timeout": timeout,
+                    }
+                ],
+            }
+        ]
+    }
+    if stop_out is not None:
+        hooks["Stop"] = [
+            {"matcher": "", "hooks": [{"type": "command", "command": f"cat >> {stop_out}"}]}
+        ]
+    hook_settings(env["CLAUDE_CONFIG_DIR"], hooks)
+    return scenario_file(
+        {
+            "boot": {"bypass_dialog": False},
+            "turns": [
+                {
+                    "match": ".*",
+                    "steps": [
+                        {
+                            "tool": "Bash",
+                            "input": {"command": "echo hi"},
+                            "result": "ran-it",
+                            "permission": permission if permission is not None else {},
+                        },
+                        {"text": "after"},
+                    ],
+                }
+            ],
+        }
+    )
+
+
+def _tool_results(env, work):
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    return [
+        c
+        for x in lines
+        if x["type"] == "user" and isinstance(x["message"]["content"], list)
+        for c in x["message"]["content"]
+        if c.get("type") == "tool_result"
+    ]
+
+
+def _permission_log(env):
+    path = Path(env["CLAUDE_CONFIG_DIR"]) / "fake-permissions.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(x) for x in path.read_text().splitlines()]
+
+
+ALLOW = (
+    'cat >/dev/null; echo \'{"hookSpecificOutput":{"hookEventName":"PermissionRequest",'
+    '"decision":{"behavior":"allow"}}}\'\n'
+)
+DENY = (
+    'cat >/dev/null; echo \'{"hookSpecificOutput":{"hookEventName":"PermissionRequest",'
+    '"decision":{"behavior":"deny","message":"no thanks","interrupt":false}}}\'\n'
+)
+
+
+def test_permission_hook_allow_runs_tool(spawn, env, work, tmp_path, scenario_file):
+    sc = _permission_setup(env, tmp_path, scenario_file, ALLOW)
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.submit("go")
+    res = _tool_results(env, work)
+    assert res[0]["content"] == "ran-it" and res[0]["is_error"] is False
+    assert [x["by"] for x in _permission_log(env)] == ["hook"]
+    sent = json.loads((tmp_path / "perm.stdin").read_text())
+    assert sent["hook_event_name"] == "PermissionRequest"
+    assert sent["tool_name"] == "Bash" and sent["tool_input"] == {"command": "echo hi"}
+    assert sent["permission_mode"] == "bypassPermissions" and "tool_use_id" not in sent
+
+
+def test_permission_hook_deny_continues_turn_with_message(
+    spawn, env, work, tmp_path, scenario_file
+):
+    sc = _permission_setup(env, tmp_path, scenario_file, DENY)
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.submit("go")
+    res = _tool_results(env, work)
+    assert res[0]["content"] == "no thanks" and res[0]["is_error"] is True
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert any(
+        x["type"] == "assistant" and x["message"]["content"][0].get("text") == "after"
+        for x in lines
+    )
+    assert _permission_log(env)[0]["behavior"] == "deny"
+
+
+def test_permission_key_wins_and_late_hook_ignored(spawn, env, work, tmp_path, scenario_file):
+    sc = _permission_setup(env, tmp_path, scenario_file, "cat >/dev/null; sleep 2\n" + DENY)
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    since = len(p.buf)
+    p.send(b"\x1b[200~go\x1b[201~")
+    time.sleep(0.1)
+    p.send(b"\r")
+    p.wait_for("Tab to amend", since=since)
+    time.sleep(0.3)
+    p.send(b"1")
+    p.wait_for("? for shortcuts", since=since + 100)
+    time.sleep(2.3)
+    res = _tool_results(env, work)
+    assert res[0]["content"] == "ran-it" and res[0]["is_error"] is False
+    log = _permission_log(env)
+    assert [(x["by"], x["behavior"]) for x in log] == [("key", "allow")]
+
+
+def test_permission_hook_timeout_falls_back_to_keys(spawn, env, work, tmp_path, scenario_file):
+    sc = _permission_setup(env, tmp_path, scenario_file, "cat >/dev/null; sleep 5\n", timeout=1)
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    since = len(p.buf)
+    p.send(b"\x1b[200~go\x1b[201~")
+    time.sleep(0.1)
+    p.send(b"\r")
+    p.wait_for("Tab to amend", since=since)
+    time.sleep(1.6)
+    assert _tool_results(env, work) == []
+    p.send(b"1")
+    p.wait_for("? for shortcuts", since=since + 100)
+    assert _tool_results(env, work)[0]["content"] == "ran-it"
+    assert [x["by"] for x in _permission_log(env)] == ["key"]
+
+
+def test_permission_esc_interrupts_without_stop(spawn, env, work, tmp_path, scenario_file):
+    stop_out = tmp_path / "stop.out"
+    sc = _permission_setup(
+        env, tmp_path, scenario_file, "cat >/dev/null; sleep 5\n", stop_out=stop_out
+    )
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    since = len(p.buf)
+    p.send(b"\x1b[200~go\x1b[201~")
+    time.sleep(0.1)
+    p.send(b"\r")
+    p.wait_for("Tab to amend", since=since)
+    time.sleep(0.2)
+    p.send(b"\x1b")
+    p.wait_for("[Request interrupted by user for tool use]", since=since)
+    lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
+    assert "interrupted by user for tool use" in json.dumps(lines[-1])
+    assert [(x["by"], x["behavior"]) for x in _permission_log(env)] == [("key", "interrupt")]
+    time.sleep(0.5)
+    assert not stop_out.exists() or stop_out.read_text() == ""
+
+
+def test_permission_key_2_interrupts(spawn, env, work, tmp_path, scenario_file):
+    sc = _permission_setup(env, tmp_path, scenario_file, "cat >/dev/null; sleep 5\n")
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    since = len(p.buf)
+    p.send(b"\x1b[200~go\x1b[201~")
+    time.sleep(0.1)
+    p.send(b"\r")
+    p.wait_for("Tab to amend", since=since)
+    time.sleep(0.2)
+    p.send(b"2")
+    p.wait_for("[Request interrupted by user for tool use]", since=since)
+    assert "ran-it" not in json.dumps(_tool_results(env, work))
+    assert [(x["by"], x["behavior"]) for x in _permission_log(env)] == [("key", "interrupt")]
+
+
+def test_permission_footer_printed(spawn, env, work, tmp_path, scenario_file):
+    sc = _permission_setup(env, tmp_path, scenario_file, ALLOW)
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.submit("go")
+    assert "Esc to cancel \u00b7 Tab to amend" in p.buf
+    assert "Do you want to proceed?" in p.buf
+
+
+def test_permission_footer_can_be_off(spawn, env, work, tmp_path, scenario_file):
+    sc = _permission_setup(env, tmp_path, scenario_file, ALLOW, permission={"footer": False})
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.submit("go")
+    assert "Tab to amend" not in p.buf and "Do you want to proceed?" in p.buf
