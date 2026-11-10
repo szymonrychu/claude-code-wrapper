@@ -77,8 +77,9 @@ Scenario schema
                          TUI permission prompt "Do you want to proceed?" / "1. Yes" / "2. No" is
                          drawn at once (footer line "Esc to cancel \u00b7 Tab to amend" unless
                          footer is false) while the PermissionRequest hooks run in a thread
-                         (payload: tool_name, tool_input, permission_mode, agent_id/agent_type;
-                         no tool_use_id). First answer wins: hook behavior allow runs the tool,
+                         (payload: tool_name, tool_input, permission_mode, agent_id/agent_type,
+                         permission_suggestions when the step gives "suggestions"; no
+                         tool_use_id). First answer wins: hook behavior allow runs the tool,
                          deny is the tool_result error with its message (the turn goes on), key
                          "1" or CR (the highlighted "1. Yes") runs the tool, ESC (or "2")
                          writes "[Request interrupted by user for tool use]" and returns to
@@ -1112,7 +1113,7 @@ class Fake:
         )
 
     def permission_prompt(
-        self, name: str, tinput: dict, who: dict, footer: bool
+        self, name: str, tinput: dict, who: dict, footer: bool, suggestions: list | None = None
     ) -> tuple[str, str | None]:
         """Draw the permission prompt and race the PermissionRequest hooks against keys.
         Returns (behavior, message): behavior allow, deny or interrupt; first answer wins."""
@@ -1133,6 +1134,7 @@ class Fake:
                     "tool_input": tinput,
                     "permission_mode": self.hook_permission_mode(),
                     **who,
+                    **({"permission_suggestions": suggestions} if suggestions is not None else {}),
                 },
                 tool=name,
             )
@@ -1200,7 +1202,11 @@ class Fake:
                 deny = r["stderr"] or "denied by hook"
         if deny is None and permission is not None:
             behavior, message = self.permission_prompt(
-                name, tinput, who, bool(permission.get("footer", True))
+                name,
+                tinput,
+                who,
+                bool(permission.get("footer", True)),
+                permission.get("suggestions"),
             )
             if behavior == "interrupt":
                 self.do_interrupt(PERMISSION_INTERRUPT_TEXT)
