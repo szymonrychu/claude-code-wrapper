@@ -10,6 +10,7 @@ from claude_code_wrapper.bootstrap import (
     BootstrapError,
     copy_config_files,
     ensure_config_dir,
+    ensure_skills_dir,
     seed_claude_json,
     write_instructions,
 )
@@ -28,6 +29,23 @@ def test_ensure_config_dir_mode(tmp_path):
     cd = tmp_path / "a" / "cfg"
     ensure_config_dir(cd)
     assert stat.S_IMODE(cd.stat().st_mode) == 0o700
+
+
+def test_ensure_skills_dir_mode(tmp_path):
+    cd = tmp_path / "cfg"
+    ensure_config_dir(cd)
+    assert ensure_skills_dir(cd) == cd / "skills"
+    assert stat.S_IMODE((cd / "skills").stat().st_mode) == 0o700
+
+
+def test_ensure_skills_dir_keeps_existing_skills(tmp_path):
+    cd = tmp_path / "cfg"
+    ensure_config_dir(cd)
+    skill = cd / "skills" / "a" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("body")
+    ensure_skills_dir(cd)
+    assert skill.read_text() == "body"
 
 
 def test_seed_creates_onboarding_and_trust(tmp_path):
