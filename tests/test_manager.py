@@ -83,6 +83,7 @@ STEP_FUNCS = (
     "seed_claude_json",
     "write_instructions",
     "copy_config_files",
+    "ensure_skills_dir",
     "install_plugins",
     "render_settings",
     "build_env",
@@ -157,6 +158,7 @@ async def test_create_runs_steps_in_order_and_is_ready(
     sdir = world.session_dir(sid)
     for rel in ("setup.done", "gitconfig", "config/.claude.json", "config/settings.json"):
         assert (sdir / rel).exists(), rel
+    assert (sdir / "config" / "skills").is_dir()
     assert "Be terse." in (sdir / "config" / "CLAUDE.md").read_text()
     assert (sdir / "config" / "rules" / "rule.md").read_text() == "be nice"
     state = json.loads((sdir / "config" / "plugins" / "fake-state.json").read_text())

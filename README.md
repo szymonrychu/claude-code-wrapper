@@ -4457,7 +4457,8 @@ Override a build arg with `docker compose build --build-arg CLAUDE_CODE_VERSION=
   - `workdir`: per-session workdirs (`/workdir/<name>`), or mounted trees.
   - `sessions`: `/sessions/<session_id>/` holding `session.json` (state, no secret values),
     `config/` (the session `CLAUDE_CONFIG_DIR`: `settings.json`, `.claude.json`, `CLAUDE.md`,
-    plugins, `projects/<project>/<id>.jsonl` transcripts), `events.jsonl` (the event log),
+    plugins, `projects/<project>/<id>.jsonl` transcripts; `skills/` exists from the start so
+    Claude Code live-detects skills added during the session), `events.jsonl` (the event log),
     `turns.jsonl` (turn records), `gitconfig` and `setup.done`.
   - `DELETE /v1/sessions/{id}` keeps all of these files unless `purge=true` (a mounted workdir is never deleted).
   - `mise`: the mise data dir (`MISE_DATA_DIR`) with installed tools; shims are on `PATH`.

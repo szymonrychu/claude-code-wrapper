@@ -20,6 +20,13 @@ def ensure_config_dir(config_dir: str | Path) -> Path:
     return path
 
 
+def ensure_skills_dir(config_dir: str | Path) -> Path:
+    """Create <config_dir>/skills so Claude Code watches it from session start."""
+    path = Path(config_dir) / "skills"
+    path.mkdir(mode=0o700, exist_ok=True)
+    return path
+
+
 def atomic_write(path: Path, data: str, mode: int = 0o600) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
