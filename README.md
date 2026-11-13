@@ -2126,6 +2126,31 @@ event: note_delivered
 data: {"seq":26,"ts":"2026-10-20T09:11:31.000Z","session_id":"ses_3f9a1c0b7d42","type":"note_delivered","data":{"hook":"PostToolUse","keys":["hive_state"],"appended":0,"chars":16}}
 ```
 
+### `shutdown_started`
+
+Emitted for every live session when `shutdown.handoff` is enabled and the service received
+SIGTERM, before the notice turn is submitted (see [`shutdown`](#shutdown)).
+
+`data`: `{}`.
+
+```
+event: shutdown_started
+data: {"seq":41,"ts":"2026-11-13T09:10:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"shutdown_started","data":{}}
+```
+
+### `shutdown_handoff`
+
+Emitted once per session when its handoff ended or its window ran out, before the sessions stop.
+
+`data`: `turn_id` (the handoff turn, `null` when none started), `status` (`completed`, `failed`,
+`running` or `not_started`), `final_text` (the handoff turn's final text, `null` unless
+`completed`).
+
+```
+event: shutdown_handoff
+data: {"seq":44,"ts":"2026-11-13T09:11:20.000Z","session_id":"ses_3f9a1c0b7d42","type":"shutdown_handoff","data":{"turn_id":"turn_0a1b2c3d4e5f","status":"completed","final_text":"State saved."}}
+```
+
 ### `session_closed`
 
 The last event of a session's stream: sent when the session is destroyed or the service stops.

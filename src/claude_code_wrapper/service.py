@@ -27,6 +27,7 @@ from claude_code_wrapper.manager import SessionManager
 from claude_code_wrapper.metrics import Metrics
 from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.session import allowed_env
+from claude_code_wrapper.shutdown_handoff import run_shutdown_handoff
 from claude_code_wrapper.usage_forward import UsageForwarder
 
 log = logging.getLogger(__name__)
@@ -276,6 +277,8 @@ async def _run(
         await asyncio.wait({stopper, *tasks}, return_when=asyncio.FIRST_COMPLETED)
         stopper.cancel()
         log.info("shutting down")
+        if cfg.shutdown.handoff.enabled:
+            await run_shutdown_handoff(manager, cfg.shutdown.handoff)
         manager.started = False
         await manager.shutdown()
         log.info("shutdown complete")
