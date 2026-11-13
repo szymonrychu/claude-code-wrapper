@@ -4034,8 +4034,8 @@ shutdown:
 
 Opt-in graceful handoff on SIGTERM; with `enabled: false` (the default) shutdown is unchanged.
 The routine runs while both HTTP servers and the SSE stream are still up, before
-`limits.shutdown_timeout_seconds` starts, so the pod grace period must cover `notice_seconds` +
-`handoff_seconds` + `limits.shutdown_timeout_seconds`. Per live session: the notice is stored as the
+`limits.shutdown_timeout_seconds` starts, so the pod grace period must satisfy `terminationGracePeriodSeconds` >=
+`notice_seconds` + `handoff_seconds` + `limits.shutdown_timeout_seconds` + a margin. Per live session: the notice is stored as the
 note `shutdown_notice` (when notes are enabled) and submitted as a regular-lane turn; the wrapper
 waits `notice_seconds`, or less once that turn ended and the session stayed idle for
 `idle_proceed_seconds`; then it submits `handoff_prompt` as a regular-lane turn and waits for it to
