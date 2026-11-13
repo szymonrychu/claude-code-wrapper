@@ -275,9 +275,10 @@ async def _run(
             ready.set()
         stopper = asyncio.create_task(stop.wait())
         await asyncio.wait({stopper, *tasks}, return_when=asyncio.FIRST_COMPLETED)
+        stopped = stopper.done()
         stopper.cancel()
         log.info("shutting down")
-        if cfg.shutdown.handoff.enabled:
+        if cfg.shutdown.handoff.enabled and stopped:  # a dead server task skips the routine
             await run_shutdown_handoff(manager, cfg.shutdown.handoff)
         manager.started = False
         await manager.shutdown()

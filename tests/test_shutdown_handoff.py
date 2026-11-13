@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 import httpx
+import pytest
 from conftest import World, wait_until
 from test_shutdown_turn_resume import SLOW, stored
 from test_turn_continuity import of_type, transcript, user_prompts
@@ -216,3 +217,64 @@ async def test_routine_bounded(world: World) -> None:
     assert time.monotonic() - began < 1 + 1 + 2
     [handoff] = of_type(world, sid, "shutdown_handoff")
     assert handoff["status"] == "running" and handoff["final_text"] is None
+
+
+async def test_slow_notice_deliver_shares_the_notice_budget(world: World) -> None:
+    cfg = config(world, NEVER_ENDING, notice_seconds=1, handoff_seconds=1, idle_proceed_seconds=30)
+    m = world.manager(cfg)
+    sid = (await m.create(CreateSessionRequest()))["session_id"]
+    router = m.router(sid)
+    real_deliver = router.deliver
+    calls = 0
+    handoff_at = 0.0
+
+    async def slow_first(*args: Any, **kw: Any) -> Any:
+        nonlocal calls, handoff_at
+        calls += 1
+        if calls == 1:
+            await asyncio.sleep(0.9)
+        else:
+            handoff_at = time.monotonic() - began
+        return await real_deliver(*args, **kw)
+
+    router.deliver = slow_first  # type: ignore[method-assign]
+    began = time.monotonic()
+    await run_shutdown_handoff(m, cfg.shutdown.handoff)
+    assert handoff_at < cfg.shutdown.handoff.notice_seconds + 0.3
+    assert time.monotonic() - began < 2.6
+    assert len(of_type(world, sid, "shutdown_handoff")) == 1
+
+
+async def test_dead_server_task_skips_the_routine(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from claude_code_wrapper import service
+
+    ran: list[bool] = []
+
+    async def spy(*args: Any, **kw: Any) -> None:
+        ran.append(True)
+
+    monkeypatch.setattr(service, "run_shutdown_handoff", spy)
+    real_serve = service._Server.serve
+    count = 0
+
+    async def serve_then_die(self: Any, *args: Any, **kw: Any) -> None:
+        nonlocal count
+        count += 1
+        if count == 2:
+            await asyncio.wait_for(real_serve(self, *args, **kw), 1.0)
+        else:
+            await real_serve(self, *args, **kw)
+
+    monkeypatch.setattr(service._Server, "serve", serve_then_die)
+    cfg = config(world).model_copy()
+    cfg = cfg.model_copy(
+        update={
+            "server": cfg.server.model_copy(
+                update={"host": "127.0.0.1", "port": 0, "internal_port": 0}
+            )
+        }
+    )
+    await asyncio.wait_for(run_service(cfg, ready=asyncio.Event(), stop=asyncio.Event()), 20)
+    assert ran == []

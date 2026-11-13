@@ -43,10 +43,9 @@ def _idle(router: SessionRouter) -> bool:
 
 
 async def _notice_wait(
-    router: SessionRouter, cfg: ShutdownHandoffConfig, clock: Callable[[], float]
+    router: SessionRouter, cfg: ShutdownHandoffConfig, deadline: float, clock: Callable[[], float]
 ) -> None:
-    """Until `notice_seconds` passed, or earlier once the session stayed idle."""
-    deadline = clock() + cfg.notice_seconds
+    """Until `deadline`, or earlier once the session stayed idle."""
     idle_since: float | None = None
     while (now := clock()) < deadline:
         if _idle(router):
@@ -87,20 +86,23 @@ async def _handoff_one(
 ) -> None:
     router = manager.router(session_id)
     router.emit_event("shutdown_started", {})
+    notice_deadline = clock() + cfg.notice_seconds  # one budget for the delivery and the wait
     try:
         if manager.cfg.notes.enabled:
             manager.note_store(session_id).put(cfg.notice_prompt, key=NOTICE_KEY, source="wrapper")
         await asyncio.wait_for(
-            router.deliver(cfg.notice_prompt, lane="regular"), timeout=max(cfg.notice_seconds, 1)
+            router.deliver(cfg.notice_prompt, lane="regular"),
+            timeout=max(notice_deadline - clock(), 0),
         )
     except Exception as exc:  # the notice is best effort; the handoff still runs
         log.warning("session %s: shutdown notice not delivered: %s", session_id, exc)
-    await _notice_wait(router, cfg, clock)
+    await _notice_wait(router, cfg, notice_deadline, clock)
     deadline = clock() + cfg.handoff_seconds
     turn_id, status, final_text = None, "not_started", None
     try:
         delivery = await asyncio.wait_for(
-            router.deliver(cfg.handoff_prompt, lane="regular"), timeout=max(cfg.handoff_seconds, 1)
+            router.deliver(cfg.handoff_prompt, lane="regular"),
+            timeout=max(deadline - clock(), 0),
         )
         turn_id, status, final_text = await _handoff_result(router, delivery, deadline, clock)
     except Exception as exc:
