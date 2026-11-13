@@ -3997,6 +3997,36 @@ Opt-in forwarding of the statusLine rate limits to agents-usage (see
 | `usage.min_interval_seconds` | number | `60` | - | An unchanged value is sent again at most this often (> 0). |
 | `usage.timeout_seconds` | number | `5` | - | Timeout of one POST in seconds (> 0, at most 30). |
 
+### `shutdown`
+
+```yaml
+shutdown:
+  handoff:
+    enabled: true
+    notice_prompt: "This pod is about to be replaced. Finish what you can and be ready to hand over."
+    handoff_prompt: "Write down your state for your successor now."
+```
+
+Opt-in graceful handoff on SIGTERM; with `enabled: false` (the default) shutdown is unchanged.
+The routine runs while both HTTP servers and the SSE stream are still up, before
+`limits.shutdown_timeout_seconds` starts, so the pod grace period must cover `notice_seconds` +
+`handoff_seconds` + `limits.shutdown_timeout_seconds`. Per live session: the notice is stored as the
+note `shutdown_notice` (when notes are enabled) and submitted as a regular-lane turn; the wrapper
+waits `notice_seconds`, or less once that turn ended and the session stayed idle for
+`idle_proceed_seconds`; then it submits `handoff_prompt` as a regular-lane turn and waits for it to
+end, at most `handoff_seconds`. A running turn is never interrupted. The event stream carries
+`shutdown_started` (data `{}`) and `shutdown_handoff` (data `{"turn_id", "status", "final_text"}`,
+status `completed`, `failed`, `running` or `not_started`, `final_text` only when `completed`).
+
+| Key | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `shutdown.handoff.enabled` | boolean | `false` | - | Run the notice and handoff routine on SIGTERM. When true, both prompts must be non-blank. |
+| `shutdown.handoff.notice_seconds` | number | `120` | - | Longest wait after the notice turn is submitted (>= 0). |
+| `shutdown.handoff.handoff_seconds` | number | `180` | - | Longest wait for the handoff turn to end (>= 0). |
+| `shutdown.handoff.idle_proceed_seconds` | number | `60` | - | The notice wait ends early once the notice turn ended and the session stayed idle this long (>= 0). |
+| `shutdown.handoff.notice_prompt` | string | `""` | - | Text of the notice turn. Required non-blank when enabled. |
+| `shutdown.handoff.handoff_prompt` | string | `""` | - | Text of the handoff turn. Required non-blank when enabled. |
+
 ## Claude Code environment
 
 `claude.env` is a typed model of the environment variables Claude Code reads. Each variable is one
