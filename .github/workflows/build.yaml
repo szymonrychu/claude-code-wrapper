@@ -36,7 +36,7 @@ jobs:
   unit:
     needs: pre-commit
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4

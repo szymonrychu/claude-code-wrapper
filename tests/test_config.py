@@ -500,3 +500,42 @@ def test_commands_override_hold():
     eff = effective_commands(CommandsConfig(), CommandsOverride(permission_hold_seconds=60))
     assert eff.permission_hold_seconds == 60
     assert effective_commands(CommandsConfig(), CommandsOverride()).permission_hold_seconds == 1800
+
+
+def test_shutdown_handoff_defaults(tmp_path):
+    cfg = load_config(write(tmp_path, ""))
+    handoff = cfg.shutdown.handoff
+    assert handoff.enabled is False
+    assert handoff.notice_seconds == 120
+    assert handoff.handoff_seconds == 180
+    assert handoff.idle_proceed_seconds == 60
+    assert handoff.notice_prompt == "" and handoff.handoff_prompt == ""
+
+
+@pytest.mark.parametrize(
+    ("block", "field"),
+    [
+        ('handoff_prompt: "go"', "notice_prompt"),
+        ('notice_prompt: "warn"', "handoff_prompt"),
+        ('notice_prompt: "  "\n    handoff_prompt: "go"', "notice_prompt"),
+    ],
+)
+def test_shutdown_handoff_enabled_requires_prompts(tmp_path, block, field):
+    text = f"shutdown:\n  handoff:\n    enabled: true\n    {block}\n"
+    assert f"shutdown.handoff.{field}" in err(tmp_path, text)
+
+
+def test_shutdown_handoff_enabled_with_prompts_ok(tmp_path):
+    block = '    notice_prompt: "warn"\n    handoff_prompt: "go"\n'
+    text = f"shutdown:\n  handoff:\n    enabled: true\n{block}"
+    assert load_config(write(tmp_path, text)).shutdown.handoff.enabled is True
+
+
+def test_shutdown_handoff_rejects_unknown_key(tmp_path):
+    text = "shutdown:\n  handoff:\n    enabled: false\n    extend_seconds: 1\n"
+    assert "shutdown.handoff.extend_seconds" in err(tmp_path, text)
+
+
+@pytest.mark.parametrize("key", ["notice_seconds", "handoff_seconds", "idle_proceed_seconds"])
+def test_shutdown_handoff_negative_seconds_rejected(tmp_path, key):
+    assert f"shutdown.handoff.{key}" in err(tmp_path, f"shutdown:\n  handoff:\n    {key}: -1\n")

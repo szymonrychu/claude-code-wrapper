@@ -932,6 +932,27 @@ class NotesConfig(_Model):
     throttle_tool_results: int = Field(10, ge=0)
 
 
+class ShutdownHandoffConfig(_Model):
+    enabled: bool = False
+    notice_seconds: float = Field(120, ge=0)
+    handoff_seconds: float = Field(180, ge=0)
+    idle_proceed_seconds: float = Field(60, ge=0)
+    notice_prompt: str = ""
+    handoff_prompt: str = ""
+
+    @model_validator(mode="after")
+    def _prompts_when_enabled(self) -> ShutdownHandoffConfig:
+        if self.enabled:
+            for name in ("notice_prompt", "handoff_prompt"):
+                if not getattr(self, name).strip():
+                    raise _at(name, "must not be blank when enabled")
+        return self
+
+
+class ShutdownConfig(_Model):
+    handoff: ShutdownHandoffConfig = Field(default_factory=ShutdownHandoffConfig)
+
+
 class Config(_Model):
     server: ServerConfig = Field(default_factory=ServerConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
@@ -946,6 +967,7 @@ class Config(_Model):
     peers: PeersConfig = Field(default_factory=PeersConfig)
     notes: NotesConfig = Field(default_factory=NotesConfig)
     usage: UsageConfig = Field(default_factory=UsageConfig)
+    shutdown: ShutdownConfig = Field(default_factory=ShutdownConfig)
 
     @model_validator(mode="after")
     def _peer_token_distinct(self) -> Config:
