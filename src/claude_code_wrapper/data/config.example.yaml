@@ -17,6 +17,9 @@ paths:
   # (e.g. under $HOME) or edit the paths.
   workdir_root: ${CCW_WORKDIR_ROOT:-/workdir}     # per-session workdirs live here (volume)
   sessions_root: ${CCW_SESSIONS_ROOT:-/sessions}  # per-session state and CLAUDE_CONFIG_DIR (volume)
+  # Managed-settings file ccw writes at start (PreToolUse/PermissionRequest relay, managed mods
+  # only); its directory must be dedicated. Unwritable: the relay stays in settings.json.
+  managed_settings: /etc/claude-code/managed-settings.json
 
 claude:
   binary: claude             # claude executable

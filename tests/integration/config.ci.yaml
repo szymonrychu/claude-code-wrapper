@@ -27,6 +27,7 @@ claude:
   env:                       # no real credentials in CI; the fake claude needs only its scenario
     extra:
       FAKE_CLAUDE_SCENARIO: /opt/ci/scenario.json
+      FAKE_CLAUDE_MANAGED_SETTINGS: /etc/claude-code/managed-settings.json  # the fake reads the file ccw writes
     # claude_code_disable_nonessential_traffic: true
     # extra:                  # any other env var, uppercase names only
     #   MY_VAR: value

@@ -56,8 +56,8 @@ RUN arch="$(dpkg --print-architecture)" \
 # uid/gid 1000: claude refuses bypassPermissions as root.
 RUN groupadd --gid 1000 agent \
  && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/agent --shell /bin/bash agent \
- && mkdir -p /workdir /sessions /opt/mise /etc/ccw \
- && chown -R agent:agent /workdir /sessions /opt/mise /etc/ccw /home/agent
+ && mkdir -p /workdir /sessions /opt/mise /etc/ccw /etc/claude-code \
+ && chown -R agent:agent /workdir /sessions /opt/mise /etc/ccw /etc/claude-code /home/agent
 
 # Install the service from the wheel: ccw and ccw-hook land on PATH, no source tree or .venv.
 RUN --mount=type=bind,from=builder,source=/dist,target=/tmp/dist \

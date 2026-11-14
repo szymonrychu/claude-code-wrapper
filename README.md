@@ -3288,6 +3288,7 @@ paths:
 |---|---|---|---|---|
 | `paths.workdir_root` | string | `"/workdir"` | - | Absolute directory holding per-session workdirs (the `workdir` volume). |
 | `paths.sessions_root` | string | `"/sessions"` | - | Absolute directory holding per-session state and `CLAUDE_CONFIG_DIR` (the `sessions` volume). |
+| `paths.managed_settings` | string | `"/etc/claude-code/managed-settings.json"` | - | Absolute path of the Claude Code managed-settings file ccw writes at start (mode 0644): the PreToolUse and PermissionRequest relay (`onFailure: block`), managed mods only, agent view and Code Mode off, Edit/Write deny rules on its directory. The parent directory must be dedicated to it (not `/`, `/etc` or `/tmp`; install refuses a directory holding other entries). When it cannot be written or read back with the relay, ccw logs a warning, `/readyz` reports `managed_settings: "fallback"` and every session's settings.json keeps the relay for all events. `ccw config managed-settings` prints the rendered file. |
 
 ### `claude`
 

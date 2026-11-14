@@ -112,7 +112,11 @@ def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> Fas
     async def readyz() -> dict[str, str]:
         if not manager.started:
             raise ApiError(503, "not_ready", "service is not ready")
-        return {"status": "ready"}
+        managed = manager.managed_settings
+        return {
+            "status": "ready",
+            "managed_settings": managed.status().state if managed is not None else "fallback",
+        }
 
     if metrics is not None:
         app.add_middleware(_HttpMetrics, metrics=metrics)

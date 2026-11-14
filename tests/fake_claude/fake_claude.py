@@ -18,6 +18,10 @@ Environment
     CLAUDE_CODE_PROJECT_DIR_NAME transcript project dir name (default: cwd with every
                                  non-alphanumeric char replaced by '-')
     FAKE_CLAUDE_SCENARIO         path to a scenario JSON file
+    FAKE_CLAUDE_MANAGED_SETTINGS path of the managed-settings file (claude's top tier, read at
+                                 boot like settings.json; missing or unset: none). Its hooks
+                                 run before the settings.json hooks of the same event; a
+                                 command hook identical in both runs once (claude dedupes).
     FAKE_CLAUDE_LOG              when set, one JSON line per invocation:
                                  {argv, cwd, env: {CLAUDE_CONFIG_DIR,
                                  CLAUDE_CODE_PROJECT_DIR_NAME, CCW_SESSION_ID,
@@ -52,7 +56,12 @@ Scenario schema
   becomes the named group `name` (a `{{name}}` without such a group stays as is). Steps:
     {"text": s}  {"thinking": s}
     {"tool": name, "input": {...}, "result": s, "fail": false,
-     "agent": {"id": A, "type": T}}   with "agent", PreToolUse and PostToolUse(Failure)
+     "agent": {"id": A, "type": T}, "mod": "answer"}
+                         "mod": "answer" models a managed mod answering PreToolUse for
+                         this call: the managed-settings PreToolUse hooks still run first,
+                         the settings.json PreToolUse hooks are skipped (claude 2.1.323
+                         mods run after managed hooks and before user hooks)
+                         with "agent", PreToolUse and PostToolUse(Failure)
                          payloads carry agent_id and agent_type, and the tool_use and
                          tool_result lines go to subagents/agent-<A>.jsonl (isSidechain true)
     {"mcp": {"server": "ccw", "tool": "command", "arguments": {...},
@@ -111,6 +120,9 @@ Scenario schema
   or exits 2 (reason = stderr) makes the fake write R as a user line, run the turn's
   on_block steps and fire Stop again with stop_hook_active true. At most 8 consecutive
   blocks (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP overrides); past the cap the turn ends as allowed.
+    {"statusline": {...}} runs settings.json statusLine.command with this JSON on stdin and
+                         draws its stdout (skipped when the managed file sets
+                         allowManagedHooksOnly or disableAllHooks, as claude does)
     {"auto_compact": {"pre_tokens": N}}  inside a turn (models Claude Code's own compaction):
                          PreCompact then the boundary (trigger "auto") and summary lines, then
                          PostCompact (trigger "auto"); the following steps continue
@@ -460,6 +472,7 @@ class Fake:
         self.proj_dir = proj
         self.transcript = os.path.join(proj, f"{self.session_id}.jsonl")
         self.settings = self._load_settings()
+        self.managed = self._load_managed()
         self.parent = None
         self.last_text = ""
         self.background: list[tuple[float, str, list]] = []
@@ -501,6 +514,18 @@ class Fake:
                 return json.load(f)
         except (FileNotFoundError, ValueError):
             return {}
+
+    @staticmethod
+    def _load_managed() -> dict:
+        path = os.environ.get("FAKE_CLAUDE_MANAGED_SETTINGS")
+        if not path:
+            return {}
+        try:
+            with open(path, encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return doc if isinstance(doc, dict) else {}
 
     # ---- terminal io
     def out(self, text: str) -> None:
@@ -565,10 +590,16 @@ class Fake:
 
     # ---- hooks
     def run_hooks(
-        self, event: str, extra: dict, tool: str | None = None, match: str | None = None
+        self,
+        event: str,
+        extra: dict,
+        tool: str | None = None,
+        match: str | None = None,
+        managed_only: bool = False,
     ) -> list[dict]:
-        """Run the event's hook commands; `match` (the tool name, or the SessionStart source)
-        filters groups by matcher."""
+        """Run the event's hook commands, managed-settings groups first, then settings.json
+        (not with `managed_only`); an identical command runs once. `match` (the tool name, or
+        the SessionStart source) filters groups by matcher."""
         if match is None:
             match = tool
         payload = {
@@ -580,13 +611,17 @@ class Fake:
             **extra,
         }
         results = []
-        for group in self.settings.get("hooks", {}).get(event, []):
+        sources = [self.managed] if managed_only else [self.managed, self.settings]
+        groups = [g for doc in sources for g in (doc.get("hooks") or {}).get(event, [])]
+        seen: set[str] = set()
+        for group in groups:
             matcher = group.get("matcher") or ""
             if match is not None and matcher not in ("", "*") and not re.fullmatch(matcher, match):
                 continue
             for h in group.get("hooks", []):
-                if h.get("type", "command") != "command":
+                if h.get("type", "command") != "command" or h.get("command") in seen:
                     continue
+                seen.add(h.get("command"))
                 env = {**os.environ, "CLAUDE_PROJECT_DIR": self.cwd}
                 try:
                     p = subprocess.run(
@@ -1079,7 +1114,33 @@ class Fake:
                 bg.append(step["background"])
             elif "auto_compact" in step:
                 self.auto_compact_step(step["auto_compact"] or {})
+            elif "statusline" in step:
+                self.statusline_step(step["statusline"])
         return True
+
+    def statusline_step(self, payload: dict) -> None:
+        """Run settings.json `statusLine.command` with `payload` on stdin, its stdout drawn.
+        Skipped, as claude does, when the managed file sets allowManagedHooksOnly or
+        disableAllHooks (N-249)."""
+        if self.managed.get("allowManagedHooksOnly") or self.managed.get("disableAllHooks"):
+            return
+        command = (self.settings.get("statusLine") or {}).get("command")
+        if not isinstance(command, str):
+            return
+        env = {**os.environ, "CLAUDE_PROJECT_DIR": self.cwd}
+        try:
+            p = subprocess.run(
+                ["sh", "-c", command],
+                input=json.dumps(payload).encode(),
+                capture_output=True,
+                env=env,
+                cwd=self.cwd,
+                timeout=30,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return
+        self.out(p.stdout.decode(errors="replace"))
 
     def exit_once(self, code: int, key: str) -> None:
         flag = os.path.join(config_dir(), f"fake-exit-once-{code}-{zlib.crc32(key.encode()):08x}")
@@ -1140,6 +1201,7 @@ class Fake:
             tokens,
             lambda: (step.get("result", ""), bool(step.get("fail"))),
             step.get("permission"),
+            mod_answers=step.get("mod") == "answer",
         )
 
     def hook_permission_mode(self) -> str:
@@ -1212,9 +1274,11 @@ class Fake:
         tokens: int,
         execute,
         permission: dict | None = None,
+        mod_answers: bool = False,
     ) -> bool:
-        """tool_use line, PreToolUse (a deny skips execute), optional permission prompt,
-        tool_result line, Post hooks. False when the turn ended (prompt answered by ESC)."""
+        """tool_use line, PreToolUse (a deny skips execute; managed hooks only when a mod
+        answers), optional permission prompt, tool_result line, Post hooks. False when the
+        turn ended (prompt answered by ESC)."""
         tid = "toolu_" + uuid.uuid4().hex[:24]
         who: dict = {}
         path, side = None, False
@@ -1231,6 +1295,7 @@ class Fake:
             "PreToolUse",
             {"tool_name": name, "tool_input": tinput, "tool_use_id": tid, **who},
             tool=name,
+            managed_only=mod_answers,
         )
         self.context_from(pre)
         deny = None

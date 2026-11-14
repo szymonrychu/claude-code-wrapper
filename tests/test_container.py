@@ -169,3 +169,12 @@ def test_compose_requires_token_and_binds_loopback():
     svc = COMPOSE["services"]["ccw"]
     assert svc["environment"]["CCW_AUTH_TOKEN"] == "${CCW_AUTH_TOKEN:?set CCW_AUTH_TOKEN}"
     assert all(p.startswith("127.0.0.1:") for p in svc["ports"])
+
+
+def test_dockerfile_managed_settings_dir():
+    """/etc/claude-code is created and owned by agent; ccw writes the file at start."""
+    mkdir = re.search(r"mkdir -p ([^\n&]*)", DOCKERFILE)
+    chown = re.search(r"chown -R agent:agent ([^\n&]*)", DOCKERFILE)
+    assert mkdir and "/etc/claude-code" in mkdir.group(1).split()
+    assert chown and "/etc/claude-code" in chown.group(1).split()
+    assert "managed-settings.json" not in DOCKERFILE

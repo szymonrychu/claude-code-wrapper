@@ -19,6 +19,7 @@ class StubManager:
     def __init__(self, started: bool = True) -> None:
         self.started = started
         self.redactor = Redactor()
+        self.managed_settings = None
 
     def list(self, state=None):
         return []
@@ -52,7 +53,7 @@ def test_right_token_passes() -> None:
 def test_health_unauthenticated() -> None:
     c = client()
     assert c.get("/healthz").json() == {"status": "ok"}
-    assert c.get("/readyz").json() == {"status": "ready"}
+    assert c.get("/readyz").json() == {"status": "ready", "managed_settings": "fallback"}
 
 
 def test_readyz_503_until_started() -> None:

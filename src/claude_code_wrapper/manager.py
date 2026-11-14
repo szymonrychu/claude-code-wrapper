@@ -64,6 +64,7 @@ from .hooks import (
     gate_fail_mode,
     instance_dispatcher,
 )
+from .managed_settings import ManagedSettings
 from .metrics import Metrics
 from .notes import NoteStore
 from .peer_service import PeerService
@@ -313,8 +314,11 @@ class SessionManager:
         metrics: Metrics | None = None,
         on_exit_request: Callable[[int], None] | None = None,
         usage: UsageForwarder | None = None,
+        managed_settings: ManagedSettings | None = None,
     ) -> None:
         self.metrics = metrics
+        #: The managed-settings file owner; None or not active = the relay stays in settings.json.
+        self.managed_settings = managed_settings
         #: Takes every session's statusLine rate limits (`usage.url` set), else None.
         self.usage = usage
         self._on_exit_request = on_exit_request
@@ -654,6 +658,7 @@ class SessionManager:
             ccw_mcp,
             peers,
             self._commands_for(ctx.meta).permission_hold_seconds,
+            self.managed_settings is not None and self.managed_settings.active,
         )
 
     async def _launch(self, ctx: _Active, *, resume: bool) -> None:

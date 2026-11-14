@@ -132,11 +132,26 @@ class ServerConfig(_Model):
         return value
 
 
+#: Parents that can never be the dedicated managed-settings dir (ruling R1).
+SHARED_DIRS = ("/", "/etc", "/tmp")
+
+
 class PathsConfig(_Model):
     workdir_root: str = "/workdir"
     sessions_root: str = "/sessions"
+    #: The managed-settings file ccw writes; its parent dir is dedicated to it.
+    managed_settings: str = "/etc/claude-code/managed-settings.json"
 
-    _abs = field_validator("workdir_root", "sessions_root")(_absolute)
+    _abs = field_validator("workdir_root", "sessions_root", "managed_settings")(_absolute)
+
+    @field_validator("managed_settings")
+    @classmethod
+    def _dedicated(cls, value: str) -> str:
+        if str(Path(value).parent) in SHARED_DIRS:
+            raise ValueError(
+                f"managed_settings must sit in a dedicated directory, not in {Path(value).parent}"
+            )
+        return value
 
 
 class BootDialog(_Model):

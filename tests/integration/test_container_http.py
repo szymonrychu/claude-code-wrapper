@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -14,6 +17,8 @@ from .conftest import AUTH_TOKEN, CALLBACK_SECRET
 pytestmark = pytest.mark.integration
 
 DEADLINE = 60.0
+ROOT = Path(__file__).resolve().parents[2]
+MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json"
 PROMPT = "run the ci lifecycle"
 
 
@@ -94,3 +99,26 @@ def test_full_session_lifecycle(api: httpx.Client) -> None:
     assert sid not in [
         s["session_id"] for s in api.get("/v1/sessions?state=ready").json()["sessions"]
     ]
+
+
+def test_managed_settings_file_in_image(anon: httpx.Client) -> None:
+    """ccw wrote /etc/claude-code/managed-settings.json at start: 0644, owned by agent."""
+    compose = [
+        "docker",
+        "compose",
+        "-p",
+        os.environ.get("CCW_COMPOSE_PROJECT", "ccw-it"),
+        "-f",
+        "docker-compose.yml",
+        "-f",
+        "docker-compose.ci.yml",
+    ]
+    out = subprocess.run(
+        [*compose, "exec", "-T", "ccw", "stat", "-c", "%a %U %G", MANAGED_SETTINGS],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout.strip() == "644 agent agent"
+    assert anon.get("/readyz").json() == {"status": "ready", "managed_settings": "active"}

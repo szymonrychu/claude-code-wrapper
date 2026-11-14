@@ -69,6 +69,53 @@ def permission_timeouts(hold_seconds: float) -> PermissionTimeouts:
     )
 
 
+#: The events whose relay lives in the managed-settings file when it is active (D1, D3); the
+#: other `CLAUDE_HOOK_EVENTS` stay in the session's settings.json.
+MANAGED_RELAY_EVENTS: tuple[str, ...] = ("PreToolUse", "PermissionRequest")
+#: The managed PermissionRequest hook timeout: one file serves every session, so it outlasts
+#: the longest hold a preset may set (`permission_hold_seconds` le 86400).
+PERMISSION_HOOK_CEILING: float = permission_timeouts(86400).hook_timeout
+#: Built-in security plugin whose `allowManagedModsOnly` option keeps unmanaged mods unloaded.
+SEC_PLUGIN = "cc-plugin-sec-default@builtin"
+#: Claude Code 2.1.295+: a command hook that cannot start, times out or exits with an
+#: unexpected code blocks the guarded action instead of letting it run (CHANGELOG 2.1.295).
+ON_FAILURE_BLOCK = "block"
+
+
+def relay_group(
+    event: str, relay: str, timeout: float, on_failure: str | None = None
+) -> dict[str, Any]:
+    """One relay hook group for `event`, matcher from `RELAY_MATCHERS`."""
+    hook: dict[str, Any] = {"type": "command", "command": f"{relay} {event}", "timeout": timeout}
+    if on_failure is not None:
+        hook["onFailure"] = on_failure
+    return {"matcher": RELAY_MATCHERS.get(event, ""), "hooks": [hook]}
+
+
+def managed_deny_rules(managed_dir: Path) -> list[str]:
+    """Edit/Write deny rules on the managed dir (`//` prefix = absolute path)."""
+    return [f"Edit(/{managed_dir}/**)", f"Write(/{managed_dir}/**)"]
+
+
+def render_managed_settings(cfg: Config, relay: str, managed_dir: Path) -> dict[str, Any]:
+    """The managed-settings baseline (spec D1): the PreToolUse and PermissionRequest relay,
+    managed mods only, agent view and Code Mode off, deny rules on the managed dir."""
+    timeouts = {
+        "PreToolUse": relay_timeouts(cfg).hook_timeout,
+        "PermissionRequest": PERMISSION_HOOK_CEILING,
+    }
+    return {
+        "hooks": {
+            event: [relay_group(event, relay, timeouts[event], ON_FAILURE_BLOCK)]
+            for event in MANAGED_RELAY_EVENTS
+        },
+        "pluginConfigs": {SEC_PLUGIN: {"options": {"allowManagedModsOnly": True}}},
+        "disableAgentView": True,
+        "permissions": {"deny": managed_deny_rules(managed_dir)},
+        "env": {"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "0", "CLAUDE_CODE_DISABLE_AGENT_VIEW": "1"},
+    }
+
+
 def _installed_script(script: str, module: str) -> str:
     """Absolute path of an installed console script, never repo-relative.
 
@@ -164,7 +211,11 @@ def render_settings(
     ccw_mcp: bool = False,
     peers: bool = False,
     permission_hold_seconds: float | None = None,
+    managed_relay: bool = False,
 ) -> dict[str, Any]:
+    """Render settings.json. `managed_relay`: the managed-settings file carries the
+    `MANAGED_RELAY_EVENTS` relay, so settings.json relays only the other events (and still
+    strips stale relay entries of those two)."""
     path = Path(config_dir) / "settings.json"
     relay = relay_command or default_relay_command()
     doc = _load(path)
@@ -183,11 +234,14 @@ def render_settings(
             timeout = permission_timeouts(hold).hook_timeout
         else:
             timeout = timeouts.hook_timeout
-        group = {
-            "matcher": RELAY_MATCHERS.get(event, ""),
-            "hooks": [{"type": "command", "command": f"{relay} {event}", "timeout": timeout}],
-        }
-        hooks[event] = [group, *_without_relay(hooks.get(event), relay)]
+        kept = _without_relay(hooks.get(event), relay)
+        if managed_relay and event in MANAGED_RELAY_EVENTS:
+            if kept:
+                hooks[event] = kept
+            else:
+                hooks.pop(event, None)
+            continue
+        hooks[event] = [relay_group(event, relay, timeout), *kept]
     doc["hooks"] = hooks
 
     ccw_allow = (CCW_MCP_ALLOW, *PEERS_ALLOW)

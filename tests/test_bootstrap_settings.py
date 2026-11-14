@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from claude_code_wrapper.bootstrap.settings import (
+    MANAGED_RELAY_EVENTS,
     RELAY_MATCHERS,
     PermissionTimeouts,
     RelayTimeouts,
@@ -25,8 +26,8 @@ def _render(tmp_path, cfg=None, **kw):
     return render_settings(tmp_path, cfg or Config(), relay_command=RELAY, **kw)
 
 
-def test_relay_hooks_for_every_event(tmp_path):
-    doc = _render(tmp_path)
+def test_relay_groups_without_managed(tmp_path):
+    doc = _render(tmp_path, managed_relay=False)
     for event in CLAUDE_HOOK_EVENTS:
         (group,) = doc["hooks"][event]
         assert group["matcher"] == RELAY_MATCHERS.get(event, "")
@@ -36,6 +37,38 @@ def test_relay_hooks_for_every_event(tmp_path):
         expected = {"UserPromptSubmit": 15, "PermissionRequest": 1830}.get(event, 30)
         assert hook["timeout"] == expected
     assert json.loads((tmp_path / "settings.json").read_text()) == doc
+
+
+def _is_relay_group(group) -> bool:
+    return any(h.get("command", "").startswith(RELAY + " ") for h in group.get("hooks", []))
+
+
+def test_relay_groups_with_managed(tmp_path):
+    doc = _render(tmp_path, managed_relay=True)
+    for event in MANAGED_RELAY_EVENTS:
+        assert not any(_is_relay_group(g) for g in doc["hooks"].get(event, []))
+    others = [e for e in CLAUDE_HOOK_EVENTS if e not in MANAGED_RELAY_EVENTS]
+    assert len(others) == 9
+    for event in others:
+        assert doc["hooks"][event][0]["hooks"][0]["command"] == f"{RELAY} {event}"
+
+
+def test_managed_strips_stale_relay(tmp_path):
+    _render(tmp_path)  # a former fallback render left the relay for every event
+    stale = json.loads((tmp_path / "settings.json").read_text())
+    assert _is_relay_group(stale["hooks"]["PreToolUse"][0])
+    doc = _render(tmp_path, managed_relay=True)
+    assert "PreToolUse" not in doc["hooks"]
+    assert "PermissionRequest" not in doc["hooks"]
+
+
+def test_managed_keeps_overlay_pretooluse_hook(tmp_path):
+    user = {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/bin/audit"}]}
+    cfg = _cfg(claude={"settings": {"hooks": {"PreToolUse": [user]}}})
+    doc = _render(tmp_path, cfg, managed_relay=True)
+    assert doc["hooks"]["PreToolUse"] == [user]
+    again = _render(tmp_path, cfg, managed_relay=True)
+    assert again["hooks"]["PreToolUse"] == [user]
 
 
 def test_relay_timeouts_helper():
