@@ -251,7 +251,8 @@ changed overlay reaches running sessions after they restart.
 
 **Tamper check.** The agent runs as uid 1000 and the file sits (mode 0644) in a directory
 the agent owns, so the deny rules alone do not stop a Bash command from rewriting it. Before
-each `PreToolUse` and `PermissionRequest` relay call and before each `turn_started`, ccw compares
+each `PreToolUse` and `PermissionRequest` relay call, before each `turn_started` and before a
+session boots (create, resume, restart), ccw compares
 the directory with what it wrote and restores it. A change made by a tool call is therefore
 live for at most that one call: it is undone before the next gated call or turn. See
 [`managed_settings_restored`](#managed_settings_restored).
@@ -2263,11 +2264,12 @@ data: {"seq":23,"ts":"2026-10-20T09:10:00.000Z","session_id":"ses_3f9a1c0b7d42",
 
 Sent to every live session when the tamper check found the managed-settings directory changed
 and put it back (or failed to). The check runs before each `PreToolUse` and `PermissionRequest`
-relay call and before each `turn_started`; it compares the file with what the service wrote
+relay call, before each `turn_started` and before a session boots (so claude never reads a
+tampered file at startup); it compares the file with what the service wrote
 (missing, unreadable, not a regular file, mode other than 0644, content hash, or any entry beside the file
 and the temporary file) and rewrites it. Only hashes are reported, never content.
 
-`data`: `trigger` (`relay` or `turn`), `kind` (the first of `missing`, `unreadable`, `not_regular`,
+`data`: `trigger` (`relay`, `turn` or `boot`), `kind` (the first of `missing`, `unreadable`, `not_regular`,
 `mode`, `modified`, `extra_entry`), `expected_sha256`, `found_sha256` (`null` when absent or not a
 regular file), `restored` (`false` leaves the managed state `degraded`: new sessions then keep
 the full relay in `settings.json`, and the next check tries again; the `false` event is sent

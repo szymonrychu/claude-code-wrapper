@@ -394,3 +394,53 @@ def test_persistent_restore_failure_emits_once(ms, monkeypatch):
     monkeypatch.undo()
     assert ms.check("turn").restored is True
     assert [d.restored for d in seen] == [False, True]
+
+
+# ---------------------------------------------------------------- boot check (final review I-2)
+
+
+async def test_session_boot_restores_a_tampered_file_before_claude_reads_it(world, monkeypatch):
+    m, ms = await _manager(world)
+    first = (await m.create({}))["session_id"]
+    _tamper_modified(ms)
+    seen: list[bytes] = []
+    real = ms_mod.ManagedSettings.check
+
+    def spy(self, trigger):
+        drift = real(self, trigger)
+        seen.append(self.path.read_bytes())
+        return drift
+
+    monkeypatch.setattr(ms_mod.ManagedSettings, "check", spy)
+    await m.create({})
+    (ev,) = [e for e in _restored(world, first) if e["data"]["trigger"] == "boot"]
+    assert ev["data"]["kind"] == "modified" and ev["data"]["restored"] is True
+    assert seen[0] == ms._expected
+    assert ms.path.read_bytes() == ms._expected
+
+
+async def test_boot_with_a_degraded_file_renders_the_full_relay(world, monkeypatch):
+    m, ms = await _manager(world)
+    _tamper_modified(ms)
+
+    def boom(path, data):
+        raise OSError(13, "denied")
+
+    monkeypatch.setattr(ms_mod, "write_managed", boom)
+    sid = (await m.create({}))["session_id"]
+    assert not ms.active
+    doc = json.loads((world.session_dir(sid) / "config" / "settings.json").read_text())
+    assert "PreToolUse" in doc["hooks"]
+
+
+def test_install_clears_claude_names_left_by_an_earlier_run(tmp_path):
+    d = tmp_path / "claude-code"
+    d.mkdir()
+    (d / "managed-settings.d").mkdir()
+    (d / "managed-settings.d" / "10-x.json").write_text('{"disableAllHooks": true}')
+    (d / "managed-mcp.json").write_text("{}")
+    ms = ManagedSettings(
+        d / "managed-settings.json", render_managed_settings(Config(), RELAY, d), RELAY
+    )
+    assert ms.install().state == "active"
+    assert sorted(os.listdir(d)) == ["managed-settings.json"]

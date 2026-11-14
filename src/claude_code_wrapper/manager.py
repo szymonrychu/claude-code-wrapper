@@ -667,6 +667,8 @@ class SessionManager:
         )
         await self._step(ctx, "ensure_skills_dir", ensure_skills_dir, ctx.config_dir)
         await self._step(ctx, "install_plugins", self._install_plugins, ctx)
+        # A tamper made while no session ran must be undone before claude reads the file.
+        self.check_managed_settings("boot")
         await self._step(
             ctx,
             "render_settings",

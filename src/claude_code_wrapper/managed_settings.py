@@ -376,7 +376,7 @@ class ManagedSettings:
             return "extra_entry", found
         return None
 
-    def check(self, trigger: Literal["relay", "turn"]) -> Drift | None:
+    def check(self, trigger: Literal["relay", "turn", "boot"]) -> Drift | None:
         """Compare the dir with what ccw wrote; restore on any drift (spec D4). Reports the
         first kind found and fixes all. A restore that fails leaves `degraded`, re-tried on
         every call; `on_drift` hears of it only on the transition into degraded (not while it
@@ -446,6 +446,9 @@ class ManagedSettings:
                     f"managed dir {self.path.parent} is not dedicated "
                     f"({len(foreign)} other entries)"
                 )
+            for name in CLAUDE_MANAGED_NAMES:
+                if os.path.lexists(self.path.parent / name):
+                    self._remove(self.path.parent / name)
             write_managed(self.path, self._expected)
             raw = self.path.read_bytes()
         except OSError as exc:
