@@ -110,3 +110,30 @@ async def test_escape_dialog_refuses_changed_since_and_usage_wait(harness: Harne
     assert since is not None
     assert await session.escape_dialog(since) is False
     assert keys(harness) == []
+
+
+#: claude 2.1.323 screens, from the live probe (workbench .scratchpad/wrapper-managed-settings/
+#: t69-probe/bypass.screens.txt and ask.screens.txt; MEMORY 2026-11-14, T-69).
+PERMISSION_2_1_323 = (
+    " Bash command\n probe\n echo probe1\n"
+    " Permission rule Bash(echo probe*) requires confirmation for this command.\n"
+    " /permissions to update rules\n Do you want to proceed?\n"
+    " \u276f 1. Yes\n   2. No\n Esc to cancel \u00b7 Tab to amend"
+)
+ASK_USER_QUESTION_2_1_323 = (
+    " \u2610 Colour\nWhich probe colour?\n"
+    "\u276f 1. Red\n     red probe\n  2. Blue\n     blue probe\n"
+    "  3. Type something.\n  4. Chat about this\n"
+    "Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 Esc to cancel"
+)
+
+
+async def test_permission_footer_2_1_323(harness: Harness) -> None:  # noqa: F811
+    session = await open_dialog(harness, PERMISSION_2_1_323)
+    assert session.dialog_kind() == "permission"
+
+
+async def test_ask_user_question_footer_2_1_323(harness: Harness) -> None:  # noqa: F811
+    # No permission prompt text next to it: a plain dialog, dismissable like any footer.
+    session = await open_dialog(harness, ASK_USER_QUESTION_2_1_323)
+    assert session.dialog_kind() == "dialog"

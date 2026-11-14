@@ -183,8 +183,10 @@ def test_boot_banner_has_ansi_and_dialog(spawn):
     p = spawn()
     p.wait_for("Bypass Permissions mode")
     assert "\x1b[" in p.buf
-    assert "1. No, exit" in p.buf
-    assert "2. Yes, I accept" in p.buf
+    # claude 2.1.323 draws the options without indexes (t69-probe/bypass-dialog)
+    assert "WARNING: Claude Code running in Bypass Permissions mode" in p.buf
+    assert "\u276f No, exit" in p.buf
+    assert "Yes, I accept" in p.buf
 
 
 def test_boot_dialog_requires_down_then_cr(spawn):

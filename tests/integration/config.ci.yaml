@@ -54,7 +54,8 @@ claude:
     submit_delay_seconds: 0.4   # gap between bracketed paste and Enter
     dialogs:                 # pattern seen on screen -> keys to send
       - {pattern: "Bypass Permissions mode", keys: ["\u001b[B", "\r"], delay_seconds: 0.6}
-      - {pattern: "Do you trust the files in this folder", keys: ["\r"]}
+      - {pattern: "Is this a project you created or one you trust", keys: ["\u001b[B", "\r"], delay_seconds: 0.6}
+      - {pattern: "Make auto mode your default permission mode", keys: ["\u001b[B", "\r"], delay_seconds: 0.6}
     ready_markers: ["? for shortcuts", "bypass permissions on"]
     fatal_patterns:          # screen text that fails the session
       - "API Error: 401"

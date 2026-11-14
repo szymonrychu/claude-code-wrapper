@@ -3343,7 +3343,7 @@ claude:
 | `claude.boot.min_boot_seconds` | number | `4.0` | - | Never report ready sooner than this. |
 | `claude.boot.idle_ready_seconds` | number | `1.5` | - | Output quiescence that counts as ready. |
 | `claude.boot.submit_delay_seconds` | number | `0.4` | - | Gap between the bracketed paste and the Enter key. |
-| `claude.boot.dialogs` | list | `[{"pattern": "Bypass Permissions mode", "keys": ["\u001b[B", "\r"], "delay_seconds": 0.6}, {"pattern": "Do you trust the files in this folder", "keys": ["\r"], "delay_seconds": 0.0}]` | - | List of `{pattern, keys: [], delay_seconds: 0.0}`: when `pattern` appears on screen, send `keys` after the delay. |
+| `claude.boot.dialogs` | list | `[{"pattern": "Bypass Permissions mode", "keys": ["\u001b[B", "\r"], "delay_seconds": 0.6}, {"pattern": "Is this a project you created or one you trust", "keys": ["\u001b[B", "\r"], "delay_seconds": 0.6}, {"pattern": "Make auto mode your default permission mode", "keys": ["\u001b[B", "\r"], "delay_seconds": 0.6}]` | - | List of `{pattern, keys: [], delay_seconds: 0.0}`: when `pattern` appears on screen, send `keys` after the delay. |
 | `claude.boot.ready_markers` | list | `["? for shortcuts", "bypass permissions on", "auto mode on"]` | - | List of screen texts that mark the TUI as ready. |
 | `claude.boot.fatal_patterns` | list | `["API Error: 401", "API Error: 403", "Please run /login", "Credit balance is too low", "OAuth token has expired"]` | - | List of screen texts that fail the session (auth errors, no credit). |
 
@@ -4498,7 +4498,7 @@ The `Dockerfile` is multi-stage: a builder resolves the locked Python dependenci
 
 | Build arg or pin | Default | Purpose |
 |---|---|---|
-| `CLAUDE_CODE_VERSION` | `2.1.304` | `@anthropic-ai/claude-code` npm version; the PTY driver depends on its dialogs and hooks |
+| `CLAUDE_CODE_VERSION` | `2.1.323` | `@anthropic-ai/claude-code` npm version; the PTY driver depends on its dialogs and hooks |
 | `RUFF_VERSION` | `0.15.0` | ruff for agent sessions |
 | `GH_VERSION` | `2.102.0` | GitHub CLI release binary |
 | `GLAB_VERSION` | `1.124.0` | GitLab CLI release binary |

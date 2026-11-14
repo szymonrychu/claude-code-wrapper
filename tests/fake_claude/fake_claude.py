@@ -27,12 +27,17 @@ Environment
     CLAUDE_CODE_STOP_HOOK_BLOCK_CAP  max consecutive Stop blocks per turn (default 8)
 
 Interactive mode (no subcommand) needs a TTY on stdin, else exits 2. Boot prints a
-colored banner, then (boot.bypass_dialog, default true) a "Bypass Permissions mode"
-dialog needing Down (ESC [ B) then CR; CR without Down exits 1. Input arriving before
+colored banner, then the claude 2.1.323 boot dialogs, in claude's order: (boot.trust_dialog,
+default false) the workspace trust dialog, (boot.bypass_dialog, default true) the
+"Bypass Permissions mode" warning and (boot.auto_default_nudge, default false) "Make auto
+mode your default permission mode?". Each needs Down (ESC [ B) then CR; CR without Down
+picks the first option ("No, exit", or switch to auto) and exits 1. Input arriving before
 boot.min_seconds (default 0.3) exits 1. Then the idle footer "? for shortcuts". With
-boot.mode "auto" there is no bypass dialog and the footer reads "auto mode on" instead;
-boot.footer replaces the boot footer text (the first footer only), e.g. an "auto mode is
-unavailable ..." line.
+boot.mode "auto" there is no bypass dialog and the footer reads "auto mode on (shift+tab to
+cycle)" instead; boot.manual_start (auto mode only) is 2.1.323's start when auto is
+unavailable: the Manual footer "manual mode on - ? for shortcuts" (every footer) and then
+the given reason notice once. boot.footer replaces the boot footer text (the first footer
+only), e.g. an "auto mode is unavailable ..." line.
 Input: bracketed paste ESC[200~ ... ESC[201~; a CR in a later read than the paste end
 submits; a CR in the same read as the paste end is a newline. A lone ESC during a turn
 interrupts it. Byte 0x03 at idle exits 0. A paste with no CR stays in the input box and the
@@ -233,7 +238,29 @@ PASTE_END = b"\x1b[201~"
 DOWN = b"\x1b[B"
 CLEAR_INPUT = b"\x0c"  # ctrl+l, chat:clearInput in claude 2.1.304
 FOOTER = "? for shortcuts"
-AUTO_FOOTER = "auto mode on"
+AUTO_FOOTER = "\u23f5\u23f5 auto mode on (shift+tab to cycle)"
+MANUAL_FOOTER = "\u23f8 manual mode on \u00b7 ? for shortcuts"
+#: claude 2.1.323 boot dialogs (title, options); the first option is always the wrong answer.
+#: The real trust and bypass dialogs end in "Enter to confirm - Esc to cancel"; the fake leaves
+#: that footer out, as it always did, so a boot dialog never reads as an open UI dialog.
+TRUST_DIALOG = (
+    " Accessing workspace:\n\n {cwd}\n\n"
+    " Quick safety check: Is this a project you created or one you trust? (Like your own code,"
+    " a well-known open source\n project, or work from your team). If not, take a moment to"
+    " review what's in this folder first.\n\n"
+    " \u276f No, exit\n   Yes, I trust this folder\n"
+)
+BYPASS_DIALOG = (
+    "  \x1b[1;31mWARNING: Claude Code running in Bypass Permissions mode\x1b[0m\n\n"
+    "  In Bypass Permissions mode, Claude Code will not ask for your approval before running"
+    " potentially dangerous\n  commands.\n\n"
+    "  \u276f No, exit\n    Yes, I accept\n"
+)
+NUDGE_DIALOG = (
+    " Make auto mode your default permission mode?\n\n"
+    "   \u276f Yes, set auto mode as my default permission mode\n"
+    "     No, keep bypass permissions\n"
+)
 INTERRUPT_TEXT = "[Request interrupted by user]"
 PERMISSION_INTERRUPT_TEXT = "[Request interrupted by user for tool use]"
 PERMISSION_PROMPT = "Do you want to proceed?\n> 1. Yes\n  2. No\n"
@@ -489,8 +516,11 @@ class Fake:
         return data
 
     def footer(self, text: str | None = None) -> None:
-        auto = self.scenario.get("boot", {}).get("mode") == "auto"
-        self.out(f"\n  {text or (AUTO_FOOTER if auto else FOOTER)}\n")
+        boot = self.scenario.get("boot", {})
+        footer = FOOTER
+        if boot.get("mode") == "auto":
+            footer = MANUAL_FOOTER if boot.get("manual_start") else AUTO_FOOTER
+        self.out(f"\n  {text or footer}\n")
 
     # ---- transcript
     def write_line(self, obj: dict, path: str | None = None, sidechain: bool = False) -> None:
@@ -601,22 +631,29 @@ class Fake:
             if self.read(left) is not None:
                 raise Exit(1)
         auto = cfg.get("mode") == "auto"
+        if cfg.get("trust_dialog"):
+            self.boot_dialog(TRUST_DIALOG.format(cwd=os.getcwd()))
         if cfg.get("bypass_dialog", True) and not auto:
-            self.out(
-                "\n\x1b[1;31mWARNING: Bypass Permissions mode\x1b[0m\n"
-                "  1. No, exit\n  2. Yes, I accept\n"
-            )
-            buf = b""
-            while True:
-                buf += self.read(None) or b""
-                idx = buf.find(DOWN)
-                if idx >= 0 and b"\r" in buf[idx:]:
-                    break
-                if idx < 0 and b"\r" in buf:
-                    raise Exit(1)
+            self.boot_dialog(BYPASS_DIALOG)
+        if cfg.get("auto_default_nudge"):
+            self.boot_dialog(NUDGE_DIALOG)
         source = "resume" if self.resume else "startup"
         self.run_hooks("SessionStart", {"source": source}, match=source)
         self.footer(cfg.get("footer"))
+        if auto and cfg.get("manual_start"):
+            self.out(f"\n{' ' * 60}{cfg['manual_start']}\n")
+
+    def boot_dialog(self, text: str) -> None:
+        """Draw a boot dialog and wait for Down then CR; a CR alone takes the first option."""
+        self.out("\n" + text)
+        buf = b""
+        while True:
+            buf += self.read(None) or b""
+            idx = buf.find(DOWN)
+            if idx >= 0 and b"\r" in buf[idx:]:
+                return
+            if idx < 0 and b"\r" in buf:
+                raise Exit(1)
 
     # ---- main loop
     def run(self) -> int:
@@ -1106,11 +1143,14 @@ class Fake:
         )
 
     def hook_permission_mode(self) -> str:
-        """The mode hooks report: the real pod runs bypassPermissions unless booted in auto."""
+        """The mode hooks report: the real pod runs bypassPermissions unless booted in auto;
+        a Manual start (auto unavailable) runs `default`."""
         boot = self.scenario.get("boot", {})
-        return boot.get("permission_mode") or (
-            "auto" if boot.get("mode") == "auto" else "bypassPermissions"
-        )
+        if boot.get("permission_mode"):
+            return boot["permission_mode"]
+        if boot.get("mode") != "auto":
+            return "bypassPermissions"
+        return "default" if boot.get("manual_start") else "auto"
 
     def permission_prompt(
         self, name: str, tinput: dict, who: dict, footer: bool, suggestions: list | None = None

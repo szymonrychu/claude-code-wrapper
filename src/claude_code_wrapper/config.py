@@ -150,10 +150,17 @@ class BootConfig(_Model):
     min_boot_seconds: float = Field(4.0, ge=0)
     idle_ready_seconds: float = Field(1.5, ge=0)
     submit_delay_seconds: float = Field(0.4, ge=0)
+    #: claude 2.1.323 boot dialogs (MEMORY 2026-11-14, T-69). The seeds in settings.json and
+    #: .claude.json normally keep them away; the first option of each is the wrong answer
+    #: (exit, or make auto the default), so each is answered with Down then CR.
     dialogs: list[BootDialog] = Field(
         default_factory=lambda: [
-            BootDialog(pattern="Bypass Permissions mode", keys=["\x1b[B", "\r"], delay_seconds=0.6),
-            BootDialog(pattern="Do you trust the files in this folder", keys=["\r"]),
+            BootDialog(pattern=pattern, keys=["\x1b[B", "\r"], delay_seconds=0.6)
+            for pattern in (
+                "Bypass Permissions mode",
+                "Is this a project you created or one you trust",
+                "Make auto mode your default permission mode",
+            )
         ]
     )
     ready_markers: list[str] = Field(

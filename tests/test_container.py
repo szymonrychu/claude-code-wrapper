@@ -16,12 +16,15 @@ def test_dockerfile_non_root_pinned_and_cmd():
     assert re.search(r"groupadd[^\n]*(-g|--gid)\s*1000", DOCKERFILE)
     assert "HOME=/home/agent" in DOCKERFILE
     m = re.search(r"^ARG CLAUDE_CODE_VERSION=(\S+)$", DOCKERFILE, re.M)
-    assert m and m.group(1) == "2.1.304"
-    assert "latest" not in m.group(1)
+    assert m and "latest" not in m.group(1)
     assert "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" in DOCKERFILE
     assert "DISABLE_AUTOUPDATER=1" in DOCKERFILE
     assert re.search(r'^CMD \["ccw", "serve"\]$', DOCKERFILE, re.M)
     assert DOCKERFILE.rstrip().splitlines()[-1].startswith("CMD")
+
+
+def test_dockerfile_claude_code_version():
+    assert "ARG CLAUDE_CODE_VERSION=2.1.323" in DOCKERFILE.splitlines()
 
 
 def test_dockerfile_installs_required_tools():

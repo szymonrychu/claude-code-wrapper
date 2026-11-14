@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import TypeAdapter
 
 from claude_code_wrapper.config import (
@@ -356,6 +357,23 @@ def test_permission_mode_default_and_valid_values(tmp_path):
     for mode in ("default", "acceptEdits", "plan", "auto", "bypassPermissions", "dontAsk"):
         cfg = load_config(write(tmp_path, f"claude:\n  permission_mode: {mode}\n"))
         assert cfg.claude.permission_mode == mode
+
+
+def test_boot_dialog_defaults_2_1_323(tmp_path):
+    # claude 2.1.323 boot dialogs (MEMORY 2026-11-14, T-69): the first option of each is the
+    # wrong answer, so each takes Down then CR. The example config carries the same list.
+    expected = [
+        ("Bypass Permissions mode", ["\x1b[B", "\r"], 0.6),
+        ("Is this a project you created or one you trust", ["\x1b[B", "\r"], 0.6),
+        ("Make auto mode your default permission mode", ["\x1b[B", "\r"], 0.6),
+    ]
+    cfg = load_config(write(tmp_path, ""))
+    got = [(d.pattern, d.keys, d.delay_seconds) for d in cfg.claude.boot.dialogs]
+    assert got == expected
+    dialogs = yaml.safe_load((ROOT / "config.example.yaml").read_text())["claude"]["boot"][
+        "dialogs"
+    ]
+    assert [(d["pattern"], d["keys"], d.get("delay_seconds", 0.0)) for d in dialogs] == expected
 
 
 def test_permission_mode_rejects_unknown(tmp_path):

@@ -18,7 +18,7 @@ FROM node:24.22.0-bookworm-slim AS node
 FROM python:3.12-slim-bookworm AS runtime
 
 # Claude Code CLI version pinned: the PTY driver depends on its dialogs and hook behaviour.
-ARG CLAUDE_CODE_VERSION=2.1.304
+ARG CLAUDE_CODE_VERSION=2.1.323
 # ruff pinned for a reproducible lint tool available to agent sessions.
 ARG RUFF_VERSION=0.15.0
 # gh pinned release binary: apt in Debian has no current gh.

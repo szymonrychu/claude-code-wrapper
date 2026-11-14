@@ -439,9 +439,11 @@ class SessionListener:
         """A message typed into a turn (`queue_prompt`) will never be read: `reason`."""
 
 
-#: What claude prints instead of the "auto mode on" footer when auto cannot be used (MEMORY
-#: 2026-11-01, C1), with the reason reported. Matched like fatal patterns (case, whitespace and
-#: escapes ignored). The "no safety verdict" text comes first: it is the longest and most specific.
+#: What claude prints when auto cannot be used (MEMORY 2026-11-01, C1; re-probed on 2.1.323,
+#: 2026-11-14, T-69: it then starts in Manual, footer "manual mode on", and draws the reason as a
+#: notice above the prompt), with the reason reported. Matched like fatal patterns (case,
+#: whitespace and escapes ignored). The "no safety verdict" text comes first: it is the longest
+#: and most specific.
 AUTO_UNAVAILABLE: tuple[tuple[str, str], ...] = (
     ("auto mode is unavailable: the server returned no safety verdict", "no_safety_verdict"),
     ("auto mode disabled by settings", "settings"),
