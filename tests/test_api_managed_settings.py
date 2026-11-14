@@ -212,6 +212,21 @@ def test_put_too_large_413(client, ms):
     assert ms.path.read_bytes() == before
 
 
+def test_put_too_large_is_refused_without_buffering_the_whole_body(client, ms, monkeypatch):
+    from starlette.requests import Request
+
+    async def no_body(self):
+        raise AssertionError("the whole body must not be read before the cap")
+
+    monkeypatch.setattr(Request, "body", no_body)
+    r = client.put(
+        "/v1/managed-settings",
+        content=json.dumps({"overlay": {"x": "a" * MAX_MANAGED_BODY_BYTES}}),
+        headers={**AUTH, "content-type": "application/json"},
+    )
+    assert r.status_code == 413
+
+
 def test_put_requires_bearer_401(client, ms):
     before = ms.path.read_bytes()
     r = client.put("/v1/managed-settings", json={"overlay": OVERLAY})

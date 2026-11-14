@@ -288,7 +288,8 @@ async def test_relay_call_restores_and_emits_event(world):
     assert ms.path.read_bytes() == ms._expected
 
 
-async def test_unmanaged_relay_event_does_not_check(world):
+async def test_every_relayed_event_checks(world):
+    """Minor 3: PostToolUse right after a tampering Bash call restores the file too."""
     m, ms = await _manager(world)
     sid = (await m.create({}))["session_id"]
     other = next(e for e in CLAUDE_HOOK_EVENTS if e not in MANAGED_RELAY_EVENTS)
@@ -297,7 +298,9 @@ async def test_unmanaged_relay_event_does_not_check(world):
     headers = {HEADER_SESSION: sid, HEADER_TOKEN: m._active[sid].hook_token}
     async with httpx.AsyncClient(transport=transport, base_url="http://ccw") as c:
         await c.post(f"/internal/hooks/{other}", json={}, headers=headers)
-    assert _restored(world, sid) == []
+    (ev,) = _restored(world, sid)
+    assert ev["data"]["trigger"] == "relay"
+    assert ms.path.read_bytes() == ms._expected
 
 
 async def test_turn_start_restores_before_turn_started(world):
@@ -475,3 +478,14 @@ def test_chmod_000_of_the_managed_dir_is_undone_by_the_restore(ms):
     drift = ms.check("relay")
     assert drift is not None and drift.restored is True
     assert ms.path.read_bytes() == ms._expected
+
+
+def test_fallback_drops_claude_names_too(tmp_path):
+    d = tmp_path / "home"
+    d.mkdir()
+    (d / "precious.txt").write_text("x")
+    (d / "managed-settings.d").mkdir()
+    (d / "managed-mcp.json").write_text("{}")
+    ms = ManagedSettings(d / "managed-settings.json", {"hooks": {}}, RELAY)
+    assert ms.install().state == "fallback"
+    assert sorted(os.listdir(d)) == ["precious.txt"]

@@ -439,11 +439,13 @@ class ManagedSettings:
 
     def _drop_stale(self) -> str:
         """Fallback must not leave a file an earlier run wrote: Claude would load it, and ccw
-        cannot vouch for it. Removes the managed file only (never the dir); the reason suffix
-        says when that failed."""
+        cannot vouch for it. Removes the managed file and Claude's own names beside it (never the
+        dir or other entries); the reason suffix says when that failed."""
         try:
-            if os.path.lexists(self.path):
-                self._remove(self.path)
+            for name in (self.path.name, *sorted(CLAUDE_MANAGED_NAMES)):
+                entry = self.path.parent / name
+                if os.path.lexists(entry):
+                    self._remove(entry)
         except OSError:
             return "; a stale managed file could not be removed"
         return ""

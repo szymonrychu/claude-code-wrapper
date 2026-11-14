@@ -251,16 +251,18 @@ changed overlay reaches running sessions after they restart.
 
 **Tamper check.** The agent runs as uid 1000 and the file sits (mode 0644) in a directory
 the agent owns, so the deny rules alone do not stop a Bash command from rewriting it. Before
-each `PreToolUse` and `PermissionRequest` relay call, before each `turn_started` and before a
+each relayed hook call, before each `turn_started` and before a
 session boots (create, resume, restart), ccw compares
 the directory with what it wrote and restores it, directory mode included (the agent shares the
 uid, so a `chmod` of the directory is undone first: `0755`). A change made by a tool call is therefore
-live for at most that one call: it is undone before the next gated call or turn. See
+live until the next relayed hook or turn start: the `PostToolUse` of the tampering call itself
+already restores it, unless the tamper also stopped the hooks from running. See
 [`managed_settings_restored`](#managed_settings_restored).
 
 **Fallback and degraded.** When the file cannot be written, the directory is not dedicated to it
 or the read-back lacks the relay, the state is `fallback`: ccw logs a warning, `/readyz` reports
-`managed_settings: "fallback"`, no managed file is left behind, and every session's
+`managed_settings: "fallback"`, no managed file (nor `managed-settings.d` or `managed-mcp.json`)
+is left behind, and every session's
 `settings.json` keeps the relay for all eleven events as before. A restore that fails leaves the
 state `degraded`: new sessions keep the full relay in `settings.json` until a later check or
 `GET`/`PUT` heals it.
@@ -2264,11 +2266,11 @@ data: {"seq":23,"ts":"2026-10-20T09:10:00.000Z","session_id":"ses_3f9a1c0b7d42",
 ### `managed_settings_restored`
 
 Sent to every live session when the tamper check found the managed-settings directory changed
-and put it back (or failed to). The check runs before each `PreToolUse` and `PermissionRequest`
-relay call, before each `turn_started` and before a session boots (so claude never reads a
-tampered file at startup); it compares the file with what the service wrote
-(missing, unreadable, not a regular file, mode other than 0644, a directory mode that is not owner-rwx or is writable by others, content hash, or any entry beside the file
-and the temporary file) and rewrites it. Only hashes are reported, never content.
+and put it back (or failed to). The check runs before each relayed hook call (any event), before
+each `turn_started` and before a session boots (so claude never reads a tampered file at startup);
+it compares the file with what the service wrote (missing, unreadable, not a regular file, mode
+other than 0644, a directory mode that is not owner-rwx or is writable by others, content hash, or
+any entry beside the file and the temporary file) and rewrites it. Only hashes are reported, never content.
 
 `data`: `trigger` (`relay`, `turn` or `boot`), `kind` (the first of `missing`, `unreadable`, `not_regular`,
 `mode`, `modified`, `extra_entry`), `expected_sha256`, `found_sha256` (`null` when absent or not a
@@ -3306,7 +3308,7 @@ FastAPI's `{"detail": ...}` body instead.
 | `create_failed` | 500 | a create or resume step failed; the message names the step |
 | `booting` | 503 | the session is still booting (409 for a `regular` or `priority` turn delivery) |
 | `dead` | 503 | the session is stopped, failed or dead and cannot take input (409 for a `regular` or `priority` turn delivery) |
-| `managed_settings_unavailable` | 409 | `GET` or `PUT /v1/managed-settings` while the managed file is not active (fallback, or degraded and not healed) |
+| `managed_settings_unavailable` | 409 | `GET /v1/managed-settings` when the service runs without a managed file; `PUT` while the file is not active (fallback, or degraded and not healed) |
 | `locked_key` | 422 | `PUT /v1/managed-settings` overlay changes a locked key or sets `disableAllHooks` or `allowManagedHooksOnly` truthy |
 | `secret_in_overlay` | 422 | `PUT /v1/managed-settings` overlay `env` carries a credential name |
 | `invalid_overlay` | 422 | `PUT /v1/managed-settings` overlay has a malformed `hooks` or `permissions.deny`, or would remove the relay |
@@ -3411,7 +3413,7 @@ paths:
 |---|---|---|---|---|
 | `paths.workdir_root` | string | `"/workdir"` | - | Absolute directory holding per-session workdirs (the `workdir` volume). |
 | `paths.sessions_root` | string | `"/sessions"` | - | Absolute directory holding per-session state and `CLAUDE_CONFIG_DIR` (the `sessions` volume). |
-| `paths.managed_settings` | string | `"/etc/claude-code/managed-settings.json"` | - | Absolute path of the Claude Code managed-settings file ccw writes at start (mode 0644): the PreToolUse and PermissionRequest relay (`onFailure: block`), managed mods only, agent view and Code Mode off, Edit/Write deny rules on its directory. The parent directory must be dedicated to it (not `/`, `/etc` or `/tmp`; install refuses a directory holding other entries). When it cannot be written or read back with the relay, ccw logs a warning, `/readyz` reports `managed_settings: "fallback"` and every session's settings.json keeps the relay for all events. `ccw config managed-settings` prints the rendered file. |
+| `paths.managed_settings` | string | `"/etc/claude-code/managed-settings.json"` | - | Absolute path of the Claude Code managed-settings file ccw writes at start (mode 0644): the PreToolUse and PermissionRequest relay (`onFailure: block`), managed mods only, agent view and Code Mode off, Edit/Write deny rules on its directory. The parent directory must be dedicated to it (not `/`, `/etc` or `/tmp`; install refuses a directory holding other entries). When it cannot be written or read back with the relay, ccw logs a warning, `/readyz` reports `managed_settings: "fallback"` and every session's settings.json keeps the relay for all events. In `fallback` the tamper check does nothing, so a non-default path must also leave `/etc/claude-code` (which the image chowns to the agent) unwritable, or the agent can create a managed file ccw never inspects. `ccw config managed-settings` prints the rendered file. |
 
 ### `claude`
 

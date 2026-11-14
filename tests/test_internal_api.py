@@ -82,13 +82,13 @@ async def test_routes_hook_to_session_router() -> None:
         assert h.json() == {"status": "ok"}
 
 
-async def test_managed_relay_events_run_the_tamper_check_first() -> None:
+async def test_every_relayed_event_runs_the_tamper_check() -> None:
     mgr = FakeManager()
     async with client(mgr) as c:
         for event in ("PreToolUse", "PermissionRequest", "Stop"):
             await c.post(f"/internal/hooks/{event}", json={}, headers=H)
     assert [e for e, _ in mgr.r.calls] == ["PreToolUse", "PermissionRequest", "Stop"]
-    assert mgr.checks == ["relay", "relay"]
+    assert mgr.checks == ["relay", "relay", "relay"]
 
 
 async def test_unknown_event_404() -> None:

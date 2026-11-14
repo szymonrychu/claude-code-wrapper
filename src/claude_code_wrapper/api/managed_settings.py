@@ -44,6 +44,20 @@ def _unavailable() -> ApiError:
     )
 
 
+async def _read_capped(request: Request) -> bytes:
+    """The body, read chunk by chunk and refused (413) as soon as it passes the cap."""
+    too_large = ApiError(413, "too_large", f"body exceeds {MAX_MANAGED_BODY_BYTES} bytes")
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > MAX_MANAGED_BODY_BYTES:
+        raise too_large
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > MAX_MANAGED_BODY_BYTES:
+            raise too_large
+    return bytes(buf)
+
+
 @router.get("/managed-settings")
 async def get_managed_settings(request: Request) -> Any:
     ms = request.app.state.manager.managed_settings
@@ -55,9 +69,7 @@ async def get_managed_settings(request: Request) -> Any:
 
 @router.put("/managed-settings")
 async def put_managed_settings(request: Request) -> Any:
-    raw = await request.body()
-    if len(raw) > MAX_MANAGED_BODY_BYTES:
-        raise ApiError(413, "too_large", f"body exceeds {MAX_MANAGED_BODY_BYTES} bytes")
+    raw = await _read_capped(request)
     try:
         body = ManagedSettingsRequest.model_validate_json(raw)
     except ValidationError as exc:
