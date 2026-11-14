@@ -38,6 +38,8 @@ FENCE_FILE = "/home/agent/ccw-live-fence.txt"
 DENY_WORDING = re.compile(r"denied", re.I)
 #: N-385: a dangerous rm waits on a 120 s auto-deny countdown in 2.1.323; the turn must end.
 DANGEROUS_RM_BOUND = 200.0
+#: After the denied rm: the 1 s ESC grace plus the 30 s settle of the permission lock, padded.
+DIALOG_CLEAR_BOUND = 60.0
 
 
 def _dockerfile_claude_version() -> str:
@@ -267,12 +269,23 @@ def test_dangerous_rm_turn_completes(live: Live) -> None:
     assert time.monotonic() - started < DANGEROUS_RM_BOUND
     assert _result("bash-rm-workspace")["is_error"]
     assert _exists(workdir)
-    state = wait_for(
-        lambda: (s := live.api.get(f"/v1/sessions/{sid}").json())["state"] == "ready" and s,
-        "session ready after the denied rm",
-        30,
-    )
-    assert state["waiting"] is None, state
+    # The relayed PermissionRequest is resolved deny by the Stop; the wrapper then sends its
+    # one guarded ESC and keeps the permission lock for ORPHAN_SETTLE_SECONDS (30 s).
+    flow = "permission_requested,permission_resolved,dialog_auto_dismissed"
+    try:
+        wait_for(
+            lambda: (
+                (s := live.api.get(f"/v1/sessions/{sid}").json())["state"] == "ready"
+                and s["waiting"] is None
+            ),
+            "session ready with nothing waiting after the denied rm",
+            DIALOG_CLEAR_BOUND,
+        )
+    except AssertionError as exc:
+        raise AssertionError(
+            f"{exc}: {live.api.get(f'/v1/sessions/{sid}').json()['waiting']}, "
+            f"{[(e['type'], e['data']) for e in live.events(sid, flow)]}"
+        ) from None
 
 
 def test_statusline_relay_fires_with_managed_file(session: dict[str, Any]) -> None:
