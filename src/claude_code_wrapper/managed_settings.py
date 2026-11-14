@@ -29,6 +29,7 @@ from claude_code_wrapper.claude_env import CREDENTIAL_ENV, SECRET_KEY_RE
 log = logging.getLogger(__name__)
 
 ManagedState = Literal["active", "fallback", "degraded"]
+DIR_MODE = 0o755
 TMP_NAME = ".managed-settings.json.ccw-tmp"
 #: Names Claude Code itself reads beside the managed file; allowed in the managed dir (R1).
 CLAUDE_MANAGED_NAMES = frozenset({"managed-settings.d", "managed-mcp.json"})
@@ -321,6 +322,9 @@ class ManagedSettings:
         """Remove what does not belong (the allow-list of R1), rewrite the expected bytes and
         read them back. The one restore path of `_heal` and `check`."""
         try:
+            # The agent shares the uid: a chmod of the dir would make every restore fail.
+            with contextlib.suppress(OSError):
+                os.chmod(self.path.parent, DIR_MODE)
             for name in self._extras():
                 self._remove(self.path.parent / name)
             if stat.S_ISDIR(self._lstat_mode()):
@@ -372,9 +376,19 @@ class ManagedSettings:
             return "mode", found
         if st.st_size != size or found != self._sha256:
             return "modified", found
+        if self._dir_mode_drifted():
+            return "mode", found
         if self._extras():
             return "extra_entry", found
         return None
+
+    def _dir_mode_drifted(self) -> bool:
+        """The managed dir, when ccw's uid owns it, is not owner-rwx or is writable by others."""
+        st = os.stat(self.path.parent)
+        if st.st_uid != os.geteuid():
+            return False
+        mode = stat.S_IMODE(st.st_mode)
+        return mode & 0o700 != 0o700 or bool(mode & 0o022)
 
     def check(self, trigger: Literal["relay", "turn", "boot"]) -> Drift | None:
         """Compare the dir with what ccw wrote; restore on any drift (spec D4). Reports the

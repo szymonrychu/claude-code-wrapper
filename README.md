@@ -253,7 +253,8 @@ changed overlay reaches running sessions after they restart.
 the agent owns, so the deny rules alone do not stop a Bash command from rewriting it. Before
 each `PreToolUse` and `PermissionRequest` relay call, before each `turn_started` and before a
 session boots (create, resume, restart), ccw compares
-the directory with what it wrote and restores it. A change made by a tool call is therefore
+the directory with what it wrote and restores it, directory mode included (the agent shares the
+uid, so a `chmod` of the directory is undone first: `0755`). A change made by a tool call is therefore
 live for at most that one call: it is undone before the next gated call or turn. See
 [`managed_settings_restored`](#managed_settings_restored).
 
@@ -2266,7 +2267,7 @@ Sent to every live session when the tamper check found the managed-settings dire
 and put it back (or failed to). The check runs before each `PreToolUse` and `PermissionRequest`
 relay call, before each `turn_started` and before a session boots (so claude never reads a
 tampered file at startup); it compares the file with what the service wrote
-(missing, unreadable, not a regular file, mode other than 0644, content hash, or any entry beside the file
+(missing, unreadable, not a regular file, mode other than 0644, a directory mode that is not owner-rwx or is writable by others, content hash, or any entry beside the file
 and the temporary file) and rewrites it. Only hashes are reported, never content.
 
 `data`: `trigger` (`relay`, `turn` or `boot`), `kind` (the first of `missing`, `unreadable`, `not_regular`,

@@ -444,3 +444,34 @@ def test_install_clears_claude_names_left_by_an_earlier_run(tmp_path):
     )
     assert ms.install().state == "active"
     assert sorted(os.listdir(d)) == ["managed-settings.json"]
+
+
+# ---------------------------------------------------------------- dir mode (final review I-3)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory modes")
+def test_chmod_of_the_managed_dir_is_undone_by_the_restore(ms):
+    _tamper_modified(ms)
+    ms.path.parent.chmod(0o555)
+    drift = ms.check("turn")
+    assert drift is not None and drift.restored is True
+    assert ms.path.read_bytes() == ms._expected
+    assert stat.S_IMODE(os.stat(ms.path.parent).st_mode) == 0o755
+    assert ms.status().state == "active"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory modes")
+def test_dir_mode_alone_is_drift_kind_mode(ms):
+    ms.path.parent.chmod(0o555)
+    drift = ms.check("relay")
+    assert (drift.kind, drift.restored) == ("mode", True)
+    assert stat.S_IMODE(os.stat(ms.path.parent).st_mode) == 0o755
+    assert ms.check("relay") is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory modes")
+def test_chmod_000_of_the_managed_dir_is_undone_by_the_restore(ms):
+    ms.path.parent.chmod(0o000)
+    drift = ms.check("relay")
+    assert drift is not None and drift.restored is True
+    assert ms.path.read_bytes() == ms._expected
