@@ -32,7 +32,8 @@ class ManagedSettingsRequest(BaseModel):
 
 
 def _view(ms: ManagedSettings) -> dict[str, Any]:
-    return ms.status().to_dict() | {"document": ms.document}
+    snap = ms.snapshot()
+    return snap.status.to_dict() | {"document": snap.document}
 
 
 def _unavailable() -> ApiError:

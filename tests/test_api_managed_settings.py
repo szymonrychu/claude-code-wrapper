@@ -252,3 +252,32 @@ def test_put_write_failure_keeps_old(client, ms, monkeypatch):
     assert got["overlay"] == {"env": {"FOO": "1"}}
     assert ms.path.read_bytes() == before
     assert ms._expected == before
+
+
+@pytest.mark.parametrize(
+    "overlay",
+    [
+        {"permissions": {"deny": None}},
+        {"permissions": {"deny": "Bash"}},
+        {"permissions": {"deny": {"a": 1}}},
+        {"permissions": [1]},
+        {"permissions": "s"},
+        {"permissions": None},
+        {"hooks": None},
+        {"hooks": []},
+        {"hooks": "x"},
+        {"hooks": {"PreToolUse": None}},
+        {"hooks": {"PreToolUse": {"a": 1}}},
+    ],
+)
+def test_put_malformed_shapes_422_invalid_overlay(client, ms, overlay):
+    before = ms.document
+    r = _put(client, overlay)
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "invalid_overlay"
+    assert ms.document == before
+
+
+def test_view_is_one_snapshot_under_the_lock(ms):
+    snap = ms.snapshot()
+    assert snap.status.sha256 and snap.document == ms.document

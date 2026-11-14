@@ -111,15 +111,17 @@ def merge_overlay(baseline: dict[str, Any], overlay: dict[str, Any]) -> dict[str
         raise OverlaySecretError
     out = copy.deepcopy(baseline)
     hooks = overlay.get("hooks")
-    deny = (overlay.get("permissions") or {}).get("deny") if "permissions" in overlay else None
+    perms = overlay.get("permissions")
     if "hooks" in overlay and not isinstance(hooks, dict):
         raise ManagedSettingsError("overlay hooks must be an object")
-    if "permissions" in overlay and not isinstance(overlay["permissions"], dict):
+    if "permissions" in overlay and not isinstance(perms, dict):
         raise ManagedSettingsError("overlay permissions must be an object")
+    deny: list[Any] | None = None
+    if isinstance(perms, dict) and "deny" in perms:
+        deny = _list_of(perms["deny"], "permissions.deny")
     rest = {k: v for k, v in overlay.items() if k != "hooks"}
     if deny is not None:
-        _list_of(deny, "permissions.deny")
-        rest["permissions"] = {k: v for k, v in rest["permissions"].items() if k != "deny"}
+        rest["permissions"] = {k: v for k, v in perms.items() if k != "deny"}
     _deep(out, rest)
     if hooks:
         merged = out.setdefault("hooks", {})
@@ -188,6 +190,12 @@ class ManagedStatus:
         return asdict(self)
 
 
+@dataclass
+class ManagedSnapshot:
+    status: ManagedStatus
+    document: dict[str, Any]
+
+
 class ManagedSettings:
     """Owner of the managed-settings file. One lock serialises install, replace and check
     (ruling R2); `_expected` and `_sha256` are what the file must hold."""
@@ -209,6 +217,12 @@ class ManagedSettings:
     def document(self) -> dict[str, Any]:
         """What the file should hold: the baseline with the overlay applied."""
         return copy.deepcopy(self._current)
+
+    def snapshot(self) -> ManagedSnapshot:
+        """Status and document read together under the lock, so a concurrent replace cannot
+        tear them apart."""
+        with self._lock:
+            return ManagedSnapshot(self.status(), self.document)
 
     @property
     def active(self) -> bool:
