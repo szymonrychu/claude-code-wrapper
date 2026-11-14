@@ -43,6 +43,10 @@ LOCKED: dict[str, Any] = {
 }
 #: Kill switches: the overlay may state them false (the baseline default), never truthy (R8).
 FORBIDDEN_TRUE = ("disableAllHooks", "allowManagedHooksOnly")
+#: The managed-mods guard plugin: `prependPlugins` replaces Claude's default list, so an overlay
+#: that sets it must name the guard, and `enabledPlugins` may not switch either name off.
+GUARD_PLUGIN = "sec-default@builtin"
+GUARD_PLUGIN_KEYS = (GUARD_PLUGIN, "cc-plugin-" + GUARD_PLUGIN)
 _MISSING = object()
 
 
@@ -95,11 +99,27 @@ def _list_of(value: Any, what: str) -> list[Any]:
     return value
 
 
+def _check_guard_plugin(overlay: dict[str, Any]) -> None:
+    """Refuse an overlay that would drop the managed-mods guard through a sibling key."""
+    if "prependPlugins" in overlay:
+        plugins = overlay["prependPlugins"]
+        if not isinstance(plugins, list) or GUARD_PLUGIN not in plugins:
+            raise LockedKeyError("prependPlugins")
+    if "enabledPlugins" in overlay:
+        enabled = overlay["enabledPlugins"]
+        if not isinstance(enabled, dict):
+            raise LockedKeyError("enabledPlugins")
+        for name in GUARD_PLUGIN_KEYS:
+            if name in enabled and not enabled[name]:
+                raise LockedKeyError(f"enabledPlugins.{name}")
+
+
 def merge_overlay(baseline: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     """The baseline with `overlay` applied (spec D2, R7). Dicts deep merge; each hooks event
     list is the baseline groups then the overlay groups; `permissions.deny` is the baseline
     rules then the overlay rules not already present; any other list is replaced. Refuses a
-    LOCKED key set to another value, a FORBIDDEN_TRUE key set truthy, and credential env."""
+    LOCKED key set to another value, a `prependPlugins` without the guard plugin, a falsy guard in
+    `enabledPlugins`, a FORBIDDEN_TRUE key set truthy, and credential env."""
     for path, locked in LOCKED.items():
         found = _lookup(overlay, path)
         if found is not _MISSING and found != locked:
@@ -107,6 +127,7 @@ def merge_overlay(baseline: dict[str, Any], overlay: dict[str, Any]) -> dict[str
     for key in FORBIDDEN_TRUE:
         if overlay.get(key):
             raise LockedKeyError(key)
+    _check_guard_plugin(overlay)
     env = overlay.get("env")
     if isinstance(env, dict) and any(
         SECRET_KEY_RE.search(str(name)) or name in CREDENTIAL_ENV for name in env

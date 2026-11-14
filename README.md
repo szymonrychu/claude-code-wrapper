@@ -243,8 +243,11 @@ rendered file.
 baseline (hook lists and `permissions.deny` append, other lists replace). The overlay cannot change
 the locked keys (`disableAgentView`, `allowManagedModsOnly`, the two env names above), set
 `disableAllHooks` or `allowManagedHooksOnly` truthy, carry a credential in `env`, or remove the
-relay. Claude Code may apply some keys only at session start, so a changed overlay reaches running
-sessions after they restart.
+relay. The managed-mods guard is protected through its sibling keys too: an overlay that sets
+`prependPlugins` (which replaces Claude Code's default list) must name `sec-default@builtin`, and
+`enabledPlugins` may not switch `sec-default@builtin` or `cc-plugin-sec-default@builtin` off; either
+is refused with `422 locked_key`. Claude Code may apply some keys only at session start, so a
+changed overlay reaches running sessions after they restart.
 
 **Tamper check.** The agent runs as uid 1000 and the file sits (mode 0644) in a directory
 the agent owns, so the deny rules alone do not stop a Bash command from rewriting it. Before

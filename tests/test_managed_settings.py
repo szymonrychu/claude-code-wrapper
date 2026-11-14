@@ -452,3 +452,38 @@ def test_replace_unavailable_in_fallback(tmp_path):
 
     with pytest.raises(ManagedSettingsUnavailable):
         _managed(tmp_path).replace({})
+
+
+# ------------------------------------------------------- guard plugin lock (final review I-1)
+
+
+@pytest.mark.parametrize(
+    "overlay",
+    [
+        {"prependPlugins": ["x@y"]},
+        {"prependPlugins": []},
+        {"prependPlugins": "sec-default@builtin"},
+        {"enabledPlugins": {"sec-default@builtin": False}},
+        {"enabledPlugins": {"cc-plugin-sec-default@builtin": False}},
+        {"enabledPlugins": {"cc-plugin-sec-default@builtin": None}},
+        {"enabledPlugins": ["sec-default@builtin"]},
+    ],
+)
+def test_merge_overlay_cannot_drop_the_guard_plugin(overlay):
+    from claude_code_wrapper.managed_settings import LockedKeyError, merge_overlay
+
+    with pytest.raises(LockedKeyError):
+        merge_overlay(_baseline(), overlay)
+
+
+def test_merge_overlay_keeps_the_guard_plugin_when_named():
+    from claude_code_wrapper.managed_settings import merge_overlay
+
+    out = merge_overlay(
+        _baseline(),
+        {
+            "prependPlugins": ["x@y", "sec-default@builtin"],
+            "enabledPlugins": {"x@y": True, "sec-default@builtin": True},
+        },
+    )
+    assert out["prependPlugins"] == ["x@y", "sec-default@builtin"]
