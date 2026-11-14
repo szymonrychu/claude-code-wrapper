@@ -64,7 +64,7 @@ from .hooks import (
     gate_fail_mode,
     instance_dispatcher,
 )
-from .managed_settings import ManagedSettings
+from .managed_settings import Drift, ManagedSettings
 from .metrics import Metrics
 from .notes import NoteStore
 from .peer_service import PeerService
@@ -319,6 +319,8 @@ class SessionManager:
         self.metrics = metrics
         #: The managed-settings file owner; None or not active = the relay stays in settings.json.
         self.managed_settings = managed_settings
+        if managed_settings is not None:
+            managed_settings.on_drift = self._on_managed_drift
         #: Takes every session's statusLine rate limits (`usage.url` set), else None.
         self.usage = usage
         self._on_exit_request = on_exit_request
@@ -396,6 +398,23 @@ class SessionManager:
 
     def active_ids(self) -> list[str]:
         return list(self._active)
+
+    def check_managed_settings(self, trigger: str) -> None:
+        """Run the managed-settings tamper check (no-op without the file owner); a drift is
+        fanned out by `_on_managed_drift`."""
+        if self.managed_settings is not None:
+            self.managed_settings.check(trigger)  # type: ignore[arg-type]
+
+    def _on_managed_drift(self, drift: Drift) -> None:
+        """Log kind and trigger only, and emit `managed_settings_restored` to every session."""
+        if drift.restored:
+            log.warning("managed settings drift %s restored (%s)", drift.kind, drift.trigger)
+        else:
+            log.error("managed settings drift %s NOT restored (%s)", drift.kind, drift.trigger)
+        for sid in self.active_ids():
+            ctx = self._active.get(sid)
+            if ctx is not None and ctx.router is not None:
+                ctx.router.emit_event("managed_settings_restored", drift.to_event())
 
     def get(self, session_id: str) -> dict[str, Any]:
         ctx = self._active.get(session_id)
@@ -809,6 +828,7 @@ class SessionManager:
             metrics=self.metrics,
             commands=self._commands_for(meta),
             on_state_change=lambda state: self._on_session_state(ctx, state),
+            managed_check=self.check_managed_settings,
         )
         if self.cfg.notes.enabled:
             ctx.router.notes = self._notes_for(ctx.session_id)

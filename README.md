@@ -1216,6 +1216,14 @@ key), `422 secret_in_overlay`, `422 invalid_overlay` (a `hooks` or `permissions.
 wrong type, or an overlay that would remove the relay), `500 managed_settings_write_failed` (the
 old file and overlay stay).
 
+**Tamper check.** Before each `PreToolUse` and `PermissionRequest` relay call and before each
+`turn_started`, the service compares the managed directory with what it wrote and restores it on
+any drift, emitting `managed_settings_restored` (see Events). It removes only Claude's own extra
+names (`managed-settings.d`, `managed-mcp.json`), and any other entry only because install found
+the directory dedicated. A failed restore leaves state `degraded` (retried on every check and on
+the next `GET`/`PUT` here). When install falls back, it removes a managed file an earlier run left,
+so Claude never loads one the service cannot vouch for.
+
 ### `GET /v1/config`
 
 The effective configuration with secrets masked as `***` (`server.auth_token`,
@@ -2190,6 +2198,24 @@ The SSE stream ends after it.
 ```
 event: session_closed
 data: {"seq":23,"ts":"2026-10-20T09:10:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"session_closed","data":{}}
+```
+
+### `managed_settings_restored`
+
+Sent to every live session when the tamper check found the managed-settings directory changed
+and put it back (or failed to). The check runs before each `PreToolUse` and `PermissionRequest`
+relay call and before each `turn_started`; it compares the file with what the service wrote
+(missing, not a regular file, mode other than 0644, content hash, or any entry beside the file
+and the temporary file) and rewrites it. Only hashes are reported, never content.
+
+`data`: `trigger` (`relay` or `turn`), `kind` (the first of `missing`, `not_regular`, `mode`,
+`modified`, `extra_entry`), `expected_sha256`, `found_sha256` (`null` when absent or not a
+regular file), `restored` (`false` leaves the managed state `degraded`: new sessions then keep
+the full relay in `settings.json`, and the next check tries again).
+
+```
+event: managed_settings_restored
+data: {"seq":9,"ts":"2026-11-14T09:10:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"managed_settings_restored","data":{"trigger":"relay","kind":"modified","expected_sha256":"9f2c...","found_sha256":"1b7e...","restored":true}}
 ```
 
 ### Callbacks

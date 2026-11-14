@@ -390,8 +390,11 @@ class SessionRouter(SessionListener):
         session_info: SessionInfo | Mapping[str, Any],
         metrics: Metrics | None = None,
         commands: CommandsConfig | None = None,
+        managed_check: Callable[[str], None] | None = None,
     ) -> None:
         self._metrics = metrics
+        #: Called with "turn" before every `turn_started` (the managed-settings tamper check).
+        self.managed_check = managed_check
         self.commands_cfg = commands if commands is not None else cfg.sessions.commands
         self.commands = CommandQueue(self.commands_cfg)
         self.signals = SignalBus()
@@ -497,6 +500,12 @@ class SessionRouter(SessionListener):
         if self._idle_start is None or not self._idle_only:
             self._last_real = time.monotonic()
         return self._event_log.append(type, self._redactor.redact_obj(dict(data or {})))
+
+    def _emit_turn_started(self, turn_id: str, origin: str, text: str) -> None:
+        """The managed-settings tamper check, then `turn_started`: a restore is logged first."""
+        if self.managed_check is not None:
+            self.managed_check("turn")
+        self._emit("turn_started", {"turn_id": turn_id, "origin": origin, "text": text})
 
     def _emit_user_message(
         self, turn_id: str | None, origin: str, text: str, files: list[str] | None = None
@@ -1394,9 +1403,7 @@ class SessionRouter(SessionListener):
         )
         self._usage.reset()
         self._emit_user_message(record.turn_id, record.origin, text, list((files or {}).keys()))
-        self._emit(
-            "turn_started", {"turn_id": record.turn_id, "origin": record.origin, "text": text}
-        )
+        self._emit_turn_started(record.turn_id, record.origin, text)
         self.ensure_tailing()
         return record
 
@@ -1768,10 +1775,7 @@ class SessionRouter(SessionListener):
             self._last_marker = record.turn_id  # its Stop carries no marker of its own
             self._usage.reset()
             self._cancel_auto_compact()
-            self._emit(
-                "turn_started",
-                {"turn_id": record.turn_id, "origin": record.origin, "text": record.text},
-            )
+            self._emit_turn_started(record.turn_id, record.origin, record.text)
         self._emit(
             "prompt_delivered",
             {
@@ -2256,9 +2260,7 @@ class SessionRouter(SessionListener):
             turn = session.adopt_turn(line, origin=origin)
             self._usage.reset()
             self._emit_user_message(turn.turn_id, turn.origin, line)
-            self._emit(
-                "turn_started", {"turn_id": turn.turn_id, "origin": turn.origin, "text": line}
-            )
+            self._emit_turn_started(turn.turn_id, turn.origin, line)
         self._last_marker = turn.turn_id
         record.turn_id = turn.turn_id
 

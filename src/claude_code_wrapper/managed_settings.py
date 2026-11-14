@@ -15,7 +15,10 @@ import hashlib
 import json
 import logging
 import os
+import shutil
+import stat
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -177,6 +180,24 @@ def has_relay(doc: Any, relay: str) -> bool:
     return True
 
 
+DriftKind = Literal["missing", "not_regular", "mode", "modified", "extra_entry"]
+
+
+@dataclass(frozen=True)
+class Drift:
+    """What `check` found wrong with the managed dir: the first kind, and whether the restore
+    worked. Hashes only, never content."""
+
+    trigger: str
+    kind: DriftKind
+    expected_sha256: str
+    found_sha256: str | None
+    restored: bool
+
+    def to_event(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class ManagedStatus:
     state: ManagedState
@@ -212,6 +233,11 @@ class ManagedSettings:
         self._current: dict[str, Any] = copy.deepcopy(baseline)
         self._expected = serialize(self._current)
         self._sha256 = hashlib.sha256(self._expected).hexdigest()
+        #: True once install saw a dir holding nothing foreign (R1): only then may a check
+        #: remove entries outside CLAUDE_MANAGED_NAMES.
+        self._dedicated = False
+        #: Told of every drift `check` found (the manager fans it out as an event).
+        self.on_drift: Callable[[Drift], None] | None = None
 
     @property
     def document(self) -> dict[str, Any]:
@@ -262,26 +288,104 @@ class ManagedSettings:
             return self.status()
 
     def _heal(self, trigger: str) -> None:
-        """Degraded -> rewrite the expected bytes; active again only when read back equal."""
+        """Degraded -> restore; active again only when the restore read back equal."""
         if self._state != "degraded":
             return
-        try:
-            write_managed(self.path, self._expected)
-            ok = self.path.read_bytes() == self._expected
-        except OSError:
-            ok = False
-        if ok:
+        if self._restore():
             self._state, self._reason = "active", None
             self._restores += 1
             log.warning("managed settings %s healed (%s)", self.path, trigger)
+
+    def _restore(self) -> bool:
+        """Remove what does not belong (the allow-list of R1), rewrite the expected bytes and
+        read them back. The one restore path of `_heal` and `check`."""
+        try:
+            for name in self._extras():
+                self._remove(self.path.parent / name)
+            if stat.S_ISDIR(self._lstat_mode()):
+                shutil.rmtree(self.path)
+            write_managed(self.path, self._expected)
+            return self.path.read_bytes() == self._expected
+        except OSError as exc:
+            log.error("managed settings %s: restore failed: %s", self.path, type(exc).__name__)
+            return False
+
+    def _lstat_mode(self) -> int:
+        try:
+            return os.lstat(self.path).st_mode
+        except FileNotFoundError:
+            return 0
+
+    @staticmethod
+    def _remove(entry: Path) -> None:
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+
+    def _extras(self) -> list[str]:
+        """Entries a restore may remove: Claude's own names, and any other when dedicated."""
+        return sorted(
+            name
+            for name in os.listdir(self.path.parent)
+            if name not in {self.path.name, TMP_NAME}
+            and (self._dedicated or name in CLAUDE_MANAGED_NAMES)
+        )
+
+    def _inspect(self) -> tuple[DriftKind, str | None] | None:
+        """The first drift kind (and the found file's sha256), or None for a clean dir."""
+        try:
+            st = os.lstat(self.path)
+        except FileNotFoundError:
+            return "missing", None
+        if not stat.S_ISREG(st.st_mode):
+            return "not_regular", None
+        found = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        if stat.S_IMODE(st.st_mode) != 0o644:
+            return "mode", found
+        if found != self._sha256:
+            return "modified", found
+        if self._extras():
+            return "extra_entry", found
+        return None
+
+    def check(self, trigger: Literal["relay", "turn"]) -> Drift | None:
+        """Compare the dir with what ccw wrote; restore on any drift (spec D4). Reports the
+        first kind found and fixes all. A restore that fails leaves `degraded`, re-tried on
+        every call. No-op in `fallback`."""
+        with self._lock:
+            if self._state == "fallback":
+                return None
+            try:
+                found = self._inspect()
+            except OSError as exc:
+                found = ("missing", None)
+                log.error("managed settings %s: unreadable: %s", self.path, type(exc).__name__)
+            if found is None:
+                if self._state == "degraded":
+                    self._state, self._reason = "active", None
+                return None
+            kind, sha = found
+            restored = self._restore()
+            if restored:
+                self._restores += 1
+                self._state, self._reason = "active", None
+            else:
+                self._state, self._reason = "degraded", "restore failed"
+            drift = Drift(trigger, kind, self._sha256, sha, restored)
+        if self.on_drift is not None:
+            self.on_drift(drift)
+        return drift
 
     def install(self) -> ManagedStatus:
         """Write the baseline, read it back, check the relay: `active`, else `fallback`."""
         with self._lock:
             reason = self._install()
+            self._dedicated = reason is None
             if reason is None:
                 self._state, self._reason = "active", None
             else:
+                reason += self._drop_stale()
                 self._state, self._reason = "fallback", reason
                 log.warning(
                     "managed settings %s: falling back to the settings.json relay: %s",
@@ -289,6 +393,17 @@ class ManagedSettings:
                     reason,
                 )
             return self.status()
+
+    def _drop_stale(self) -> str:
+        """Fallback must not leave a file an earlier run wrote: Claude would load it, and ccw
+        cannot vouch for it. Removes the managed file only (never the dir); the reason suffix
+        says when that failed."""
+        try:
+            if os.path.lexists(self.path):
+                self._remove(self.path)
+        except OSError:
+            return "; a stale managed file could not be removed"
+        return ""
 
     def _install(self) -> str | None:
         try:
