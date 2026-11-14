@@ -180,7 +180,7 @@ def has_relay(doc: Any, relay: str) -> bool:
     return True
 
 
-DriftKind = Literal["missing", "not_regular", "mode", "modified", "extra_entry"]
+DriftKind = Literal["missing", "unreadable", "not_regular", "mode", "modified", "extra_entry"]
 
 
 @dataclass(frozen=True)
@@ -307,7 +307,8 @@ class ManagedSettings:
             write_managed(self.path, self._expected)
             return self.path.read_bytes() == self._expected
         except OSError as exc:
-            log.error("managed settings %s: restore failed: %s", self.path, type(exc).__name__)
+            if self._state != "degraded":
+                log.error("managed settings %s: restore failed: %s", self.path, type(exc).__name__)
             return False
 
     def _lstat_mode(self) -> int:
@@ -340,10 +341,15 @@ class ManagedSettings:
             return "missing", None
         if not stat.S_ISREG(st.st_mode):
             return "not_regular", None
-        found = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        size = len(self._expected)
+        try:
+            with open(self.path, "rb") as f:
+                found = hashlib.sha256(f.read(size + 1)).hexdigest()
+        except OSError:
+            return "unreadable", None
         if stat.S_IMODE(st.st_mode) != 0o644:
             return "mode", found
-        if found != self._sha256:
+        if st.st_size != size or found != self._sha256:
             return "modified", found
         if self._extras():
             return "extra_entry", found
@@ -352,20 +358,22 @@ class ManagedSettings:
     def check(self, trigger: Literal["relay", "turn"]) -> Drift | None:
         """Compare the dir with what ccw wrote; restore on any drift (spec D4). Reports the
         first kind found and fixes all. A restore that fails leaves `degraded`, re-tried on
-        every call. No-op in `fallback`."""
+        every call; `on_drift` hears of it only on the transition into degraded (not while it
+        stays so), and of the later successful restore. No-op in `fallback`."""
         with self._lock:
             if self._state == "fallback":
                 return None
             try:
                 found = self._inspect()
             except OSError as exc:
-                found = ("missing", None)
+                found = ("unreadable", None)
                 log.error("managed settings %s: unreadable: %s", self.path, type(exc).__name__)
             if found is None:
                 if self._state == "degraded":
                     self._state, self._reason = "active", None
                 return None
             kind, sha = found
+            was_degraded = self._state == "degraded"
             restored = self._restore()
             if restored:
                 self._restores += 1
@@ -373,7 +381,7 @@ class ManagedSettings:
             else:
                 self._state, self._reason = "degraded", "restore failed"
             drift = Drift(trigger, kind, self._sha256, sha, restored)
-        if self.on_drift is not None:
+        if self.on_drift is not None and (restored or not was_degraded):
             self.on_drift(drift)
         return drift
 

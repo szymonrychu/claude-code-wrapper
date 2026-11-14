@@ -1222,7 +1222,9 @@ any drift, emitting `managed_settings_restored` (see Events). It removes only Cl
 names (`managed-settings.d`, `managed-mcp.json`), and any other entry only because install found
 the directory dedicated. A failed restore leaves state `degraded` (retried on every check and on
 the next `GET`/`PUT` here). When install falls back, it removes a managed file an earlier run left,
-so Claude never loads one the service cannot vouch for.
+so Claude never loads one the service cannot vouch for. That includes the case where the
+fallback was caused by a non-dedicated directory: the file is the same one install would have
+overwritten, and a stale one would be loaded as an old baseline.
 
 ### `GET /v1/config`
 
@@ -2205,13 +2207,14 @@ data: {"seq":23,"ts":"2026-10-20T09:10:00.000Z","session_id":"ses_3f9a1c0b7d42",
 Sent to every live session when the tamper check found the managed-settings directory changed
 and put it back (or failed to). The check runs before each `PreToolUse` and `PermissionRequest`
 relay call and before each `turn_started`; it compares the file with what the service wrote
-(missing, not a regular file, mode other than 0644, content hash, or any entry beside the file
+(missing, unreadable, not a regular file, mode other than 0644, content hash, or any entry beside the file
 and the temporary file) and rewrites it. Only hashes are reported, never content.
 
-`data`: `trigger` (`relay` or `turn`), `kind` (the first of `missing`, `not_regular`, `mode`,
-`modified`, `extra_entry`), `expected_sha256`, `found_sha256` (`null` when absent or not a
+`data`: `trigger` (`relay` or `turn`), `kind` (the first of `missing`, `unreadable`, `not_regular`,
+`mode`, `modified`, `extra_entry`), `expected_sha256`, `found_sha256` (`null` when absent or not a
 regular file), `restored` (`false` leaves the managed state `degraded`: new sessions then keep
-the full relay in `settings.json`, and the next check tries again).
+the full relay in `settings.json`, and the next check tries again; the `false` event is sent
+once, on the transition into `degraded`, not on every retry).
 
 ```
 event: managed_settings_restored

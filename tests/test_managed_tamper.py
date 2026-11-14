@@ -350,3 +350,47 @@ async def test_degraded_new_session_gets_full_relay(world, monkeypatch):
     for event in CLAUDE_HOOK_EVENTS:
         groups = doc["hooks"].get(event, [])
         assert any("ccw-hook" in h.get("command", "") for g in groups for h in g["hooks"]), event
+
+
+def test_unreadable_file_is_tampered_not_missing(ms, monkeypatch):
+    real_open = open
+    calls = []
+
+    def flaky(file, *args, **kwargs):
+        if Path(file) == ms.path and not calls:
+            calls.append(file)
+            raise OSError(13, "denied")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(ms_mod, "open", flaky, raising=False)
+    drift = ms.check("relay")
+    assert drift is not None
+    assert (drift.kind, drift.restored) == ("unreadable", True)
+    assert ms.check("relay") is None
+
+
+def test_size_mismatch_read_is_bounded(ms):
+    expected = ms.path.read_bytes()
+    ms.path.write_bytes(b"x" * (len(expected) + 5000))
+    drift = ms.check("relay")
+    assert drift.kind == "modified"
+    assert drift.found_sha256 == _sha(b"x" * (len(expected) + 1))
+    assert ms.path.read_bytes() == expected
+
+
+def test_persistent_restore_failure_emits_once(ms, monkeypatch):
+    seen = []
+    ms.on_drift = seen.append
+    _tamper_modified(ms)
+
+    def boom(path, data):
+        raise OSError(13, "denied")
+
+    monkeypatch.setattr(ms_mod, "write_managed", boom)
+    assert ms.check("relay").restored is False
+    assert ms.check("relay") is not None
+    assert ms.check("turn") is not None
+    assert [d.restored for d in seen] == [False]
+    monkeypatch.undo()
+    assert ms.check("turn").restored is True
+    assert [d.restored for d in seen] == [False, True]
