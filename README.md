@@ -1187,6 +1187,35 @@ after this seq). Header: `Last-Event-ID` (the seq of the last frame seen; wins o
 Response `200`, `Content-Type: text/event-stream`. Errors: `400 invalid_last_event_id` (header not
 an integer), `401 unauthorized`, `404 not_found`, `422 invalid_request` (bad `after_seq`).
 
+### `GET /v1/managed-settings`
+
+The managed-settings file ccw owns (`paths.managed_settings`, the top settings tier of every
+session). A degraded file is healed first.
+
+Auth: bearer. Response `200`: `{"state": "active"|"fallback"|"degraded", "path", "sha256",
+"reason", "restores", "overlay": object, "document": object}`; `document` is the file content
+(baseline plus overlay). Errors: `401 unauthorized`, `409 managed_settings_unavailable` (the
+service runs without a managed file).
+
+### `PUT /v1/managed-settings`
+
+Replaces the overlay (a replace, not a patch) and rewrites the file atomically, mode 0644.
+Body: `{"overlay": object}`, at most 64 KiB.
+Merge: objects deep merge; each `hooks` event list is the baseline groups, then the overlay
+groups; `permissions.deny` is the baseline rules, then the overlay rules not already there; any
+other list is replaced. The overlay may not change `disableAgentView`,
+`pluginConfigs.cc-plugin-sec-default@builtin.options.allowManagedModsOnly`,
+`env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE` or `env.CLAUDE_CODE_DISABLE_AGENT_VIEW`, and may not
+set `disableAllHooks` or `allowManagedHooksOnly` truthy (`false` is the baseline default: it is
+accepted and written as `false`). An `env` name matching a credential pattern is refused.
+
+Auth: bearer. Response `200`: the `GET` shape. Errors: `401 unauthorized`, `409
+managed_settings_unavailable` (file in `fallback`, or `degraded` and not healed), `413 too_large`,
+`422 invalid_request` (body is not `{"overlay": object}`), `422 locked_key` (the message names the
+key), `422 secret_in_overlay`, `422 invalid_overlay` (a `hooks` or `permissions.deny` value of the
+wrong type, or an overlay that would remove the relay), `500 managed_settings_write_failed` (the
+old file and overlay stay).
+
 ### `GET /v1/config`
 
 The effective configuration with secrets masked as `***` (`server.auth_token`,
@@ -3188,6 +3217,11 @@ FastAPI's `{"detail": ...}` body instead.
 | `create_failed` | 500 | a create or resume step failed; the message names the step |
 | `booting` | 503 | the session is still booting (409 for a `regular` or `priority` turn delivery) |
 | `dead` | 503 | the session is stopped, failed or dead and cannot take input (409 for a `regular` or `priority` turn delivery) |
+| `managed_settings_unavailable` | 409 | `GET` or `PUT /v1/managed-settings` while the managed file is not active (fallback, or degraded and not healed) |
+| `locked_key` | 422 | `PUT /v1/managed-settings` overlay changes a locked key or sets `disableAllHooks` or `allowManagedHooksOnly` truthy |
+| `secret_in_overlay` | 422 | `PUT /v1/managed-settings` overlay `env` carries a credential name |
+| `invalid_overlay` | 422 | `PUT /v1/managed-settings` overlay has a malformed `hooks` or `permissions.deny`, or would remove the relay |
+| `managed_settings_write_failed` | 500 | `PUT /v1/managed-settings` could not write the file |
 | `not_ready` | 503 | `/readyz` before startup finished |
 | `http_error` | any | any other HTTP error status raised by the framework |
 

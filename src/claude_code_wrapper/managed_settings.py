@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from claude_code_wrapper.bootstrap.settings import MANAGED_RELAY_EVENTS, _is_relay
+from claude_code_wrapper.claude_env import CREDENTIAL_ENV, SECRET_KEY_RE
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +29,109 @@ ManagedState = Literal["active", "fallback", "degraded"]
 TMP_NAME = ".managed-settings.json.ccw-tmp"
 #: Names Claude Code itself reads beside the managed file; allowed in the managed dir (R1).
 CLAUDE_MANAGED_NAMES = frozenset({"managed-settings.d", "managed-mcp.json"})
+
+
+#: Keys the overlay may never change: the baseline's own values (dotted path -> value).
+LOCKED: dict[str, Any] = {
+    "disableAgentView": True,
+    "pluginConfigs.cc-plugin-sec-default@builtin.options.allowManagedModsOnly": True,
+    "env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "0",
+    "env.CLAUDE_CODE_DISABLE_AGENT_VIEW": "1",
+}
+#: Kill switches: the overlay may state them false (the baseline default), never truthy (R8).
+FORBIDDEN_TRUE = ("disableAllHooks", "allowManagedHooksOnly")
+_MISSING = object()
+
+
+class ManagedSettingsError(ValueError):
+    """The overlay is refused."""
+
+
+class LockedKeyError(ManagedSettingsError):
+    def __init__(self, path: str) -> None:
+        super().__init__(f"overlay may not change the locked key {path}")
+        self.path = path
+
+
+class OverlaySecretError(ManagedSettingsError):
+    def __init__(self) -> None:
+        super().__init__("overlay env may not carry credentials; use claude.secret_env")
+
+
+class ManagedSettingsUnavailable(RuntimeError):
+    """The managed file is not active (fallback or degraded): no overlay can be applied."""
+
+
+def _lookup(doc: dict[str, Any], path: str) -> Any:
+    """The value at dotted `path`; _MISSING when absent. A non-dict where the path continues
+    would replace the baseline's dict, so it counts as a change: raises LockedKeyError."""
+    node: Any = doc
+    parts = path.split(".")
+    for part in parts:
+        if not isinstance(node, dict):
+            raise LockedKeyError(path)
+        if part not in node:
+            return _MISSING
+        node = node[part]
+    return node
+
+
+def _deep(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    out = base
+    for key, val in over.items():
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep(out[key], val)
+        else:
+            out[key] = copy.deepcopy(val)
+    return out
+
+
+def _list_of(value: Any, what: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise ManagedSettingsError(f"overlay {what} must be a list")
+    return value
+
+
+def merge_overlay(baseline: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """The baseline with `overlay` applied (spec D2, R7). Dicts deep merge; each hooks event
+    list is the baseline groups then the overlay groups; `permissions.deny` is the baseline
+    rules then the overlay rules not already present; any other list is replaced. Refuses a
+    LOCKED key set to another value, a FORBIDDEN_TRUE key set truthy, and credential env."""
+    for path, locked in LOCKED.items():
+        found = _lookup(overlay, path)
+        if found is not _MISSING and found != locked:
+            raise LockedKeyError(path)
+    for key in FORBIDDEN_TRUE:
+        if overlay.get(key):
+            raise LockedKeyError(key)
+    env = overlay.get("env")
+    if isinstance(env, dict) and any(
+        SECRET_KEY_RE.search(str(name)) or name in CREDENTIAL_ENV for name in env
+    ):
+        raise OverlaySecretError
+    out = copy.deepcopy(baseline)
+    hooks = overlay.get("hooks")
+    deny = (overlay.get("permissions") or {}).get("deny") if "permissions" in overlay else None
+    if "hooks" in overlay and not isinstance(hooks, dict):
+        raise ManagedSettingsError("overlay hooks must be an object")
+    if "permissions" in overlay and not isinstance(overlay["permissions"], dict):
+        raise ManagedSettingsError("overlay permissions must be an object")
+    rest = {k: v for k, v in overlay.items() if k != "hooks"}
+    if deny is not None:
+        _list_of(deny, "permissions.deny")
+        rest["permissions"] = {k: v for k, v in rest["permissions"].items() if k != "deny"}
+    _deep(out, rest)
+    if hooks:
+        merged = out.setdefault("hooks", {})
+        for event, groups in hooks.items():
+            merged[event] = [
+                *_list_of(merged.get(event, []), f"hooks.{event}"),
+                *copy.deepcopy(_list_of(groups, f"hooks.{event}")),
+            ]
+    if deny:
+        rules = out.setdefault("permissions", {}).setdefault("deny", [])
+        rules.extend(r for r in deny if r not in rules)
+    return out
 
 
 def serialize(doc: dict[str, Any]) -> bytes:
@@ -97,13 +201,14 @@ class ManagedSettings:
         self._state: ManagedState = "fallback"
         self._reason: str | None = "not installed"
         self._restores = 0
-        self._expected = serialize(self.document)
+        self._current: dict[str, Any] = copy.deepcopy(baseline)
+        self._expected = serialize(self._current)
         self._sha256 = hashlib.sha256(self._expected).hexdigest()
 
     @property
     def document(self) -> dict[str, Any]:
-        """What the file should hold."""
-        return copy.deepcopy(self._baseline)
+        """What the file should hold: the baseline with the overlay applied."""
+        return copy.deepcopy(self._current)
 
     @property
     def active(self) -> bool:
@@ -118,6 +223,43 @@ class ManagedSettings:
             restores=self._restores,
             overlay=copy.deepcopy(self._overlay),
         )
+
+    def refresh(self, trigger: str = "api") -> ManagedStatus:
+        """The status, after healing a degraded file first (R3)."""
+        with self._lock:
+            self._heal(trigger)
+            return self.status()
+
+    def replace(self, overlay: dict[str, Any]) -> ManagedStatus:
+        """Make `overlay` (not a patch) the overlay: merge, write, then update what the file
+        must hold, all under the lock. On OSError the old file, bytes and overlay stay."""
+        with self._lock:
+            self._heal("api")
+            if self._state != "active":
+                raise ManagedSettingsUnavailable(f"managed settings are {self._state}")
+            merged = merge_overlay(self._baseline, overlay)
+            if not has_relay(merged, self.relay):
+                raise ManagedSettingsError("overlay would remove the relay hooks")
+            data = serialize(merged)
+            write_managed(self.path, data)
+            self._current, self._expected = merged, data
+            self._sha256 = hashlib.sha256(data).hexdigest()
+            self._overlay = copy.deepcopy(overlay)
+            return self.status()
+
+    def _heal(self, trigger: str) -> None:
+        """Degraded -> rewrite the expected bytes; active again only when read back equal."""
+        if self._state != "degraded":
+            return
+        try:
+            write_managed(self.path, self._expected)
+            ok = self.path.read_bytes() == self._expected
+        except OSError:
+            ok = False
+        if ok:
+            self._state, self._reason = "active", None
+            self._restores += 1
+            log.warning("managed settings %s healed (%s)", self.path, trigger)
 
     def install(self) -> ManagedStatus:
         """Write the baseline, read it back, check the relay: `active`, else `fallback`."""

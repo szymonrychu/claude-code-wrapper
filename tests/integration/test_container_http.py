@@ -122,3 +122,29 @@ def test_managed_settings_file_in_image(anon: httpx.Client) -> None:
     )
     assert out.stdout.strip() == "644 agent agent"
     assert anon.get("/readyz").json() == {"status": "ready", "managed_settings": "active"}
+
+
+def test_managed_settings_put_round_trip(api: httpx.Client) -> None:
+    """PUT rewrites the managed file in the container; GET returns the overlay."""
+    compose = [
+        "docker",
+        "compose",
+        "-p",
+        os.environ.get("CCW_COMPOSE_PROJECT", "ccw-it"),
+        "-f",
+        "docker-compose.yml",
+        "-f",
+        "docker-compose.ci.yml",
+    ]
+    overlay = {"env": {"FOO": "1"}}
+    put = api.put("/v1/managed-settings", json={"overlay": overlay})
+    assert put.status_code == 200
+    out = subprocess.run(
+        [*compose, "exec", "-T", "ccw", "cat", MANAGED_SETTINGS],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert '"FOO": "1"' in out.stdout
+    assert api.get("/v1/managed-settings").json()["overlay"] == overlay

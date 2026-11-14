@@ -306,3 +306,149 @@ async def test_statusline_relay_works_with_managed_file_active(world):
     await m.router(sid).submit_turn("status")
     await world.wait_turn(m, sid)
     await world.until(lambda: (m.router(sid).statusline or {}).get("used_percentage") == 42.0)
+
+
+# ---------------------------------------------------------------- overlay merge (D2, R7, R8)
+
+GROUP = {"matcher": "Bash", "hooks": [{"type": "command", "command": "/bin/true"}]}
+
+#: every LOCKED key paired with a value that differs from the locked one
+LOCKED_CHANGES = [
+    ("disableAgentView", {"disableAgentView": False}),
+    (
+        "pluginConfigs.cc-plugin-sec-default@builtin.options.allowManagedModsOnly",
+        {
+            "pluginConfigs": {
+                "cc-plugin-sec-default@builtin": {"options": {"allowManagedModsOnly": False}}
+            }
+        },
+    ),
+    (
+        "env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE",
+        {"env": {"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"}},
+    ),
+    ("env.CLAUDE_CODE_DISABLE_AGENT_VIEW", {"env": {"CLAUDE_CODE_DISABLE_AGENT_VIEW": "0"}}),
+    ("disableAllHooks", {"disableAllHooks": True}),
+    ("allowManagedHooksOnly", {"allowManagedHooksOnly": True}),
+]
+
+
+def test_merge_overlay_keeps_overlay_keys():
+    from claude_code_wrapper.managed_settings import merge_overlay
+
+    base = _baseline()
+    before = json.loads(json.dumps(base))
+    out = merge_overlay(base, {"env": {"FOO": "1"}, "model": "opus"})
+    assert out["env"] == {**base["env"], "FOO": "1"}
+    assert out["model"] == "opus"
+    assert out["disableAgentView"] is True
+    assert base == before  # the baseline is never mutated
+
+
+def test_merge_overlay_relay_groups_first():
+    from claude_code_wrapper.managed_settings import merge_overlay
+
+    base = _baseline()
+    out = merge_overlay(base, {"hooks": {"PreToolUse": [GROUP], "Stop": [GROUP]}})
+    assert out["hooks"]["PreToolUse"] == [*base["hooks"]["PreToolUse"], GROUP]
+    assert out["hooks"]["PermissionRequest"] == base["hooks"]["PermissionRequest"]
+    assert out["hooks"]["Stop"] == [GROUP]
+
+
+@pytest.mark.parametrize(("path", "overlay"), LOCKED_CHANGES)
+def test_merge_overlay_locked_key_refused(path, overlay):
+    from claude_code_wrapper.managed_settings import LockedKeyError, merge_overlay
+
+    with pytest.raises(LockedKeyError) as exc:
+        merge_overlay(_baseline(), overlay)
+    assert exc.value.path == path
+
+
+@pytest.mark.parametrize(
+    "overlay",
+    [
+        {"pluginConfigs": "x"},
+        {"env": ["a"]},
+        {"pluginConfigs": {"cc-plugin-sec-default@builtin": {"options": None}}},
+    ],
+)
+def test_merge_overlay_replacing_a_locked_parent_refused(overlay):
+    from claude_code_wrapper.managed_settings import LockedKeyError, merge_overlay
+
+    with pytest.raises(LockedKeyError):
+        merge_overlay(_baseline(), overlay)
+
+
+def test_merge_overlay_same_locked_value_ok():
+    from claude_code_wrapper.managed_settings import LOCKED, merge_overlay
+
+    out = merge_overlay(
+        _baseline(),
+        {
+            "disableAgentView": True,
+            "env": {"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "0"},
+            "pluginConfigs": {
+                "cc-plugin-sec-default@builtin": {"options": {"allowManagedModsOnly": True}}
+            },
+        },
+    )
+    assert out == _baseline()
+    assert len(LOCKED) == 4
+
+
+@pytest.mark.parametrize("key", ["disableAllHooks", "allowManagedHooksOnly"])
+def test_merge_overlay_false_kill_switch_ok_and_not_written_true(key):
+    from claude_code_wrapper.managed_settings import merge_overlay
+
+    out = merge_overlay(_baseline(), {key: False})
+    assert out[key] is False
+    assert out[key] is not True
+
+
+def test_merge_overlay_deny_union():
+    from claude_code_wrapper.managed_settings import merge_overlay
+
+    base = _baseline()
+    deny = base["permissions"]["deny"]
+    out = merge_overlay(base, {"permissions": {"deny": ["Bash(rm:*)", deny[0]], "allow": ["Read"]}})
+    assert out["permissions"]["deny"] == [*deny, "Bash(rm:*)"]
+    assert out["permissions"]["allow"] == ["Read"]
+
+
+@pytest.mark.parametrize(
+    "overlay", [{"hooks": "x"}, {"hooks": {"PreToolUse": "x"}}, {"permissions": {"deny": "x"}}]
+)
+def test_merge_overlay_malformed_shape_refused(overlay):
+    from claude_code_wrapper.managed_settings import ManagedSettingsError, merge_overlay
+
+    with pytest.raises(ManagedSettingsError):
+        merge_overlay(_baseline(), overlay)
+
+
+@pytest.mark.parametrize("name", ["GH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"])
+def test_merge_overlay_secret_env_refused(name):
+    from claude_code_wrapper.managed_settings import OverlaySecretError, merge_overlay
+
+    with pytest.raises(OverlaySecretError) as exc:
+        merge_overlay(_baseline(), {"env": {name: "CANARY-mset-7f3a"}})
+    assert str(exc.value) == "overlay env may not carry credentials; use claude.secret_env"
+    assert name not in str(exc.value)
+    assert "CANARY" not in str(exc.value)
+
+
+def test_replace_updates_expected_and_sha_before_unlock(tmp_path):
+    ms = _managed(tmp_path)
+    ms.install()
+    status = ms.replace({"env": {"FOO": "1"}})
+    raw = ms.path.read_bytes()
+    assert ms._expected == raw
+    assert status.sha256 == hashlib.sha256(raw).hexdigest()
+    assert status.overlay == {"env": {"FOO": "1"}}
+    assert ms.document["env"]["FOO"] == "1"
+
+
+def test_replace_unavailable_in_fallback(tmp_path):
+    from claude_code_wrapper.managed_settings import ManagedSettingsUnavailable
+
+    with pytest.raises(ManagedSettingsUnavailable):
+        _managed(tmp_path).replace({})
