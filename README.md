@@ -213,6 +213,60 @@ secret values and the token patterns), then writes the marker file `<sessions_ro
 - Files outside `config/` (`events.jsonl`, `turns.jsonl`, hook state) are not rewritten; the
   events and turns are redacted when written.
 
+## Managed settings
+
+Claude Code reads a managed-settings file as its top settings tier: it outranks every other source
+(precedence managed > `--settings` > local > project > user), and the user and project tiers
+cannot switch it off. At start ccw writes that file itself (`paths.managed_settings`, default
+`/etc/claude-code/managed-settings.json`, mode 0644, written at runtime and never baked into the
+image). The API is [`GET`/`PUT /v1/managed-settings`](#get-v1managed-settings); the event is
+[`managed_settings_restored`](#managed_settings_restored); `ccw config managed-settings` prints the
+rendered file.
+
+**What the baseline holds.**
+
+- The `PreToolUse` and `PermissionRequest` relay to ccw (`onFailure: block`, so a relay that cannot
+  run blocks the tool call instead of letting it through). Because the managed tier runs first,
+  mods and user hooks can no longer act before the gate. `settings.json` then relays only the
+  other nine events, and the `claude.settings` `PreToolUse` hooks you configure run after the
+  managed relay and after mods. The `PermissionRequest` timeout is the 86430 s ceiling (one file
+  serves every session); a session's own hold still follows its `CCW_PERMISSION_TIMEOUT`.
+- Managed mods only (`allowManagedModsOnly` on the built-in `sec-default` plugin): a mod loads only
+  when the managed settings name it. Hooks are never locked with `allowManagedHooksOnly` or
+  `disableAllHooks`, because Claude would then skip the statusLine relay or every hook.
+- Agent view and Code Mode off (`disableAgentView`, and in the file's `env` block
+  `CLAUDE_CODE_DISABLE_AGENT_VIEW=1` and `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0`; the child env
+  carries the same two).
+- `Edit` and `Write` deny rules on the managed directory.
+
+**Overlay and locked keys.** `PUT /v1/managed-settings` replaces an overlay merged over the
+baseline (hook lists and `permissions.deny` append, other lists replace). The overlay cannot change
+the locked keys (`disableAgentView`, `allowManagedModsOnly`, the two env names above), set
+`disableAllHooks` or `allowManagedHooksOnly` truthy, carry a credential in `env`, or remove the
+relay. Claude Code may apply some keys only at session start, so a changed overlay reaches running
+sessions after they restart.
+
+**Tamper check.** The agent runs as uid 1000 and the file sits (mode 0644) in a directory
+the agent owns, so the deny rules alone do not stop a Bash command from rewriting it. Before
+each `PreToolUse` and `PermissionRequest` relay call and before each `turn_started`, ccw compares
+the directory with what it wrote and restores it. A change made by a tool call is therefore
+live for at most that one call: it is undone before the next gated call or turn. See
+[`managed_settings_restored`](#managed_settings_restored).
+
+**Fallback and degraded.** When the file cannot be written, the directory is not dedicated to it
+or the read-back lacks the relay, the state is `fallback`: ccw logs a warning, `/readyz` reports
+`managed_settings: "fallback"`, no managed file is left behind, and every session's
+`settings.json` keeps the relay for all eleven events as before. A restore that fails leaves the
+state `degraded`: new sessions keep the full relay in `settings.json` until a later check or
+`GET`/`PUT` heals it.
+
+**Write fence.** In `bypassPermissions` sessions `settings.json` sets
+`permissions.blockWritesOutsideWorkingDirectories`, with `permissions.additionalDirectories` from
+`claude.additional_directories` (default: the workdir root, `/tmp` and the session config
+directory). The fence covers the `Write`, `Edit` and `NotebookEdit` tools only: Bash, MCP tools and
+programs run by hooks are not fenced. Claude Code also removes the `EnterWorktree` and
+`ExitWorktree` tools while it is set. `claude.settings` is merged after and can lift it.
+
 ## Architecture
 
 ```
