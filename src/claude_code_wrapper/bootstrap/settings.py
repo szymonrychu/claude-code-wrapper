@@ -241,7 +241,8 @@ def render_settings(
             else:
                 hooks.pop(event, None)
             continue
-        hooks[event] = [relay_group(event, relay, timeout), *kept]
+        on_failure = ON_FAILURE_BLOCK if event in MANAGED_RELAY_EVENTS else None
+        hooks[event] = [relay_group(event, relay, timeout, on_failure), *kept]
     doc["hooks"] = hooks
 
     ccw_allow = (CCW_MCP_ALLOW, *PEERS_ALLOW)

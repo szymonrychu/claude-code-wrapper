@@ -39,6 +39,16 @@ def test_relay_groups_without_managed(tmp_path):
     assert json.loads((tmp_path / "settings.json").read_text()) == doc
 
 
+def test_fallback_relay_fails_closed_for_managed_events(tmp_path):
+    doc = _render(tmp_path, managed_relay=False)
+    for event in CLAUDE_HOOK_EVENTS:
+        hook = doc["hooks"][event][0]["hooks"][0]
+        if event in MANAGED_RELAY_EVENTS:
+            assert hook["onFailure"] == "block"
+        else:
+            assert "onFailure" not in hook
+
+
 def _is_relay_group(group) -> bool:
     return any(h.get("command", "").startswith(RELAY + " ") for h in group.get("hooks", []))
 
