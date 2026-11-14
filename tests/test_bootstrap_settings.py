@@ -309,6 +309,23 @@ def test_no_fence_in_auto_mode(tmp_path):
     assert "additionalDirectories" not in perms
 
 
+def test_fence_removed_when_not_bypass(tmp_path):
+    (tmp_path / "settings.json").write_text(
+        json.dumps(
+            {
+                "permissions": {
+                    "blockWritesOutsideWorkingDirectories": True,
+                    "additionalDirectories": ["/workdir", "/tmp"],
+                }
+            }
+        )
+    )
+    cfg = _cfg(claude={"permission_mode": "auto"})
+    perms = _render(tmp_path, cfg)["permissions"]
+    assert "blockWritesOutsideWorkingDirectories" not in perms
+    assert "additionalDirectories" not in perms
+
+
 def test_overlay_can_override_fence(tmp_path):
     (tmp_path / "cfg").mkdir()
     overlay = {

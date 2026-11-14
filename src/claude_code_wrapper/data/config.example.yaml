@@ -39,7 +39,6 @@ claude:
     allow: []                # e.g. ["Bash(git status:*)"]
     deny: [EnterPlanMode, ExitPlanMode]
   # additional_directories: [/workdir, /tmp]   # bypass write fence dirs; default workdir_root, /tmp, session config dir
-  # additional_directories: [/workdir, /tmp]   # bypass write fence dirs; default workdir_root, /tmp, session config dir
   settings: {}               # deep-merged into settings.json (hook lists are appended)
   claude_json: {}            # deep-merged into .claude.json
   mcp_servers: {}            # name -> server definition
