@@ -3399,6 +3399,7 @@ claude:
 | `claude.main_agent_only_tools` | list | `[]` | - | List of `fnmatch` globs (case-sensitive) of tool names that PreToolUse denies when the call comes from a subagent (hook payload carries `agent_id`), for example `["mcp__any-mcp__orchestrator_*"]`. Main-agent calls pass. Best-effort guard, not a security boundary: subagents share the pod and trust domain with the main agent. |
 | `claude.permissions.allow` | list | `[]` | - | List of allow rules, for example `Bash(git status:*)`. |
 | `claude.permissions.deny` | list | `["EnterPlanMode", "ExitPlanMode"]` | - | List of deny rules. Plan-mode tools are denied by default. |
+| `claude.additional_directories` | list or null | `null` | - | Absolute directories bypass sessions may write to besides their workdir. With `claude.permission_mode: bypassPermissions` the service writes `permissions.blockWritesOutsideWorkingDirectories: true` and `permissions.additionalDirectories` (this list, or `null` for `paths.workdir_root`, `/tmp` and the session's `CLAUDE_CONFIG_DIR`) to `settings.json`; in other modes neither key is written. `claude.settings` is merged after, so it can lift the fence. |
 | `claude.settings` | map | `{}` | - | Map deep-merged into `settings.json`; hook lists are appended to the service's own hooks. |
 | `claude.claude_json` | map | `{}` | - | Map deep-merged into `.claude.json` in the session config dir. |
 | `claude.mcp_servers` | map | `{}` | - | Map of server name to definition. Stdio: `{type: stdio, command, args: [], env: {}}`. Remote: `{type: http\|sse, url, headers: {}}`. Header values and secret-looking env values are masked. The name `ccw` is reserved: while `sessions.commands.agent` is non-empty (config or create override) the service injects its own `ccw` server (`${CCW_INTERNAL_URL}/internal/mcp`, with the session id and hook token passed as env references, so the token is never written to a file) and adds `mcp__ccw__command` to `permissions.allow`; a user entry named `ccw` is then a config error (a 422 at create for an override). |
@@ -3518,7 +3519,7 @@ The typed Claude Code environment. Each field is the variable name lowercased; u
 | `claude.env.claude_code_disable_adaptive_thinking` | bool | `null` | `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` | Set to 1 to disable adaptive reasoning on Opus 4.6 and Sonnet 4.6 and fall back to the fixed thinking budget controll... |
 | `claude.env.claude_code_disable_admin_env_union` | bool | `null` | `CLAUDE_CODE_DISABLE_ADMIN_ENV_UNION` | Set to 1 to stop Claude Code from merging managed settings env blocks per key across admin sources, so only the highe... |
 | `claude.env.claude_code_disable_advisor_tool` | bool | `null` | `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` | Set to 1 to disable the advisor tool |
-| `claude.env.claude_code_disable_agent_view` | bool | `null` | `CLAUDE_CODE_DISABLE_AGENT_VIEW` | Set to 1 to turn off background agents and agent view: claude agents, --bg, /background, and the on-demand supervisor |
+| `claude.env.claude_code_disable_agent_view` | bool | `null` | `CLAUDE_CODE_DISABLE_AGENT_VIEW` | Set to 1 to turn off background agents and agent view: claude agents, --bg, /background, and the on-demand supervisor (managed by the service, always `1`; cannot be set) |
 | `claude.env.claude_code_disable_alternate_screen` | bool | `null` | `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` | Set to 1 to disable fullscreen rendering and use the classic main-screen renderer |
 | `claude.env.claude_code_disable_artifact` | bool | `null` | `CLAUDE_CODE_DISABLE_ARTIFACT` | Set to 1 to turn off the Artifact tool, which publishes session output as a private web page on claude.ai |
 | `claude.env.claude_code_disable_attachments` | bool | `null` | `CLAUDE_CODE_DISABLE_ATTACHMENTS` | Set to 1 to disable attachment processing |
@@ -4133,6 +4134,9 @@ the table below lists all of them with their group, checked against the Claude C
   token wins: `ANTHROPIC_API_KEY` is not exported and a warning is logged at start.
 - **Provider exclusivity.** At most one of `claude_code_use_bedrock`, `claude_code_use_vertex`,
   `claude_code_use_foundry` and `claude_code_use_anthropic_aws` may be true.
+- **Managed `CLAUDE_CODE_DISABLE_AGENT_VIEW` and `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE`.** The service
+  exports `1` and `0` to every claude child; neither the field, an `extra` key nor passthrough
+  can change them.
 - **Managed `CLAUDE_CONFIG_DIR`.** The service sets it per session to
   `<paths.sessions_root>/<session_id>/config`; `claude_config_dir` cannot be set.
 - **`extra`.** `claude.env.extra` is a map of any other variable, passed verbatim. Names match
@@ -4251,7 +4255,7 @@ the table below lists all of them with their group, checked against the Claude C
 | `claude_code_disable_adaptive_thinking` | `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` | bool | no | model | Set to 1 to disable adaptive reasoning on Opus 4.6 and Sonnet 4.6 and fall back to the fixed thinking budget controll... |
 | `claude_code_disable_admin_env_union` | `CLAUDE_CODE_DISABLE_ADMIN_ENV_UNION` | bool | no | behaviour | Set to 1 to stop Claude Code from merging managed settings env blocks per key across admin sources, so only the highe... |
 | `claude_code_disable_advisor_tool` | `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` | bool | no | behaviour | Set to 1 to disable the advisor tool |
-| `claude_code_disable_agent_view` | `CLAUDE_CODE_DISABLE_AGENT_VIEW` | bool | no | behaviour | Set to 1 to turn off background agents and agent view: claude agents, --bg, /background, and the on-demand supervisor |
+| `claude_code_disable_agent_view` | `CLAUDE_CODE_DISABLE_AGENT_VIEW` | bool | no | behaviour | Set to 1 to turn off background agents and agent view: claude agents, --bg, /background, and the on-demand supervisor (managed by the service, always `1`; cannot be set) |
 | `claude_code_disable_alternate_screen` | `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` | bool | no | behaviour | Set to 1 to disable fullscreen rendering and use the classic main-screen renderer |
 | `claude_code_disable_artifact` | `CLAUDE_CODE_DISABLE_ARTIFACT` | bool | no | behaviour | Set to 1 to turn off the Artifact tool, which publishes session output as a private web page on claude.ai |
 | `claude_code_disable_attachments` | `CLAUDE_CODE_DISABLE_ATTACHMENTS` | bool | no | behaviour | Set to 1 to disable attachment processing |

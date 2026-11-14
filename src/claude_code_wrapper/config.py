@@ -243,6 +243,9 @@ class ClaudeConfig(_Model):
     secret_env: list[str] = Field(default_factory=list)
     main_agent_only_tools: list[str] = Field(default_factory=list)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
+    #: With `permission_mode: bypassPermissions`, the directories writes may reach besides the
+    #: session workdir; None means workdir_root, /tmp and the session config dir.
+    additional_directories: list[str] | None = None
     settings: dict[str, Any] = Field(default_factory=dict)
     claude_json: dict[str, Any] = Field(default_factory=dict)
     mcp_servers: dict[str, McpServer] = Field(default_factory=dict)
@@ -259,6 +262,13 @@ class ClaudeConfig(_Model):
         if isinstance(out.get("extra"), dict):
             out["extra"] = {k: v for k, v in out["extra"].items() if v != ""}
         return out
+
+    @field_validator("additional_directories")
+    @classmethod
+    def _check_additional_directories(cls, value: list[str] | None) -> list[str] | None:
+        for path in value or []:
+            _absolute(path)
+        return value
 
     @field_validator("secret_env")
     @classmethod

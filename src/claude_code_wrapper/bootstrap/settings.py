@@ -261,6 +261,18 @@ def render_settings(
         allow=allow,
         deny=deny,
     )
+    if cfg.claude.permission_mode == "bypassPermissions":
+        # Write fence: bypass sessions may write only under the workdir and these dirs. Before
+        # the overlay merge, so `claude.settings` can still move or lift it (operator choice).
+        permissions["blockWritesOutsideWorkingDirectories"] = True
+        permissions["additionalDirectories"] = (
+            list(cfg.claude.additional_directories)
+            if cfg.claude.additional_directories is not None
+            else [cfg.paths.workdir_root, "/tmp", str(config_dir)]
+        )
+    else:
+        permissions.pop("blockWritesOutsideWorkingDirectories", None)
+        permissions.pop("additionalDirectories", None)
     doc["permissions"] = permissions
     # Dialog prevention: nothing may ask a person at boot or mid-session (user settings).
     doc["skipDangerousModePermissionPrompt"] = True

@@ -90,3 +90,37 @@ def test_tool_env_uses_same_rule():
     assert expected == {"GH_TOKEN", "GH_HOST", "WB_ONE"}
     assert expected <= set(tool) and expected <= set(child)
     assert "WB_SECRET_KEY" not in tool and "WB_SECRET_KEY" not in child
+
+
+def _managed_child(service_env, passthrough):
+    return build_env(
+        service_env=service_env,
+        claude_env=ClaudeEnv(),
+        config_dir="/cfg",
+        gitconfig="/g",
+        session_id="s",
+        internal_url="http://x",
+        hook_token="t",
+        gate_fail="allow",
+        gate_timeout=1.0,
+        permission_timeout=1815.0,
+        mise_env=None,
+        passthrough=passthrough,
+    )
+
+
+def test_build_env_sets_agent_view_and_code_mode_off():
+    env = _managed_child({"PATH": "/usr/bin"}, [])
+    assert env["CLAUDE_CODE_DISABLE_AGENT_VIEW"] == "1"
+    assert env["CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"] == "0"
+
+
+def test_passthrough_cannot_override_agent_view_or_code_mode():
+    service = {
+        "PATH": "/usr/bin",
+        "CLAUDE_CODE_DISABLE_AGENT_VIEW": "0",
+        "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1",
+    }
+    env = _managed_child(service, ["*"])
+    assert env["CLAUDE_CODE_DISABLE_AGENT_VIEW"] == "1"
+    assert env["CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"] == "0"

@@ -301,6 +301,8 @@ MANAGED_ENV_NAMES = frozenset(
     {
         "CLAUDE_CONFIG_DIR",
         "CLAUDE_CODE_PROJECT_DIR_NAME",
+        "CLAUDE_CODE_DISABLE_AGENT_VIEW",
+        "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE",
         "GIT_CONFIG_GLOBAL",
         "CCW_SESSION_ID",
         "CCW_INTERNAL_URL",
@@ -375,6 +377,8 @@ def build_env(
     managed = {
         "CLAUDE_CONFIG_DIR": config_dir,
         "CLAUDE_CODE_PROJECT_DIR_NAME": PROJECT_DIR_NAME,
+        "CLAUDE_CODE_DISABLE_AGENT_VIEW": "1",
+        "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "0",
         "GIT_CONFIG_GLOBAL": gitconfig,
         "CCW_SESSION_ID": session_id,
         "CCW_INTERNAL_URL": internal_url,

@@ -297,6 +297,8 @@ def test_env_minimal_and_managed_vars() -> None:
         "DISABLE_TELEMETRY": "1",
         "CLAUDE_CONFIG_DIR": "/sessions/ses_1/config",
         "CLAUDE_CODE_PROJECT_DIR_NAME": "workdir",
+        "CLAUDE_CODE_DISABLE_AGENT_VIEW": "1",
+        "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "0",
         "GIT_CONFIG_GLOBAL": "/sessions/ses_1/gitconfig",
         "CCW_SESSION_ID": "ses_1",
         "CCW_INTERNAL_URL": "http://127.0.0.1:8090",

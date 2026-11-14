@@ -101,7 +101,8 @@ def test_catalogue_flags():
     assert cat["DISABLE_TELEMETRY"].type == "bool" and not cat["DISABLE_TELEMETRY"].secret
     assert cat["MCP_TIMEOUT"].type == "int"
     assert cat["CLAUDE_CONFIG_DIR"].managed
-    assert sum(s.managed for s in cat.values()) == 1
+    assert cat["CLAUDE_CODE_DISABLE_AGENT_VIEW"].managed
+    assert sum(s.managed for s in cat.values()) == 2
 
 
 def test_secret_fields_are_secretstr():
@@ -265,3 +266,18 @@ def test_redacted_masks_secrets():
     assert r["anthropic_model"] == "m"
     assert r["extra"] == {"MY_TOKEN": "***", "PLAIN": "p", "DB_PASSWORD": "***"}
     assert sorted(e.secret_values()) == sorted(["oauth-token-1", "tokval", "pw"])
+
+
+def test_claude_env_rejects_disable_agent_view_field():
+    with pytest.raises(
+        ValidationError, match=r"CLAUDE_CODE_DISABLE_AGENT_VIEW.*managed by the service"
+    ):
+        ClaudeEnv(claude_code_disable_agent_view=False)
+
+
+def test_claude_env_rejects_code_mode_extra():
+    with pytest.raises(
+        ValidationError,
+        match=r"extra key CLAUDE_CODE_EXPERIMENTAL_CODE_MODE is managed by the service",
+    ):
+        ClaudeEnv(extra={"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"})

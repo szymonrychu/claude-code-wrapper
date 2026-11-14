@@ -80,7 +80,10 @@ def test_settings_disabled_unchanged(tmp_path):
     b.mkdir()
     render_settings(a, Config(), relay_command=RELAY)
     render_settings(b, Config(), relay_command=RELAY, peers=False)
-    assert (a / "settings.json").read_bytes() == (b / "settings.json").read_bytes()
+    # the bypass write fence names the session config dir, which differs between a and b
+    first = (a / "settings.json").read_text().replace(str(a), "<config>")
+    second = (b / "settings.json").read_text().replace(str(b), "<config>")
+    assert first == second
     assert "SendMessage" not in json.loads((a / "settings.json").read_text())["permissions"]["deny"]
 
 

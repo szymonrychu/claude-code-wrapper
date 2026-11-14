@@ -557,3 +557,12 @@ def test_shutdown_handoff_rejects_unknown_key(tmp_path):
 @pytest.mark.parametrize("key", ["notice_seconds", "handoff_seconds", "idle_proceed_seconds"])
 def test_shutdown_handoff_negative_seconds_rejected(tmp_path, key):
     assert f"shutdown.handoff.{key}" in err(tmp_path, f"shutdown:\n  handoff:\n    {key}: -1\n")
+
+
+def test_additional_directories_must_be_absolute(tmp_path):
+    assert "claude.additional_directories" in err(
+        tmp_path, "claude: {additional_directories: [rel]}\n"
+    )
+    cfg = load_config(write(tmp_path, "claude: {additional_directories: [/data]}\n"))
+    assert cfg.claude.additional_directories == ["/data"]
+    assert Config().claude.additional_directories is None

@@ -275,3 +275,48 @@ def test_prevention_env_merges_and_overlay_wins(tmp_path):
     assert doc["env"]["FOO"] == "1"
     assert doc["env"]["CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"] == "1"
     assert doc["feedbackDrafts"] == "quiet"
+
+
+def _bypass_fence(tmp_path, claude=None, **kw):
+    cfg = _cfg(claude={"permission_mode": "bypassPermissions", **(claude or {})})
+    return _render(tmp_path / "cfg", cfg, **kw)["permissions"]
+
+
+def test_fence_in_bypass_default_dirs(tmp_path):
+    (tmp_path / "cfg").mkdir()
+    perms = _bypass_fence(tmp_path)
+    assert perms["blockWritesOutsideWorkingDirectories"] is True
+    assert perms["additionalDirectories"] == ["/workdir", "/tmp", str(tmp_path / "cfg")]
+
+
+def test_fence_configured_dirs(tmp_path):
+    (tmp_path / "cfg").mkdir()
+    perms = _bypass_fence(tmp_path, {"additional_directories": ["/data", "/cache"]})
+    assert perms["blockWritesOutsideWorkingDirectories"] is True
+    assert perms["additionalDirectories"] == ["/data", "/cache"]
+
+
+def test_fence_configured_empty_list(tmp_path):
+    (tmp_path / "cfg").mkdir()
+    perms = _bypass_fence(tmp_path, {"additional_directories": []})
+    assert perms["additionalDirectories"] == []
+
+
+def test_no_fence_in_auto_mode(tmp_path):
+    cfg = _cfg(claude={"permission_mode": "auto"})
+    perms = _render(tmp_path, cfg)["permissions"]
+    assert "blockWritesOutsideWorkingDirectories" not in perms
+    assert "additionalDirectories" not in perms
+
+
+def test_overlay_can_override_fence(tmp_path):
+    (tmp_path / "cfg").mkdir()
+    overlay = {
+        "permissions": {
+            "blockWritesOutsideWorkingDirectories": False,
+            "additionalDirectories": ["/elsewhere"],
+        }
+    }
+    perms = _bypass_fence(tmp_path, {"settings": overlay})
+    assert perms["blockWritesOutsideWorkingDirectories"] is False
+    assert perms["additionalDirectories"] == ["/elsewhere"]

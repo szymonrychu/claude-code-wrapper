@@ -33,7 +33,12 @@ VarType = Literal["str", "bool", "int", "secret"]
 EXTRA_KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 SECRET_KEY_RE = re.compile(r"TOKEN|KEY|SECRET|PASSWORD|AUTH|CREDENTIAL")
 RESERVED_EXTRA = frozenset({"TERM", "HOME"})
-MANAGED_ENV = frozenset({"CLAUDE_CONFIG_DIR"})
+#: Set by the service for every session; a field or an `extra` key naming one is refused.
+#: The two Claude Code ones are pinned off (agent view, Code Mode) so a session cannot start
+#: background agents or run tools outside the hooks' view (T-223).
+MANAGED_ENV = frozenset(
+    {"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_DISABLE_AGENT_VIEW", "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"}
+)
 PROVIDER_FLAGS = (
     "claude_code_use_bedrock",
     "claude_code_use_vertex",
@@ -2365,6 +2370,9 @@ class _ClaudeEnvBase(BaseModel):
             raise ValueError(
                 "CLAUDE_CONFIG_DIR is set per session by the service from paths.sessions_root"
             )
+        for env in sorted(MANAGED_ENV - {"CLAUDE_CONFIG_DIR"}):
+            if getattr(self, env.lower(), None) is not None:
+                raise ValueError(f"{env} is managed by the service and cannot be set")
         if sum(getattr(self, f) is True for f in PROVIDER_FLAGS) > 1:
             raise ValueError(
                 "at most one of claude_code_use_bedrock, claude_code_use_vertex, "
