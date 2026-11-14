@@ -101,6 +101,10 @@ SUBAGENT_LINK_WAIT_SECONDS = 10.0
 SUBAGENT_LINK_POLL_SECONDS = 0.1
 #: How often a priority delivery re-checks for the turn claude starts for its flushed queue.
 PRIORITY_FLUSH_POLL = 0.05
+#: Claude Code 2.1.323 can run the Stop hook before its transcript holds the turn's prompt
+#: line; a Stop that reads the previous turn's marker waits this long for the running one.
+STOP_MARKER_WAIT_SECONDS = 2.0
+STOP_MARKER_POLL_SECONDS = 0.05
 #: Priority deliveries remembered by client message id, so a retried send is idempotent.
 PRIORITY_IDS_MAX = 256
 
@@ -1168,6 +1172,7 @@ class SessionRouter(SessionListener):
     async def _on_stop(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         self._resolve_pending_by_terminal(self.permissions.of_agent(None), "deny")
         await self._flush_transcripts()
+        await self._await_running_marker()
         held = await self._stop_gate(payload)
         if held is not None:
             return held
@@ -1196,6 +1201,20 @@ class SessionRouter(SessionListener):
             self._start_idle_runner()
             await self._after_turn(record, event)
         return _allow()
+
+    async def _await_running_marker(self) -> None:
+        """While a turn runs and the newest marker read names an earlier turn, re-read the
+        transcript until the running turn's marker shows up, for STOP_MARKER_WAIT_SECONDS at
+        most. Without it a Stop that outruns the transcript write is dropped as stale and the
+        turn never completes; a Stop that is really stale is only delayed."""
+        session = self.session
+        record = session.current_turn
+        if session.state != "busy" or record is None:
+            return
+        deadline = time.monotonic() + STOP_MARKER_WAIT_SECONDS
+        while self._last_marker not in (None, record.turn_id) and time.monotonic() < deadline:
+            await asyncio.sleep(STOP_MARKER_POLL_SECONDS)
+            await self._flush_transcripts()
 
     async def _stop_gate(self, payload: Mapping[str, Any]) -> RelayResponse | None:
         """onStop for a Stop that would end the running turn; the relay answer if it stays open.

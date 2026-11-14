@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from claude_code_wrapper import router as router_mod
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.events import EventLog
 from claude_code_wrapper.hooks import HookDispatcher
@@ -384,6 +385,43 @@ async def test_stop_flushes_tailer_before_marker(h):
     assert marker == "turn-1"
     assert usage["input_tokens"] == 7 and model_tokens["claude-x"]["input_tokens"] == 7
     assert h.events("turn_completed")
+
+
+async def test_stop_waits_for_a_lagging_prompt_line(h):
+    """Claude Code 2.1.323 can run the Stop hook before its transcript holds the turn's prompt
+    line (seen in the live-claude job with a fast model): the router waits for the running
+    turn's marker instead of reading the previous turn's marker and dropping the Stop."""
+    h.transcript.write_text(user("one\n\n<!-- ccw turn: turn-0 -->") + assistant("done one"))
+    h.router.ensure_tailing()
+    await h.router._flush_transcripts()
+    assert h.router._last_marker == "turn-0"
+    h.session.state = "busy"
+    h.session.turn = TurnRecord(turn_id="turn-1", session_id=SID, started_at=now_iso())
+
+    async def late_line() -> None:
+        await asyncio.sleep(0.3)
+        with h.transcript.open("a") as f:
+            f.write(user("two\n\n<!-- ccw turn: turn-1 -->") + assistant("done two", mid="m2"))
+
+    writer = asyncio.create_task(late_line())
+    await h.router.handle_claude_hook("Stop", {"session_id": CLAUDE_SID})
+    await writer
+    (call,) = h.calls("complete")
+    assert call[4] == "turn-1"
+
+
+async def test_stale_stop_wait_is_bounded(h, monkeypatch):
+    """A Stop that really belongs to the previous turn still reaches the session (which drops
+    it) once the bounded wait ends."""
+    monkeypatch.setattr(router_mod, "STOP_MARKER_WAIT_SECONDS", 0.3)
+    h.transcript.write_text(user("one\n\n<!-- ccw turn: turn-0 -->") + assistant("done one"))
+    h.session.state = "busy"
+    h.session.turn = TurnRecord(turn_id="turn-1", session_id=SID, started_at=now_iso())
+    started = time.monotonic()
+    await h.router.handle_claude_hook("Stop", {"session_id": CLAUDE_SID})
+    assert time.monotonic() - started < 2.0
+    (call,) = h.calls("complete")
+    assert call[4] == "turn-0"
 
 
 async def test_usage_reset_after_stop(h):
