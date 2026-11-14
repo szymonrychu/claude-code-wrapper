@@ -18,6 +18,10 @@ Environment
     CLAUDE_CODE_PROJECT_DIR_NAME transcript project dir name (default: cwd with every
                                  non-alphanumeric char replaced by '-')
     FAKE_CLAUDE_SCENARIO         path to a scenario JSON file
+    FAKE_CLAUDE_MANAGED_SETTINGS path of the managed-settings file (claude's top tier, read at
+                                 boot like settings.json; missing or unset: none). Its hooks
+                                 run before the settings.json hooks of the same event; a
+                                 command hook identical in both runs once (claude dedupes).
     FAKE_CLAUDE_LOG              when set, one JSON line per invocation:
                                  {argv, cwd, env: {CLAUDE_CONFIG_DIR,
                                  CLAUDE_CODE_PROJECT_DIR_NAME, CCW_SESSION_ID,
@@ -27,12 +31,17 @@ Environment
     CLAUDE_CODE_STOP_HOOK_BLOCK_CAP  max consecutive Stop blocks per turn (default 8)
 
 Interactive mode (no subcommand) needs a TTY on stdin, else exits 2. Boot prints a
-colored banner, then (boot.bypass_dialog, default true) a "Bypass Permissions mode"
-dialog needing Down (ESC [ B) then CR; CR without Down exits 1. Input arriving before
+colored banner, then the claude 2.1.323 boot dialogs, in claude's order: (boot.trust_dialog,
+default false) the workspace trust dialog, (boot.bypass_dialog, default true) the
+"Bypass Permissions mode" warning and (boot.auto_default_nudge, default false) "Make auto
+mode your default permission mode?". Each needs Down (ESC [ B) then CR; CR without Down
+picks the first option ("No, exit", or switch to auto) and exits 1. Input arriving before
 boot.min_seconds (default 0.3) exits 1. Then the idle footer "? for shortcuts". With
-boot.mode "auto" there is no bypass dialog and the footer reads "auto mode on" instead;
-boot.footer replaces the boot footer text (the first footer only), e.g. an "auto mode is
-unavailable ..." line.
+boot.mode "auto" there is no bypass dialog and the footer reads "auto mode on (shift+tab to
+cycle)" instead; boot.manual_start (auto mode only) is 2.1.323's start when auto is
+unavailable: the Manual footer "manual mode on - ? for shortcuts" (every footer) and then
+the given reason notice once. boot.footer replaces the boot footer text (the first footer
+only), e.g. an "auto mode is unavailable ..." line.
 Input: bracketed paste ESC[200~ ... ESC[201~; a CR in a later read than the paste end
 submits; a CR in the same read as the paste end is a newline. A lone ESC during a turn
 interrupts it. Byte 0x03 at idle exits 0. A paste with no CR stays in the input box and the
@@ -47,7 +56,12 @@ Scenario schema
   becomes the named group `name` (a `{{name}}` without such a group stays as is). Steps:
     {"text": s}  {"thinking": s}
     {"tool": name, "input": {...}, "result": s, "fail": false,
-     "agent": {"id": A, "type": T}}   with "agent", PreToolUse and PostToolUse(Failure)
+     "agent": {"id": A, "type": T}, "mod": "answer"}
+                         "mod": "answer" models a managed mod answering PreToolUse for
+                         this call: the managed-settings PreToolUse hooks still run first,
+                         the settings.json PreToolUse hooks are skipped (claude 2.1.323
+                         mods run after managed hooks and before user hooks)
+                         with "agent", PreToolUse and PostToolUse(Failure)
                          payloads carry agent_id and agent_type, and the tool_use and
                          tool_result lines go to subagents/agent-<A>.jsonl (isSidechain true)
     {"mcp": {"server": "ccw", "tool": "command", "arguments": {...},
@@ -106,6 +120,9 @@ Scenario schema
   or exits 2 (reason = stderr) makes the fake write R as a user line, run the turn's
   on_block steps and fire Stop again with stop_hook_active true. At most 8 consecutive
   blocks (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP overrides); past the cap the turn ends as allowed.
+    {"statusline": {...}} runs settings.json statusLine.command with this JSON on stdin and
+                         draws its stdout (skipped when the managed file sets
+                         allowManagedHooksOnly or disableAllHooks, as claude does)
     {"auto_compact": {"pre_tokens": N}}  inside a turn (models Claude Code's own compaction):
                          PreCompact then the boundary (trigger "auto") and summary lines, then
                          PostCompact (trigger "auto"); the following steps continue
@@ -233,7 +250,29 @@ PASTE_END = b"\x1b[201~"
 DOWN = b"\x1b[B"
 CLEAR_INPUT = b"\x0c"  # ctrl+l, chat:clearInput in claude 2.1.304
 FOOTER = "? for shortcuts"
-AUTO_FOOTER = "auto mode on"
+AUTO_FOOTER = "\u23f5\u23f5 auto mode on (shift+tab to cycle)"
+MANUAL_FOOTER = "\u23f8 manual mode on \u00b7 ? for shortcuts"
+#: claude 2.1.323 boot dialogs (title, options); the first option is always the wrong answer.
+#: The real trust and bypass dialogs end in "Enter to confirm - Esc to cancel"; the fake leaves
+#: that footer out, as it always did, so a boot dialog never reads as an open UI dialog.
+TRUST_DIALOG = (
+    " Accessing workspace:\n\n {cwd}\n\n"
+    " Quick safety check: Is this a project you created or one you trust? (Like your own code,"
+    " a well-known open source\n project, or work from your team). If not, take a moment to"
+    " review what's in this folder first.\n\n"
+    " \u276f No, exit\n   Yes, I trust this folder\n"
+)
+BYPASS_DIALOG = (
+    "  \x1b[1;31mWARNING: Claude Code running in Bypass Permissions mode\x1b[0m\n\n"
+    "  In Bypass Permissions mode, Claude Code will not ask for your approval before running"
+    " potentially dangerous\n  commands.\n\n"
+    "  \u276f No, exit\n    Yes, I accept\n"
+)
+NUDGE_DIALOG = (
+    " Make auto mode your default permission mode?\n\n"
+    "   \u276f Yes, set auto mode as my default permission mode\n"
+    "     No, keep bypass permissions\n"
+)
 INTERRUPT_TEXT = "[Request interrupted by user]"
 PERMISSION_INTERRUPT_TEXT = "[Request interrupted by user for tool use]"
 PERMISSION_PROMPT = "Do you want to proceed?\n> 1. Yes\n  2. No\n"
@@ -433,6 +472,7 @@ class Fake:
         self.proj_dir = proj
         self.transcript = os.path.join(proj, f"{self.session_id}.jsonl")
         self.settings = self._load_settings()
+        self.managed = self._load_managed()
         self.parent = None
         self.last_text = ""
         self.background: list[tuple[float, str, list]] = []
@@ -475,6 +515,18 @@ class Fake:
         except (FileNotFoundError, ValueError):
             return {}
 
+    @staticmethod
+    def _load_managed() -> dict:
+        path = os.environ.get("FAKE_CLAUDE_MANAGED_SETTINGS")
+        if not path:
+            return {}
+        try:
+            with open(path, encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return doc if isinstance(doc, dict) else {}
+
     # ---- terminal io
     def out(self, text: str) -> None:
         os.write(1, text.replace("\r\n", "\n").replace("\n", "\r\n").encode())
@@ -489,8 +541,11 @@ class Fake:
         return data
 
     def footer(self, text: str | None = None) -> None:
-        auto = self.scenario.get("boot", {}).get("mode") == "auto"
-        self.out(f"\n  {text or (AUTO_FOOTER if auto else FOOTER)}\n")
+        boot = self.scenario.get("boot", {})
+        footer = FOOTER
+        if boot.get("mode") == "auto":
+            footer = MANUAL_FOOTER if boot.get("manual_start") else AUTO_FOOTER
+        self.out(f"\n  {text or footer}\n")
 
     # ---- transcript
     def write_line(self, obj: dict, path: str | None = None, sidechain: bool = False) -> None:
@@ -535,10 +590,16 @@ class Fake:
 
     # ---- hooks
     def run_hooks(
-        self, event: str, extra: dict, tool: str | None = None, match: str | None = None
+        self,
+        event: str,
+        extra: dict,
+        tool: str | None = None,
+        match: str | None = None,
+        managed_only: bool = False,
     ) -> list[dict]:
-        """Run the event's hook commands; `match` (the tool name, or the SessionStart source)
-        filters groups by matcher."""
+        """Run the event's hook commands, managed-settings groups first, then settings.json
+        (not with `managed_only`); an identical command runs once. `match` (the tool name, or
+        the SessionStart source) filters groups by matcher."""
         if match is None:
             match = tool
         payload = {
@@ -550,13 +611,17 @@ class Fake:
             **extra,
         }
         results = []
-        for group in self.settings.get("hooks", {}).get(event, []):
+        sources = [self.managed] if managed_only else [self.managed, self.settings]
+        groups = [g for doc in sources for g in (doc.get("hooks") or {}).get(event, [])]
+        seen: set[str] = set()
+        for group in groups:
             matcher = group.get("matcher") or ""
             if match is not None and matcher not in ("", "*") and not re.fullmatch(matcher, match):
                 continue
             for h in group.get("hooks", []):
-                if h.get("type", "command") != "command":
+                if h.get("type", "command") != "command" or h.get("command") in seen:
                     continue
+                seen.add(h.get("command"))
                 env = {**os.environ, "CLAUDE_PROJECT_DIR": self.cwd}
                 try:
                     p = subprocess.run(
@@ -601,22 +666,29 @@ class Fake:
             if self.read(left) is not None:
                 raise Exit(1)
         auto = cfg.get("mode") == "auto"
+        if cfg.get("trust_dialog"):
+            self.boot_dialog(TRUST_DIALOG.format(cwd=os.getcwd()))
         if cfg.get("bypass_dialog", True) and not auto:
-            self.out(
-                "\n\x1b[1;31mWARNING: Bypass Permissions mode\x1b[0m\n"
-                "  1. No, exit\n  2. Yes, I accept\n"
-            )
-            buf = b""
-            while True:
-                buf += self.read(None) or b""
-                idx = buf.find(DOWN)
-                if idx >= 0 and b"\r" in buf[idx:]:
-                    break
-                if idx < 0 and b"\r" in buf:
-                    raise Exit(1)
+            self.boot_dialog(BYPASS_DIALOG)
+        if cfg.get("auto_default_nudge"):
+            self.boot_dialog(NUDGE_DIALOG)
         source = "resume" if self.resume else "startup"
         self.run_hooks("SessionStart", {"source": source}, match=source)
         self.footer(cfg.get("footer"))
+        if auto and cfg.get("manual_start"):
+            self.out(f"\n{' ' * 60}{cfg['manual_start']}\n")
+
+    def boot_dialog(self, text: str) -> None:
+        """Draw a boot dialog and wait for Down then CR; a CR alone takes the first option."""
+        self.out("\n" + text)
+        buf = b""
+        while True:
+            buf += self.read(None) or b""
+            idx = buf.find(DOWN)
+            if idx >= 0 and b"\r" in buf[idx:]:
+                return
+            if idx < 0 and b"\r" in buf:
+                raise Exit(1)
 
     # ---- main loop
     def run(self) -> int:
@@ -1042,7 +1114,33 @@ class Fake:
                 bg.append(step["background"])
             elif "auto_compact" in step:
                 self.auto_compact_step(step["auto_compact"] or {})
+            elif "statusline" in step:
+                self.statusline_step(step["statusline"])
         return True
+
+    def statusline_step(self, payload: dict) -> None:
+        """Run settings.json `statusLine.command` with `payload` on stdin, its stdout drawn.
+        Skipped, as claude does, when the managed file sets allowManagedHooksOnly or
+        disableAllHooks (N-249)."""
+        if self.managed.get("allowManagedHooksOnly") or self.managed.get("disableAllHooks"):
+            return
+        command = (self.settings.get("statusLine") or {}).get("command")
+        if not isinstance(command, str):
+            return
+        env = {**os.environ, "CLAUDE_PROJECT_DIR": self.cwd}
+        try:
+            p = subprocess.run(
+                ["sh", "-c", command],
+                input=json.dumps(payload).encode(),
+                capture_output=True,
+                env=env,
+                cwd=self.cwd,
+                timeout=30,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return
+        self.out(p.stdout.decode(errors="replace"))
 
     def exit_once(self, code: int, key: str) -> None:
         flag = os.path.join(config_dir(), f"fake-exit-once-{code}-{zlib.crc32(key.encode()):08x}")
@@ -1103,14 +1201,18 @@ class Fake:
             tokens,
             lambda: (step.get("result", ""), bool(step.get("fail"))),
             step.get("permission"),
+            mod_answers=step.get("mod") == "answer",
         )
 
     def hook_permission_mode(self) -> str:
-        """The mode hooks report: the real pod runs bypassPermissions unless booted in auto."""
+        """The mode hooks report: the real pod runs bypassPermissions unless booted in auto;
+        a Manual start (auto unavailable) runs `default`."""
         boot = self.scenario.get("boot", {})
-        return boot.get("permission_mode") or (
-            "auto" if boot.get("mode") == "auto" else "bypassPermissions"
-        )
+        if boot.get("permission_mode"):
+            return boot["permission_mode"]
+        if boot.get("mode") != "auto":
+            return "bypassPermissions"
+        return "default" if boot.get("manual_start") else "auto"
 
     def permission_prompt(
         self, name: str, tinput: dict, who: dict, footer: bool, suggestions: list | None = None
@@ -1172,9 +1274,11 @@ class Fake:
         tokens: int,
         execute,
         permission: dict | None = None,
+        mod_answers: bool = False,
     ) -> bool:
-        """tool_use line, PreToolUse (a deny skips execute), optional permission prompt,
-        tool_result line, Post hooks. False when the turn ended (prompt answered by ESC)."""
+        """tool_use line, PreToolUse (a deny skips execute; managed hooks only when a mod
+        answers), optional permission prompt, tool_result line, Post hooks. False when the
+        turn ended (prompt answered by ESC)."""
         tid = "toolu_" + uuid.uuid4().hex[:24]
         who: dict = {}
         path, side = None, False
@@ -1191,6 +1295,7 @@ class Fake:
             "PreToolUse",
             {"tool_name": name, "tool_input": tinput, "tool_use_id": tid, **who},
             tool=name,
+            managed_only=mod_answers,
         )
         self.context_from(pre)
         deny = None

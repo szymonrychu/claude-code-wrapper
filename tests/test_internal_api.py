@@ -47,6 +47,10 @@ class FakeRouter:
 class FakeManager:
     def __init__(self) -> None:
         self.r = FakeRouter()
+        self.checks: list[str] = []
+
+    def check_managed_settings(self, trigger: str) -> None:
+        self.checks.append(trigger)
 
     def hook_token_matches(self, sid: str, token: str | None) -> bool:
         return sid == "s1" and token == TOKEN
@@ -76,6 +80,15 @@ async def test_routes_hook_to_session_router() -> None:
         assert mgr.r.calls == [("Stop", {"a": 1})]
         h = await c.get("/internal/healthz")
         assert h.json() == {"status": "ok"}
+
+
+async def test_managed_relay_events_run_the_tamper_check_first() -> None:
+    mgr = FakeManager()
+    async with client(mgr) as c:
+        for event in ("PreToolUse", "PermissionRequest", "Stop"):
+            await c.post(f"/internal/hooks/{event}", json={}, headers=H)
+    assert [e for e, _ in mgr.r.calls] == ["PreToolUse", "PermissionRequest", "Stop"]
+    assert mgr.checks == ["relay", "relay"]
 
 
 async def test_unknown_event_404() -> None:

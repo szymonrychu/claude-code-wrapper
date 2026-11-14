@@ -1,0 +1,4 @@
+{
+  "description": "live-unmanaged-mod hooks module",
+  "modules": ["./register.js"]
+}

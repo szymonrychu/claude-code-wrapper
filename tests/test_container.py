@@ -16,12 +16,15 @@ def test_dockerfile_non_root_pinned_and_cmd():
     assert re.search(r"groupadd[^\n]*(-g|--gid)\s*1000", DOCKERFILE)
     assert "HOME=/home/agent" in DOCKERFILE
     m = re.search(r"^ARG CLAUDE_CODE_VERSION=(\S+)$", DOCKERFILE, re.M)
-    assert m and m.group(1) == "2.1.304"
-    assert "latest" not in m.group(1)
+    assert m and "latest" not in m.group(1)
     assert "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" in DOCKERFILE
     assert "DISABLE_AUTOUPDATER=1" in DOCKERFILE
     assert re.search(r'^CMD \["ccw", "serve"\]$', DOCKERFILE, re.M)
     assert DOCKERFILE.rstrip().splitlines()[-1].startswith("CMD")
+
+
+def test_dockerfile_claude_code_version():
+    assert "ARG CLAUDE_CODE_VERSION=2.1.323" in DOCKERFILE.splitlines()
 
 
 def test_dockerfile_installs_required_tools():
@@ -166,3 +169,12 @@ def test_compose_requires_token_and_binds_loopback():
     svc = COMPOSE["services"]["ccw"]
     assert svc["environment"]["CCW_AUTH_TOKEN"] == "${CCW_AUTH_TOKEN:?set CCW_AUTH_TOKEN}"
     assert all(p.startswith("127.0.0.1:") for p in svc["ports"])
+
+
+def test_dockerfile_managed_settings_dir():
+    """/etc/claude-code is created and owned by agent; ccw writes the file at start."""
+    mkdir = re.search(r"mkdir -p ([^\n&]*)", DOCKERFILE)
+    chown = re.search(r"chown -R agent:agent ([^\n&]*)", DOCKERFILE)
+    assert mkdir and "/etc/claude-code" in mkdir.group(1).split()
+    assert chown and "/etc/claude-code" in chown.group(1).split()
+    assert "managed-settings.json" not in DOCKERFILE

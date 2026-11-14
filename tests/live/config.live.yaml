@@ -1,0 +1,52 @@
+# live-claude job (scripts/live-claude.sh): the built image runs the real Claude Code it ships,
+# against tests/live/fake_messages_api.py on the host network. No real credentials: the API key
+# is a dummy the fake API never checks. Unset values below default to the container layout.
+
+server:
+  host: 127.0.0.1
+  port: ${CCW_PORT:-8080}
+  internal_port: ${CCW_INTERNAL_PORT:-8090}
+  auth_token: live-token
+  log_level: info
+
+paths:
+  workdir_root: ${CCW_WORKDIR_ROOT:-/workdir}
+  sessions_root: ${CCW_SESSIONS_ROOT:-/sessions}
+  managed_settings: ${CCW_MANAGED_SETTINGS:-/etc/claude-code/managed-settings.json}
+
+claude:
+  binary: ${LIVE_CLAUDE_BINARY:-claude}
+  permission_mode: bypassPermissions
+  # A mod in a user location: allowManagedModsOnly (managed baseline) must refuse it.
+  extra_args: ["--plugin-dir", "${LIVE_MODS_DIR:-/opt/live-mods}/unmanaged-mod"]
+  env:
+    anthropic_api_key: ${LIVE_API_KEY}
+    anthropic_base_url: http://127.0.0.1:${LIVE_API_PORT:-18765}
+    claude_code_disable_nonessential_traffic: "1"
+    disable_autoupdater: "1"
+  settings:
+    # Positive and negative control: a non-managed PreToolUse hook logs every call it sees.
+    hooks:
+      PreToolUse:
+        - matcher: ""
+          hooks:
+            - {type: command, command: "jq -c . >> /tmp/ccw-live-settings-pretooluse.jsonl"}
+    # Chained behind the ccw statusLine relay: proves the relay still fires (N-249).
+    statusLine: {type: command, command: "cat > /tmp/ccw-live-statusline.json"}
+
+init:
+  workdir:
+    mode: empty
+
+mise:
+  install_on_start: false
+  install_workdir: false
+  required: false
+
+sessions:
+  max_sessions: 8
+  resume_on_start: false
+
+limits:
+  turn_max_seconds: 180
+  shutdown_timeout_seconds: 10

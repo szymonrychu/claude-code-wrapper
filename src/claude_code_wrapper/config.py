@@ -132,11 +132,26 @@ class ServerConfig(_Model):
         return value
 
 
+#: Parents that can never be the dedicated managed-settings dir (ruling R1).
+SHARED_DIRS = ("/", "/etc", "/tmp")
+
+
 class PathsConfig(_Model):
     workdir_root: str = "/workdir"
     sessions_root: str = "/sessions"
+    #: The managed-settings file ccw writes; its parent dir is dedicated to it.
+    managed_settings: str = "/etc/claude-code/managed-settings.json"
 
-    _abs = field_validator("workdir_root", "sessions_root")(_absolute)
+    _abs = field_validator("workdir_root", "sessions_root", "managed_settings")(_absolute)
+
+    @field_validator("managed_settings")
+    @classmethod
+    def _dedicated(cls, value: str) -> str:
+        if str(Path(value).parent) in SHARED_DIRS:
+            raise ValueError(
+                f"managed_settings must sit in a dedicated directory, not in {Path(value).parent}"
+            )
+        return value
 
 
 class BootDialog(_Model):
@@ -150,10 +165,17 @@ class BootConfig(_Model):
     min_boot_seconds: float = Field(4.0, ge=0)
     idle_ready_seconds: float = Field(1.5, ge=0)
     submit_delay_seconds: float = Field(0.4, ge=0)
+    #: claude 2.1.323 boot dialogs (MEMORY 2026-11-14, T-69). The seeds in settings.json and
+    #: .claude.json normally keep them away; the first option of each is the wrong answer
+    #: (exit, or make auto the default), so each is answered with Down then CR.
     dialogs: list[BootDialog] = Field(
         default_factory=lambda: [
-            BootDialog(pattern="Bypass Permissions mode", keys=["\x1b[B", "\r"], delay_seconds=0.6),
-            BootDialog(pattern="Do you trust the files in this folder", keys=["\r"]),
+            BootDialog(pattern=pattern, keys=["\x1b[B", "\r"], delay_seconds=0.6)
+            for pattern in (
+                "Bypass Permissions mode",
+                "Is this a project you created or one you trust",
+                "Make auto mode your default permission mode",
+            )
         ]
     )
     ready_markers: list[str] = Field(
@@ -221,6 +243,9 @@ class ClaudeConfig(_Model):
     secret_env: list[str] = Field(default_factory=list)
     main_agent_only_tools: list[str] = Field(default_factory=list)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
+    #: With `permission_mode: bypassPermissions`, the directories writes may reach besides the
+    #: session workdir; None means workdir_root, /tmp and the session config dir.
+    additional_directories: list[str] | None = None
     settings: dict[str, Any] = Field(default_factory=dict)
     claude_json: dict[str, Any] = Field(default_factory=dict)
     mcp_servers: dict[str, McpServer] = Field(default_factory=dict)
@@ -237,6 +262,13 @@ class ClaudeConfig(_Model):
         if isinstance(out.get("extra"), dict):
             out["extra"] = {k: v for k, v in out["extra"].items() if v != ""}
         return out
+
+    @field_validator("additional_directories")
+    @classmethod
+    def _check_additional_directories(cls, value: list[str] | None) -> list[str] | None:
+        for path in value or []:
+            _absolute(path)
+        return value
 
     @field_validator("secret_env")
     @classmethod

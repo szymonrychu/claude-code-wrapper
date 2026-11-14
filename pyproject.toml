@@ -57,6 +57,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q -m 'not integration'"
-markers = ["integration: needs the compose stack (mise run test:integration)"]
+addopts = "-q -m 'not integration and not live'"
+markers = [
+    "integration: needs the compose stack (mise run test:integration)",
+    "live: real Claude Code in the built image (mise run test:live)",
+]
 asyncio_mode = "auto"

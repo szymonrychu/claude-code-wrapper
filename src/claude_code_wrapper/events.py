@@ -71,6 +71,7 @@ EVENT_TYPES: list[str] = [
     "shutdown_started",
     "shutdown_handoff",
     "session_closed",
+    "managed_settings_restored",
 ]
 
 MAX_PAGE_LIMIT = 1000

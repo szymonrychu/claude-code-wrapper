@@ -13,6 +13,7 @@ from claude_code_wrapper.api import (
     dialog,
     events,
     files,
+    managed_settings,
     notes,
     peers,
     sessions,
@@ -88,6 +89,7 @@ def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> Fas
     v1.include_router(events.router)
     v1.include_router(files.router)
     v1.include_router(notes.router)
+    v1.include_router(managed_settings.router)
     v1.include_router(terminals.router)
     v1.include_router(peers.view_router)
     app.state.v1 = v1
@@ -112,7 +114,11 @@ def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> Fas
     async def readyz() -> dict[str, str]:
         if not manager.started:
             raise ApiError(503, "not_ready", "service is not ready")
-        return {"status": "ready"}
+        managed = manager.managed_settings
+        return {
+            "status": "ready",
+            "managed_settings": managed.status().state if managed is not None else "fallback",
+        }
 
     if metrics is not None:
         app.add_middleware(_HttpMetrics, metrics=metrics)

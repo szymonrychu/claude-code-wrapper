@@ -301,6 +301,8 @@ MANAGED_ENV_NAMES = frozenset(
     {
         "CLAUDE_CONFIG_DIR",
         "CLAUDE_CODE_PROJECT_DIR_NAME",
+        "CLAUDE_CODE_DISABLE_AGENT_VIEW",
+        "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE",
         "GIT_CONFIG_GLOBAL",
         "CCW_SESSION_ID",
         "CCW_INTERNAL_URL",
@@ -375,6 +377,8 @@ def build_env(
     managed = {
         "CLAUDE_CONFIG_DIR": config_dir,
         "CLAUDE_CODE_PROJECT_DIR_NAME": PROJECT_DIR_NAME,
+        "CLAUDE_CODE_DISABLE_AGENT_VIEW": "1",
+        "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "0",
         "GIT_CONFIG_GLOBAL": gitconfig,
         "CCW_SESSION_ID": session_id,
         "CCW_INTERNAL_URL": internal_url,
@@ -439,9 +443,11 @@ class SessionListener:
         """A message typed into a turn (`queue_prompt`) will never be read: `reason`."""
 
 
-#: What claude prints instead of the "auto mode on" footer when auto cannot be used (MEMORY
-#: 2026-11-01, C1), with the reason reported. Matched like fatal patterns (case, whitespace and
-#: escapes ignored). The "no safety verdict" text comes first: it is the longest and most specific.
+#: What claude prints when auto cannot be used (MEMORY 2026-11-01, C1; re-probed on 2.1.323,
+#: 2026-11-14, T-69: it then starts in Manual, footer "manual mode on", and draws the reason as a
+#: notice above the prompt), with the reason reported. Matched like fatal patterns (case,
+#: whitespace and escapes ignored). The "no safety verdict" text comes first: it is the longest
+#: and most specific.
 AUTO_UNAVAILABLE: tuple[tuple[str, str], ...] = (
     ("auto mode is unavailable: the server returned no safety verdict", "no_safety_verdict"),
     ("auto mode disabled by settings", "settings"),

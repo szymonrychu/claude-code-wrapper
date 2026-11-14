@@ -484,11 +484,26 @@ async def test_gate_env_from_hooks(world: World) -> None:
 
 
 async def test_permission_hold_override_reaches_settings_and_env(world: World) -> None:
-    m = world.manager(world.cfg())
+    # Fallback (no managed file): the per-session PermissionRequest relay is in settings.json.
+    m = world.manager(world.cfg(), managed=False)
     snap = await m.create(CreateSessionRequest(commands={"permission_hold_seconds": 60}))
     sid = snap["session_id"]
     settings = json.loads((world.session_dir(sid) / "config" / "settings.json").read_text())
     assert settings["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"] == 90
+    assert m.router(sid).session.spec.env["CCW_PERMISSION_TIMEOUT"] == "75"
+
+
+async def test_permission_hold_override_with_managed_file(world: World) -> None:
+    # Managed file active: claude's hook timeout is the shared ceiling, the relay's own
+    # attempt timeout still follows the session's hold.
+    cfg = world.cfg()
+    m = world.manager(cfg)
+    snap = await m.create(CreateSessionRequest(commands={"permission_hold_seconds": 60}))
+    sid = snap["session_id"]
+    settings = json.loads((world.session_dir(sid) / "config" / "settings.json").read_text())
+    assert "PermissionRequest" not in settings["hooks"]
+    managed = json.loads(Path(cfg.paths.managed_settings).read_text())
+    assert managed["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"] == 86430
     assert m.router(sid).session.spec.env["CCW_PERMISSION_TIMEOUT"] == "75"
 
 

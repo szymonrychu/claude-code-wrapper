@@ -17,6 +17,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from claude_code_wrapper.bootstrap.settings import MANAGED_RELAY_EVENTS
 from claude_code_wrapper.hook_relay import (
     CLAUDE_HOOK_EVENTS,
     HEADER_DELIVERY,
@@ -224,6 +225,8 @@ def create_internal_app(manager: SessionManager) -> FastAPI:
             raise HTTPException(400, "body must be a JSON object") from None
         if not isinstance(payload, dict):
             raise HTTPException(400, "body must be a JSON object")
+        if event in MANAGED_RELAY_EVENTS:
+            manager.check_managed_settings("relay")
 
         # A held PermissionRequest learns that its ccw-hook died (connection dropped).
         gone = asyncio.Event() if event == "PermissionRequest" else None

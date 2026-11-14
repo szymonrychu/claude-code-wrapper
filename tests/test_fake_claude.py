@@ -183,8 +183,10 @@ def test_boot_banner_has_ansi_and_dialog(spawn):
     p = spawn()
     p.wait_for("Bypass Permissions mode")
     assert "\x1b[" in p.buf
-    assert "1. No, exit" in p.buf
-    assert "2. Yes, I accept" in p.buf
+    # claude 2.1.323 draws the options without indexes (t69-probe/bypass-dialog)
+    assert "WARNING: Claude Code running in Bypass Permissions mode" in p.buf
+    assert "\u276f No, exit" in p.buf
+    assert "Yes, I accept" in p.buf
 
 
 def test_boot_dialog_requires_down_then_cr(spawn):
@@ -1143,3 +1145,103 @@ def test_permission_footer_can_be_off(spawn, env, work, tmp_path, scenario_file)
     p.wait_for("? for shortcuts")
     p.submit("go")
     assert "Tab to amend" not in p.buf and "Do you want to proceed?" in p.buf
+
+
+RECORD_HOOK = Path(__file__).parent / "fixtures" / "hooks" / "record_hook.sh"
+
+
+def _recorder(label: str) -> dict:
+    return {"type": "command", "command": f"CCW_EVENT={label} sh {RECORD_HOOK}"}
+
+
+def _recorded(log: Path) -> list[str]:
+    if not log.exists():
+        return []
+    return [json.loads(x)["event"] for x in log.read_text().splitlines()]
+
+
+def test_managed_hooks_run_first_and_mod_skips_user_pretooluse(
+    spawn, env, work, tmp_path, scenario_file
+):
+    log = tmp_path / "record.jsonl"
+    managed = tmp_path / "managed-settings.json"
+    managed.write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"matcher": "", "hooks": [_recorder("managed")]}]}})
+    )
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {"PreToolUse": [{"matcher": "", "hooks": [_recorder("user")]}]},
+    )
+    scenario = scenario_file(
+        {
+            "turns": [
+                {
+                    "match": "^mod",
+                    "steps": [
+                        {
+                            "tool": "Bash",
+                            "input": {"command": "ls"},
+                            "result": "m-ok",
+                            "mod": "answer",
+                        }
+                    ],
+                },
+                {
+                    "match": "^plain",
+                    "steps": [{"tool": "Bash", "input": {"command": "ls"}, "result": "p-ok"}],
+                },
+            ]
+        }
+    )
+    p = spawn(
+        FAKE_CLAUDE_SCENARIO=str(scenario),
+        FAKE_CLAUDE_MANAGED_SETTINGS=str(managed),
+        RECORD_HOOK_LOG=str(log),
+    )
+    p.boot()
+    p.submit("mod")
+    assert _recorded(log) == ["managed"]
+    results = _tool_results(env, work)
+    assert results[-1]["content"] == "m-ok" and not results[-1]["is_error"]
+    # positive control: without a mod answer, managed hooks run first, then settings.json
+    p.submit("plain")
+    assert _recorded(log) == ["managed", "managed", "user"]
+    assert _tool_results(env, work)[-1]["content"] == "p-ok"
+
+
+def test_identical_managed_and_user_hook_runs_once(spawn, env, work, tmp_path, scenario_file):
+    """F1.9: claude dedupes an identical command hook across settings files."""
+    log = tmp_path / "record.jsonl"
+    managed = tmp_path / "managed-settings.json"
+    same = [{"matcher": "", "hooks": [_recorder("same")]}]
+    managed.write_text(json.dumps({"hooks": {"PreToolUse": same}}))
+    hook_settings(env["CLAUDE_CONFIG_DIR"], {"PreToolUse": same})
+    scenario = scenario_file(
+        {"turns": [{"match": "", "steps": [{"tool": "Bash", "input": {}, "result": "r"}]}]}
+    )
+    p = spawn(
+        FAKE_CLAUDE_SCENARIO=str(scenario),
+        FAKE_CLAUDE_MANAGED_SETTINGS=str(managed),
+        RECORD_HOOK_LOG=str(log),
+    )
+    p.boot()
+    p.submit("x")
+    assert _recorded(log) == ["same"]
+
+
+def test_managed_settings_file_missing_is_empty(spawn, env, work, tmp_path, scenario_file):
+    log = tmp_path / "record.jsonl"
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"], {"PreToolUse": [{"matcher": "", "hooks": [_recorder("user")]}]}
+    )
+    scenario = scenario_file(
+        {"turns": [{"match": "", "steps": [{"tool": "Bash", "input": {}, "result": "r"}]}]}
+    )
+    p = spawn(
+        FAKE_CLAUDE_SCENARIO=str(scenario),
+        FAKE_CLAUDE_MANAGED_SETTINGS=str(tmp_path / "absent.json"),
+        RECORD_HOOK_LOG=str(log),
+    )
+    p.boot()
+    p.submit("x")
+    assert _recorded(log) == ["user"]
