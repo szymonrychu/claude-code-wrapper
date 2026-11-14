@@ -1,0 +1,16 @@
+{
+  "name": "ccw-live",
+  "owner": {
+    "name": "claude-code-wrapper live tests"
+  },
+  "metadata": {
+    "description": "Mods for the claude-code-wrapper live-claude CI job"
+  },
+  "plugins": [
+    {
+      "name": "live-managed-mod",
+      "source": "./plugins/live-managed-mod",
+      "description": "Answers Bash calls that mention live-mod; enabled only through managed settings"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "live-unmanaged-mod",
+  "version": "0.1.0",
+  "description": "Live-test mod loaded with --plugin-dir: writes a marker whenever it runs",
+  "author": {"name": "claude-code-wrapper"}
+}

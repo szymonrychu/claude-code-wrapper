@@ -16,3 +16,6 @@ docs/plans/index.json
 **/.claude/checkpoints/
 **/.claude/mailbox/
 **/.claude/agent-registry.json
+# Written by Claude Code when it loads a mod from tests/live/mods locally
+tests/live/mods/**/tsconfig.json
+tests/live/mods/**/.claude-plugin/types/
