@@ -162,6 +162,9 @@ async def test_compact_relays_installed_and_accepted(tmp_path):
         def router(self, sid):
             return R()
 
+        def check_managed_settings(self, trigger):
+            pass
+
     app = create_internal_app(M())  # type: ignore[arg-type]
     transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 1))
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:

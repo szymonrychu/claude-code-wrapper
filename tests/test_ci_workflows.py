@@ -33,14 +33,22 @@ def _needs(job: dict) -> list:
 
 def test_job_chain():
     jobs = _load("build.yaml")["jobs"]
-    assert list(jobs) == ["pre-commit", "unit", "integration", "build-push"]
+    assert list(jobs) == ["pre-commit", "unit", "integration", "live-claude", "build-push"]
     assert _needs(jobs["pre-commit"]) == []
     assert _needs(jobs["unit"]) == ["pre-commit"]
     assert _needs(jobs["integration"]) == ["unit"]
-    assert _needs(jobs["build-push"]) == ["integration"]
+    assert _needs(jobs["live-claude"]) == ["unit"]
+    assert _needs(jobs["build-push"]) == ["integration", "live-claude"]
     for job in jobs.values():
         assert "timeout-minutes" in job
     assert jobs["integration"]["timeout-minutes"] == 20
+    assert jobs["live-claude"]["timeout-minutes"] == 25
+
+
+def test_live_job_runs_live_task():
+    """The live job runs real Claude Code against the built image on every PR and main push."""
+    steps = _load("build.yaml")["jobs"]["live-claude"]["steps"]
+    assert "mise run test:live" in [s.get("run") for s in steps]
 
 
 def test_build_triggers_and_settings():

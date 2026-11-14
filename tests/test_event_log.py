@@ -61,6 +61,7 @@ def test_event_types_exact():
         "shutdown_started",
         "shutdown_handoff",
         "session_closed",
+        "managed_settings_restored",
     ]
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "claude-code-wrapper"
-version = "0.15.0"
+version = "0.16.0"
 description = "HTTP microservice that runs long-lived interactive Claude Code sessions under a PTY"
 readme = "README.md"
 license = "MIT"
@@ -57,6 +57,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q -m 'not integration'"
-markers = ["integration: needs the compose stack (mise run test:integration)"]
+addopts = "-q -m 'not integration and not live'"
+markers = [
+    "integration: needs the compose stack (mise run test:integration)",
+    "live: real Claude Code in the built image (mise run test:live)",
+]
 asyncio_mode = "auto"

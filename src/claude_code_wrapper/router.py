@@ -101,6 +101,10 @@ SUBAGENT_LINK_WAIT_SECONDS = 10.0
 SUBAGENT_LINK_POLL_SECONDS = 0.1
 #: How often a priority delivery re-checks for the turn claude starts for its flushed queue.
 PRIORITY_FLUSH_POLL = 0.05
+#: Claude Code 2.1.323 can run the Stop hook before its transcript holds the turn's prompt
+#: line; a Stop that reads the previous turn's marker waits this long for the running one.
+STOP_MARKER_WAIT_SECONDS = 2.0
+STOP_MARKER_POLL_SECONDS = 0.05
 #: Priority deliveries remembered by client message id, so a retried send is idempotent.
 PRIORITY_IDS_MAX = 256
 
@@ -390,8 +394,11 @@ class SessionRouter(SessionListener):
         session_info: SessionInfo | Mapping[str, Any],
         metrics: Metrics | None = None,
         commands: CommandsConfig | None = None,
+        managed_check: Callable[[str], None] | None = None,
     ) -> None:
         self._metrics = metrics
+        #: Called with "turn" before every `turn_started` (the managed-settings tamper check).
+        self.managed_check = managed_check
         self.commands_cfg = commands if commands is not None else cfg.sessions.commands
         self.commands = CommandQueue(self.commands_cfg)
         self.signals = SignalBus()
@@ -497,6 +504,12 @@ class SessionRouter(SessionListener):
         if self._idle_start is None or not self._idle_only:
             self._last_real = time.monotonic()
         return self._event_log.append(type, self._redactor.redact_obj(dict(data or {})))
+
+    def _emit_turn_started(self, turn_id: str, origin: str, text: str) -> None:
+        """The managed-settings tamper check, then `turn_started`: a restore is logged first."""
+        if self.managed_check is not None:
+            self.managed_check("turn")
+        self._emit("turn_started", {"turn_id": turn_id, "origin": origin, "text": text})
 
     def _emit_user_message(
         self, turn_id: str | None, origin: str, text: str, files: list[str] | None = None
@@ -1159,6 +1172,7 @@ class SessionRouter(SessionListener):
     async def _on_stop(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         self._resolve_pending_by_terminal(self.permissions.of_agent(None), "deny")
         await self._flush_transcripts()
+        await self._await_running_marker()
         held = await self._stop_gate(payload)
         if held is not None:
             return held
@@ -1187,6 +1201,20 @@ class SessionRouter(SessionListener):
             self._start_idle_runner()
             await self._after_turn(record, event)
         return _allow()
+
+    async def _await_running_marker(self) -> None:
+        """While a turn runs and the newest marker read names an earlier turn, re-read the
+        transcript until the running turn's marker shows up, for STOP_MARKER_WAIT_SECONDS at
+        most. Without it a Stop that outruns the transcript write is dropped as stale and the
+        turn never completes; a Stop that is really stale is only delayed."""
+        session = self.session
+        record = session.current_turn
+        if session.state != "busy" or record is None:
+            return
+        deadline = time.monotonic() + STOP_MARKER_WAIT_SECONDS
+        while self._last_marker not in (None, record.turn_id) and time.monotonic() < deadline:
+            await asyncio.sleep(STOP_MARKER_POLL_SECONDS)
+            await self._flush_transcripts()
 
     async def _stop_gate(self, payload: Mapping[str, Any]) -> RelayResponse | None:
         """onStop for a Stop that would end the running turn; the relay answer if it stays open.
@@ -1394,9 +1422,7 @@ class SessionRouter(SessionListener):
         )
         self._usage.reset()
         self._emit_user_message(record.turn_id, record.origin, text, list((files or {}).keys()))
-        self._emit(
-            "turn_started", {"turn_id": record.turn_id, "origin": record.origin, "text": text}
-        )
+        self._emit_turn_started(record.turn_id, record.origin, text)
         self.ensure_tailing()
         return record
 
@@ -1768,10 +1794,7 @@ class SessionRouter(SessionListener):
             self._last_marker = record.turn_id  # its Stop carries no marker of its own
             self._usage.reset()
             self._cancel_auto_compact()
-            self._emit(
-                "turn_started",
-                {"turn_id": record.turn_id, "origin": record.origin, "text": record.text},
-            )
+            self._emit_turn_started(record.turn_id, record.origin, record.text)
         self._emit(
             "prompt_delivered",
             {
@@ -2256,9 +2279,7 @@ class SessionRouter(SessionListener):
             turn = session.adopt_turn(line, origin=origin)
             self._usage.reset()
             self._emit_user_message(turn.turn_id, turn.origin, line)
-            self._emit(
-                "turn_started", {"turn_id": turn.turn_id, "origin": turn.origin, "text": line}
-            )
+            self._emit_turn_started(turn.turn_id, turn.origin, line)
         self._last_marker = turn.turn_id
         record.turn_id = turn.turn_id
 

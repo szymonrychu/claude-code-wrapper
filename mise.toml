@@ -47,6 +47,10 @@ run = "uvx pre-commit run --all-files --show-diff-on-failure"
 description = "Build the image once, then run tests/integration (CCW_PORT, default 8080) and the two-container tests/integration_peers against it"
 run = ["scripts/integration.sh", "CCW_SKIP_BUILD=1 scripts/integration-peers.sh"]
 
+[tasks."test:live"]
+description = "Run real Claude Code in the built image against a fake Messages API (builds the image unless CCW_SKIP_BUILD=1)"
+run = "scripts/live-claude.sh"
+
 [tasks."test:integration:peers"]
 description = "Run the two-container peer messaging tests (builds the image unless CCW_SKIP_BUILD=1)"
 run = "scripts/integration-peers.sh"

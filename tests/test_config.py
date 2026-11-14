@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import TypeAdapter
 
 from claude_code_wrapper.config import (
@@ -358,6 +359,23 @@ def test_permission_mode_default_and_valid_values(tmp_path):
         assert cfg.claude.permission_mode == mode
 
 
+def test_boot_dialog_defaults_2_1_323(tmp_path):
+    # claude 2.1.323 boot dialogs (MEMORY 2026-11-14, T-69): the first option of each is the
+    # wrong answer, so each takes Down then CR. The example config carries the same list.
+    expected = [
+        ("Bypass Permissions mode", ["\x1b[B", "\r"], 0.6),
+        ("Is this a project you created or one you trust", ["\x1b[B", "\r"], 0.6),
+        ("Make auto mode your default permission mode", ["\x1b[B", "\r"], 0.6),
+    ]
+    cfg = load_config(write(tmp_path, ""))
+    got = [(d.pattern, d.keys, d.delay_seconds) for d in cfg.claude.boot.dialogs]
+    assert got == expected
+    dialogs = yaml.safe_load((ROOT / "config.example.yaml").read_text())["claude"]["boot"][
+        "dialogs"
+    ]
+    assert [(d["pattern"], d["keys"], d.get("delay_seconds", 0.0)) for d in dialogs] == expected
+
+
 def test_permission_mode_rejects_unknown(tmp_path):
     assert "permission_mode" in err(tmp_path, "claude:\n  permission_mode: yolo\n")
 
@@ -539,3 +557,12 @@ def test_shutdown_handoff_rejects_unknown_key(tmp_path):
 @pytest.mark.parametrize("key", ["notice_seconds", "handoff_seconds", "idle_proceed_seconds"])
 def test_shutdown_handoff_negative_seconds_rejected(tmp_path, key):
     assert f"shutdown.handoff.{key}" in err(tmp_path, f"shutdown:\n  handoff:\n    {key}: -1\n")
+
+
+def test_additional_directories_must_be_absolute(tmp_path):
+    assert "claude.additional_directories" in err(
+        tmp_path, "claude: {additional_directories: [rel]}\n"
+    )
+    cfg = load_config(write(tmp_path, "claude: {additional_directories: [/data]}\n"))
+    assert cfg.claude.additional_directories == ["/data"]
+    assert Config().claude.additional_directories is None

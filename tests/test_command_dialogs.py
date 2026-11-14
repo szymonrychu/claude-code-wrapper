@@ -29,6 +29,7 @@ from test_router import Harness
 from claude_code_wrapper.commands import effective_commands
 from claude_code_wrapper.config import CommandsConfig, CommandsOverride
 from claude_code_wrapper.manager import CreateSessionRequest
+from claude_code_wrapper.session import FatalScanner
 
 DEFAULT_PATTERNS = [
     "esc to cancel",
@@ -369,3 +370,20 @@ async def test_timeout_leg_skips_escape_while_usage_wait(world):
     assert keys(world, sid) == []
     assert len(world.interactive_argvs()) == 1  # no relaunch over the held wait
     assert m.router(sid).session.restarts == 0
+
+
+@pytest.mark.parametrize(
+    ("footer", "expected"),
+    [
+        # claude 2.1.323 footers from the live probe (t69-probe, MEMORY 2026-11-14, T-69)
+        ("Esc to cancel \u00b7 Tab to amend", ["esc to cancel"]),
+        (
+            "Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 Esc to cancel",
+            ["esc to cancel"],
+        ),
+        ("Enter to confirm \u00b7 Esc to cancel", ["esc to cancel", "enter to confirm"]),
+    ],
+)
+def test_default_dialog_patterns_match_2_1_323_footers(footer: str, expected: list[str]) -> None:
+    scanner = FatalScanner(CommandsConfig().dialog_patterns)
+    assert sorted(scanner.feed(f"\n {footer}\n")) == sorted(expected)

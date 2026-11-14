@@ -312,3 +312,42 @@ async def test_global_mise_install_gets_no_service_secret(
     assert "SERVICE_ONLY" not in seen
     for name, value in secrets.items():
         assert f"{name}=" not in seen and value not in seen, name
+
+
+async def test_readyz_reports_managed_state(tmp_path: Path) -> None:
+    managed_dir = tmp_path / "cc"
+    managed_dir.mkdir()
+    path = managed_dir / "managed-settings.json"
+    cfg = make_cfg(
+        tmp_path,
+        paths={
+            "workdir_root": str(tmp_path / "wd"),
+            "sessions_root": str(tmp_path / "ss"),
+            "managed_settings": str(path),
+        },
+    )
+    task, stop, handle = await start(cfg)
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"http://127.0.0.1:{handle.public_port}/readyz")
+        assert r.json() == {"status": "ready", "managed_settings": "active"}
+        doc = json.loads(path.read_text())
+        assert set(doc["hooks"]) == {"PreToolUse", "PermissionRequest"}
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 15)
+
+    path.unlink()
+    managed_dir.chmod(0o555)
+    try:
+        task, stop, handle = await start(cfg)
+        try:
+            async with httpx.AsyncClient() as c:
+                r = await c.get(f"http://127.0.0.1:{handle.public_port}/readyz")
+            assert r.json() == {"status": "ready", "managed_settings": "fallback"}
+        finally:
+            stop.set()
+            await asyncio.wait_for(task, 15)
+    finally:
+        managed_dir.chmod(0o755)
+    assert not path.exists()

@@ -146,3 +146,26 @@ paths: {{workdir_root: {tmp_path}/wd, sessions_root: {tmp_path}/ss}}
     assert cli.main(["serve", "--config", str(cfg)]) == 78
     err = capsys.readouterr().err
     assert "server.auth_token" in err and "server.allow_anonymous" in err
+
+
+def test_config_managed_settings_prints_render(tmp_path: Path, capsys) -> None:
+    from pathlib import Path as _P
+
+    from claude_code_wrapper.bootstrap.settings import (
+        default_relay_command,
+        render_managed_settings,
+    )
+    from claude_code_wrapper.config import load_config
+
+    cfg_path = write_cfg(tmp_path)
+    assert cli.main(["config", "managed-settings", "--config", str(cfg_path)]) == 0
+    cfg = load_config(str(cfg_path))
+    expected = render_managed_settings(
+        cfg, default_relay_command(), _P(cfg.paths.managed_settings).parent
+    )
+    assert json.loads(capsys.readouterr().out) == expected
+
+
+def test_config_example_still_prints(capsys) -> None:
+    assert cli.main(["config", "example"]) == 0
+    assert "managed_settings:" in capsys.readouterr().out

@@ -432,7 +432,7 @@ async def test_fake_claude_boots_under_pty(spawn, fake_claude_bin, claude_config
     exits: list[int] = []
     p = await spawn([str(fake_claude_bin)], env=env, on_exit=exits.append)
     await wait_until(lambda: p.ring.contains("Bypass Permissions mode"))
-    assert p.ring.contains("1. No, exit")
+    assert p.ring.contains("No, exit")  # 2.1.323 draws the options without indexes
     assert "\x1b" not in p.ring.text()
     await asyncio.sleep(0.4)
     await p.write(b"\x1b[B")

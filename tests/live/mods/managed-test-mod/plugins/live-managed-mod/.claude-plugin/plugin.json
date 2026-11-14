@@ -1,0 +1,6 @@
+{
+  "name": "live-managed-mod",
+  "version": "0.1.0",
+  "description": "Live-test mod: answers Bash calls whose command contains live-mod and writes a marker",
+  "author": {"name": "claude-code-wrapper"}
+}

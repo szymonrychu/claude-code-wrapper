@@ -13,16 +13,19 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import uvicorn
 
 from claude_code_wrapper import tooling
 from claude_code_wrapper.api.app import create_app
+from claude_code_wrapper.bootstrap.settings import default_relay_command, render_managed_settings
 from claude_code_wrapper.claude_env import without_secrets
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.hooks import fire_instance, instance_dispatcher
 from claude_code_wrapper.internal_api import create_internal_app
+from claude_code_wrapper.managed_settings import ManagedSettings
 from claude_code_wrapper.manager import SessionManager
 from claude_code_wrapper.metrics import Metrics
 from claude_code_wrapper.redact import Redactor
@@ -245,6 +248,12 @@ async def _run(
             redactor.add([cfg.usage.token])
             usage = UsageForwarder(cfg.usage)
             usage_task = asyncio.create_task(usage.run())
+        relay = default_relay_command()
+        managed_path = Path(cfg.paths.managed_settings)
+        managed = ManagedSettings(
+            managed_path, render_managed_settings(cfg, relay, managed_path.parent), relay
+        )
+        managed.install()
         manager = SessionManager(
             cfg,
             internal_url=f"http://{INTERNAL_HOST}:{handle.internal_port}",
@@ -254,6 +263,8 @@ async def _run(
             metrics=metrics,
             on_exit_request=on_exit_request,
             usage=usage,
+            relay_command=relay,
+            managed_settings=managed,
         )
         await manager.start_peers(handle.public_port)
         await manager.load_persisted()

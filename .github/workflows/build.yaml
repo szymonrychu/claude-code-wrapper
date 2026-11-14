@@ -56,8 +56,21 @@ jobs:
       - run: mise run install
       - run: mise run test:integration
 
+  # Real Claude Code (the Dockerfile's CLAUDE_CODE_VERSION) in the built image against a fake
+  # Messages API: re-runs on every PR and main push, so on every Claude Code bump.
+  live-claude:
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+      - run: mise install
+      - run: mise run install
+      - run: mise run test:live
+
   build-push:
-    needs: integration
+    needs: [integration, live-claude]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

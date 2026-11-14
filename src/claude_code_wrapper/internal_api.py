@@ -224,6 +224,7 @@ def create_internal_app(manager: SessionManager) -> FastAPI:
             raise HTTPException(400, "body must be a JSON object") from None
         if not isinstance(payload, dict):
             raise HTTPException(400, "body must be a JSON object")
+        manager.check_managed_settings("relay")
 
         # A held PermissionRequest learns that its ccw-hook died (connection dropped).
         gone = asyncio.Event() if event == "PermissionRequest" else None

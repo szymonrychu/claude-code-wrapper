@@ -17,6 +17,9 @@ paths:
   # (e.g. under $HOME) or edit the paths.
   workdir_root: ${CCW_WORKDIR_ROOT:-/workdir}     # per-session workdirs live here (volume)
   sessions_root: ${CCW_SESSIONS_ROOT:-/sessions}  # per-session state and CLAUDE_CONFIG_DIR (volume)
+  # Managed-settings file ccw writes at start (PreToolUse/PermissionRequest relay, managed mods
+  # only); its directory must be dedicated. Unwritable: the relay stays in settings.json.
+  managed_settings: /etc/claude-code/managed-settings.json
 
 claude:
   binary: claude             # claude executable
@@ -35,6 +38,7 @@ claude:
   permissions:
     allow: []                # e.g. ["Bash(git status:*)"]
     deny: [EnterPlanMode, ExitPlanMode]
+  # additional_directories: [/workdir, /tmp]   # bypass write fence dirs; default workdir_root, /tmp, session config dir
   settings: {}               # deep-merged into settings.json (hook lists are appended)
   claude_json: {}            # deep-merged into .claude.json
   mcp_servers: {}            # name -> server definition
@@ -55,7 +59,8 @@ claude:
     submit_delay_seconds: 0.4   # gap between bracketed paste and Enter
     dialogs:                 # pattern seen on screen -> keys to send
       - {pattern: "Bypass Permissions mode", keys: ["\u001b[B", "\r"], delay_seconds: 0.6}
-      - {pattern: "Do you trust the files in this folder", keys: ["\r"]}
+      - {pattern: "Is this a project you created or one you trust", keys: ["\u001b[B", "\r"], delay_seconds: 0.6}
+      - {pattern: "Make auto mode your default permission mode", keys: ["\u001b[B", "\r"], delay_seconds: 0.6}
     ready_markers: ["? for shortcuts", "bypass permissions on", "auto mode on"]
     fatal_patterns:          # screen text that fails the session
       - "API Error: 401"

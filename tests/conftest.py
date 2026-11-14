@@ -20,8 +20,10 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from claude_code_wrapper.bootstrap.settings import default_relay_command, render_managed_settings
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.internal_api import create_internal_app
+from claude_code_wrapper.managed_settings import ManagedSettings
 from claude_code_wrapper.manager import InvalidState, SessionManager, SessionNotFound
 from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.service import ServiceHandle, run_service
@@ -157,12 +159,20 @@ class World:
     # ---- config and managers
 
     def cfg(self, scenario: dict | None = None, **sections: Any) -> Config:
+        """A config for the fake claude. `paths.managed_settings` is a dedicated dir under tmp
+        (created here); the fake reads the same file through FAKE_CLAUDE_MANAGED_SETTINGS."""
         scenario_path = self.scenario_file({"boot": FAKE_BOOT, **(scenario or {})})
         claude = sections.pop("claude", {})
         env = claude.pop("env", {})
+        managed = Path(
+            sections.get("paths", {}).get("managed_settings")
+            or self.tmp / "managed" / "managed-settings.json"
+        )
+        managed.parent.mkdir(parents=True, exist_ok=True)
         extra = {
             "FAKE_CLAUDE_SCENARIO": str(scenario_path),
             "FAKE_CLAUDE_LOG": str(self.log),
+            "FAKE_CLAUDE_MANAGED_SETTINGS": str(managed),
             **env.pop("extra", {}),
         }
         data: dict[str, Any] = {
@@ -170,6 +180,7 @@ class World:
             "paths": {
                 "workdir_root": str(self.tmp / "workdir"),
                 "sessions_root": str(self.tmp / "sessions"),
+                "managed_settings": str(managed),
             },
             "claude": {
                 "binary": str(self.bin),
@@ -198,6 +209,7 @@ class World:
             "paths": {
                 "workdir_root": str(root / "workdir"),
                 "sessions_root": str(root / "sessions"),
+                "managed_settings": str(root / "managed" / "managed-settings.json"),
             },
             "mise": {
                 "trusted_paths": [str(root / "workdir")],
@@ -207,7 +219,23 @@ class World:
         merged = {key: {**base[key], **sections.pop(key, {})} for key in base}
         return self.cfg(scenario, **merged, **sections)
 
-    def manager(self, cfg: Config, **kw: Any) -> SessionManager:
+    def managed_settings(self, cfg: Config, relay: str | None = None) -> ManagedSettings:
+        """Install the managed-settings file of `cfg` (as service start does)."""
+        relay = relay or default_relay_command()
+        path = Path(cfg.paths.managed_settings)
+        ms = ManagedSettings(path, render_managed_settings(cfg, relay, path.parent), relay)
+        ms.install()
+        return ms
+
+    def manager(self, cfg: Config, *, managed: bool = True, **kw: Any) -> SessionManager:
+        """A manager with the managed-settings file installed (state active); `managed=False`
+        builds the fallback: no managed file, the relay for every event in settings.json."""
+        if "managed_settings" not in kw:
+            if managed:
+                kw["managed_settings"] = self.managed_settings(cfg, kw.get("relay_command"))
+            else:
+                with contextlib.suppress(FileNotFoundError):
+                    Path(cfg.paths.managed_settings).unlink()
         m = SessionManager(
             cfg,
             internal_url=self.url,

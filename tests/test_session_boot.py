@@ -297,6 +297,8 @@ def test_env_minimal_and_managed_vars() -> None:
         "DISABLE_TELEMETRY": "1",
         "CLAUDE_CONFIG_DIR": "/sessions/ses_1/config",
         "CLAUDE_CODE_PROJECT_DIR_NAME": "workdir",
+        "CLAUDE_CODE_DISABLE_AGENT_VIEW": "1",
+        "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "0",
         "GIT_CONFIG_GLOBAL": "/sessions/ses_1/gitconfig",
         "CCW_SESSION_ID": "ses_1",
         "CCW_INTERNAL_URL": "http://127.0.0.1:8090",
@@ -419,6 +421,30 @@ async def test_boot_accepts_bypass_dialog_and_becomes_ready(make_spec, sessions)
     assert calls[0]["env"]["CLAUDE_CONFIG_DIR"] == spec.config_dir
     assert calls[0]["env"]["CLAUDE_CODE_PROJECT_DIR_NAME"] == "workdir"
     assert calls[0]["env"]["CCW_SESSION_ID"] == spec.session_id
+
+
+async def test_boot_default_dialogs_answer_2_1_323_screens(make_spec, sessions) -> None:
+    # claude 2.1.323 boot dialogs as probed (t69-probe: trust, bypass-dialog, nudge; MEMORY
+    # 2026-11-14, T-69): each one's first option is the wrong answer (exit, or switch the
+    # default to auto), so every default answer is Down then CR; a CR alone exits the fake.
+    scenario = {
+        "boot": {
+            "trust_dialog": True,
+            "bypass_dialog": True,
+            "auto_default_nudge": True,
+            "min_seconds": 0.1,
+        }
+    }
+    defaults = [d.model_dump() for d in BootConfig().dialogs]
+    spec = make_spec(scenario, boot={**MARKER_ONLY, "timeout_seconds": 10.0, "dialogs": defaults})
+    session = sessions(Session(spec, Recorder()))
+    await session.start()
+    assert session.state == "ready"
+    assert session.pty.alive
+    assert session.ring.contains("Is this a project you created or one you trust?")
+    assert session.ring.contains("WARNING: Claude Code running in Bypass Permissions mode")
+    assert session.ring.contains("Make auto mode your default permission mode?")
+    assert len(invocations(make_spec.log)) == 1
 
 
 async def test_boot_ready_on_idle_without_marker(make_spec, sessions) -> None:

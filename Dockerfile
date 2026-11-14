@@ -18,7 +18,7 @@ FROM node:24.22.0-bookworm-slim AS node
 FROM python:3.12-slim-bookworm AS runtime
 
 # Claude Code CLI version pinned: the PTY driver depends on its dialogs and hook behaviour.
-ARG CLAUDE_CODE_VERSION=2.1.304
+ARG CLAUDE_CODE_VERSION=2.1.323
 # ruff pinned for a reproducible lint tool available to agent sessions.
 ARG RUFF_VERSION=0.15.0
 # gh pinned release binary: apt in Debian has no current gh.
@@ -56,8 +56,8 @@ RUN arch="$(dpkg --print-architecture)" \
 # uid/gid 1000: claude refuses bypassPermissions as root.
 RUN groupadd --gid 1000 agent \
  && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/agent --shell /bin/bash agent \
- && mkdir -p /workdir /sessions /opt/mise /etc/ccw \
- && chown -R agent:agent /workdir /sessions /opt/mise /etc/ccw /home/agent
+ && mkdir -p /workdir /sessions /opt/mise /etc/ccw /etc/claude-code \
+ && chown -R agent:agent /workdir /sessions /opt/mise /etc/ccw /etc/claude-code /home/agent
 
 # Install the service from the wheel: ccw and ccw-hook land on PATH, no source tree or .venv.
 RUN --mount=type=bind,from=builder,source=/dist,target=/tmp/dist \

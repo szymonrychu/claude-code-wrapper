@@ -213,6 +213,67 @@ secret values and the token patterns), then writes the marker file `<sessions_ro
 - Files outside `config/` (`events.jsonl`, `turns.jsonl`, hook state) are not rewritten; the
   events and turns are redacted when written.
 
+## Managed settings
+
+Claude Code reads a managed-settings file as its top settings tier: it outranks every other source
+(precedence managed > `--settings` > local > project > user), and the user and project tiers
+cannot switch it off. At start ccw writes that file itself (`paths.managed_settings`, default
+`/etc/claude-code/managed-settings.json`, mode 0644, written at runtime and never baked into the
+image). The API is [`GET`/`PUT /v1/managed-settings`](#get-v1managed-settings); the event is
+[`managed_settings_restored`](#managed_settings_restored); `ccw config managed-settings` prints the
+rendered file.
+
+**What the baseline holds.**
+
+- The `PreToolUse` and `PermissionRequest` relay to ccw (`onFailure: block`, so a relay that cannot
+  run blocks the tool call instead of letting it through). Because the managed tier runs first,
+  mods and user hooks can no longer act before the gate. `settings.json` then relays only the
+  other nine events, and the `claude.settings` `PreToolUse` hooks you configure run after the
+  managed relay and after mods. The `PermissionRequest` timeout is the 86430 s ceiling (one file
+  serves every session); a session's own hold still follows its `CCW_PERMISSION_TIMEOUT`.
+- Managed mods only (`allowManagedModsOnly` on the built-in `sec-default` plugin): a mod loads only
+  when the managed settings name it. Hooks are never locked with `allowManagedHooksOnly` or
+  `disableAllHooks`, because Claude would then skip the statusLine relay or every hook.
+- Agent view and Code Mode off (`disableAgentView`, and in the file's `env` block
+  `CLAUDE_CODE_DISABLE_AGENT_VIEW=1` and `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0`; the child env
+  carries the same two).
+- `Edit` and `Write` deny rules on the managed directory.
+
+**Overlay and locked keys.** `PUT /v1/managed-settings` replaces an overlay merged over the
+baseline (hook lists and `permissions.deny` append, other lists replace). The overlay cannot change
+the locked keys (`disableAgentView`, `allowManagedModsOnly`, the two env names above), set
+`disableAllHooks` or `allowManagedHooksOnly` truthy, carry a credential in `env`, or remove the
+relay. The managed-mods guard is protected through its sibling keys too: an overlay that sets
+`prependPlugins` (which replaces Claude Code's default list) must name `sec-default@builtin`, and
+`enabledPlugins` may not switch `sec-default@builtin` or `cc-plugin-sec-default@builtin` off; either
+is refused with `422 locked_key`. Claude Code may apply some keys only at session start, so a
+changed overlay reaches running sessions after they restart.
+
+**Tamper check.** The agent runs as uid 1000 and the file sits (mode 0644) in a directory
+the agent owns, so the deny rules alone do not stop a Bash command from rewriting it. Before
+each relayed hook call, before each `turn_started` and before a
+session boots (create, resume, restart), ccw compares
+the directory with what it wrote and restores it, directory mode included (the agent shares the
+uid, so a `chmod` of the directory is undone first: `0755`). A change made by a tool call is therefore
+live until the next relayed hook or turn start: the `PostToolUse` of the tampering call itself
+already restores it, unless the tamper also stopped the hooks from running. See
+[`managed_settings_restored`](#managed_settings_restored).
+
+**Fallback and degraded.** When the file cannot be written, the directory is not dedicated to it
+or the read-back lacks the relay, the state is `fallback`: ccw logs a warning, `/readyz` reports
+`managed_settings: "fallback"`, no managed file (nor `managed-settings.d` or `managed-mcp.json`)
+is left behind, and every session's
+`settings.json` keeps the relay for all eleven events as before. A restore that fails leaves the
+state `degraded`: new sessions keep the full relay in `settings.json` until a later check or
+`GET`/`PUT` heals it.
+
+**Write fence.** In `bypassPermissions` sessions `settings.json` sets
+`permissions.blockWritesOutsideWorkingDirectories`, with `permissions.additionalDirectories` from
+`claude.additional_directories` (default: the workdir root, `/tmp` and the session config
+directory). The fence covers the `Write`, `Edit` and `NotebookEdit` tools only: Bash, MCP tools and
+programs run by hooks are not fenced. Claude Code also removes the `EnterWorktree` and
+`ExitWorktree` tools while it is set. `claude.settings` is merged after and can lift it.
+
 ## Architecture
 
 ```
@@ -1186,6 +1247,45 @@ after this seq). Header: `Last-Event-ID` (the seq of the last frame seen; wins o
 
 Response `200`, `Content-Type: text/event-stream`. Errors: `400 invalid_last_event_id` (header not
 an integer), `401 unauthorized`, `404 not_found`, `422 invalid_request` (bad `after_seq`).
+
+### `GET /v1/managed-settings`
+
+The managed-settings file ccw owns (`paths.managed_settings`, the top settings tier of every
+session). A degraded file is healed first.
+
+Auth: bearer. Response `200`: `{"state": "active"|"fallback"|"degraded", "path", "sha256",
+"reason", "restores", "overlay": object, "document": object}`; `document` is the file content
+(baseline plus overlay). Errors: `401 unauthorized`, `409 managed_settings_unavailable` (the
+service runs without a managed file).
+
+### `PUT /v1/managed-settings`
+
+Replaces the overlay (a replace, not a patch) and rewrites the file atomically, mode 0644.
+Body: `{"overlay": object}`, at most 64 KiB.
+Merge: objects deep merge; each `hooks` event list is the baseline groups, then the overlay
+groups; `permissions.deny` is the baseline rules, then the overlay rules not already there; any
+other list is replaced. The overlay may not change `disableAgentView`,
+`pluginConfigs.cc-plugin-sec-default@builtin.options.allowManagedModsOnly`,
+`env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE` or `env.CLAUDE_CODE_DISABLE_AGENT_VIEW`, and may not
+set `disableAllHooks` or `allowManagedHooksOnly` truthy (`false` is the baseline default: it is
+accepted and written as `false`). An `env` name matching a credential pattern is refused.
+
+Auth: bearer. Response `200`: the `GET` shape. Errors: `401 unauthorized`, `409
+managed_settings_unavailable` (file in `fallback`, or `degraded` and not healed), `413 too_large`,
+`422 invalid_request` (body is not `{"overlay": object}`), `422 locked_key` (the message names the
+key), `422 secret_in_overlay`, `422 invalid_overlay` (a `hooks` or `permissions.deny` value of the
+wrong type, or an overlay that would remove the relay), `500 managed_settings_write_failed` (the
+old file and overlay stay).
+
+**Tamper check.** Before each `PreToolUse` and `PermissionRequest` relay call and before each
+`turn_started`, the service compares the managed directory with what it wrote and restores it on
+any drift, emitting `managed_settings_restored` (see Events). It removes only Claude's own extra
+names (`managed-settings.d`, `managed-mcp.json`), and any other entry only because install found
+the directory dedicated. A failed restore leaves state `degraded` (retried on every check and on
+the next `GET`/`PUT` here). When install falls back, it removes a managed file an earlier run left,
+so Claude never loads one the service cannot vouch for. That includes the case where the
+fallback was caused by a non-dedicated directory: the file is the same one install would have
+overwritten, and a stale one would be loaded as an old baseline.
 
 ### `GET /v1/config`
 
@@ -2161,6 +2261,26 @@ The SSE stream ends after it.
 ```
 event: session_closed
 data: {"seq":23,"ts":"2026-10-20T09:10:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"session_closed","data":{}}
+```
+
+### `managed_settings_restored`
+
+Sent to every live session when the tamper check found the managed-settings directory changed
+and put it back (or failed to). The check runs before each relayed hook call (any event), before
+each `turn_started` and before a session boots (so claude never reads a tampered file at startup);
+it compares the file with what the service wrote (missing, unreadable, not a regular file, mode
+other than 0644, a directory mode that is not owner-rwx or is writable by others, content hash, or
+any entry beside the file and the temporary file) and rewrites it. Only hashes are reported, never content.
+
+`data`: `trigger` (`relay`, `turn` or `boot`), `kind` (the first of `missing`, `unreadable`, `not_regular`,
+`mode`, `modified`, `extra_entry`), `expected_sha256`, `found_sha256` (`null` when absent or not a
+regular file), `restored` (`false` leaves the managed state `degraded`: new sessions then keep
+the full relay in `settings.json`, and the next check tries again; the `false` event is sent
+once, on the transition into `degraded`, not on every retry).
+
+```
+event: managed_settings_restored
+data: {"seq":9,"ts":"2026-11-14T09:10:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"managed_settings_restored","data":{"trigger":"relay","kind":"modified","expected_sha256":"9f2c...","found_sha256":"1b7e...","restored":true}}
 ```
 
 ### Callbacks
@@ -3188,6 +3308,11 @@ FastAPI's `{"detail": ...}` body instead.
 | `create_failed` | 500 | a create or resume step failed; the message names the step |
 | `booting` | 503 | the session is still booting (409 for a `regular` or `priority` turn delivery) |
 | `dead` | 503 | the session is stopped, failed or dead and cannot take input (409 for a `regular` or `priority` turn delivery) |
+| `managed_settings_unavailable` | 409 | `GET /v1/managed-settings` when the service runs without a managed file; `PUT` while the file is not active (fallback, or degraded and not healed) |
+| `locked_key` | 422 | `PUT /v1/managed-settings` overlay changes a locked key or sets `disableAllHooks` or `allowManagedHooksOnly` truthy |
+| `secret_in_overlay` | 422 | `PUT /v1/managed-settings` overlay `env` carries a credential name |
+| `invalid_overlay` | 422 | `PUT /v1/managed-settings` overlay has a malformed `hooks` or `permissions.deny`, or would remove the relay |
+| `managed_settings_write_failed` | 500 | `PUT /v1/managed-settings` could not write the file |
 | `not_ready` | 503 | `/readyz` before startup finished |
 | `http_error` | any | any other HTTP error status raised by the framework |
 
@@ -3288,6 +3413,7 @@ paths:
 |---|---|---|---|---|
 | `paths.workdir_root` | string | `"/workdir"` | - | Absolute directory holding per-session workdirs (the `workdir` volume). |
 | `paths.sessions_root` | string | `"/sessions"` | - | Absolute directory holding per-session state and `CLAUDE_CONFIG_DIR` (the `sessions` volume). |
+| `paths.managed_settings` | string | `"/etc/claude-code/managed-settings.json"` | - | Absolute path of the Claude Code managed-settings file ccw writes at start (mode 0644): the PreToolUse and PermissionRequest relay (`onFailure: block`), managed mods only, agent view and Code Mode off, Edit/Write deny rules on its directory. The parent directory must be dedicated to it (not `/`, `/etc` or `/tmp`; install refuses a directory holding other entries). When it cannot be written or read back with the relay, ccw logs a warning, `/readyz` reports `managed_settings: "fallback"` and every session's settings.json keeps the relay for all events. In `fallback` the tamper check does nothing, so a non-default path must also leave `/etc/claude-code` (which the image chowns to the agent) unwritable, or the agent can create a managed file ccw never inspects. `ccw config managed-settings` prints the rendered file. |
 
 ### `claude`
 
@@ -3335,6 +3461,7 @@ claude:
 | `claude.main_agent_only_tools` | list | `[]` | - | List of `fnmatch` globs (case-sensitive) of tool names that PreToolUse denies when the call comes from a subagent (hook payload carries `agent_id`), for example `["mcp__any-mcp__orchestrator_*"]`. Main-agent calls pass. Best-effort guard, not a security boundary: subagents share the pod and trust domain with the main agent. |
 | `claude.permissions.allow` | list | `[]` | - | List of allow rules, for example `Bash(git status:*)`. |
 | `claude.permissions.deny` | list | `["EnterPlanMode", "ExitPlanMode"]` | - | List of deny rules. Plan-mode tools are denied by default. |
+| `claude.additional_directories` | list or null | `null` | - | Absolute directories bypass sessions may write to besides their workdir. With `claude.permission_mode: bypassPermissions` the service writes `permissions.blockWritesOutsideWorkingDirectories: true` and `permissions.additionalDirectories` (this list, or `null` for `paths.workdir_root`, `/tmp` and the session's `CLAUDE_CONFIG_DIR`) to `settings.json`; in other modes neither key is written. `claude.settings` is merged after, so it can lift the fence. |
 | `claude.settings` | map | `{}` | - | Map deep-merged into `settings.json`; hook lists are appended to the service's own hooks. |
 | `claude.claude_json` | map | `{}` | - | Map deep-merged into `.claude.json` in the session config dir. |
 | `claude.mcp_servers` | map | `{}` | - | Map of server name to definition. Stdio: `{type: stdio, command, args: [], env: {}}`. Remote: `{type: http\|sse, url, headers: {}}`. Header values and secret-looking env values are masked. The name `ccw` is reserved: while `sessions.commands.agent` is non-empty (config or create override) the service injects its own `ccw` server (`${CCW_INTERNAL_URL}/internal/mcp`, with the session id and hook token passed as env references, so the token is never written to a file) and adds `mcp__ccw__command` to `permissions.allow`; a user entry named `ccw` is then a config error (a 422 at create for an override). |
@@ -3343,7 +3470,7 @@ claude:
 | `claude.boot.min_boot_seconds` | number | `4.0` | - | Never report ready sooner than this. |
 | `claude.boot.idle_ready_seconds` | number | `1.5` | - | Output quiescence that counts as ready. |
 | `claude.boot.submit_delay_seconds` | number | `0.4` | - | Gap between the bracketed paste and the Enter key. |
-| `claude.boot.dialogs` | list | `[{"pattern": "Bypass Permissions mode", "keys": ["\u001b[B", "\r"], "delay_seconds": 0.6}, {"pattern": "Do you trust the files in this folder", "keys": ["\r"], "delay_seconds": 0.0}]` | - | List of `{pattern, keys: [], delay_seconds: 0.0}`: when `pattern` appears on screen, send `keys` after the delay. |
+| `claude.boot.dialogs` | list | `[{"pattern": "Bypass Permissions mode", "keys": ["\u001b[B", "\r"], "delay_seconds": 0.6}, {"pattern": "Is this a project you created or one you trust", "keys": ["\u001b[B", "\r"], "delay_seconds": 0.6}, {"pattern": "Make auto mode your default permission mode", "keys": ["\u001b[B", "\r"], "delay_seconds": 0.6}]` | - | List of `{pattern, keys: [], delay_seconds: 0.0}`: when `pattern` appears on screen, send `keys` after the delay. |
 | `claude.boot.ready_markers` | list | `["? for shortcuts", "bypass permissions on", "auto mode on"]` | - | List of screen texts that mark the TUI as ready. |
 | `claude.boot.fatal_patterns` | list | `["API Error: 401", "API Error: 403", "Please run /login", "Credit balance is too low", "OAuth token has expired"]` | - | List of screen texts that fail the session (auth errors, no credit). |
 
@@ -3454,7 +3581,7 @@ The typed Claude Code environment. Each field is the variable name lowercased; u
 | `claude.env.claude_code_disable_adaptive_thinking` | bool | `null` | `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` | Set to 1 to disable adaptive reasoning on Opus 4.6 and Sonnet 4.6 and fall back to the fixed thinking budget controll... |
 | `claude.env.claude_code_disable_admin_env_union` | bool | `null` | `CLAUDE_CODE_DISABLE_ADMIN_ENV_UNION` | Set to 1 to stop Claude Code from merging managed settings env blocks per key across admin sources, so only the highe... |
 | `claude.env.claude_code_disable_advisor_tool` | bool | `null` | `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` | Set to 1 to disable the advisor tool |
-| `claude.env.claude_code_disable_agent_view` | bool | `null` | `CLAUDE_CODE_DISABLE_AGENT_VIEW` | Set to 1 to turn off background agents and agent view: claude agents, --bg, /background, and the on-demand supervisor |
+| `claude.env.claude_code_disable_agent_view` | bool | `null` | `CLAUDE_CODE_DISABLE_AGENT_VIEW` | Set to 1 to turn off background agents and agent view: claude agents, --bg, /background, and the on-demand supervisor (managed by the service, always `1`; cannot be set) |
 | `claude.env.claude_code_disable_alternate_screen` | bool | `null` | `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` | Set to 1 to disable fullscreen rendering and use the classic main-screen renderer |
 | `claude.env.claude_code_disable_artifact` | bool | `null` | `CLAUDE_CODE_DISABLE_ARTIFACT` | Set to 1 to turn off the Artifact tool, which publishes session output as a private web page on claude.ai |
 | `claude.env.claude_code_disable_attachments` | bool | `null` | `CLAUDE_CODE_DISABLE_ATTACHMENTS` | Set to 1 to disable attachment processing |
@@ -4069,6 +4196,9 @@ the table below lists all of them with their group, checked against the Claude C
   token wins: `ANTHROPIC_API_KEY` is not exported and a warning is logged at start.
 - **Provider exclusivity.** At most one of `claude_code_use_bedrock`, `claude_code_use_vertex`,
   `claude_code_use_foundry` and `claude_code_use_anthropic_aws` may be true.
+- **Managed `CLAUDE_CODE_DISABLE_AGENT_VIEW` and `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE`.** The service
+  exports `1` and `0` to every claude child; neither the field, an `extra` key nor passthrough
+  can change them.
 - **Managed `CLAUDE_CONFIG_DIR`.** The service sets it per session to
   `<paths.sessions_root>/<session_id>/config`; `claude_config_dir` cannot be set.
 - **`extra`.** `claude.env.extra` is a map of any other variable, passed verbatim. Names match
@@ -4187,7 +4317,7 @@ the table below lists all of them with their group, checked against the Claude C
 | `claude_code_disable_adaptive_thinking` | `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` | bool | no | model | Set to 1 to disable adaptive reasoning on Opus 4.6 and Sonnet 4.6 and fall back to the fixed thinking budget controll... |
 | `claude_code_disable_admin_env_union` | `CLAUDE_CODE_DISABLE_ADMIN_ENV_UNION` | bool | no | behaviour | Set to 1 to stop Claude Code from merging managed settings env blocks per key across admin sources, so only the highe... |
 | `claude_code_disable_advisor_tool` | `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` | bool | no | behaviour | Set to 1 to disable the advisor tool |
-| `claude_code_disable_agent_view` | `CLAUDE_CODE_DISABLE_AGENT_VIEW` | bool | no | behaviour | Set to 1 to turn off background agents and agent view: claude agents, --bg, /background, and the on-demand supervisor |
+| `claude_code_disable_agent_view` | `CLAUDE_CODE_DISABLE_AGENT_VIEW` | bool | no | behaviour | Set to 1 to turn off background agents and agent view: claude agents, --bg, /background, and the on-demand supervisor (managed by the service, always `1`; cannot be set) |
 | `claude_code_disable_alternate_screen` | `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` | bool | no | behaviour | Set to 1 to disable fullscreen rendering and use the classic main-screen renderer |
 | `claude_code_disable_artifact` | `CLAUDE_CODE_DISABLE_ARTIFACT` | bool | no | behaviour | Set to 1 to turn off the Artifact tool, which publishes session output as a private web page on claude.ai |
 | `claude_code_disable_attachments` | `CLAUDE_CODE_DISABLE_ATTACHMENTS` | bool | no | behaviour | Set to 1 to disable attachment processing |
@@ -4498,7 +4628,7 @@ The `Dockerfile` is multi-stage: a builder resolves the locked Python dependenci
 
 | Build arg or pin | Default | Purpose |
 |---|---|---|
-| `CLAUDE_CODE_VERSION` | `2.1.304` | `@anthropic-ai/claude-code` npm version; the PTY driver depends on its dialogs and hooks |
+| `CLAUDE_CODE_VERSION` | `2.1.323` | `@anthropic-ai/claude-code` npm version; the PTY driver depends on its dialogs and hooks |
 | `RUFF_VERSION` | `0.15.0` | ruff for agent sessions |
 | `GH_VERSION` | `2.102.0` | GitHub CLI release binary |
 | `GLAB_VERSION` | `1.124.0` | GitLab CLI release binary |

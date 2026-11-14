@@ -41,6 +41,10 @@ def _parser() -> argparse.ArgumentParser:
     config = sub.add_parser("config", help="bundled configuration helpers")
     config_sub = config.add_subparsers(dest="config_command", required=True)
     config_sub.add_parser("example", help="print the bundled example config.yaml")
+    managed = config_sub.add_parser(
+        "managed-settings", help="print the managed-settings file ccw writes for a config"
+    )
+    managed.add_argument("--config", default=None, help="config path (default $CCW_CONFIG)")
     return parser
 
 
@@ -94,6 +98,27 @@ def _serve(args: argparse.Namespace) -> int:
     return handle.exit_code or 0
 
 
+def _managed_settings(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from claude_code_wrapper.bootstrap.settings import (
+        default_relay_command,
+        render_managed_settings,
+    )
+
+    path = args.config or os.environ.get("CCW_CONFIG") or DEFAULT_CONFIG
+    try:
+        cfg = load_config(path)
+    except ConfigError as exc:
+        print(f"ccw: invalid config: {exc}", file=sys.stderr)
+        return EX_CONFIG
+    doc = render_managed_settings(
+        cfg, default_relay_command(), Path(cfg.paths.managed_settings).parent
+    )
+    print(json.dumps(doc, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "version":
@@ -103,6 +128,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         from claude_code_wrapper.statusline import main as statusline_main
 
         return statusline_main()
+    if args.command == "config" and args.config_command == "managed-settings":
+        return _managed_settings(args)
     if args.command == "config":
         text = resources.files("claude_code_wrapper.data").joinpath("config.example.yaml")
         sys.stdout.write(text.read_text(encoding="utf-8"))

@@ -27,6 +27,7 @@ claude:
   env:                       # no real credentials in CI; the fake claude needs only its scenario
     extra:
       FAKE_CLAUDE_SCENARIO: /opt/ci/scenario.json
+      FAKE_CLAUDE_MANAGED_SETTINGS: /etc/claude-code/managed-settings.json  # the fake reads the file ccw writes
     # claude_code_disable_nonessential_traffic: true
     # extra:                  # any other env var, uppercase names only
     #   MY_VAR: value
@@ -54,7 +55,8 @@ claude:
     submit_delay_seconds: 0.4   # gap between bracketed paste and Enter
     dialogs:                 # pattern seen on screen -> keys to send
       - {pattern: "Bypass Permissions mode", keys: ["\u001b[B", "\r"], delay_seconds: 0.6}
-      - {pattern: "Do you trust the files in this folder", keys: ["\r"]}
+      - {pattern: "Is this a project you created or one you trust", keys: ["\u001b[B", "\r"], delay_seconds: 0.6}
+      - {pattern: "Make auto mode your default permission mode", keys: ["\u001b[B", "\r"], delay_seconds: 0.6}
     ready_markers: ["? for shortcuts", "bypass permissions on"]
     fatal_patterns:          # screen text that fails the session
       - "API Error: 401"
