@@ -59,6 +59,7 @@ def test_event_types_exact():
         "peer_member_left",
         "note_received",
         "note_delivered",
+        "pressure_policy_set",
         "shutdown_started",
         "shutdown_handoff",
         "session_closed",

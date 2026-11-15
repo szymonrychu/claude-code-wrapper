@@ -964,6 +964,20 @@ class NotesConfig(_Model):
     throttle_tool_results: int = Field(10, ge=0)
 
 
+class PressureConfig(_Model):
+    """Cooperative context-pressure handoff policy pushed by the orchestrator."""
+
+    enabled: bool = False
+    l1_every_tool_calls: int = Field(20, ge=1)
+    l2_every_tool_calls: int = Field(3, ge=1)
+    l3_every_tool_calls: int = Field(1, ge=1)
+    full_every: int = Field(5, ge=1)
+    l2_stop_blocks: int = Field(1, ge=0)
+    l3_stop_blocks: int = Field(3, ge=0)
+    git_timeout_seconds: float = Field(10, gt=0)
+    max_text_chars: int = Field(4000, ge=1)
+
+
 class ShutdownHandoffConfig(_Model):
     enabled: bool = False
     notice_seconds: float = Field(120, ge=0)
@@ -1027,6 +1041,7 @@ class Config(_Model):
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     peers: PeersConfig = Field(default_factory=PeersConfig)
     notes: NotesConfig = Field(default_factory=NotesConfig)
+    pressure: PressureConfig = Field(default_factory=PressureConfig)
     usage: UsageConfig = Field(default_factory=UsageConfig)
     shutdown: ShutdownConfig = Field(default_factory=ShutdownConfig)
     guard: GuardConfig = Field(default_factory=GuardConfig)

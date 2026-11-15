@@ -1318,6 +1318,29 @@ previous note with the same key, and `source` (optional) is at most 80 character
 number of notes awaiting delivery). Errors: `401 unauthorized`, `404 not_found` (unknown
 session), `409 notes_disabled`, `409 invalid_state` (session not running), `422 invalid_request`.
 
+### `PUT /v1/sessions/{id}/pressure`
+
+Push the context pressure policy of a session (see [Context pressure](#context-pressure)). Auth:
+bearer. Body: a policy `{"version": 1, "thresholds": {...}, "profile": "work"|"chat", "texts":
+{"l1": {"full", "short"}, "l2": ..., "l3": ...}, "handoff_state", "waiting_on", "resume_pending",
+"resume_text", "compact_instructions", "reinject_text"}`; every text is at most
+`pressure.max_text_chars` characters. Response `200`: `{"version": 1, "result": "set"|"unchanged",
+"level": 0}`. Errors: `401 unauthorized`, `404 not_found`, `409 pressure_disabled`, `409
+stale_version` (a lower version than the one in force), `409 invalid_state`, `422
+invalid_request`.
+
+### `GET /v1/sessions/{id}/pressure`
+
+The pressure state: `{"version": 1|null, "level": 0, "context": {...}|null, "handoff_state":
+"none", "deliveries": 0, "stop_blocks_this_turn": 0}`. The state is memory only, so `version` is
+null after a wrapper restart until the orchestrator pushes again. Auth: bearer. Errors: `401
+unauthorized`, `404 not_found`, `409 invalid_state`.
+
+### `DELETE /v1/sessions/{id}/pressure`
+
+Drop the session's pressure policy. Response `204`. Auth: bearer. Errors: `401 unauthorized`,
+`404 not_found`, `409 invalid_state`.
+
 ### `GET /v1/peers`
 
 The peer mesh as this instance sees it. Always mounted (unlike the signed `POST /v1/peers/*`
@@ -2235,6 +2258,17 @@ Emitted when a pushed note is accepted into the session's notes inbox.
 ```
 event: note_received
 data: {"seq":25,"ts":"2026-10-20T09:11:30.000Z","session_id":"ses_3f9a1c0b7d42","type":"note_received","data":{"key":"hive_state","source":"orchestrator","text":"leader is ses_aa","chars":16}}
+```
+
+### `pressure_policy_set`
+
+Emitted when a pushed pressure policy is set (not when the same policy is pushed again).
+
+`data`: `version` (the policy version), `profile` (`work` or `chat`).
+
+```
+event: pressure_policy_set
+data: {"seq":27,"ts":"2026-10-20T09:11:32.000Z","session_id":"ses_3f9a1c0b7d42","type":"pressure_policy_set","data":{"version":3,"profile":"work"}}
 ```
 
 ### `note_delivered`
@@ -3328,6 +3362,8 @@ FastAPI's `{"detail": ...}` body instead.
 | `inbox_full` | 429 | the target session's peer inbox is at `peers.inbox_max` |
 | `rate_limited` | 429 | a peer sender over `peers.max_messages_per_minute`, or the peer nonce cache is full |
 | `notes_disabled` | 409 | `POST /v1/sessions/{id}/notes` while `notes.enabled` is false |
+| `pressure_disabled` | 409 | `PUT /v1/sessions/{id}/pressure` while `pressure.enabled` is false |
+| `stale_version` | 409 | `PUT /v1/sessions/{id}/pressure` with a version lower than the one in force |
 | `invalid_command` | 422 | an empty or invalid command name, invalid `args`, or `--force` not allowed |
 | `slash_command` | 422 | a turn's or probe's text is a slash command (claude's parser would run it, so it is never typed as a turn or probe); slash commands go to `POST /v1/sessions/{id}/commands` |
 | `command_queue_full` | 429 | the session already has the maximum of queued commands |
@@ -3372,6 +3408,17 @@ curl -fsS -X DELETE localhost:8080/v1/sessions/$SID -H "$H"   # keeps files; add
 
 See [API reference](#api-reference) for the exact bodies and [Events (SSE)](#events-sse) for the
 stream. Without Docker see [Installation](#installation).
+
+## Context pressure
+
+With `pressure.enabled` the orchestrator pushes a per-session policy through
+[`PUT /v1/sessions/{id}/pressure`](#put-v1sessionsidpressure) (memory only; it re-pushes after a
+wrapper restart). The level (0 to 3) is computed from the statusLine context gauge in tokens
+(`used_tokens` against `thresholds.l1_tokens`, `l2_tokens`, `l3_tokens`); the percentage
+thresholds apply only when the gauge has no window. An unknown gauge (for example right after
+compaction) is level 0. Texts support the placeholders `{pct}`, `{used_k}`, `{window_k}`,
+`{compact_pct}`, `{left_k}`, `{level}` and `{waiting_on}`; unknown placeholders stay literal and
+missing values render as `?`. A `pressure_policy_set` event is emitted when a policy is set.
 
 ## Configuration reference
 
@@ -4156,6 +4203,28 @@ Opt-in notes inbox for hived agents (see [Notes](#notes)); with `enabled: false`
 | `notes.delivery_max_chars` | integer | `8000` | - | Most characters of notes delivered in one hook output, below Claude Code's 10,000-character hook limit (>= 1). |
 | `notes.throttle_seconds` | integer | `30` | - | Minimum seconds between note deliveries on tool results (>= 0). |
 | `notes.throttle_tool_results` | integer | `10` | - | Tool results between note deliveries (>= 0). |
+
+### `pressure`
+
+```yaml
+pressure:
+  enabled: true
+  l3_stop_blocks: 3
+```
+
+Opt-in context pressure policy for limit subjects (see [Context pressure](#context-pressure)); with `enabled: false` (the default) the route answers `409 pressure_disabled` and nothing changes.
+
+| Key | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `pressure.enabled` | boolean | `false` | - | Turn the pressure policy API on. Off, `PUT /v1/sessions/{id}/pressure` answers `409 pressure_disabled`. |
+| `pressure.l1_every_tool_calls` | integer | `20` | - | Tool calls between level 1 reminders (>= 1). |
+| `pressure.l2_every_tool_calls` | integer | `3` | - | Tool calls between level 2 reminders (>= 1). |
+| `pressure.l3_every_tool_calls` | integer | `1` | - | Tool calls between level 3 reminders (>= 1). |
+| `pressure.full_every` | integer | `5` | - | Every Nth reminder uses the full text, the others the short one (>= 1). |
+| `pressure.l2_stop_blocks` | integer | `1` | - | Stop blocks per turn at level 2 (>= 0). |
+| `pressure.l3_stop_blocks` | integer | `3` | - | Stop blocks per turn at level 3 (>= 0). |
+| `pressure.git_timeout_seconds` | number | `10` | - | Timeout of the git status probe in seconds (> 0). |
+| `pressure.max_text_chars` | integer | `4000` | - | Longest accepted policy text in characters (>= 1). |
 
 ### `usage`
 

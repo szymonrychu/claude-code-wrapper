@@ -566,3 +566,18 @@ def test_additional_directories_must_be_absolute(tmp_path):
     cfg = load_config(write(tmp_path, "claude: {additional_directories: [/data]}\n"))
     assert cfg.claude.additional_directories == ["/data"]
     assert Config().claude.additional_directories is None
+
+
+def test_pressure_defaults():
+    p = Config.model_validate({"server": {"auth_token": "tok-" + "a" * 20}}).pressure
+    assert p.model_dump() == {
+        "enabled": False,
+        "l1_every_tool_calls": 20,
+        "l2_every_tool_calls": 3,
+        "l3_every_tool_calls": 1,
+        "full_every": 5,
+        "l2_stop_blocks": 1,
+        "l3_stop_blocks": 3,
+        "git_timeout_seconds": 10,
+        "max_text_chars": 4000,
+    }

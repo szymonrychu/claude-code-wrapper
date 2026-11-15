@@ -57,6 +57,7 @@ from .permissions import (
     PendingPermission,
     PermissionBroker,
 )
+from .pressure import PressureState
 from .pty_proc import PtyClosed
 from .redact import Redactor
 from .session import (
@@ -467,6 +468,8 @@ class SessionRouter(SessionListener):
         self.peer_inbox: PeerInbox | None = None
         #: The session's notes inbox, set by the manager when `notes.enabled` (memory only).
         self.notes: NoteStore | None = None
+        #: The session's pressure policy state, set by the manager when `pressure.enabled`.
+        self.pressure: PressureState | None = None
         #: Notes delivery throttle: monotonic time of the last delivery and the main-agent tool
         #: results seen since.
         self._notes_last = time.monotonic()
