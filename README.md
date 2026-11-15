@@ -1837,7 +1837,9 @@ data: {"seq":12,"ts":"2026-10-20T09:01:07.000Z","session_id":"ses_3f9a1c0b7d42",
 
 ### `tool_denied`
 
-Emitted when a blocking `onAgentToolCall` action denied a tool call; Claude receives the reason.
+Emitted when a tool call is denied; Claude receives the reason. The denier is a blocking
+`onAgentToolCall` action, or the wrapper's own guard (the agent spawn cap and the repeated-failure
+breaker, see the guard section); the `reason` says which.
 
 `data`: `tool_use_id`, `tool_name`, `reason`, `agent_id`, `agent_type`.
 
@@ -4219,7 +4221,7 @@ Runaway guard; every cap defaults to `0` (off). Each trip emits `guard_tripped`.
 
 | Key | Type | Default | Env var | Description |
 |---|---|---|---|---|
-| `guard.max_stop_continuations` | integer | `0` | - | Stop-hook continuations allowed per turn; `0` is off, else 1 to 1000. |
+| `guard.max_stop_continuations` | integer | `0` | - | Stop-hook continuations allowed per Stop chain; `0` is off, else 1 to 1000. |
 | `guard.max_agent_spawns` | integer | `0` | - | Agent and Task spawns allowed per Claude session id; `0` is off, else 1 to 100000. |
 | `guard.tool_failure_repeats` | integer | `0` | - | Identical failing calls in a row before the next is denied; `0` is off, else 2 to 100. |
 
