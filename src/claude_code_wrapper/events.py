@@ -54,6 +54,7 @@ EVENT_TYPES: list[str] = [
     "context",
     "error",
     "permission_mode_unavailable",
+    "auth_failed",
     "waiting_started",
     "waiting_ended",
     "permission_requested",

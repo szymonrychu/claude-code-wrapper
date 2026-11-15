@@ -8,11 +8,15 @@ Placeholders only: no credential material appears in any fixture.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import os
 
 import pytest
 from conftest import World, turns_of, wait_turn, wait_until
 
-from claude_code_wrapper.manager import CreateSessionRequest
+from claude_code_wrapper.manager import CreateSessionRequest, SessionManager
+from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.session import AUTH_FAILED, FatalScanner
 
 DOT = "·"
@@ -145,3 +149,57 @@ async def test_healthy_session_has_no_auth_state(world: World) -> None:
     snap = m.get(sid)
     assert snap["auth_state"] is None
     assert snap["auth_reason"] is None
+
+
+def auth_events(world: World, sid: str) -> list[dict]:
+    return [e for e in world.events(sid) if e["type"] == "auth_failed"]
+
+
+async def test_auth_failed_event_carries_reason_and_redacted_tail(world: World) -> None:
+    scenario = {"turns": [{"match": "go", "steps": [{"print": screen("OAuth token revoked")}]}]}
+    m = world.manager(world.cfg(scenario))
+    sid = (await m.create(CreateSessionRequest(prompt="go")))["session_id"]
+    await wait_turn(m, sid, "failed")
+    (event,) = auth_events(world, sid)
+    data = event["data"]
+    assert set(data) == {"reason", "tail"}
+    assert data["reason"] == "revoked"
+    assert "OAuth token revoked" in data["tail"]
+
+
+async def test_auth_failed_event_once_per_session(world: World) -> None:
+    scenario = {
+        "turns": [
+            {"match": "go", "steps": [{"print": screen("OAuth token revoked")}]},
+            {"match": "second", "steps": [{"print": screen("Login expired")}]},
+        ]
+    }
+    m = world.manager(world.cfg(scenario))
+    sid = (await m.create(CreateSessionRequest(prompt="go")))["session_id"]
+    await wait_turn(m, sid, "failed")
+    await m.router(sid).submit_turn("second")
+    await asyncio.wait_for(
+        wait_until(lambda: len([t for t in turns_of(m, sid) if t.state == "failed"]) == 2), 2.0
+    )
+    assert len(auth_events(world, sid)) == 1
+    assert m.get(sid)["auth_reason"] == "revoked"
+
+
+async def test_auth_failed_canary_never_leaks(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    canary = "CANARY-ccw-auth-0001"
+    line = f"\nOAuth token revoked {DOT} Please run /login\n{canary}\n"
+    scenario = {"turns": [{"match": "go", "steps": [{"print": line}]}]}
+    cfg = world.cfg(scenario, claude={"passthrough_env": ["CLAUDE_CODE_OAUTH_TOKEN"]})
+    service_env = {"CLAUDE_CODE_OAUTH_TOKEN": canary, "PATH": os.environ["PATH"]}
+    m = SessionManager(cfg, internal_url=world.url, service_env=service_env, redactor=Redactor())
+    world.managers.append(m)
+    sid = (await m.create(CreateSessionRequest(prompt="go")))["session_id"]
+    turn = await wait_turn(m, sid, "failed")
+    assert len(auth_events(world, sid)) == 1
+    assert canary not in json.dumps(world.events(sid))
+    assert canary not in json.dumps(m.get(sid))
+    assert canary not in (turn.error or "")
+    assert canary not in caplog.text

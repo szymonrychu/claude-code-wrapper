@@ -1948,6 +1948,24 @@ event: permission_mode_unavailable
 data: {"seq":20,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_mode_unavailable","data":{"reason":"plan","tail":"auto mode is unavailable for your plan"}}
 ```
 
+### `auth_failed`
+
+Emitted once per claude launch when claude draws its re-login screen: a full
+`<title> \u00b7 Please run /login` line for `Login reached its time limit`, `OAuth token revoked`,
+`Login expired` or `Not logged in`. The running turn, and every later turn until claude is
+relaunched, fails at once with `error: "auth_failed"`. The snapshot shows `auth_state: "failed"`
+and `auth_reason`. The state is sticky and clears only when claude is relaunched. The generic
+fatal patterns are unchanged: a bare `Please run /login`, `API Error: 401` and
+`OAuth token has expired` still fail the turn through `on_fatal`, without this state.
+
+`data`: `reason` (`time_limit`, `revoked`, `expired`, `not_logged_in`), `tail` (the redacted
+screen tail).
+
+```
+event: auth_failed
+data: {"seq":21,"ts":"2026-11-15T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"auth_failed","data":{"reason":"revoked","tail":"OAuth token revoked \u00b7 Please run /login"}}
+```
+
 ### `waiting_started`
 
 Emitted when the session starts waiting on the user: a permission prompt or dialog is open on
