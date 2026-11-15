@@ -38,6 +38,7 @@ from .events import Event as LogEvent
 from .events import EventLog
 from .guard import (
     AGENT_SPAWN_DENY_REASON,
+    BREAKER_DENY_REASON,
     STOP_LOOP_REASON,
     SUBAGENT_TOOLS,
     RunawayGuard,
@@ -1143,6 +1144,8 @@ class SessionRouter(SessionListener):
             self._deliver(self._callback_url(self.session.current_turn), event)
             return {"stdout": deny_output(QUESTION_DENY_REASON), "stderr": "", "exit_code": 0}
         who = _attribution(payload)
+        agent_id = _str_or_none(payload.get("agent_id"))
+        key = call_key(agent_id, tool_name, tool_input)
         gate_reason = None
         if self._cfg.peers.enabled and tool_name in NATIVE_PEER_TOOLS:
             gate_reason = NATIVE_PEER_DENY_REASON
@@ -1153,13 +1156,30 @@ class SessionRouter(SessionListener):
         ):
             gate_reason = MAIN_AGENT_ONLY_DENY_REASON
         if gate_reason is not None:
+            self.guard.record_denial(key, tool_use_id)
             return self._deny(tool_use_id, tool_name, gate_reason, who)
+        breaker = self.guard.breaker_check(key)
+        if breaker.deny:
+            if breaker.first_trip:
+                current = self.session.current_turn
+                self._emit_guard_tripped(
+                    "tool_breaker",
+                    count=breaker.streak,
+                    limit=self.guard.cfg.tool_failure_repeats,
+                    turn_id=current.turn_id if current is not None else None,
+                    claude_session_id=_str_or_none(payload.get("session_id")),
+                    agent_id=agent_id,
+                    tool_name=tool_name,
+                )
+            self.guard.record_denial(key, tool_use_id)
+            return self._deny(
+                tool_use_id, tool_name, BREAKER_DENY_REASON.format(count=breaker.streak), who
+            )
         if tool_name in SUBAGENT_TOOLS:
             claude_session_id = _str_or_none(payload.get("session_id")) or ""
             verdict = self.guard.spawn(claude_session_id)
             if not verdict.allowed:
                 limit = self.guard.cfg.max_agent_spawns
-                agent_id = _str_or_none(payload.get("agent_id"))
                 if verdict.first_denial:
                     current = self.session.current_turn
                     self._emit_guard_tripped(
@@ -1171,7 +1191,7 @@ class SessionRouter(SessionListener):
                         agent_id=agent_id,
                         tool_name=tool_name,
                     )
-                self.guard.record_denial(call_key(agent_id, tool_name, tool_input), tool_use_id)
+                self.guard.record_denial(key, tool_use_id)
                 return self._deny(
                     tool_use_id, tool_name, AGENT_SPAWN_DENY_REASON.format(limit=limit), who
                 )
@@ -1188,6 +1208,7 @@ class SessionRouter(SessionListener):
             self._metrics.tool_call(tool_name, "deny" if outcome.decision == "deny" else "allow")
         if outcome.decision == "deny":
             reason = outcome.reason or DEFAULT_DENY_REASON
+            self.guard.record_denial(key, tool_use_id)
             self._emit(
                 "tool_denied",
                 {"tool_use_id": tool_use_id, "tool_name": tool_name, "reason": reason, **who},
@@ -1217,6 +1238,12 @@ class SessionRouter(SessionListener):
             "response": _response_text(payload),
             **_attribution(payload),
         }
+        post_input = payload.get("tool_input")
+        self.guard.record_result(
+            call_key(_str_or_none(agent_id), tool_name, {} if post_input is None else post_input),
+            failed=bool(data["is_error"]),
+            tool_use_id=payload.get("tool_use_id"),
+        )
         self._emit("tool_result", data)
         self.session.record_tool_call()
         outcome = await self._fire("onToolResult", data, tool_name=tool_name)
