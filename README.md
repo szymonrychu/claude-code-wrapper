@@ -376,6 +376,8 @@ Response `201`:
   "last_fatal": null,
   "permission_mode_state": null,
   "permission_mode_reason": null,
+  "auth_state": null,
+  "auth_reason": null,
   "waiting": null,
   "bootstrap": {"steps": [{"step": "session_dir", "status": "succeeded", "message": null, "started_at": "2026-10-20T09:00:00.130+00:00", "finished_at": "2026-10-20T09:00:00.140+00:00"}]},
   "restarts": 0,
@@ -394,7 +396,7 @@ answered it), else `null`; `bootstrap.steps` lists each create/resume step in or
 characters) and `started_at`/`finished_at`; `state` is one of `creating`, `ready`, `busy`, `stopped`, `failed`, `dead`;
 `step` is the create/resume step last entered (on `failed`, the one that failed, with `error:
 {"step", "message"}`); `outstanding_subagents` is the number of subagents started and not yet stopped (0 for stopped and persisted sessions); `current_turn_id` is the running turn; `last_fatal` is the last fatal
-screen text; `permission_mode_state` is `"unavailable"` (with `permission_mode_reason`: `settings`, `plan`, `fast_mode`, `model`, `unknown` or `no_safety_verdict`) once claude printed that auto mode cannot be used, else `null` (only ever set when `claude.permission_mode` is `auto`); `pid` is the claude pid while alive; `env` shows set values with secrets masked as
+screen text; `permission_mode_state` is `"unavailable"` (with `permission_mode_reason`: `settings`, `plan`, `fast_mode`, `model`, `unknown` or `no_safety_verdict`) once claude printed that auto mode cannot be used, else `null` (only ever set when `claude.permission_mode` is `auto`); `auth_state` is `"failed"` (with `auth_reason`: `time_limit`, `revoked`, `expired` or `not_logged_in`) once claude drew its re-login screen, else `null`; the running turn then fails with `auth_failed`, as does every later turn until claude is relaunched; `pid` is the claude pid while alive; `env` shows set values with secrets masked as
 `***`. `idle_since` is the ISO timestamp of the latest transition into `ready` (boot, a turn or command
 completing, a relaunch of claude) and `null` in every other state, including stopped sessions
 loaded from disk; the orchestrator uses it to route to the agent idle the longest. It differs from
@@ -1944,6 +1946,24 @@ permission prompt until `stall_suspected`. A healthy auto session emits nothing.
 ```
 event: permission_mode_unavailable
 data: {"seq":20,"ts":"2026-10-20T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"permission_mode_unavailable","data":{"reason":"plan","tail":"auto mode is unavailable for your plan"}}
+```
+
+### `auth_failed`
+
+Emitted once per claude launch when claude draws its re-login screen: a full
+`<title> \u00b7 Please run /login` line for `Login reached its time limit`, `OAuth token revoked`,
+`Login expired` or `Not logged in`. The running turn, and every later turn until claude is
+relaunched, fails at once with `error: "auth_failed"`. The snapshot shows `auth_state: "failed"`
+and `auth_reason`. The state is sticky and clears only when claude is relaunched. The generic
+fatal patterns are unchanged: a bare `Please run /login`, `API Error: 401` and
+`OAuth token has expired` still fail the turn through `on_fatal`, without this state.
+
+`data`: `reason` (`time_limit`, `revoked`, `expired`, `not_logged_in`), `tail` (the redacted
+screen tail).
+
+```
+event: auth_failed
+data: {"seq":21,"ts":"2026-11-15T09:31:00.000Z","session_id":"ses_3f9a1c0b7d42","type":"auth_failed","data":{"reason":"revoked","tail":"OAuth token revoked \u00b7 Please run /login"}}
 ```
 
 ### `waiting_started`

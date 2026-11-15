@@ -1723,6 +1723,8 @@ class SessionManager:
             "last_fatal": live.get("last_fatal"),
             "permission_mode_state": live.get("permission_mode_state"),
             "permission_mode_reason": live.get("permission_mode_reason"),
+            "auth_state": live.get("auth_state"),
+            "auth_reason": live.get("auth_reason"),
             "restarts": live.get("restarts", 0),
             "pid": live.get("pid"),
             "context": dict(context) if context is not None else None,

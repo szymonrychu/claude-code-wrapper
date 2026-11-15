@@ -419,6 +419,9 @@ class SessionListener:
     def on_permission_unavailable(self, reason: str, tail: str) -> None:
         """Auto mode is unavailable for `reason` (see `AUTO_UNAVAILABLE`); `tail` is the screen."""
 
+    def on_auth_failed(self, reason: str, tail: str) -> None:
+        """claude shows a re-login screen for `reason` (see `AUTH_FAILED`); `tail` is the screen."""
+
     def on_waiting(self, reason: str | None, previous: str | None) -> None:
         """The wait for the user changed from `previous` to `reason` (`dialog`, `permission`,
         `question`; None when nothing is awaited)."""
@@ -457,6 +460,17 @@ AUTO_UNAVAILABLE: tuple[tuple[str, str], ...] = (
     ("auto mode is unavailable right now", "unknown"),
 )
 PERMISSION_UNAVAILABLE_ERROR = "permission_mode_unavailable"
+
+#: The re-login screens of claude 2.1.323, each the full screen line ("<title> <U+00B7> Please run
+#: /login"), with the reason reported. Matched like fatal patterns, in every permission mode. The
+#: bare 401 / "OAuth token has expired" / "Please run /login" stay generic fatal patterns.
+AUTH_FAILED: tuple[tuple[str, str], ...] = (
+    ("Login reached its time limit \u00b7 Please run /login", "time_limit"),
+    ("OAuth token revoked \u00b7 Please run /login", "revoked"),
+    ("Login expired \u00b7 Please run /login", "expired"),
+    ("Not logged in \u00b7 Please run /login", "not_logged_in"),
+)
+AUTH_FAILED_ERROR = "auth_failed"
 
 
 class FatalScanner:
@@ -589,6 +603,9 @@ class Session:
         )
         self.permission_mode_state: str | None = None  # "unavailable" or None
         self.permission_mode_reason: str | None = None
+        self._auth = FatalScanner(p for p, _ in AUTH_FAILED)
+        self.auth_state: str | None = None  # "failed" or None
+        self.auth_reason: str | None = None
         #: Dialog footers of the slash command being run (`watch_dialogs`); none otherwise.
         self._dialogs = FatalScanner(())
         self._dialog_hits = 0
@@ -684,6 +701,8 @@ class Session:
             "last_fatal": self.last_fatal,
             "permission_mode_state": self.permission_mode_state,
             "permission_mode_reason": self.permission_mode_reason,
+            "auth_state": self.auth_state,
+            "auth_reason": self.auth_reason,
             "waiting": (
                 {"reason": self._waiting, "since": self.waiting_since}
                 if self._waiting is not None
@@ -813,6 +832,8 @@ class Session:
         self._scanner.reset()
         self._unavailable.reset()
         self.permission_mode_state = self.permission_mode_reason = None
+        self._auth.reset()  # a relaunched claude re-detects; a pod restart reads a rotated Secret
+        self.auth_state = self.auth_reason = None
         self._dialogs.reset()
         self._ui_dialogs.reset()
         self._ui_dialog_at = float("-inf")
@@ -898,6 +919,8 @@ class Session:
         if self._allow_lock and not self._ring_shows_permission():
             self._lift_lock()  # the allowed prompt closed: its footer left the screen
         self._sync_waiting()
+        for pattern in self._auth.feed(text):
+            self._on_auth_failed(pattern)
         for pattern in self._scanner.feed(text):
             self.last_fatal = pattern
             log.warning("session %s: fatal pattern %r on screen", self.spec.session_id, pattern)
@@ -923,6 +946,19 @@ class Session:
             self._notify("on_permission_unavailable", reason, self.tail())
         if record is not None:
             self._end_turn(record, "failed", error=PERMISSION_UNAVAILABLE_ERROR)
+
+    def _on_auth_failed(self, pattern: str) -> None:
+        record = self._turn
+        # A prompt that quotes the text is echoed on screen; that is not claude saying it.
+        if record is not None and _squash(pattern) in _squash(record.text):
+            return
+        if self.auth_state is None:
+            reason = dict(AUTH_FAILED)[pattern]
+            self.auth_state, self.auth_reason = "failed", reason
+            log.warning("session %s: claude auth failed (%s)", self.spec.session_id, reason)
+            self._notify("on_auth_failed", reason, self.tail())
+        if record is not None:
+            self._end_turn(record, "failed", error=AUTH_FAILED_ERROR)
 
     def _on_exit(self, pty: PtyProcess, code: int) -> None:
         if pty is not self.pty:
@@ -1204,6 +1240,11 @@ class Session:
             # claude would stop at a permission prompt for the first tool call: fail it now.
             self._persist(record)
             self._end_turn(record, "failed", error=PERMISSION_UNAVAILABLE_ERROR)
+            return record
+        if self.auth_state == "failed":
+            # claude shows its re-login screen and would never answer: fail it now.
+            self._persist(record)
+            self._end_turn(record, "failed", error=AUTH_FAILED_ERROR)
             return record
         # Reserve before the first byte: a second submit racing this one sees busy.
         self._turn = record

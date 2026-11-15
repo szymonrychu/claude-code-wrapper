@@ -2652,6 +2652,9 @@ class SessionRouter(SessionListener):
             {"reason": reason, "tail": self._redactor.redact(tail)},
         )
 
+    def on_auth_failed(self, reason: str, tail: str) -> None:
+        self._emit("auth_failed", {"reason": reason, "tail": self._redactor.redact(tail)})
+
     def on_restart(self, count: int, resumed: bool) -> None:
         # The relaunched claude has no prompt for the held hooks: answer them now (gone, deny)
         # and free the lanes before the crash continuation is typed.

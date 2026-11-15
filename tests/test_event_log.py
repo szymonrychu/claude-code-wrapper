@@ -44,6 +44,7 @@ def test_event_types_exact():
         "context",
         "error",
         "permission_mode_unavailable",
+        "auth_failed",
         "waiting_started",
         "waiting_ended",
         "permission_requested",
