@@ -30,11 +30,14 @@ Worktree = dict[str, Any]
 ScratchFile = dict[str, Any]
 
 
-def find_repos(workdir: Path) -> list[Path]:
-    """Directories holding a `.git` (dir or file) up to MAX_DEPTH below `workdir`."""
+def find_repos(workdir: Path, deadline: float | None = None) -> list[Path]:
+    """Directories holding a `.git` (dir or file) up to MAX_DEPTH below `workdir`; the walk
+    stops quietly past the monotonic `deadline` (the caller times out the same way)."""
     found: list[Path] = []
 
     def walk(directory: Path, depth: int) -> None:
+        if deadline is not None and time.monotonic() > deadline:
+            return
         try:
             names = sorted(os.listdir(directory))
         except OSError:
@@ -115,7 +118,13 @@ async def _scan_repo(workdir: Path, repo: Path) -> Worktree:
 async def scan_worktrees(workdir: Path, timeout: float) -> list[Worktree]:
     """Git state of every repository under `workdir`; repos not done in `timeout` seconds
     (one budget for all) are reported with error "timeout"."""
-    repos = await asyncio.to_thread(find_repos, workdir)
+    start = time.monotonic()
+    try:
+        repos = await asyncio.wait_for(
+            asyncio.to_thread(find_repos, workdir, start + timeout), timeout
+        )
+    except TimeoutError:
+        return [_entry(workdir, workdir, "timeout")]
     gate = asyncio.Semaphore(PARALLEL_REPOS)
 
     async def one(repo: Path) -> Worktree:
@@ -124,7 +133,7 @@ async def scan_worktrees(workdir: Path, timeout: float) -> list[Worktree]:
 
     tasks = {repo: asyncio.ensure_future(one(repo)) for repo in repos}
     if tasks:
-        await asyncio.wait(tasks.values(), timeout=timeout)
+        await asyncio.wait(tasks.values(), timeout=max(timeout - (time.monotonic() - start), 0))
     out: list[Worktree] = []
     for repo, task in tasks.items():
         if task.done() and not task.cancelled() and task.exception() is None:
@@ -139,23 +148,33 @@ async def scan_worktrees(workdir: Path, timeout: float) -> list[Worktree]:
 
 def _scan_scratch(
     roots: list[str], since: datetime, deadline: float, exclude: Path | None
-) -> list[ScratchFile]:
+) -> tuple[list[ScratchFile], bool]:
     floor = since.timestamp()
     skip = os.path.realpath(exclude) if exclude is not None else None
     out: list[ScratchFile] = []
+    incomplete = False
+
+    def unreadable(_err: OSError) -> None:
+        nonlocal incomplete
+        incomplete = True
+
     for pattern in roots:
         for root in sorted(glob.glob(pattern)):
             if os.path.islink(root) or not os.path.isdir(root):
                 continue
-            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            for dirpath, dirnames, filenames in os.walk(
+                root, onerror=unreadable, followlinks=False
+            ):
                 real = os.path.realpath(dirpath)
                 if skip is not None and (real == skip or real.startswith(skip + os.sep)):
                     dirnames[:] = []
                     continue
                 dirnames.sort()
                 for name in sorted(filenames):
-                    if time.monotonic() > deadline or len(out) >= MAX_SCRATCH:
-                        return out
+                    if len(out) >= MAX_SCRATCH:
+                        return out, incomplete
+                    if time.monotonic() > deadline:
+                        return out, True
                     path = os.path.join(dirpath, name)
                     try:
                         st = os.lstat(path)
@@ -165,17 +184,26 @@ def _scan_scratch(
                         continue
                     mtime = iso(datetime.fromtimestamp(st.st_mtime, UTC))
                     out.append({"path": path, "size": st.st_size, "mtime": mtime})
-    return out
+            if time.monotonic() > deadline:
+                return out, True
+    return out, incomplete
 
 
 async def scan_scratch(
     roots: list[str], since: datetime, timeout: float, exclude: Path | None = None
-) -> list[ScratchFile]:
+) -> tuple[list[ScratchFile], bool]:
     """Regular files modified at or after `since` under the glob `roots`, outside `exclude`
     (the workdir persists, so it is not scratch). At most MAX_SCRATCH, symlinks never followed,
-    contents never read; a scan past `timeout` seconds returns what it has."""
+    contents never read. The flag is true when the scan is incomplete (past `timeout` seconds
+    or an unreadable directory): the files returned are then only part of the truth."""
     deadline = time.monotonic() + timeout
     return await asyncio.to_thread(_scan_scratch, roots, since, deadline, exclude)
+
+
+def _slim(item: Any) -> dict[str, Any]:
+    """Whitelist id, description and status: task text and commands are never output."""
+    src = item if isinstance(item, dict) else {}
+    return {k: src[k] for k in ("id", "description", "status") if k in src}
 
 
 async def build_inflight(router: Any, workdir: Path, since: datetime, cfg: Any) -> dict[str, Any]:
@@ -187,18 +215,19 @@ async def build_inflight(router: Any, workdir: Path, since: datetime, cfg: Any) 
         for t in inventory.get("background_tasks") or []
         if not isinstance(t, dict) or t.get("status", "running") == "running"
     ]
-    worktrees, scratch = await asyncio.gather(
+    worktrees, (scratch, scratch_incomplete) = await asyncio.gather(
         scan_worktrees(workdir, cfg.git_timeout_seconds),
         scan_scratch(cfg.scratch_roots, since, cfg.git_timeout_seconds, exclude=workdir),
     )
     return {
         "subagents": len(ids),
         "subagent_ids": ids,
-        "background_tasks": tasks,
-        "crons": list(inventory.get("session_crons") or []),
+        "background_tasks": [_slim(t) for t in tasks],
+        "crons": [_slim(c) for c in inventory.get("session_crons") or []],
         "worktrees": worktrees,
         "scratch": scratch,
-        "unknown": any(w["error"] in ("timeout", "git_failed") for w in worktrees),
+        "unknown": scratch_incomplete
+        or any(w["error"] in ("timeout", "git_failed") for w in worktrees),
         "stop_seen_at": inventory.get("at"),
         "scanned_at": now_iso(),
     }

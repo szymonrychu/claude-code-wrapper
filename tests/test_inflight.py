@@ -157,7 +157,7 @@ def hour_ago() -> datetime:
 
 async def test_scratch_outside_workdir_reported(tmp_path):
     f = touch(tmp_path / "pod" / "claude-1" / "scratchpad" / "notes.md")
-    got = await scan_scratch([str(tmp_path / "pod" / "claude-*")], hour_ago(), 20)
+    got, _ = await scan_scratch([str(tmp_path / "pod" / "claude-*")], hour_ago(), 20)
     assert [g["path"] for g in got] == [str(f)]
     assert got[0]["size"] == 7 and got[0]["mtime"]
 
@@ -166,7 +166,7 @@ async def test_scratch_inside_workdir_excluded(tmp_path):
     work = tmp_path / "work"
     touch(work / "claude-1" / "persisted.md")
     touch(tmp_path / "pod" / "claude-1" / "a.md")
-    got = await scan_scratch(
+    got, _ = await scan_scratch(
         [str(work / "claude-*"), str(tmp_path / "pod" / "claude-*")],
         hour_ago(),
         20,
@@ -179,7 +179,7 @@ async def test_scratch_older_than_tenure_ignored(tmp_path):
     root = tmp_path / "pod" / "claude-1"
     touch(root / "old.md", datetime.now(UTC) - timedelta(days=2))
     new = touch(root / "new.md")
-    got = await scan_scratch([str(root)], hour_ago(), 20)
+    got, _ = await scan_scratch([str(root)], hour_ago(), 20)
     assert [g["path"] for g in got] == [str(new)]
 
 
@@ -191,7 +191,7 @@ async def test_scratch_capped_and_no_symlink_follow(tmp_path):
     touch(outside / "secret.txt")
     (root / "link").symlink_to(outside, target_is_directory=True)
     (root / "flink.txt").symlink_to(outside / "secret.txt")
-    got = await scan_scratch([str(root)], hour_ago(), 20)
+    got, _ = await scan_scratch([str(root)], hour_ago(), 20)
     assert len(got) == 100
     assert not any("secret" in g["path"] or "link" in g["path"] for g in got)
 
@@ -238,3 +238,74 @@ async def test_unknown_when_a_scan_times_out(tmp_path, monkeypatch):
 
 async def test_scratch_roots_default():
     assert PressureConfig().scratch_roots == ["/tmp/claude-*"]  # noqa: S108
+
+
+async def test_scratch_timeout_is_incomplete(tmp_path):
+    root = tmp_path / "pod" / "claude-1"
+    touch(root / "a.txt")
+    got, incomplete = await scan_scratch([str(root)], hour_ago(), 0.0)
+    assert incomplete is True
+
+
+async def test_scratch_complete_flag_false_when_done(tmp_path):
+    root = tmp_path / "pod" / "claude-1"
+    touch(root / "a.txt")
+    got, incomplete = await scan_scratch([str(root)], hour_ago(), 20)
+    assert len(got) == 1 and incomplete is False
+
+
+async def test_scratch_unreadable_dir_is_incomplete(tmp_path):
+    if os.geteuid() == 0:
+        import pytest
+
+        pytest.skip("root reads everything")
+    root = tmp_path / "pod" / "claude-1"
+    touch(root / "ok.txt")
+    locked = root / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        got, incomplete = await scan_scratch([str(root)], hour_ago(), 20)
+    finally:
+        locked.chmod(0o755)
+    assert incomplete is True and len(got) == 1
+
+
+async def test_unknown_when_scratch_incomplete(tmp_path):
+    root = tmp_path / "pod" / "claude-1"
+    touch(root / "a.txt")
+    cfg = PressureConfig(scratch_roots=[str(root)], git_timeout_seconds=1e-9)
+    out = await build_inflight(FakeRouter(None), tmp_path / "work", hour_ago(), cfg)
+    assert out["unknown"] is True
+
+
+async def test_find_repos_timeout_marks_unknown(tmp_path, monkeypatch):
+    def slow(workdir, deadline=None):
+        time.sleep(2)
+        return []
+
+    monkeypatch.setattr(inflight, "find_repos", slow)
+    wts = await scan_worktrees(tmp_path, 0.2)
+    assert [w["error"] for w in wts] == ["timeout"]
+
+
+async def test_background_tasks_and_crons_whitelisted(tmp_path):
+    inv = {
+        "background_tasks": [
+            {
+                "id": "b1",
+                "status": "running",
+                "description": "d",
+                "command": "secret --x",
+                "text": "t",
+            }
+        ],
+        "session_crons": [
+            {"id": "c1", "description": "nightly", "prompt": "do x", "cron": "* * * * *"}
+        ],
+    }
+    out = await build_inflight(
+        FakeRouter(inv), tmp_path, hour_ago(), PressureConfig(scratch_roots=[])
+    )
+    assert out["background_tasks"] == [{"id": "b1", "status": "running", "description": "d"}]
+    assert out["crons"] == [{"id": "c1", "description": "nightly"}]
