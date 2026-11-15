@@ -36,6 +36,7 @@ from .commands import Origin as CommandOrigin
 from .config import CommandsConfig, Config
 from .events import Event as LogEvent
 from .events import EventLog
+from .guard import RunawayGuard
 from .hook_relay import PERMISSION_FAIL_MESSAGE, RelayResponse, deny_output, permission_output
 from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
@@ -407,6 +408,7 @@ class SessionRouter(SessionListener):
         self._dispatcher = dispatcher
         self._redactor = redactor
         self._cfg = cfg
+        self.guard = RunawayGuard(cfg.guard)
         self.info = SessionInfo.coerce(session_info)
         self._usage = UsageTotals()
         self._last_marker: str | None = None
@@ -504,6 +506,30 @@ class SessionRouter(SessionListener):
         if self._idle_start is None or not self._idle_only:
             self._last_real = time.monotonic()
         return self._event_log.append(type, self._redactor.redact_obj(dict(data or {})))
+
+    def _emit_guard_tripped(
+        self,
+        kind: Literal["stop_loop", "agent_spawns", "tool_breaker"],
+        *,
+        count: int,
+        limit: int,
+        turn_id: str | None = None,
+        claude_session_id: str | None = None,
+        agent_id: str | None = None,
+        tool_name: str | None = None,
+    ) -> LogEvent:
+        return self._emit(
+            "guard_tripped",
+            {
+                "kind": kind,
+                "turn_id": turn_id,
+                "count": count,
+                "limit": limit,
+                "claude_session_id": claude_session_id,
+                "agent_id": agent_id,
+                "tool_name": tool_name,
+            },
+        )
 
     def _emit_turn_started(self, turn_id: str, origin: str, text: str) -> None:
         """The managed-settings tamper check, then `turn_started`: a restore is logged first."""

@@ -985,6 +985,35 @@ class ShutdownConfig(_Model):
     handoff: ShutdownHandoffConfig = Field(default_factory=ShutdownHandoffConfig)
 
 
+def _bounded(value: int, lo: int, hi: int) -> int:
+    if value != 0 and not lo <= value <= hi:
+        raise ValueError(f"must be 0 (off) or {lo} to {hi}")
+    return value
+
+
+class GuardConfig(_Model):
+    """Runaway guard caps (README "Runaway guard"); 0 turns a cap off."""
+
+    max_stop_continuations: int = 0
+    max_agent_spawns: int = 0
+    tool_failure_repeats: int = 0
+
+    @field_validator("max_stop_continuations")
+    @classmethod
+    def _stop(cls, value: int) -> int:
+        return _bounded(value, 1, 1000)
+
+    @field_validator("max_agent_spawns")
+    @classmethod
+    def _spawns(cls, value: int) -> int:
+        return _bounded(value, 1, 100000)
+
+    @field_validator("tool_failure_repeats")
+    @classmethod
+    def _repeats(cls, value: int) -> int:
+        return _bounded(value, 2, 100)
+
+
 class Config(_Model):
     server: ServerConfig = Field(default_factory=ServerConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
@@ -1000,6 +1029,7 @@ class Config(_Model):
     notes: NotesConfig = Field(default_factory=NotesConfig)
     usage: UsageConfig = Field(default_factory=UsageConfig)
     shutdown: ShutdownConfig = Field(default_factory=ShutdownConfig)
+    guard: GuardConfig = Field(default_factory=GuardConfig)
 
     @model_validator(mode="after")
     def _peer_token_distinct(self) -> Config:

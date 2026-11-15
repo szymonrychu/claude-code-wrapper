@@ -2300,6 +2300,12 @@ up to 3 retries with 0.5 s doubling backoff on connection errors and non-2xx res
 timeout, then dropped with a warning (the event is still in the log). Any 2xx is success. Verify the
 signature as shown under [Webhook actions](#webhook-actions).
 
+### `guard_tripped`
+
+A runaway-guard cap was hit (see `guard` in the configuration reference). `data`: `kind`
+(`stop_loop`, `agent_spawns` or `tool_breaker`), `turn_id` (`stop_loop` only, else `null`), `count`,
+`limit`, `claude_session_id`, `agent_id` and `tool_name` (each `null` when not applicable).
+
 ## Hooks
 
 Hooks are the extension point for domain logic: each configured event holds a list of actions that
@@ -4178,6 +4184,27 @@ status `completed`, `failed`, `running` or `not_started`, `final_text` only when
 | `shutdown.handoff.idle_proceed_seconds` | number | `60` | - | The notice wait ends early once the notice turn ended and the session stayed idle this long (>= 0). |
 | `shutdown.handoff.notice_prompt` | string | `""` | - | Text of the notice turn. Required non-blank when enabled. |
 | `shutdown.handoff.handoff_prompt` | string | `""` | - | Text of the handoff turn. Required non-blank when enabled. |
+
+### `guard`
+
+```yaml
+guard:
+  max_stop_continuations: 25
+  max_agent_spawns: 300
+  tool_failure_repeats: 3
+```
+
+Runaway guard; every cap defaults to `0` (off). `max_stop_continuations` ends a turn whose Stop
+hooks continued it that many times (tool calls between continuations do not reset the count);
+`max_agent_spawns` denies further `Agent` and `Task` calls of one Claude session once it
+launched that many subagents; `tool_failure_repeats` denies an identical call (same agent, tool
+and input) after that many failures in a row. Each trip emits `guard_tripped`.
+
+| Key | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `guard.max_stop_continuations` | integer | `0` | - | Stop-hook continuations allowed per turn; `0` is off, else 1 to 1000. |
+| `guard.max_agent_spawns` | integer | `0` | - | Agent and Task spawns allowed per Claude session id; `0` is off, else 1 to 100000. |
+| `guard.tool_failure_repeats` | integer | `0` | - | Identical failing calls in a row before the next is denied; `0` is off, else 2 to 100. |
 
 ## Claude Code environment
 
