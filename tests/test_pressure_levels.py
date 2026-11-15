@@ -89,3 +89,18 @@ def test_same_version_different_body_is_set() -> None:
     st = PressureState()
     st.put(_policy(2))
     assert st.put(_policy(2, waiting_on=["x"])) == "set"
+
+
+def test_render_pct_uses_tokens_when_window_known() -> None:
+    # used_percentage relative to another window must not mix with {compact_pct}
+    out = render("{pct} {compact_pct}", 2, ctx(142_000, pct=90.0), TH, [])
+    assert out == "71 95"
+
+
+def test_waiting_on_is_capped() -> None:
+    texts = {lv: LevelTexts(full="f", short="s") for lv in ("l1", "l2", "l3")}
+    base = dict(version=1, thresholds=TH, profile="work", texts=texts)
+    with pytest.raises(ValueError):
+        PressurePolicy(**base, waiting_on=["x"] * 21)
+    with pytest.raises(ValueError):
+        PressurePolicy(**base, waiting_on=["x" * 201])

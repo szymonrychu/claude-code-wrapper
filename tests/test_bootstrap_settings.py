@@ -58,7 +58,7 @@ def test_relay_groups_with_managed(tmp_path):
     for event in MANAGED_RELAY_EVENTS:
         assert not any(_is_relay_group(g) for g in doc["hooks"].get(event, []))
     others = [e for e in CLAUDE_HOOK_EVENTS if e not in MANAGED_RELAY_EVENTS]
-    assert len(others) == 9
+    assert len(others) == 10
     for event in others:
         assert doc["hooks"][event][0]["hooks"][0]["command"] == f"{RELAY} {event}"
 
@@ -337,3 +337,11 @@ def test_overlay_can_override_fence(tmp_path):
     perms = _bypass_fence(tmp_path, {"settings": overlay})
     assert perms["blockWritesOutsideWorkingDirectories"] is False
     assert perms["additionalDirectories"] == ["/elsewhere"]
+
+
+def test_post_tool_batch_relay_registered(tmp_path):
+    for managed in (False, True):
+        doc = _render(tmp_path, managed_relay=managed)
+        (group,) = doc["hooks"]["PostToolBatch"]
+        assert group["hooks"][0]["command"] == f"{RELAY} PostToolBatch"
+        assert "onFailure" not in group["hooks"][0]

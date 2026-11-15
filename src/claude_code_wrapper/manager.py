@@ -469,7 +469,7 @@ class SessionManager:
     def _pressure_for(self, session_id: str) -> PressureState:
         state = self._pressure.get(session_id)
         if state is None:
-            state = self._pressure[session_id] = PressureState()
+            state = self._pressure[session_id] = PressureState(self.cfg.pressure)
         return state
 
     def _notes_for(self, session_id: str) -> NoteStore:
@@ -1161,6 +1161,7 @@ class SessionManager:
             self._pressure.pop(ctx.session_id, None)
             if self.metrics is not None:
                 self.metrics.session_closed()
+                self.metrics.pressure_level_remove(ctx.session_id)
 
     def _finish(self, ctx: _Active) -> None:
         """Persist the final metadata and close the event log."""

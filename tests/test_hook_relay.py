@@ -87,6 +87,7 @@ def test_constants() -> None:
         "PreToolUse",
         "PostToolUse",
         "PostToolUseFailure",
+        "PostToolBatch",
         "Stop",
         "SubagentStart",
         "SubagentStop",
@@ -374,4 +375,15 @@ def test_permission_request_empty_stdout_passes_through(
     s = _Srv([_ok("")])
     monkeypatch.setenv("CCW_INTERNAL_URL", s.url)
     assert _run(monkeypatch, capsys, ["ccw-hook", "PermissionRequest"]) == (0, "", "")
+    s.close()
+
+
+def test_post_tool_batch_is_relayed(
+    env: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    s = _Srv([_ok("ctx")])
+    monkeypatch.setenv("CCW_INTERNAL_URL", s.url)
+    assert "PostToolBatch" in hr.CLAUDE_HOOK_EVENTS
+    assert _run(monkeypatch, capsys, ["h", "PostToolBatch"], b"{}") == (0, "ctx", "")
+    assert s.requests[0]["path"] == "/internal/hooks/PostToolBatch"
     s.close()

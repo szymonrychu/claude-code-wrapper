@@ -70,6 +70,7 @@ EVENT_TYPES: list[str] = [
     "note_received",
     "note_delivered",
     "pressure_policy_set",
+    "pressure_delivered",
     "shutdown_started",
     "shutdown_handoff",
     "session_closed",

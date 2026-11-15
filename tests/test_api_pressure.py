@@ -131,3 +131,9 @@ def test_text_over_max_chars_422(tmp_path: Path) -> None:
     body["texts"]["l2"]["full"] = "x" * 11
     r = client.put(URL, json=body, headers=H)
     assert r.status_code == 422 and r.json()["error"]["code"] == "invalid_request"
+
+
+def test_disabled_answers_409_before_body_validation(tmp_path: Path) -> None:
+    client, _, _ = make(tmp_path, enabled=False)
+    r = client.put(URL, json={"version": 0}, headers=H)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "pressure_disabled"

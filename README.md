@@ -1459,7 +1459,7 @@ retries idempotent: a repeated delivery id returns the first result without re-r
 handlers.
 
 Path parameter: `event`, a Claude hook event: `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`PostToolUseFailure`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`,
+`PostToolUseFailure`, `PostToolBatch`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`,
 `SessionStart` (registered with matcher `clear` only, see [Clearing the
 conversation](#clearing-the-conversation-clear); its answer is always empty). Request body: the raw
 JSON object Claude passes the hook on stdin.
@@ -2260,6 +2260,19 @@ event: note_received
 data: {"seq":25,"ts":"2026-10-20T09:11:30.000Z","session_id":"ses_3f9a1c0b7d42","type":"note_received","data":{"key":"hive_state","source":"orchestrator","text":"leader is ses_aa","chars":16}}
 ```
 
+### `pressure_delivered`
+
+Emitted when a context pressure text was injected into a hook answer.
+
+`data`: `level` (1 to 3), `hook` (`UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure` or
+`PostToolBatch`), `pct` (live used percentage or null), `used_tokens` (or null), `form` (`full` or
+`short`), `handoff_state`.
+
+```
+event: pressure_delivered
+data: {"seq":28,"ts":"2026-10-20T09:11:33.000Z","session_id":"ses_3f9a1c0b7d42","type":"pressure_delivered","data":{"level":2,"hook":"PostToolBatch","pct":71.0,"used_tokens":142000,"form":"short","handoff_state":"none"}}
+```
+
 ### `pressure_policy_set`
 
 Emitted when a pushed pressure policy is set (not when the same policy is pushed again).
@@ -2716,7 +2729,7 @@ expected="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -h
 
 The service renders `settings.json` in each session's `CLAUDE_CONFIG_DIR` so Claude calls the
 `ccw-hook <Event>` relay for `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`PostToolUseFailure`, `Stop`, `SubagentStart` and `SubagentStop`. The relay is stdlib-only Python
+`PostToolUseFailure`, `PostToolBatch`, `Stop`, `SubagentStart` and `SubagentStop`. The relay is stdlib-only Python
 and does this:
 
 1. Reads Claude's hook JSON from stdin.
@@ -3419,6 +3432,20 @@ thresholds apply only when the gauge has no window. An unknown gauge (for exampl
 compaction) is level 0. Texts support the placeholders `{pct}`, `{used_k}`, `{window_k}`,
 `{compact_pct}`, `{left_k}`, `{level}` and `{waiting_on}`; unknown placeholders stay literal and
 missing values render as `?`. A `pressure_policy_set` event is emitted when a policy is set.
+
+**Injection.** At level 1 and above the router appends a `<context-pressure>` frame (first line
+`From the orchestrator: this is an instruction about your context window, not data.`) to the hook
+`additionalContext`, after user hook context and notes, for the main agent only (subagent hooks
+never count or deliver). `UserPromptSubmit` delivers at every turn start, always the full text. At
+tool boundaries the frame is due once the main agent's tool results since the last delivery reach
+`pressure.l1_every_tool_calls`, `l2_every_tool_calls` or `l3_every_tool_calls`; the first tool
+boundary after the level rose always delivers. The first delivery after a rise is the full text,
+then every `pressure.full_every`-th one, the others use the short text. Once a `PostToolBatch` hook
+was seen in the session, `PostToolUse` no longer counts or delivers (no double delivery); before
+that it is the fallback. Each delivery emits a [`pressure_delivered`](#pressure_delivered) event
+and counts `ccw_pressure_delivered_total{level,hook}`; `ccw_pressure_level{session}` is the
+current level and `ccw_pressure_stop_blocks_total{level}` counts Stop blocks. `{pct}` is computed
+from the tokens and the window, on the same base as `{compact_pct}`.
 
 ## Configuration reference
 

@@ -225,7 +225,9 @@ matcher is matched (re.fullmatch; "" or "*" match all) against the tool name for
 against the source for SessionStart. Commands run via
 `sh -c` with the JSON payload on stdin and CLAUDE_PROJECT_DIR=<cwd>. PreToolUse deny
 is stdout hookSpecificOutput.permissionDecision == "deny" or exit code 2; additionalContext
-from PreToolUse/PostToolUse is written to the transcript as a system line.
+from PreToolUse/PostToolUse/PostToolBatch is written to the transcript as a system line.
+PostToolBatch runs once after each group of consecutive main-agent tool/mcp steps (after the
+PostToolUse hooks, before the next model text or the Stop hook); it has no matcher.
 """
 
 from __future__ import annotations
@@ -1080,12 +1082,22 @@ class Fake:
             )
 
     def run_steps(self, steps: list[dict], tokens: int, bg: list[dict], turn: dict) -> bool:
-        """Run steps; False when the turn ended without a Stop (interrupt or raw print)."""
+        """Run steps; False when the turn ended without a Stop (interrupt or raw print).
+
+        A run of consecutive main-agent tool/mcp steps is one tool group: PostToolBatch hooks
+        run once after its last PostToolUse hooks, before the next model text (or the Stop)."""
+        batch_open = False
         for index, step in enumerate(steps):
             if self.interrupted():
                 self.do_interrupt()
                 return False
             self.absorb_queued()
+            main_tool = ("tool" in step and "agent" not in step) or (
+                "mcp" in step and "agent" not in step["mcp"]
+            )
+            if batch_open and not main_tool:
+                self.post_tool_batch()
+            batch_open = main_tool
             if "text" in step:
                 self.assistant_line({"type": "text", "text": step["text"]}, tokens)
                 self.last_text = step["text"]
@@ -1118,7 +1130,12 @@ class Fake:
                 self.auto_compact_step(step["auto_compact"] or {})
             elif "statusline" in step:
                 self.statusline_step(step["statusline"])
+        if batch_open:
+            self.post_tool_batch()
         return True
+
+    def post_tool_batch(self) -> None:
+        self.context_from(self.run_hooks("PostToolBatch", {}))
 
     def statusline_step(self, payload: dict) -> None:
         """Run settings.json `statusLine.command` with `payload` on stdin, its stdout drawn.

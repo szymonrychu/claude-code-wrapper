@@ -291,7 +291,7 @@ async def test_active_session_omits_managed_events(world, tmp_path):
     snap = await m.create({})
     relayed = _relayed(_session_hooks(world, snap["session_id"]))
     assert relayed == set(CLAUDE_HOOK_EVENTS) - set(MANAGED_RELAY_EVENTS)
-    assert len(relayed) == 9
+    assert len(relayed) == 10
 
 
 async def test_statusline_relay_works_with_managed_file_active(world):

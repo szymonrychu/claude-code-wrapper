@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 
 from claude_code_wrapper.api.errors import ApiError
 from claude_code_wrapper.pressure import PressurePolicy, StaleVersion
@@ -12,13 +12,17 @@ from claude_code_wrapper.pressure import PressurePolicy, StaleVersion
 router = APIRouter()
 
 
-@router.put("/sessions/{session_id}/pressure")
-async def put_pressure(session_id: str, body: PressurePolicy, request: Request) -> Any:
-    cfg = request.app.state.cfg.pressure
-    if not cfg.enabled:
+def _require_enabled(request: Request) -> None:
+    """A dependency, so a disabled feature answers 409 before the body is validated (422)."""
+    if not request.app.state.cfg.pressure.enabled:
         raise ApiError(
             409, "pressure_disabled", "context pressure is disabled (pressure.enabled is false)"
         )
+
+
+@router.put("/sessions/{session_id}/pressure", dependencies=[Depends(_require_enabled)])
+async def put_pressure(session_id: str, body: PressurePolicy, request: Request) -> Any:
+    cfg = request.app.state.cfg.pressure
     if body.max_text_len() > cfg.max_text_chars:
         raise ApiError(
             422,

@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+from .config import PressureConfig
 
 PLACEHOLDER = re.compile(r"\{(pct|used_k|window_k|compact_pct|left_k|level|waiting_on)\}")
 
@@ -52,7 +54,9 @@ class PressurePolicy(BaseModel):
     profile: Literal["work", "chat"]
     texts: dict[Literal["l1", "l2", "l3"], LevelTexts]
     handoff_state: Literal["none", "submitted", "blocked", "accepted"] = "none"
-    waiting_on: list[str] = Field(default_factory=list)
+    waiting_on: list[Annotated[str, StringConstraints(max_length=200)]] = Field(
+        default_factory=list, max_length=20
+    )
     resume_pending: bool = False
     resume_text: str = ""
     compact_instructions: str = Field(default="", max_length=9000)
@@ -94,6 +98,17 @@ def _num(value: float) -> str:
     return f"{value:.1f}".rstrip("0").rstrip(".")
 
 
+def live_pct(context: Mapping[str, Any]) -> float | None:
+    """Used percentage on one base for every number in a text: tokens over the window, so it
+    never mixes with `{compact_pct}` when CLAUDE_CODE_AUTO_COMPACT_WINDOW makes the gauge's
+    used_percentage relative to another window. The gauge value is the fallback without one."""
+    used = context.get("used_tokens")
+    window = context.get("window_tokens")
+    if used is not None and window:
+        return used * 100 / window
+    return context.get("used_percentage")
+
+
 def render(
     template: str,
     level: int,
@@ -104,9 +119,7 @@ def render(
     """Fill the placeholders; unknown ones stay literal and missing values render as `?`."""
     used = context.get("used_tokens")
     window = context.get("window_tokens")
-    pct = context.get("used_percentage")
-    if pct is None and used is not None and window:
-        pct = used * 100 / window
+    pct = live_pct(context)
     compact_pct = th.compact_tokens * 100 / window if window else th.compact_pct
     values = {
         "pct": "?" if pct is None else _num(pct),
@@ -120,11 +133,73 @@ def render(
     return PLACEHOLDER.sub(lambda m: values[m.group(1)], template)
 
 
+Form = Literal["full", "short"]
+TOOL_RESULT_HOOKS = ("PostToolUse", "PostToolUseFailure")
+
+
+class PressureCadence:
+    """When a hook delivers pressure text, and in which form (memory only).
+
+    Turn start delivers at every level 1+ (always full). A tool boundary delivers once the
+    main agent's tool results since the last delivery reach the level's `*_every_tool_calls`.
+    After a `PostToolBatch` was seen, `PostToolUse` neither counts nor delivers. The first
+    delivery after the level rose is full, then every `full_every`-th is, the rest are short.
+    A level rise makes the next tool boundary deliver.
+    """
+
+    def __init__(self, cfg: PressureConfig) -> None:
+        self._cfg = cfg
+        self.reset()
+
+    def reset(self) -> None:
+        self._last_level: int | None = None
+        self._tool_results = 0
+        self._rose = False
+        self._sent = 0
+        self._batch_seen = False
+
+    def _every(self, level: int) -> int:
+        return (
+            self._cfg.l1_every_tool_calls,
+            self._cfg.l2_every_tool_calls,
+            self._cfg.l3_every_tool_calls,
+        )[level - 1]
+
+    def _deliver(self, forced_full: bool) -> Form:
+        full = forced_full or self._sent % self._cfg.full_every == 0
+        self._sent += 1
+        self._tool_results = 0
+        self._rose = False
+        return "full" if full else "short"
+
+    def due(self, hook: str, level: int) -> Form | None:
+        last, self._last_level = self._last_level, level
+        if level == 0:
+            self._sent = 0
+            self._tool_results = 0
+            self._rose = False
+            return None
+        if last is not None and level > last:
+            self._rose = True
+            self._sent = 0
+        if hook == "UserPromptSubmit":
+            return self._deliver(True)
+        if hook == "PostToolBatch":
+            self._batch_seen = True
+        elif hook in TOOL_RESULT_HOOKS and self._batch_seen:
+            return None
+        self._tool_results += 1
+        if self._rose or self._tool_results >= self._every(level):
+            return self._deliver(False)
+        return None
+
+
 class PressureState:
     """One session's policy in force plus delivery counters (memory only)."""
 
-    def __init__(self) -> None:
+    def __init__(self, cfg: PressureConfig | None = None) -> None:
         self.policy: PressurePolicy | None = None
+        self.cadence = PressureCadence(cfg or PressureConfig())
         self.deliveries = 0
         self.stop_blocks_this_turn = 0
 
@@ -140,6 +215,7 @@ class PressureState:
 
     def clear(self) -> None:
         self.policy = None
+        self.cadence.reset()
         self.deliveries = 0
         self.stop_blocks_this_turn = 0
 

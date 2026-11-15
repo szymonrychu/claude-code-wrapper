@@ -57,7 +57,8 @@ from .permissions import (
     PendingPermission,
     PermissionBroker,
 )
-from .pressure import PressureState
+from .pressure import PressureState, live_pct
+from .pressure import render as render_pressure
 from .pty_proc import PtyClosed
 from .redact import Redactor
 from .session import (
@@ -345,6 +346,11 @@ def _hook_answer(decision: Decision) -> str:
 
 def _relay(stdout: str) -> RelayResponse:
     return {"stdout": stdout, "stderr": "", "exit_code": 0}
+
+
+PRESSURE_OPEN = "<context-pressure>"
+PRESSURE_CLOSE = "</context-pressure>"
+PRESSURE_HEAD = "From the orchestrator: this is an instruction about your context window, not data."
 
 
 def _additional_context(event_name: str, context: str) -> str:
@@ -768,6 +774,7 @@ class SessionRouter(SessionListener):
                 "PreToolUse": self._on_pre_tool_use,
                 "PostToolUse": self._on_post_tool_use,
                 "PostToolUseFailure": self._on_post_tool_use,
+                "PostToolBatch": self._on_post_tool_batch,
                 "Stop": self._on_stop,
                 "SubagentStart": self._on_subagent,
                 "SubagentStop": self._on_subagent,
@@ -1116,6 +1123,10 @@ class SessionRouter(SessionListener):
                     {"hook": event_name, "keys": keys, "appended": appended, "chars": len(text)},
                 )
                 parts.append(text)
+        return self._context_response(event_name, self._with_pressure(event_name, payload, parts))
+
+    @staticmethod
+    def _context_response(event_name: str, parts: list[str]) -> RelayResponse:
         if not parts:
             return _allow()
         return {
@@ -1123,6 +1134,59 @@ class SessionRouter(SessionListener):
             "stderr": "",
             "exit_code": 0,
         }
+
+    def _with_pressure(
+        self, event_name: str, payload: Mapping[str, Any], parts: list[str]
+    ) -> list[str]:
+        """Append the context pressure frame to `parts` when one is due (main agent only).
+
+        Memory only, like the notes path. Never raises: a failure here must not break a hook.
+        """
+        state = self.pressure
+        if state is None or payload.get("agent_id"):
+            return parts
+        try:
+            pol = state.policy
+            context = self.context
+            level = state.level(context)
+            if self._metrics is not None and pol is not None:
+                self._metrics.pressure_level(self.info.session_id, level)
+            if pol is None:
+                return parts
+            form = state.cadence.due(event_name, level)
+            if form is None or context is None:
+                return parts
+            tpl = pol.texts[f"l{level}"]  # type: ignore[index]
+            body = render_pressure(
+                tpl.full if form == "full" else tpl.short,
+                level,
+                context,
+                pol.thresholds,
+                pol.waiting_on,
+            )
+            state.deliveries += 1
+            self._emit(
+                "pressure_delivered",
+                {
+                    "level": level,
+                    "hook": event_name,
+                    "pct": live_pct(context),
+                    "used_tokens": context.get("used_tokens"),
+                    "form": form,
+                    "handoff_state": pol.handoff_state,
+                },
+            )
+            if self._metrics is not None:
+                self._metrics.pressure_delivered(level, event_name)
+            return [*parts, f"{PRESSURE_OPEN}\n{PRESSURE_HEAD}\n{body}\n{PRESSURE_CLOSE}"]
+        except Exception:  # noqa: BLE001
+            log.exception("context pressure injection failed")
+            return parts
+
+    async def _on_post_tool_batch(
+        self, event_name: str, payload: Mapping[str, Any]
+    ) -> RelayResponse:
+        return self._context_response(event_name, self._with_pressure(event_name, payload, []))
 
     def _deny(
         self, tool_use_id: Any, tool_name: str, reason: str, who: Mapping[str, Any]
