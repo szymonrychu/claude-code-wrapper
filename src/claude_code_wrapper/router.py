@@ -36,7 +36,13 @@ from .commands import Origin as CommandOrigin
 from .config import CommandsConfig, Config
 from .events import Event as LogEvent
 from .events import EventLog
-from .guard import STOP_LOOP_REASON, RunawayGuard
+from .guard import (
+    AGENT_SPAWN_DENY_REASON,
+    STOP_LOOP_REASON,
+    SUBAGENT_TOOLS,
+    RunawayGuard,
+    call_key,
+)
 from .hook_relay import PERMISSION_FAIL_MESSAGE, RelayResponse, deny_output, permission_output
 from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
@@ -1114,6 +1120,17 @@ class SessionRouter(SessionListener):
             "exit_code": 0,
         }
 
+    def _deny(
+        self, tool_use_id: Any, tool_name: str, reason: str, who: Mapping[str, Any]
+    ) -> RelayResponse:
+        self._emit(
+            "tool_denied",
+            {"tool_use_id": tool_use_id, "tool_name": tool_name, "reason": reason, **who},
+        )
+        if self._metrics is not None:
+            self._metrics.tool_call(tool_name, "deny")
+        return {"stdout": deny_output(reason), "stderr": "", "exit_code": 0}
+
     async def _on_pre_tool_use(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         tool_name = str(payload.get("tool_name") or "")
         tool_use_id = payload.get("tool_use_id")
@@ -1136,18 +1153,28 @@ class SessionRouter(SessionListener):
         ):
             gate_reason = MAIN_AGENT_ONLY_DENY_REASON
         if gate_reason is not None:
-            self._emit(
-                "tool_denied",
-                {
-                    "tool_use_id": tool_use_id,
-                    "tool_name": tool_name,
-                    "reason": gate_reason,
-                    **who,
-                },
-            )
-            if self._metrics is not None:
-                self._metrics.tool_call(tool_name, "deny")
-            return {"stdout": deny_output(gate_reason), "stderr": "", "exit_code": 0}
+            return self._deny(tool_use_id, tool_name, gate_reason, who)
+        if tool_name in SUBAGENT_TOOLS:
+            claude_session_id = _str_or_none(payload.get("session_id")) or ""
+            verdict = self.guard.spawn(claude_session_id)
+            if not verdict.allowed:
+                limit = self.guard.cfg.max_agent_spawns
+                agent_id = _str_or_none(payload.get("agent_id"))
+                if verdict.first_denial:
+                    current = self.session.current_turn
+                    self._emit_guard_tripped(
+                        "agent_spawns",
+                        count=verdict.count,
+                        limit=limit,
+                        turn_id=current.turn_id if current is not None else None,
+                        claude_session_id=claude_session_id,
+                        agent_id=agent_id,
+                        tool_name=tool_name,
+                    )
+                self.guard.record_denial(call_key(agent_id, tool_name, tool_input), tool_use_id)
+                return self._deny(
+                    tool_use_id, tool_name, AGENT_SPAWN_DENY_REASON.format(limit=limit), who
+                )
         data = {
             "tool_use_id": tool_use_id,
             "tool_name": tool_name,
