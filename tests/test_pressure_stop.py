@@ -163,3 +163,42 @@ async def test_onstop_hook_still_runs_when_pressure_allows(tmp_path):
     assert blocked(await stop(h)) is None
     assert [p["event"] for p in h.hook_posts] == ["onStop"]
     await h.router.close()
+
+
+async def test_stop_records_inventory_with_defer_on(tmp_path):
+    h = make(tmp_path, used=None)
+    h.cfg.sessions.defer_stop_on_background_tasks = True
+    tasks = [{"id": "b1", "status": "running"}]
+    await stop(h, background_tasks=tasks, session_crons=[{"id": "c1"}])
+    inv = h.router.stop_inventory
+    assert inv["background_tasks"] == tasks and inv["session_crons"] == [{"id": "c1"}]
+    await h.router.close()
+
+
+async def test_resume_cleared_by_tool_call_falls_through_to_l3(tmp_path):
+    h = make(tmp_path, used=L3, resume_pending=True, resume_text="RESUME now")
+    h.record.tool_calls = 2
+    reason = blocked(await stop(h))
+    assert reason is not None and "RESUME" not in reason  # the L3 text, not the resume text
+    (ev,) = h.events("pressure_stop_blocked")
+    assert ev.data["reason"] == "pressure" and ev.data["level"] == 3
+    assert h.state.resume_open is False
+    await h.router.close()
+
+
+async def test_resume_then_l3_chain_is_bounded(tmp_path):
+    h = make(tmp_path, used=L3, resume_pending=True, resume_text="RESUME now")
+    assert blocked(await stop(h)) == "RESUME now"
+    reasons = [blocked(await stop(h, stop_hook_active=True)) for _ in range(4)]
+    assert [r is not None for r in reasons] == [True, True, True, False]  # l3_stop_blocks=3
+    await h.router.close()
+
+
+async def test_resume_disarmed_once_handoff_submitted(tmp_path):
+    h = make(tmp_path, used=None, resume_pending=True, resume_text="RESUME now")
+    assert h.state.resume_open is True
+    h.state.put(h.state.policy.model_copy(update={"version": 9, "handoff_state": "submitted"}))
+    h.state.resume_open = True  # armed by an earlier policy
+    assert blocked(await stop(h)) is None
+    assert h.state.resume_open is False
+    await h.router.close()

@@ -1404,8 +1404,10 @@ class SessionRouter(SessionListener):
                 record is None
                 or record is not self.session.current_turn
                 or record is self._commands_turn
-                or pol.handoff_state in ("submitted", "accepted")
             ):
+                return None
+            if pol.handoff_state in ("submitted", "accepted"):
+                state.resume_open = False  # the handoff is in: nothing left to resume
                 return None
             context = self.context
             level = state.level(context)
@@ -1414,7 +1416,7 @@ class SessionRouter(SessionListener):
                 state.resume_open = False
                 if record.tool_calls == 0 and pol.resume_text:
                     return self._block_stop(record, payload, level, pol.resume_text, "resume", 1)
-                return None
+                # the agent worked since the restart: no resume block, the pressure check below
             if level < 2 or context is None:
                 return None
             bound = cfg.l2_stop_blocks if level == 2 else cfg.l3_stop_blocks
@@ -1439,7 +1441,7 @@ class SessionRouter(SessionListener):
     ) -> RelayResponse:
         state = self.pressure
         if state is not None and why == "pressure":
-            state.stop_blocks_this_turn = count
+            state.note_stop_block(record.turn_id)
         self._emit(
             "pressure_stop_blocked",
             {"turn_id": record.turn_id, "level": level, "count": count, "reason": why},
@@ -1564,6 +1566,11 @@ class SessionRouter(SessionListener):
                 "commands": commands,
             },
         )
+
+    @property
+    def outstanding_subagent_ids(self) -> list[str]:
+        """Ids of the subagents seen in SubagentStart and not yet in SubagentStop."""
+        return sorted(self._subagents)
 
     @property
     def outstanding_subagents(self) -> int:

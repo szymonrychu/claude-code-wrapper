@@ -37,6 +37,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -444,6 +445,16 @@ class SessionManager:
             return ctx.router
         meta = self._read_meta(session_id)
         raise InvalidState(session_id, str(meta.get("state")))
+
+    def inflight_source(self, session_id: str) -> SimpleNamespace:
+        """Router, workdir and tenure start for the in-flight inventory; `InvalidState` unless
+        the session is running."""
+        ctx = self._active.get(session_id)
+        if ctx is None or ctx.router is None or ctx.workdir is None:
+            meta = self._read_meta(session_id)
+            raise InvalidState(session_id, str(meta.get("state")))
+        since = datetime.fromisoformat(str(ctx.meta["created_at"]).replace("Z", "+00:00"))
+        return SimpleNamespace(router=ctx.router, workdir=ctx.workdir, since=since)
 
     def note_store(self, session_id: str) -> NoteStore:
         """The session's notes inbox, created on first use; `InvalidState` unless running."""

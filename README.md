@@ -1336,6 +1336,22 @@ The pressure state: `{"version": 1|null, "level": 0, "context": {...}|null, "han
 null after a wrapper restart until the orchestrator pushes again. Auth: bearer. Errors: `401
 unauthorized`, `404 not_found`, `409 invalid_state`.
 
+### `GET /v1/sessions/{id}/inflight`
+
+Work that a clear or a move of the session would lose. Auth: bearer. Response `200`:
+`{"subagents": 1, "subagent_ids": ["a1"], "background_tasks": [...], "crons": [...],
+"worktrees": [{"path": "code/web", "branch": "main", "dirty": 2, "dirty_files": ["?? x"],
+"ahead": 0, "upstream": "origin/main", "error": null}], "scratch": [{"path": "/tmp/claude-1/x",
+"size": 7, "mtime": "..."}], "unknown": false, "stop_seen_at": "...", "scanned_at": "..."}`.
+`background_tasks` are the running ones of the last Stop, `crons` its session crons (both empty
+before the first Stop). `worktrees` covers every repository up to depth 4 below the workdir
+(`path` relative to it; `dirty` counts porcelain lines, `dirty_files` lists the first 50;
+`upstream` is `false` and `ahead` null for a branch without upstream; `error` is `timeout` or
+`git_failed`, and then `unknown` is true). All git calls share `pressure.git_timeout_seconds`
+and never fetch. `scratch` lists files modified since the session started under
+`pressure.scratch_roots` (default `/tmp/claude-*`), outside the workdir, at most 100. Errors:
+`401 unauthorized`, `404 not_found`, `409 invalid_state`.
+
 ### `DELETE /v1/sessions/{id}/pressure`
 
 Drop the session's pressure policy. Response `204`. Auth: bearer. Errors: `401 unauthorized`,
@@ -4275,7 +4291,8 @@ Opt-in context pressure policy for limit subjects (see [Context pressure](#conte
 | `pressure.full_every` | integer | `5` | - | Every Nth reminder uses the full text, the others the short one (>= 1). |
 | `pressure.l2_stop_blocks` | integer | `1` | - | Stop blocks per turn at level 2 (>= 0). |
 | `pressure.l3_stop_blocks` | integer | `3` | - | Stop blocks per turn at level 3 (>= 0). |
-| `pressure.git_timeout_seconds` | number | `10` | - | Timeout of the git status probe in seconds (> 0). |
+| `pressure.git_timeout_seconds` | number | `10` | - | One timeout shared by all git probes of the in-flight inventory, in seconds (> 0). |
+| `pressure.scratch_roots` | list of strings | `["/tmp/claude-*"]` | - | Glob roots of pod-local scratch files reported by the in-flight inventory. |
 | `pressure.max_text_chars` | integer | `4000` | - | Longest accepted policy text in characters (>= 1). |
 
 ### `usage`

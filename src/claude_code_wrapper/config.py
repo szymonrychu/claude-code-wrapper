@@ -975,6 +975,8 @@ class PressureConfig(_Model):
     l2_stop_blocks: int = Field(1, ge=0)
     l3_stop_blocks: int = Field(3, ge=0)
     git_timeout_seconds: float = Field(10, gt=0)
+    #: Glob roots of pod-local scratch files reported by the in-flight inventory.
+    scratch_roots: list[str] = Field(default_factory=lambda: ["/tmp/claude-*"])  # noqa: S108
     max_text_chars: int = Field(4000, ge=1)
 
 

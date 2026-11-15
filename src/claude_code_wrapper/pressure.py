@@ -213,6 +213,11 @@ class PressureState:
             self.stop_blocks_this_turn = 0
         return self.stop_blocks_this_turn
 
+    def note_stop_block(self, turn_id: str) -> None:
+        """Count one pressure Stop block of `turn_id` (the only writer of the counter)."""
+        self.stop_count(turn_id)
+        self.stop_blocks_this_turn += 1
+
     def put(self, policy: PressurePolicy) -> Literal["set", "unchanged"]:
         cur = self.policy
         if cur is not None:

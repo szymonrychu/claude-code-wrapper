@@ -579,5 +579,6 @@ def test_pressure_defaults():
         "l2_stop_blocks": 1,
         "l3_stop_blocks": 3,
         "git_timeout_seconds": 10,
+        "scratch_roots": ["/tmp/claude-*"],  # noqa: S108
         "max_text_chars": 4000,
     }
