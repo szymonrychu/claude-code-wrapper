@@ -31,13 +31,14 @@ ScratchFile = dict[str, Any]
 
 
 def find_repos(workdir: Path, deadline: float | None = None) -> list[Path]:
-    """Directories holding a `.git` (dir or file) up to MAX_DEPTH below `workdir`; the walk
-    stops quietly past the monotonic `deadline` (the caller times out the same way)."""
+    """Directories holding a `.git` (dir or file) up to MAX_DEPTH below `workdir`. Past the
+    monotonic `deadline` the walk raises TimeoutError: a partial list is never returned, so the
+    caller reports the scan as timed out (unknown) even when no repository was found yet."""
     found: list[Path] = []
 
     def walk(directory: Path, depth: int) -> None:
         if deadline is not None and time.monotonic() > deadline:
-            return
+            raise TimeoutError("find_repos deadline")
         try:
             names = sorted(os.listdir(directory))
         except OSError:
@@ -179,6 +180,7 @@ def _scan_scratch(
                     try:
                         st = os.lstat(path)
                     except OSError:
+                        incomplete = True
                         continue
                     if not os.path.isfile(path) or os.path.islink(path) or st.st_mtime < floor:
                         continue

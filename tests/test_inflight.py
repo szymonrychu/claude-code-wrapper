@@ -309,3 +309,39 @@ async def test_background_tasks_and_crons_whitelisted(tmp_path):
     )
     assert out["background_tasks"] == [{"id": "b1", "status": "running", "description": "d"}]
     assert out["crons"] == [{"id": "c1", "description": "nightly"}]
+
+
+async def test_find_repos_deadline_marks_unknown_even_with_no_repos(tmp_path):
+    (tmp_path / "a").mkdir()
+    wts = await scan_worktrees(tmp_path, 1e-9)
+    assert [w["error"] for w in wts] == ["timeout"]
+    out = await build_inflight(
+        FakeRouter(None),
+        tmp_path,
+        hour_ago(),
+        PressureConfig(scratch_roots=[], git_timeout_seconds=1e-9),
+    )
+    assert out["unknown"] is True
+
+
+async def test_scratch_lstat_failure_is_incomplete(tmp_path, monkeypatch):
+    root = tmp_path / "pod" / "claude-1"
+    touch(root / "a.txt")
+    real = os.lstat
+
+    def boom(path, *a, **k):
+        if str(path).endswith("a.txt"):
+            raise PermissionError("denied")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(inflight.os, "lstat", boom)
+    got, incomplete = await scan_scratch([str(root)], hour_ago(), 20)
+    assert incomplete is True
+
+
+def test_find_repos_past_deadline_is_not_a_quiet_empty_list(tmp_path):
+    import pytest
+
+    (tmp_path / "a").mkdir()
+    with pytest.raises(TimeoutError):
+        inflight.find_repos(tmp_path, time.monotonic() - 1)

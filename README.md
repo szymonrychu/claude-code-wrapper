@@ -1476,8 +1476,9 @@ handlers.
 
 Path parameter: `event`, a Claude hook event: `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
 `PostToolUseFailure`, `PostToolBatch`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`,
-`SessionStart` (registered with matcher `clear` only, see [Clearing the
-conversation](#clearing-the-conversation-clear); its answer is always empty). Request body: the raw
+`SessionStart` (registered with matcher `clear|compact`, see [Clearing the
+conversation](#clearing-the-conversation-clear) and [Compaction steering](#context-pressure); its
+answer is empty except for source `compact` with a pressure policy). Request body: the raw
 JSON object Claude passes the hook on stdin.
 
 Response `200`:
@@ -2302,6 +2303,18 @@ event: pressure_stop_blocked
 data: {"seq":31,"ts":"2026-10-20T09:12:01.000Z","session_id":"ses_3f9a1c0b7d42","type":"pressure_stop_blocked","data":{"turn_id":"turn_01","level":3,"count":1,"reason":"pressure"}}
 ```
 
+### `pressure_reinjected`
+
+Emitted when a SessionStart with source `compact` was answered with the pressure policy's
+`reinject_text` as `additionalContext`.
+
+`data`: `chars` (length of the rendered text).
+
+```
+event: pressure_reinjected
+data: {"seq":32,"ts":"2026-10-20T09:12:30.000Z","session_id":"ses_3f9a1c0b7d42","type":"pressure_reinjected","data":{"chars":412}}
+```
+
 ### `pressure_policy_set`
 
 Emitted when a pushed pressure policy is set (not when the same policy is pushed again).
@@ -3048,7 +3061,8 @@ an idle session, or queued until the running turn's Stop completes that turn.
 claude 2.1.304 handles `/clear` by ending the conversation (SessionEnd hooks, reason `clear`),
 minting a new claude session id with a new transcript file, then running the SessionStart hooks
 with source `clear`, possibly in the background. ccw registers its relay for SessionStart with the
-matcher `clear` only, so startup, resume and compact SessionStarts never call it. When that
+matcher `clear|compact`, so startup and resume SessionStarts never call it; a compact SessionStart
+only re-injects the pressure policy's `reinject_text` and never adopts a session id. When that
 SessionStart arrives while the session's `clear` command runs, ccw adopts the new id: the Stop gate
 accepts the new id's Stops only, the transcript tailer and subagent watcher move to the new file,
 the per-conversation state (outstanding subagents, turn marker, usage, `context`) is dropped, the
@@ -3056,8 +3070,8 @@ session snapshot and the hook envelopes carry the new `claude_session_id`, and `
 records it at once, with the previous ids in `previous_claude_session_ids` (the newest 16). Then
 [`session_cleared`](#session_cleared) is emitted and the command completes with result `ok`. A
 SessionStart with another source, or with no `clear` command running (a nested `claude`, for
-example), changes nothing. The relay's answer to SessionStart is always empty: nothing is injected
-into the fresh conversation.
+example), changes nothing. The relay's answer to a `clear` SessionStart is always empty: nothing is
+injected into the fresh conversation.
 
 - Subagents: claude keeps background subagents running across `/clear`, so their results would land
   in the cleared conversation. `clear` is refused with `409 subagents_running` while any subagent
@@ -3475,6 +3489,13 @@ that it is the fallback. Each delivery emits a [`pressure_delivered`](#pressure_
 and counts `ccw_pressure_delivered_total{level,hook}`; `ccw_pressure_level{session}` is the
 current level and `ccw_pressure_stop_blocks_total{level}` counts Stop blocks. `{pct}` is computed
 from the tokens and the window, on the same base as `{compact_pct}`.
+
+**Compaction steering.** With a policy whose `compact_instructions` is non-empty, the PreCompact
+hook answers with it as plain stdout (Claude Code appends it to the compaction instructions; manual
+and auto triggers alike; the idle auto-compact's own `sessions.auto_compact.instructions` is kept).
+After compaction the SessionStart hook (source `compact`) answers with the rendered `reinject_text`
+as `additionalContext` and emits [`pressure_reinjected`](#pressure_reinjected). Auto-compaction
+stays the last-resort safety net.
 
 **Stop.** Every main-agent Stop records `stop_inventory` (`background_tasks`, `session_crons`, `at`)
 in memory, whatever `sessions.defer_stop_on_background_tasks` says. After the runaway guard's check

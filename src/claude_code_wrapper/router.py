@@ -997,6 +997,8 @@ class SessionRouter(SessionListener):
         conversation. The previous conversation's per-session state (subagents, link waits, turn
         marker, usage, context) is dropped; `session_cleared` completes the command.
         """
+        if payload.get("source") == "compact":
+            return self._reinject_after_compact()
         current = self._current
         new_id = payload.get("session_id")
         if (
@@ -1035,6 +1037,34 @@ class SessionRouter(SessionListener):
         self.signals.publish("session_cleared", data)
         return _allow()
 
+    def _reinject_after_compact(self) -> RelayResponse:
+        """SessionStart(compact): the policy's `reinject_text` becomes additionalContext.
+
+        Never adopts a session id (compaction keeps it). Empty without a policy or text. Memory
+        only; never raises.
+        """
+        try:
+            state = self.pressure
+            pol = state.policy if state is not None else None
+            if state is None or pol is None or not pol.reinject_text:
+                return _allow()
+            body = render_pressure(
+                pol.reinject_text,
+                state.level(self.context),
+                self.context or {},
+                pol.thresholds,
+                pol.waiting_on,
+            )
+            self._emit("pressure_reinjected", {"chars": len(body)})
+            return {
+                "stdout": _additional_context("SessionStart", body),
+                "stderr": "",
+                "exit_code": 0,
+            }
+        except Exception:  # noqa: BLE001
+            log.exception("pressure re-injection failed")
+            return _allow()
+
     async def _on_compact_hook(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         """PreCompact emits `compacting` and signals; `compacted` comes from the boundary."""
         if event_name == "PreCompact":
@@ -1050,6 +1080,11 @@ class SessionRouter(SessionListener):
                     "custom_instructions": payload.get("custom_instructions"),
                 },
             )
+            state = self.pressure
+            pol = state.policy if state is not None else None
+            if pol is not None and pol.compact_instructions:
+                # PreCompact stdout is appended to the compaction instructions by Claude Code.
+                return {"stdout": pol.compact_instructions, "stderr": "", "exit_code": 0}
         else:
             self.signals.publish(
                 "post_compact",

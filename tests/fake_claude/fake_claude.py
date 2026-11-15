@@ -640,6 +640,7 @@ class Fake:
                 except subprocess.TimeoutExpired:
                     continue
                 res = {
+                    "stdout": p.stdout.decode(errors="replace"),
                     "code": p.returncode,
                     "stderr": p.stderr.decode(errors="replace").strip(),
                     "json": {},
@@ -986,6 +987,7 @@ class Fake:
             pre = self.run_hooks(
                 "PreCompact", {"trigger": "manual", "custom_instructions": args or None}
             )
+            self.record_precompact(pre)
             if self.block_reason(pre) is not None:
                 outcome = "canceled"
         if outcome != "ok":
@@ -1031,10 +1033,22 @@ class Fake:
         )
         if post_hook:
             self.run_hooks("PostCompact", {"trigger": trigger, "compact_summary": summary})
+        # claude runs SessionStart(compact) after every compaction and injects its context
+        self.context_from(self.run_hooks("SessionStart", {"source": "compact"}, match="compact"))
+
+    def record_precompact(self, results: list[dict]) -> None:
+        """PreCompact stdout is appended to the compaction instructions: log it for assertions."""
+        for r in results:
+            if r.get("stdout", "").strip() and not r["json"]:
+                self.write_line(
+                    {"type": "system", "subtype": "precompact_instructions", "content": r["stdout"]}
+                )
 
     def auto_compact_step(self, spec: dict) -> None:
         start = time.monotonic()
-        self.run_hooks("PreCompact", {"trigger": "auto", "custom_instructions": None})
+        self.record_precompact(
+            self.run_hooks("PreCompact", {"trigger": "auto", "custom_instructions": None})
+        )
         self.write_compaction("auto", int(spec.get("pre_tokens", 100000)), 5000, start)
 
     def prompt_command(self, name: str, args: str, cfg: dict) -> None:
