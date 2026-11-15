@@ -1837,7 +1837,9 @@ data: {"seq":12,"ts":"2026-10-20T09:01:07.000Z","session_id":"ses_3f9a1c0b7d42",
 
 ### `tool_denied`
 
-Emitted when a blocking `onAgentToolCall` action denied a tool call; Claude receives the reason.
+Emitted when a tool call is denied; Claude receives the reason. The denier is a blocking
+`onAgentToolCall` action, or the wrapper's own guard (the agent spawn cap and the repeated-failure
+breaker, see the guard section); the `reason` says which.
 
 `data`: `tool_use_id`, `tool_name`, `reason`, `agent_id`, `agent_type`.
 
@@ -2299,6 +2301,12 @@ application/json`, `X-CCW-Delivery: <uuid>` and, when `server.callback_secret` i
 up to 3 retries with 0.5 s doubling backoff on connection errors and non-2xx responses, 10 s
 timeout, then dropped with a warning (the event is still in the log). Any 2xx is success. Verify the
 signature as shown under [Webhook actions](#webhook-actions).
+
+### `guard_tripped`
+
+A runaway-guard cap was hit (see `guard` in the configuration reference). `data`: `kind`
+(`stop_loop`, `agent_spawns` or `tool_breaker`), `turn_id` (`stop_loop` only, else `null`), `count`,
+`limit`, `claude_session_id`, `agent_id` and `tool_name` (each `null` when not applicable).
 
 ## Hooks
 
@@ -4178,6 +4186,44 @@ status `completed`, `failed`, `running` or `not_started`, `final_text` only when
 | `shutdown.handoff.idle_proceed_seconds` | number | `60` | - | The notice wait ends early once the notice turn ended and the session stayed idle this long (>= 0). |
 | `shutdown.handoff.notice_prompt` | string | `""` | - | Text of the notice turn. Required non-blank when enabled. |
 | `shutdown.handoff.handoff_prompt` | string | `""` | - | Text of the handoff turn. Required non-blank when enabled. |
+
+### `guard`
+
+```yaml
+guard:
+  max_stop_continuations: 25
+  max_agent_spawns: 300
+  tool_failure_repeats: 3
+```
+
+Runaway guard; every cap defaults to `0` (off). Each trip emits `guard_tripped`.
+
+- **Stop loop** (`max_stop_continuations`). Counted per Stop chain, not per turn: the chain starts
+  at a Stop with `stop_hook_active` false and every Stop that arrives with `stop_hook_active` true
+  adds one, so tool calls between continuations do not reset it and any Stop hook's loop counts
+  (a claude-level Stop hook, whose continuation legs are new agent-origin turn records, as well
+  as `onStop`). Any Stop with `stop_hook_active` false starts a new chain. At the limit the
+  wrapper skips `onStop`, completes the turn and answers the Stop hook `continue: false`. If claude
+  still continues, the next Stop gets the same answer plus one ESC. The wrapper reads the
+  transcript for the Stop only when the cap is enabled.
+- **Spawn cap** (`max_agent_spawns`). Counts `Agent` and `Task` calls per Claude session id (a
+  `/clear` gives a new id, so a new count). The call past the limit is denied (PreToolUse deny
+  and a `tool_denied` event); `guard_tripped` fires once per Claude session id.
+- **Breaker** (`tool_failure_repeats`). Per agent (`agent_id`, or the main agent) the wrapper
+  tracks the last call (tool name and canonical input) and how many times in a row it failed.
+  A success or a different call resets the streak. At the limit the same call is denied with a
+  reason telling Claude to change the input; `guard_tripped` fires on the first denial of a
+  streak. Every wrapper denial counts as a failure of its call, once: the existing gates
+  (native peer tools, `ccw` tools from subagents, `claude.main_agent_only_tools`), the breaker,
+  the spawn cap and an `onAgentToolCall` deny. The `PostToolUseFailure` that follows such a
+  denial is ignored, so it is not counted twice. The `AskUserQuestion` forward is not a
+  denial for this purpose.
+
+| Key | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `guard.max_stop_continuations` | integer | `0` | - | Stop-hook continuations allowed per Stop chain; `0` is off, else 1 to 1000. |
+| `guard.max_agent_spawns` | integer | `0` | - | Agent and Task spawns allowed per Claude session id; `0` is off, else 1 to 100000. |
+| `guard.tool_failure_repeats` | integer | `0` | - | Identical failing calls in a row before the next is denied; `0` is off, else 2 to 100. |
 
 ## Claude Code environment
 

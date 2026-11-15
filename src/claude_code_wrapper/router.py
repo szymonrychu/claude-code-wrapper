@@ -36,6 +36,14 @@ from .commands import Origin as CommandOrigin
 from .config import CommandsConfig, Config
 from .events import Event as LogEvent
 from .events import EventLog
+from .guard import (
+    AGENT_SPAWN_DENY_REASON,
+    BREAKER_DENY_REASON,
+    STOP_LOOP_REASON,
+    SUBAGENT_TOOLS,
+    RunawayGuard,
+    call_key,
+)
 from .hook_relay import PERMISSION_FAIL_MESSAGE, RelayResponse, deny_output, permission_output
 from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
@@ -407,6 +415,8 @@ class SessionRouter(SessionListener):
         self._dispatcher = dispatcher
         self._redactor = redactor
         self._cfg = cfg
+        self.guard = RunawayGuard(cfg.guard)
+        self._stop_chain: str | None = None  # turn id whose Stop chain the guard counts
         self.info = SessionInfo.coerce(session_info)
         self._usage = UsageTotals()
         self._last_marker: str | None = None
@@ -504,6 +514,30 @@ class SessionRouter(SessionListener):
         if self._idle_start is None or not self._idle_only:
             self._last_real = time.monotonic()
         return self._event_log.append(type, self._redactor.redact_obj(dict(data or {})))
+
+    def _emit_guard_tripped(
+        self,
+        kind: Literal["stop_loop", "agent_spawns", "tool_breaker"],
+        *,
+        count: int,
+        limit: int,
+        turn_id: str | None = None,
+        claude_session_id: str | None = None,
+        agent_id: str | None = None,
+        tool_name: str | None = None,
+    ) -> LogEvent:
+        return self._emit(
+            "guard_tripped",
+            {
+                "kind": kind,
+                "turn_id": turn_id,
+                "count": count,
+                "limit": limit,
+                "claude_session_id": claude_session_id,
+                "agent_id": agent_id,
+                "tool_name": tool_name,
+            },
+        )
 
     def _emit_turn_started(self, turn_id: str, origin: str, text: str) -> None:
         """The managed-settings tamper check, then `turn_started`: a restore is logged first."""
@@ -1087,6 +1121,17 @@ class SessionRouter(SessionListener):
             "exit_code": 0,
         }
 
+    def _deny(
+        self, tool_use_id: Any, tool_name: str, reason: str, who: Mapping[str, Any]
+    ) -> RelayResponse:
+        self._emit(
+            "tool_denied",
+            {"tool_use_id": tool_use_id, "tool_name": tool_name, "reason": reason, **who},
+        )
+        if self._metrics is not None:
+            self._metrics.tool_call(tool_name, "deny")
+        return {"stdout": deny_output(reason), "stderr": "", "exit_code": 0}
+
     async def _on_pre_tool_use(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         tool_name = str(payload.get("tool_name") or "")
         tool_use_id = payload.get("tool_use_id")
@@ -1099,6 +1144,8 @@ class SessionRouter(SessionListener):
             self._deliver(self._callback_url(self.session.current_turn), event)
             return {"stdout": deny_output(QUESTION_DENY_REASON), "stderr": "", "exit_code": 0}
         who = _attribution(payload)
+        agent_id = _str_or_none(payload.get("agent_id"))
+        key = call_key(agent_id, tool_name, tool_input)
         gate_reason = None
         if self._cfg.peers.enabled and tool_name in NATIVE_PEER_TOOLS:
             gate_reason = NATIVE_PEER_DENY_REASON
@@ -1109,18 +1156,45 @@ class SessionRouter(SessionListener):
         ):
             gate_reason = MAIN_AGENT_ONLY_DENY_REASON
         if gate_reason is not None:
-            self._emit(
-                "tool_denied",
-                {
-                    "tool_use_id": tool_use_id,
-                    "tool_name": tool_name,
-                    "reason": gate_reason,
-                    **who,
-                },
+            self.guard.record_denial(key, tool_use_id)
+            return self._deny(tool_use_id, tool_name, gate_reason, who)
+        breaker = self.guard.breaker_check(key)
+        if breaker.deny:
+            if breaker.first_trip:
+                current = self.session.current_turn
+                self._emit_guard_tripped(
+                    "tool_breaker",
+                    count=breaker.streak,
+                    limit=self.guard.cfg.tool_failure_repeats,
+                    turn_id=current.turn_id if current is not None else None,
+                    claude_session_id=_str_or_none(payload.get("session_id")),
+                    agent_id=agent_id,
+                    tool_name=tool_name,
+                )
+            self.guard.record_denial(key, tool_use_id)
+            return self._deny(
+                tool_use_id, tool_name, BREAKER_DENY_REASON.format(count=breaker.streak), who
             )
-            if self._metrics is not None:
-                self._metrics.tool_call(tool_name, "deny")
-            return {"stdout": deny_output(gate_reason), "stderr": "", "exit_code": 0}
+        if tool_name in SUBAGENT_TOOLS:
+            claude_session_id = _str_or_none(payload.get("session_id")) or ""
+            verdict = self.guard.spawn(claude_session_id)
+            if not verdict.allowed:
+                limit = self.guard.cfg.max_agent_spawns
+                if verdict.first_denial:
+                    current = self.session.current_turn
+                    self._emit_guard_tripped(
+                        "agent_spawns",
+                        count=verdict.count,
+                        limit=limit,
+                        turn_id=current.turn_id if current is not None else None,
+                        claude_session_id=claude_session_id,
+                        agent_id=agent_id,
+                        tool_name=tool_name,
+                    )
+                self.guard.record_denial(key, tool_use_id)
+                return self._deny(
+                    tool_use_id, tool_name, AGENT_SPAWN_DENY_REASON.format(limit=limit), who
+                )
         data = {
             "tool_use_id": tool_use_id,
             "tool_name": tool_name,
@@ -1134,6 +1208,7 @@ class SessionRouter(SessionListener):
             self._metrics.tool_call(tool_name, "deny" if outcome.decision == "deny" else "allow")
         if outcome.decision == "deny":
             reason = outcome.reason or DEFAULT_DENY_REASON
+            self.guard.record_denial(key, tool_use_id)
             self._emit(
                 "tool_denied",
                 {"tool_use_id": tool_use_id, "tool_name": tool_name, "reason": reason, **who},
@@ -1163,6 +1238,12 @@ class SessionRouter(SessionListener):
             "response": _response_text(payload),
             **_attribution(payload),
         }
+        post_input = payload.get("tool_input")
+        self.guard.record_result(
+            call_key(_str_or_none(agent_id), tool_name, {} if post_input is None else post_input),
+            failed=bool(data["is_error"]),
+            tool_use_id=payload.get("tool_use_id"),
+        )
         self._emit("tool_result", data)
         self.session.record_tool_call()
         outcome = await self._fire("onToolResult", data, tool_name=tool_name)
@@ -1173,9 +1254,37 @@ class SessionRouter(SessionListener):
         self._resolve_pending_by_terminal(self.permissions.of_agent(None), "deny")
         await self._flush_transcripts()
         await self._await_running_marker()
-        held = await self._stop_gate(payload)
-        if held is not None:
-            return held
+        active = bool(payload.get("stop_hook_active"))
+        if self.guard.loop_tripped:
+            if active:
+                return self._stop_loop_fallback()
+            self.guard.clear_loop_trip()
+        tripped: int | None = None
+        record = (
+            self.session.stop_target(payload, self._last_marker)
+            if self.guard.cfg.max_stop_continuations
+            else None  # the cap is off
+        )
+        if record is not None and record is not self._commands_turn:
+            # A continued Stop belongs to the turn that started the chain, also when that turn
+            # already completed (a claude-level Stop hook blocked, not onStop): each leg then
+            # targets a fresh agent-origin record.
+            if not active or self._stop_chain is None:
+                self._stop_chain = record.turn_id
+            tripped = self.guard.stop_continuation(self._stop_chain, active)
+        if tripped is not None:
+            # The cap ends the turn: no onStop fires, claude gets continue:false.
+            self._emit_guard_tripped(
+                "stop_loop",
+                count=tripped,
+                limit=self.guard.cfg.max_stop_continuations,
+                turn_id=self._stop_chain,
+                claude_session_id=_str_or_none(payload.get("session_id")),
+            )
+        else:
+            held = await self._stop_gate(payload)
+            if held is not None:
+                return held
         per_model = self._usage.as_dict()
         usage: dict[str, int] | None = None
         if per_model:
@@ -1200,7 +1309,24 @@ class SessionRouter(SessionListener):
             # and the callback run after it, so a POST /turns cannot take the slot ahead of them.
             self._start_idle_runner()
             await self._after_turn(record, event)
-        return _allow()
+        return self._stop_loop_answer() if tripped is not None else _allow()
+
+    def _stop_loop_answer(self) -> RelayResponse:
+        limit = self.guard.cfg.max_stop_continuations
+        return _relay(
+            json.dumps({"continue": False, "stopReason": STOP_LOOP_REASON.format(limit=limit)})
+        )
+
+    def _stop_loop_fallback(self) -> RelayResponse:
+        """A Stop that still continues after the guard answered continue:false: answer it
+        again and send one ESC; no event, no new turn."""
+
+        async def escape() -> None:
+            with contextlib.suppress(PtyClosed, TurnRejected):
+                await self.session.send_escape()
+
+        self._spawn(escape())
+        return self._stop_loop_answer()
 
     async def _await_running_marker(self) -> None:
         """While a turn runs and the newest marker read names an earlier turn, re-read the

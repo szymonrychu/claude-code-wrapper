@@ -1245,3 +1245,19 @@ def test_managed_settings_file_missing_is_empty(spawn, env, work, tmp_path, scen
     p.boot()
     p.submit("x")
     assert _recorded(log) == ["user"]
+
+
+def test_fake_claude_continue_false_ends_turn(spawn, env, tmp_path, work):
+    out = block_hook(
+        env, tmp_path, 'echo \'{"continue": false, "decision": "block", "reason": "x"}\''
+    )
+    sid = "77777777-7777-4777-8777-777777777777"
+    p = spawn(["--session-id", sid])
+    p.boot()
+    p.submit("hi")
+    time.sleep(0.3)
+    p.pump(0.3)
+    assert len(payloads(out)) == 1  # one Stop: continue:false wins over the block
+    rows = transcript_lines(env["CLAUDE_CONFIG_DIR"], work, sid)
+    users = [r["message"]["content"] for r in rows if r["type"] == "user"]
+    assert [u for u in users if isinstance(u, str)] == ["hi"]

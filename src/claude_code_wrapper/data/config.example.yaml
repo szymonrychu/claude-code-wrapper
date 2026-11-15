@@ -242,3 +242,11 @@ peers:
 #     idle_proceed_seconds: 60   # the notice wait ends early once the session stayed idle this long
 #     notice_prompt: ""          # required when enabled
 #     handoff_prompt: ""         # required when enabled
+
+# Runaway guard (0 = off): cap Stop-hook continuations per Stop chain (tool calls do not reset the
+# count), Agent and Task spawns per Claude session id, and identical tool calls that failed this
+# many times in a row (the next one is denied).
+# guard:
+#   max_stop_continuations: 25
+#   max_agent_spawns: 300
+#   tool_failure_repeats: 3
