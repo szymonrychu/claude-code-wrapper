@@ -4194,11 +4194,28 @@ guard:
   tool_failure_repeats: 3
 ```
 
-Runaway guard; every cap defaults to `0` (off). `max_stop_continuations` ends a turn whose Stop
-hooks continued it that many times (tool calls between continuations do not reset the count);
-`max_agent_spawns` denies further `Agent` and `Task` calls of one Claude session once it
-launched that many subagents; `tool_failure_repeats` denies an identical call (same agent, tool
-and input) after that many failures in a row. Each trip emits `guard_tripped`.
+Runaway guard; every cap defaults to `0` (off). Each trip emits `guard_tripped`.
+
+- **Stop loop** (`max_stop_continuations`). Counted per Stop chain, not per turn: the chain starts
+  at a Stop with `stop_hook_active` false and every Stop that arrives with `stop_hook_active` true
+  adds one, so tool calls between continuations do not reset it and any Stop hook's loop counts
+  (a claude-level Stop hook, whose continuation legs are new agent-origin turn records, as well
+  as `onStop`). Any Stop with `stop_hook_active` false starts a new chain. At the limit the
+  wrapper skips `onStop`, completes the turn and answers the Stop hook `continue: false`. If claude
+  still continues, the next Stop gets the same answer plus one ESC. The wrapper reads the
+  transcript for the Stop only when the cap is enabled.
+- **Spawn cap** (`max_agent_spawns`). Counts `Agent` and `Task` calls per Claude session id (a
+  `/clear` gives a new id, so a new count). The call past the limit is denied (PreToolUse deny
+  and a `tool_denied` event); `guard_tripped` fires once per Claude session id.
+- **Breaker** (`tool_failure_repeats`). Per agent (`agent_id`, or the main agent) the wrapper
+  tracks the last call (tool name and canonical input) and how many times in a row it failed.
+  A success or a different call resets the streak. At the limit the same call is denied with a
+  reason telling Claude to change the input; `guard_tripped` fires on the first denial of a
+  streak. Every wrapper denial counts as a failure of its call, once: the existing gates
+  (native peer tools, `ccw` tools from subagents, `claude.main_agent_only_tools`), the breaker,
+  the spawn cap and an `onAgentToolCall` deny. The `PostToolUseFailure` that follows such a
+  denial is ignored, so it is not counted twice. The `AskUserQuestion` forward is not a
+  denial for this purpose.
 
 | Key | Type | Default | Env var | Description |
 |---|---|---|---|---|
