@@ -120,6 +120,8 @@ Scenario schema
   or exits 2 (reason = stderr) makes the fake write R as a user line, run the turn's
   on_block steps and fire Stop again with stop_hook_active true. At most 8 consecutive
   blocks (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP overrides); past the cap the turn ends as allowed.
+  A Stop hook whose stdout JSON has "continue": false ends the turn as allowed, checked before
+  any block (also one in the same JSON or from another Stop hook): no user line, no on_block.
     {"statusline": {...}} runs settings.json statusLine.command with this JSON on stdin and
                          draws its stdout (skipped when the managed file sets
                          allowManagedHooksOnly or disableAllHooks, as claude does)
@@ -1182,6 +1184,8 @@ class Fake:
                     "session_crons": crons,
                 },
             )
+            if any(r["json"].get("continue") is False for r in results):
+                return  # continue:false ends the turn as allowed, ahead of any block
             reason = self.block_reason(results)
             if reason is None or blocks >= cap:
                 return

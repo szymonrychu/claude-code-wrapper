@@ -36,7 +36,7 @@ from .commands import Origin as CommandOrigin
 from .config import CommandsConfig, Config
 from .events import Event as LogEvent
 from .events import EventLog
-from .guard import RunawayGuard
+from .guard import STOP_LOOP_REASON, RunawayGuard
 from .hook_relay import PERMISSION_FAIL_MESSAGE, RelayResponse, deny_output, permission_output
 from .hooks import ActionResult, HookDispatcher, HookOutcome, build_payload, gate_fail_mode
 from .metrics import Metrics
@@ -409,6 +409,7 @@ class SessionRouter(SessionListener):
         self._redactor = redactor
         self._cfg = cfg
         self.guard = RunawayGuard(cfg.guard)
+        self._stop_chain: str | None = None  # turn id whose Stop chain the guard counts
         self.info = SessionInfo.coerce(session_info)
         self._usage = UsageTotals()
         self._last_marker: str | None = None
@@ -1199,9 +1200,37 @@ class SessionRouter(SessionListener):
         self._resolve_pending_by_terminal(self.permissions.of_agent(None), "deny")
         await self._flush_transcripts()
         await self._await_running_marker()
-        held = await self._stop_gate(payload)
-        if held is not None:
-            return held
+        active = bool(payload.get("stop_hook_active"))
+        if self.guard.loop_tripped:
+            if active:
+                return self._stop_loop_fallback()
+            self.guard.clear_loop_trip()
+        tripped: int | None = None
+        record = (
+            self.session.stop_target(payload, self._last_marker)
+            if self.guard.cfg.max_stop_continuations
+            else None  # the cap is off
+        )
+        if record is not None and record is not self._commands_turn:
+            # A continued Stop belongs to the turn that started the chain, also when that turn
+            # already completed (a claude-level Stop hook blocked, not onStop): each leg then
+            # targets a fresh agent-origin record.
+            if not active or self._stop_chain is None:
+                self._stop_chain = record.turn_id
+            tripped = self.guard.stop_continuation(self._stop_chain, active)
+        if tripped is not None:
+            # The cap ends the turn: no onStop fires, claude gets continue:false.
+            self._emit_guard_tripped(
+                "stop_loop",
+                count=tripped,
+                limit=self.guard.cfg.max_stop_continuations,
+                turn_id=self._stop_chain,
+                claude_session_id=_str_or_none(payload.get("session_id")),
+            )
+        else:
+            held = await self._stop_gate(payload)
+            if held is not None:
+                return held
         per_model = self._usage.as_dict()
         usage: dict[str, int] | None = None
         if per_model:
@@ -1226,7 +1255,24 @@ class SessionRouter(SessionListener):
             # and the callback run after it, so a POST /turns cannot take the slot ahead of them.
             self._start_idle_runner()
             await self._after_turn(record, event)
-        return _allow()
+        return self._stop_loop_answer() if tripped is not None else _allow()
+
+    def _stop_loop_answer(self) -> RelayResponse:
+        limit = self.guard.cfg.max_stop_continuations
+        return _relay(
+            json.dumps({"continue": False, "stopReason": STOP_LOOP_REASON.format(limit=limit)})
+        )
+
+    def _stop_loop_fallback(self) -> RelayResponse:
+        """A Stop that still continues after the guard answered continue:false: answer it
+        again and send one ESC; no event, no new turn."""
+
+        async def escape() -> None:
+            with contextlib.suppress(PtyClosed, TurnRejected):
+                await self.session.send_escape()
+
+        self._spawn(escape())
+        return self._stop_loop_answer()
 
     async def _await_running_marker(self) -> None:
         """While a turn runs and the newest marker read names an earlier turn, re-read the
