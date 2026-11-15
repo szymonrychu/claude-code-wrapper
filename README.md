@@ -376,6 +376,8 @@ Response `201`:
   "last_fatal": null,
   "permission_mode_state": null,
   "permission_mode_reason": null,
+  "auth_state": null,
+  "auth_reason": null,
   "waiting": null,
   "bootstrap": {"steps": [{"step": "session_dir", "status": "succeeded", "message": null, "started_at": "2026-10-20T09:00:00.130+00:00", "finished_at": "2026-10-20T09:00:00.140+00:00"}]},
   "restarts": 0,
@@ -394,7 +396,7 @@ answered it), else `null`; `bootstrap.steps` lists each create/resume step in or
 characters) and `started_at`/`finished_at`; `state` is one of `creating`, `ready`, `busy`, `stopped`, `failed`, `dead`;
 `step` is the create/resume step last entered (on `failed`, the one that failed, with `error:
 {"step", "message"}`); `outstanding_subagents` is the number of subagents started and not yet stopped (0 for stopped and persisted sessions); `current_turn_id` is the running turn; `last_fatal` is the last fatal
-screen text; `permission_mode_state` is `"unavailable"` (with `permission_mode_reason`: `settings`, `plan`, `fast_mode`, `model`, `unknown` or `no_safety_verdict`) once claude printed that auto mode cannot be used, else `null` (only ever set when `claude.permission_mode` is `auto`); `pid` is the claude pid while alive; `env` shows set values with secrets masked as
+screen text; `permission_mode_state` is `"unavailable"` (with `permission_mode_reason`: `settings`, `plan`, `fast_mode`, `model`, `unknown` or `no_safety_verdict`) once claude printed that auto mode cannot be used, else `null` (only ever set when `claude.permission_mode` is `auto`); `auth_state` is `"failed"` (with `auth_reason`: `time_limit`, `revoked`, `expired` or `not_logged_in`) once claude drew its re-login screen, else `null`; the running turn then fails with `auth_failed`, as does every later turn until claude is relaunched; `pid` is the claude pid while alive; `env` shows set values with secrets masked as
 `***`. `idle_since` is the ISO timestamp of the latest transition into `ready` (boot, a turn or command
 completing, a relaunch of claude) and `null` in every other state, including stopped sessions
 loaded from disk; the orchestrator uses it to route to the agent idle the longest. It differs from
