@@ -179,7 +179,7 @@ class PressureCadence:
             self._tool_results = 0
             self._rose = False
             return None
-        if last is not None and level > last:
+        if (last is None and level >= 2) or (last is not None and level > last):
             self._rose = True
             self._sent = 0
         if hook == "UserPromptSubmit":
@@ -202,6 +202,16 @@ class PressureState:
         self.cadence = PressureCadence(cfg or PressureConfig())
         self.deliveries = 0
         self.stop_blocks_this_turn = 0
+        #: The resume check is armed: the next tool-free turn end is blocked once.
+        self.resume_open = False
+        self._stop_turn: str | None = None
+
+    def stop_count(self, turn_id: str) -> int:
+        """Stop blocks of `turn_id` so far; a new turn id resets the counter."""
+        if turn_id != self._stop_turn:
+            self._stop_turn = turn_id
+            self.stop_blocks_this_turn = 0
+        return self.stop_blocks_this_turn
 
     def put(self, policy: PressurePolicy) -> Literal["set", "unchanged"]:
         cur = self.policy
@@ -210,6 +220,10 @@ class PressureState:
                 raise StaleVersion(policy.version, cur.version)
             if policy == cur:
                 return "unchanged"
+        if not policy.resume_pending:
+            self.resume_open = False
+        elif cur is None or not cur.resume_pending:
+            self.resume_open = True
         self.policy = policy
         return "set"
 
@@ -218,6 +232,8 @@ class PressureState:
         self.cadence.reset()
         self.deliveries = 0
         self.stop_blocks_this_turn = 0
+        self.resume_open = False
+        self._stop_turn = None
 
     def level(self, context: Mapping[str, Any] | None) -> int:
         if self.policy is None:

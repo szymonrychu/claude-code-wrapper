@@ -61,6 +61,7 @@ def test_event_types_exact():
         "note_delivered",
         "pressure_policy_set",
         "pressure_delivered",
+        "pressure_stop_blocked",
         "shutdown_started",
         "shutdown_handoff",
         "session_closed",

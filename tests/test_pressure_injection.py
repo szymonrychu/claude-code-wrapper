@@ -88,7 +88,7 @@ async def test_level_zero_no_injection(tmp_path):
     await h.router.close()
 
 
-async def test_user_prompt_submit_full_text_at_l1(tmp_path):
+async def test_user_prompt_submit_full_text_at_l2(tmp_path):
     h = make(tmp_path, used=142_000)
     text = ctx(await prompt(h))
     assert text == f"<context-pressure>\n{HEAD}\nFULL2 71%\n</context-pressure>"
@@ -110,7 +110,8 @@ async def test_l1_cadence_every_20_tool_calls(tmp_path):
 async def test_l2_every_3_and_l3_every_call(tmp_path):
     h = make(tmp_path, used=140_000)
     got = [bool(ctx(await tool(h))) for _ in range(6)]
-    assert got == [False, False, True, False, False, True]
+    # the first observed hook at L2 counts as a rise (delivers), then every 3rd
+    assert got == [True, False, False, True, False, False]
     status(h, 170_000)
     # the rise delivers at the next boundary, then every call
     assert [bool(ctx(await tool(h))) for _ in range(3)] == [True, True, True]
@@ -219,5 +220,24 @@ async def test_unknown_context_after_known_is_silent(tmp_path):
     h = make(tmp_path, used=170_000)
     h.router.on_statusline({})
     assert ctx(await prompt(h)) == ""
+    assert ctx(await tool(h)) == ""
+    await h.router.close()
+
+
+async def test_first_seen_l2_tool_hook_counts_as_rise(tmp_path):
+    # a session resumed mid-turn: its first observed hook is a tool hook at L2 (every 3rd call)
+    h = make(tmp_path, used=142_000)
+    assert "FULL2" in ctx(await tool(h))
+    await h.router.close()
+
+
+async def test_first_seen_l3_tool_hook_counts_as_rise(tmp_path):
+    h = make(tmp_path, used=170_000)
+    assert "FULL3" in ctx(await tool(h))
+    await h.router.close()
+
+
+async def test_first_seen_l1_tool_hook_is_not_a_rise(tmp_path):
+    h = make(tmp_path, used=110_000)
     assert ctx(await tool(h)) == ""
     await h.router.close()

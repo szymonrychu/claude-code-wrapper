@@ -184,3 +184,43 @@ async def test_stop_loop_fallback_escapes_when_claude_ignores_continue_false(
     assert len(Gate.calls(world, sid)) == 3
     await router.handle_claude_hook("Stop", {**payload, "stop_hook_active": False})
     assert router.guard.loop_tripped is False
+
+
+async def test_guard_trip_wins_over_pressure_block(tmp_path):
+    from types import SimpleNamespace
+
+    from test_pressure_injection import policy, status
+    from test_router import CLAUDE_SID, SID, Harness
+
+    from claude_code_wrapper.pressure import PressureState
+    from claude_code_wrapper.timeutil import now_iso
+    from claude_code_wrapper.turns import TurnRecord
+
+    h = Harness(tmp_path)
+    h.cfg.pressure.enabled = True
+    h.cfg.guard.max_stop_continuations = 2
+    h.router.guard.cfg.max_stop_continuations = 2
+    h.router.pressure = PressureState(h.cfg.pressure)
+    h.router.pressure.put(policy())
+    status(h, 170_000)  # L3: three pressure blocks allowed
+    record = TurnRecord(turn_id="turn-1", session_id=SID, state="running", started_at=now_iso())
+    h.session.turn = record
+    h.session.stop_target = lambda payload, marker=None: record  # type: ignore[attr-defined]
+    h.session.spec = SimpleNamespace(resume=False, claude_session_id=CLAUDE_SID)
+
+    def reply(r: dict[str, Any]) -> dict[str, Any]:
+        return json.loads(r["stdout"])
+
+    first = await h.router.handle_claude_hook("Stop", {"session_id": CLAUDE_SID})
+    assert reply(first)["decision"] == "block"
+    second = await h.router.handle_claude_hook(
+        "Stop", {"session_id": CLAUDE_SID, "stop_hook_active": True}
+    )
+    assert reply(second)["decision"] == "block"
+    third = await h.router.handle_claude_hook(
+        "Stop", {"session_id": CLAUDE_SID, "stop_hook_active": True}
+    )
+    assert reply(third)["continue"] is False
+    assert [e.data["count"] for e in h.events("pressure_stop_blocked")] == [1, 2]
+    assert [e.data["kind"] for e in h.events("guard_tripped")] == ["stop_loop"]
+    await h.router.close()

@@ -2273,6 +2273,19 @@ event: pressure_delivered
 data: {"seq":28,"ts":"2026-10-20T09:11:33.000Z","session_id":"ses_3f9a1c0b7d42","type":"pressure_delivered","data":{"level":2,"hook":"PostToolBatch","pct":71.0,"used_tokens":142000,"form":"short","handoff_state":"none"}}
 ```
 
+### `pressure_stop_blocked`
+
+Emitted when a Stop was blocked because of context pressure (a [`turn_continued`](#turn_continued)
+event with the same reason text follows) or by the resume check.
+
+`data`: `turn_id`, `level` (current level, 0 to 3), `count` (blocks of this turn so far; 1 for a
+resume block), `reason` (`pressure` or `resume`).
+
+```
+event: pressure_stop_blocked
+data: {"seq":31,"ts":"2026-10-20T09:12:01.000Z","session_id":"ses_3f9a1c0b7d42","type":"pressure_stop_blocked","data":{"turn_id":"turn_01","level":3,"count":1,"reason":"pressure"}}
+```
+
 ### `pressure_policy_set`
 
 Emitted when a pushed pressure policy is set (not when the same policy is pushed again).
@@ -3446,6 +3459,18 @@ that it is the fallback. Each delivery emits a [`pressure_delivered`](#pressure_
 and counts `ccw_pressure_delivered_total{level,hook}`; `ccw_pressure_level{session}` is the
 current level and `ccw_pressure_stop_blocks_total{level}` counts Stop blocks. `{pct}` is computed
 from the tokens and the window, on the same base as `{compact_pct}`.
+
+**Stop.** Every main-agent Stop records `stop_inventory` (`background_tasks`, `session_crons`, `at`)
+in memory, whatever `sessions.defer_stop_on_background_tasks` says. After the runaway guard's check
+and before the `onStop` gate, a Stop that ends the running turn is blocked (`decision: block`,
+reason = the full text of the current level, [`pressure_stop_blocked`](#pressure_stop_blocked)
+and `turn_continued` events) while a policy is in force, the level is 2 or 3, `handoff_state` is
+`none` or `blocked`, and the turn has been blocked fewer than `pressure.l2_stop_blocks` (level 2)
+or `pressure.l3_stop_blocks` (level 3) times; the counter resets on a new turn id. Never blocked
+once `handoff_state` is `submitted` or `accepted`. Blocks are Stop continuations and count against
+`guard.max_stop_continuations`, which must stay above `l3_stop_blocks` + 1. When a pushed policy
+has `resume_pending` the first turn that ends afterwards with no tool call is blocked once with
+`resume_text` (reason `resume`); a turn with a tool call clears it without a block.
 
 ## Configuration reference
 

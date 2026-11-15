@@ -424,6 +424,8 @@ class SessionRouter(SessionListener):
         self._cfg = cfg
         self.guard = RunawayGuard(cfg.guard)
         self._stop_chain: str | None = None  # turn id whose Stop chain the guard counts
+        #: Background tasks and session crons from the newest main-agent Stop (memory only).
+        self.stop_inventory: dict[str, Any] | None = None
         self.info = SessionInfo.coerce(session_info)
         self._usage = UsageTotals()
         self._last_marker: str | None = None
@@ -1321,6 +1323,11 @@ class SessionRouter(SessionListener):
         self._resolve_pending_by_terminal(self.permissions.of_agent(None), "deny")
         await self._flush_transcripts()
         await self._await_running_marker()
+        self.stop_inventory = {
+            "background_tasks": _list_or_empty(payload.get("background_tasks")),
+            "session_crons": _list_or_empty(payload.get("session_crons")),
+            "at": now_iso(),
+        }
         active = bool(payload.get("stop_hook_active"))
         if self.guard.loop_tripped:
             if active:
@@ -1349,6 +1356,9 @@ class SessionRouter(SessionListener):
                 claude_session_id=_str_or_none(payload.get("session_id")),
             )
         else:
+            pressured = self._pressure_stop(payload, record)
+            if pressured is not None:
+                return pressured
             held = await self._stop_gate(payload)
             if held is not None:
                 return held
@@ -1377,6 +1387,74 @@ class SessionRouter(SessionListener):
             self._start_idle_runner()
             await self._after_turn(record, event)
         return self._stop_loop_answer() if tripped is not None else _allow()
+
+    def _pressure_stop(
+        self, payload: Mapping[str, Any], record: TurnRecord | None
+    ) -> RelayResponse | None:
+        """Block a Stop of the running turn under context pressure (bounded per turn), or once
+        for the resume check; None lets the Stop go on to the gate. Memory only, never raises."""
+        state = self.pressure
+        pol = state.policy if state is not None else None
+        if state is None or pol is None:
+            return None
+        try:
+            if record is None and not payload.get("agent_id"):
+                record = self.session.stop_target(payload, self._last_marker)
+            if (
+                record is None
+                or record is not self.session.current_turn
+                or record is self._commands_turn
+                or pol.handoff_state in ("submitted", "accepted")
+            ):
+                return None
+            context = self.context
+            level = state.level(context)
+            cfg = self._cfg.pressure
+            if state.resume_open:
+                state.resume_open = False
+                if record.tool_calls == 0 and pol.resume_text:
+                    return self._block_stop(record, payload, level, pol.resume_text, "resume", 1)
+                return None
+            if level < 2 or context is None:
+                return None
+            bound = cfg.l2_stop_blocks if level == 2 else cfg.l3_stop_blocks
+            count = state.stop_count(record.turn_id)
+            if count >= bound:
+                return None
+            tpl = pol.texts[f"l{level}"]  # type: ignore[index]
+            reason = render_pressure(tpl.full, level, context, pol.thresholds, pol.waiting_on)
+            return self._block_stop(record, payload, level, reason, "pressure", count + 1)
+        except Exception:  # noqa: BLE001
+            log.exception("context pressure stop gate failed")
+            return None
+
+    def _block_stop(
+        self,
+        record: TurnRecord,
+        payload: Mapping[str, Any],
+        level: int,
+        reason: str,
+        why: str,
+        count: int,
+    ) -> RelayResponse:
+        state = self.pressure
+        if state is not None and why == "pressure":
+            state.stop_blocks_this_turn = count
+        self._emit(
+            "pressure_stop_blocked",
+            {"turn_id": record.turn_id, "level": level, "count": count, "reason": why},
+        )
+        self._emit(
+            "turn_continued",
+            {
+                "turn_id": record.turn_id,
+                "reason": reason,
+                "stop_hook_active": bool(payload.get("stop_hook_active")),
+            },
+        )
+        if self._metrics is not None:
+            self._metrics.pressure_stop_block(level)
+        return {"stdout": _block_output(reason), "stderr": "", "exit_code": 0}
 
     def _stop_loop_answer(self) -> RelayResponse:
         limit = self.guard.cfg.max_stop_continuations
