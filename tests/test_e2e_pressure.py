@@ -70,7 +70,7 @@ def policy(version: int = 1, **over: Any) -> dict[str, Any]:
 def config(w: E2E, scenario: dict[str, Any]) -> Config:
     path = w.tmp / "pressure-scenario.json"
     path.write_text(json.dumps({"boot": {"bypass_dialog": True, "min_seconds": 0.1}, **scenario}))
-    cfg = w.config(
+    return w.config(
         claude={
             "binary": str(w.fake_bin),
             "boot": BOOT,
@@ -81,7 +81,6 @@ def config(w: E2E, scenario: dict[str, Any]) -> Config:
         },
         pressure={"enabled": True},
     )
-    return cfg
 
 
 async def start(w: E2E, scenario: dict[str, Any], **pol: Any) -> str:
@@ -164,7 +163,6 @@ async def test_submitted_state_with_background_task_never_blocks(e2e: E2E) -> No
     }
     sid = await start(e2e, scenario, handoff_state="submitted")
     await e2e.submit(sid, "bg")
-    await until(lambda: e2e.fake_log.exists(), "fake claude started")
     await until(
         lambda: _stop_seen(e2e),
         "Stop with the background task",
