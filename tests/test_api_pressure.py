@@ -137,3 +137,27 @@ def test_disabled_answers_409_before_body_validation(tmp_path: Path) -> None:
     client, _, _ = make(tmp_path, enabled=False)
     r = client.put(URL, json={"version": 0}, headers=H)
     assert r.status_code == 409 and r.json()["error"]["code"] == "pressure_disabled"
+
+
+def test_put_missing_level_text_422(tmp_path: Path) -> None:
+    client, _, _ = make(tmp_path)
+    body = policy()
+    del body["texts"]["l2"]
+    r = client.put(URL, json=body, headers=H)
+    assert r.status_code == 422
+    assert "l2" in r.text
+
+
+def test_delete_clears_level_metric(tmp_path: Path) -> None:
+    from prometheus_client import CollectorRegistry
+
+    from claude_code_wrapper.metrics import Metrics
+
+    client, stub, cfg = make(tmp_path)
+    reg = CollectorRegistry()
+    metrics = Metrics(registry=reg)
+    client = TestClient(create_app(stub, cfg, metrics))
+    metrics.pressure_level(SID, 2)
+    assert reg.get_sample_value("ccw_pressure_level", {"session": SID}) == 2
+    assert client.delete(URL, headers=H).status_code == 204
+    assert reg.get_sample_value("ccw_pressure_level", {"session": SID}) is None

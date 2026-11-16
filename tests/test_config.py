@@ -582,3 +582,29 @@ def test_pressure_defaults():
         "scratch_roots": ["/tmp/claude-*"],  # noqa: S108
         "max_text_chars": 4000,
     }
+
+
+def _guard_pressure(stop, l3):
+    return Config.model_validate(
+        {
+            "server": {"auth_token": "tok-" + "a" * 20},
+            "guard": {"max_stop_continuations": stop},
+            "pressure": {"enabled": True, "l3_stop_blocks": l3},
+        }
+    )
+
+
+def test_guard_stop_continuations_must_exceed_l3_stop_blocks():
+    from pydantic import ValidationError
+
+    _guard_pressure(0, 3)  # off stays valid
+    _guard_pressure(5, 3)
+    for stop in (1, 4):
+        with pytest.raises(ValidationError, match="l3_stop_blocks"):
+            _guard_pressure(stop, 3)
+
+
+def test_guard_stop_continuations_unchecked_when_pressure_disabled():
+    Config.model_validate(
+        {"server": {"auth_token": "tok-" + "a" * 20}, "guard": {"max_stop_continuations": 3}}
+    )

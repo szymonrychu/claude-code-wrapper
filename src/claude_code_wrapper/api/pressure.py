@@ -51,4 +51,7 @@ async def get_pressure(session_id: str, request: Request) -> Any:
 @router.delete("/sessions/{session_id}/pressure", status_code=204)
 async def delete_pressure(session_id: str, request: Request) -> Response:
     request.app.state.manager.pressure_state(session_id).clear()
+    metrics = request.app.state.metrics
+    if metrics is not None:
+        metrics.pressure_level_remove(session_id)
     return Response(status_code=204)

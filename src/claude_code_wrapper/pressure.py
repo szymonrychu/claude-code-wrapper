@@ -12,7 +12,7 @@ import re
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from .config import PressureConfig
 
@@ -61,6 +61,13 @@ class PressurePolicy(BaseModel):
     resume_text: str = ""
     compact_instructions: str = Field(default="", max_length=9000)
     reinject_text: str = Field(default="", max_length=9000)
+
+    @model_validator(mode="after")
+    def _all_levels_have_texts(self) -> PressurePolicy:
+        missing = [lv for lv in ("l1", "l2", "l3") if lv not in self.texts]
+        if missing:
+            raise ValueError(f"texts: missing level {', '.join(missing)}")
+        return self
 
     def max_text_len(self) -> int:
         """The longest single text field, for the `pressure.max_text_chars` check."""

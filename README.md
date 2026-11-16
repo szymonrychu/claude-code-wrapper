@@ -1327,7 +1327,7 @@ bearer. Body: a policy `{"version": 1, "thresholds": {...}, "profile": "work"|"c
 `pressure.max_text_chars` characters. Response `200`: `{"version": 1, "result": "set"|"unchanged",
 "level": 0}`. Errors: `401 unauthorized`, `404 not_found`, `409 pressure_disabled`, `409
 stale_version` (a lower version than the one in force), `409 invalid_state`, `422
-invalid_request`.
+invalid_request` (including `texts` missing any of `l1`, `l2`, `l3`).
 
 ### `GET /v1/sessions/{id}/pressure`
 
@@ -3508,7 +3508,7 @@ and `turn_continued` events) while a policy is in force, the level is 2 or 3, `h
 `none` or `blocked`, and the turn has been blocked fewer than `pressure.l2_stop_blocks` (level 2)
 or `pressure.l3_stop_blocks` (level 3) times; the counter resets on a new turn id. Never blocked
 once `handoff_state` is `submitted` or `accepted`. Blocks are Stop continuations and count against
-`guard.max_stop_continuations`, which must stay above `l3_stop_blocks` + 1. When a pushed policy
+`guard.max_stop_continuations`, which must stay above `l3_stop_blocks` + 1 when `pressure.enabled` and the cap is not 0 (checked at config load). When a pushed policy
 has `resume_pending` the first turn that ends afterwards with no tool call is blocked once with
 `resume_text` (reason `resume`); a turn with a tool call clears it without a block.
 

@@ -1049,6 +1049,16 @@ class Config(_Model):
     guard: GuardConfig = Field(default_factory=GuardConfig)
 
     @model_validator(mode="after")
+    def _stop_cap_above_pressure_blocks(self) -> Config:
+        cap = self.guard.max_stop_continuations
+        if self.pressure.enabled and cap and cap <= self.pressure.l3_stop_blocks + 1:
+            raise _at(
+                "guard.max_stop_continuations",
+                "must be greater than pressure.l3_stop_blocks + 1 when pressure.enabled and not 0",
+            )
+        return self
+
+    @model_validator(mode="after")
     def _peer_token_distinct(self) -> Config:
         if self.peers.token and self.peers.token == self.server.auth_token:
             raise _at("peers.token", "must differ from server.auth_token")
