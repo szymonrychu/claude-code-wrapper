@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from test_pressure_injection import TH, make, policy
+from test_pressure_injection import TH, make, policy, status
 from test_router import Harness
 
 from claude_code_wrapper.bootstrap.settings import (
@@ -67,6 +68,8 @@ async def test_precompact_without_policy_allows_empty(tmp_path):
 async def test_precompact_instructions_capped_9000_chars(tmp_path):
     h = with_policy(tmp_path, compact_instructions="x" * 9000)
     assert len((await pre(h, "manual"))["stdout"]) == 9000
+    # The router passes the policy text through untruncated at the cap.
+    assert (await pre(h, "auto"))["stdout"] == "x" * 9000
     with pytest.raises(ValueError):
         PressurePolicy.model_validate({**pol().model_dump(), "compact_instructions": "x" * 9001})
 
@@ -81,6 +84,39 @@ async def test_session_start_compact_reinjects(tmp_path):
     assert h.router.info.claude_session_id != "new-sid"
     (ev,) = [e.data for e in h.events("pressure_reinjected")]
     assert ev == {"chars": len(body["additionalContext"])}
+
+
+async def test_session_start_compact_after_high_context_renders_unknown(tmp_path):
+    h = with_policy(tmp_path)
+    status(h, 190_000)
+    assert h.router.context is not None
+    r = await start(h, "compact")
+    assert ctx(r) == REINJ.replace("{pct}", "?")
+    assert h.router.context is None
+
+
+async def test_session_start_clear_path_unchanged(tmp_path):
+    h = with_policy(tmp_path, reinject_text="")
+    status(h, 110_000)
+    adopted = []
+
+    def adopt(new_id, path):
+        adopted.append((new_id, path))
+        return h.router.info.claude_session_id
+
+    h.session.adopt_claude_session = adopt
+    h.session.transcript_path = str(h.tmp / "t" / "new-sid.jsonl")
+    h.router._current = SimpleNamespace(name="clear", state="running")
+    r = await h.router.handle_claude_hook(
+        "SessionStart", {"source": "clear", "session_id": "new-sid", "transcript_path": "p"}
+    )
+    assert r == {"stdout": "", "stderr": "", "exit_code": 0}
+    assert adopted == [("new-sid", "p")]
+    assert h.router.info.claude_session_id == "new-sid"
+    assert h.router.context is None
+    (ev,) = h.events("session_cleared")
+    assert ev.data["claude_session_id"] == "new-sid"
+    assert not h.events("pressure_reinjected")
 
 
 async def test_session_start_compact_never_adopts_session_id(tmp_path):

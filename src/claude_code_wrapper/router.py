@@ -1040,7 +1040,8 @@ class SessionRouter(SessionListener):
     def _reinject_after_compact(self) -> RelayResponse:
         """SessionStart(compact): the policy's `reinject_text` becomes additionalContext.
 
-        Never adopts a session id (compaction keeps it). Empty without a policy or text. Memory
+        Never adopts a session id (compaction keeps it). Renders at L0 with an empty context and
+        resets the stored context. Empty without a policy or text. Memory
         only; never raises.
         """
         try:
@@ -1048,13 +1049,9 @@ class SessionRouter(SessionListener):
             pol = state.policy if state is not None else None
             if state is None or pol is None or not pol.reinject_text:
                 return _allow()
-            body = render_pressure(
-                pol.reinject_text,
-                state.level(self.context),
-                self.context or {},
-                pol.thresholds,
-                pol.waiting_on,
-            )
+            # Compaction emptied the window: the gauge is unknown (L0, no values), never stale.
+            self.reset_context()
+            body = render_pressure(pol.reinject_text, 0, {}, pol.thresholds, pol.waiting_on)
             self._emit("pressure_reinjected", {"chars": len(body)})
             return {
                 "stdout": _additional_context("SessionStart", body),
