@@ -95,3 +95,32 @@ def test_inflight_before_any_stop_has_no_tasks(tmp_path: Path) -> None:
     body = client.get(URL, headers=H).json()
     assert body["background_tasks"] == [] and body["crons"] == []
     assert body["stop_seen_at"] is None
+
+
+def test_inflight_free_text_is_redacted(tmp_path: Path) -> None:
+    import subprocess
+
+    client, stub = make(tmp_path)
+    secret = "canary-secret-value-0001"
+    shaped = "ghp_" + "Q" * 24
+    stub.router._redactor = Redactor([secret])
+    stub.router.stop_inventory = {
+        "background_tasks": [
+            {"id": "b1", "status": "running", "description": f"watch with T={secret} {shaped}"}
+        ],
+        "session_crons": [],
+        "at": "2026-01-01T00:00:00.000Z",
+    }
+    repo = stub.workdir / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / f"{secret}-{shaped}.txt").write_text("x")
+    pad = tmp_path / "pod" / "claude-1" / f"{secret}-{shaped}.md"
+    pad.parent.mkdir(parents=True)
+    pad.write_text("x")
+    body = client.get(URL, headers=H).json()
+    text = str(body)
+    assert secret not in text and shaped not in text
+    assert body["background_tasks"][0]["description"] == "watch with T=*** ***"
+    assert "***" in body["worktrees"][0]["dirty_files"][0]
+    assert "***" in body["scratch"][0]["path"]

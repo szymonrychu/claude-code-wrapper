@@ -235,10 +235,10 @@ async def build_inflight(router: Any, workdir: Path, since: datetime, cfg: Any) 
     return {
         "subagents": len(ids),
         "subagent_ids": ids,
-        "background_tasks": [_slim(t) for t in tasks],
+        "background_tasks": [redactor.redact_obj(_slim(t)) for t in tasks],
         "crons": crons,
-        "worktrees": worktrees,
-        "scratch": scratch,
+        "worktrees": redactor.redact_obj(worktrees),
+        "scratch": redactor.redact_obj(scratch),
         "unknown": scratch_incomplete
         or any(w["error"] in ("timeout", "git_failed") for w in worktrees),
         "stop_seen_at": inventory.get("at"),
