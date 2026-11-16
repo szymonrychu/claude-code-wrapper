@@ -67,3 +67,20 @@ def test_hook_context_after_the_tool_result_still_ends_the_case() -> None:
     case, kind, value, results = _fake().decide(body)
     assert (case, kind, value) == ("case-1", "text", "done case-1")
     assert [r["tool_use_id"] for r in results] == ["toolu_1"]
+
+
+def test_system_role_hook_context_after_the_tool_result_still_ends_the_case() -> None:
+    """claude 2.1.323 sends hook additionalContext as a `system` role message after the
+    tool_result (CI run 43800103009 dump: assistant tool_use, user tool_result, system text);
+    the case is still past its tool call and must not call it again."""
+    reminder = {
+        "role": "system",
+        "content": [{"type": "text", "text": "LIVE-PRESSURE-l1"}],
+    }
+    body = {
+        "tools": OFFERED,
+        "messages": [{"role": "user", "content": PROMPT}, _tool_use(), _tool_result(), reminder],
+    }
+    case, kind, value, results = _fake().decide(body)
+    assert (case, kind, value) == ("case-1", "text", "done case-1")
+    assert [r["tool_use_id"] for r in results] == ["toolu_1"]
