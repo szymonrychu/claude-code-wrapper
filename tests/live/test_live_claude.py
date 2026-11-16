@@ -22,6 +22,7 @@ from .conftest import (
     STATUSLINE_MARKER,
     UNMANAGED_MOD_MARKER,
     Live,
+    api_log,
     container_file,
     in_container,
     live_prompt,
@@ -292,3 +293,127 @@ def test_statusline_relay_fires_with_managed_file(session: dict[str, Any]) -> No
     """N-249: the baseline never sets allowManagedHooksOnly, so the statusLine relay (and the
     command chained behind it) still runs with the managed file active."""
     wait_for(lambda: container_file(STATUSLINE_MARKER), "statusLine chain marker", 60)
+
+
+# ---------------------------------------------------------------- pressure probes (T-423)
+
+#: Tiny thresholds so the fake API's few input tokens already mean level 1; l2 and up stay far away.
+PROBE_POLICY: dict[str, Any] = {
+    "version": 1,
+    "thresholds": {
+        "l1_tokens": 1,
+        "l2_tokens": 10_000_000,
+        "l3_tokens": 20_000_000,
+        "compact_tokens": 30_000_000,
+        "l1_pct": 0.0001,
+        "l2_pct": 90,
+        "l3_pct": 95,
+        "compact_pct": 99,
+    },
+    "profile": "work",
+    "texts": {
+        lv: {"full": f"LIVE-PRESSURE-{lv}", "short": f"LIVE-PRESSURE-{lv}"}
+        for lv in ("l1", "l2", "l3")
+    },
+}
+PROBE_BOUND = 90.0
+
+
+def _push_policy(live: Live, sid: str) -> None:
+    put = live.api.put(f"/v1/sessions/{sid}/pressure", json=PROBE_POLICY)
+    assert put.status_code == 200, put.text
+
+
+def test_live_post_tool_batch_is_emitted(live: Live) -> None:
+    """The pinned claude emits PostToolBatch after a tool group: a pressure delivery at a tool
+    boundary comes from that hook. The gauge needs a statusLine after the first API reply, so
+    tool turns repeat until a delivery shows. If claude never emits PostToolBatch, the
+    PostToolUse fallback must deliver instead (README "Context pressure"); the result is
+    recorded in MEMORY.md."""
+    session = live.create_session("live-batch")
+    sid = session["session_id"]
+    _push_policy(live, sid)
+    hooks: set[str] = set()
+    for n in range(4):
+        turn = live.turn(
+            sid,
+            live_prompt(f"batch-{n}", "Bash", {"command": f"echo batch-{n}", "description": "x"}),
+        )
+        assert turn["state"] == "completed", turn
+        hooks = {
+            e["data"]["hook"]
+            for e in live.events(sid, "pressure_delivered")
+            if e["data"]["hook"] != "UserPromptSubmit"
+        }
+        if hooks:
+            break
+    assert hooks, "no tool-boundary pressure delivery: neither PostToolBatch nor PostToolUse"
+    print(f"live-claude observed tool-boundary pressure hooks: {sorted(hooks)}")
+    assert hooks == {"PostToolBatch"} or hooks == {"PostToolUse"}, hooks
+    marker = [
+        r for r in api_log() if "LIVE-PRESSURE-l1" in json.dumps(r["body"].get("messages", []))
+    ]
+    assert marker, "the injected text never reached the model request"
+
+
+def test_live_stop_payload_carries_background_tasks(live: Live) -> None:
+    """A run_in_background Bash is in the Stop payload's background_tasks: the inventory route
+    (fed by every main-agent Stop) lists it."""
+    session = live.create_session("live-bg")
+    sid = session["session_id"]
+    try:
+        live.turn(
+            sid,
+            live_prompt(
+                "bg-task",
+                "Bash",
+                {"command": "sleep 600", "description": "x", "run_in_background": True},
+            ),
+        )
+        inflight = wait_for(
+            lambda: (live.api.get(f"/v1/sessions/{sid}/inflight").json())["background_tasks"],
+            "a background task in the Stop inventory",
+            PROBE_BOUND,
+        )
+        assert inflight, inflight
+    finally:
+        live.api.delete(f"/v1/sessions/{sid}")
+
+
+def test_live_clear_and_background_shell(live: Live) -> None:
+    """Observe whether a background shell survives /clear (the orchestrator gate blocks the
+    clear on running shells either way). The observation is printed and asserted only as
+    'a definite answer'; MEMORY.md records what CI saw."""
+    session = live.create_session("live-clear")
+    sid = session["session_id"]
+    marker = f"/tmp/ccw-live-bgshell-{sid}"
+    command = f"sh -c 'while true; do date > {marker}; sleep 1; done'"
+    try:
+        live.turn(
+            sid,
+            live_prompt(
+                "clear-bg",
+                "Bash",
+                {"command": command, "description": "x", "run_in_background": True},
+            ),
+        )
+        wait_for(lambda: container_file(marker), "the background shell started", PROBE_BOUND)
+        queued = live.api.post(f"/v1/sessions/{sid}/commands", json={"name": "clear"})
+        assert queued.status_code == 202, queued.text
+        cid = queued.json()["id"]
+        wait_for(
+            lambda: (
+                live.api.get(f"/v1/sessions/{sid}/commands/{cid}").json()["state"]
+                in ("completed", "failed")
+            ),
+            "the clear command finished",
+            PROBE_BOUND,
+        )
+        first = container_file(marker)
+        time.sleep(3)
+        alive = container_file(marker) != first
+        print(f"live-claude observed: background shell survives /clear = {alive}")
+        assert isinstance(alive, bool)
+    finally:
+        live.api.delete(f"/v1/sessions/{sid}")
+        in_container("rm", "-f", marker, check=False)

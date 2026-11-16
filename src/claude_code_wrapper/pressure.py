@@ -174,6 +174,8 @@ class PressureCadence:
 
     def due(self, hook: str, level: int) -> Form | None:
         last, self._last_level = self._last_level, level
+        if hook == "PostToolBatch":
+            self._batch_seen = True
         if level == 0:
             self._sent = 0
             self._tool_results = 0
@@ -184,9 +186,7 @@ class PressureCadence:
             self._sent = 0
         if hook == "UserPromptSubmit":
             return self._deliver(True)
-        if hook == "PostToolBatch":
-            self._batch_seen = True
-        elif hook in TOOL_RESULT_HOOKS and self._batch_seen:
+        if hook in TOOL_RESULT_HOOKS and self._batch_seen:
             return None
         self._tool_results += 1
         if self._rose or self._tool_results >= self._every(level):

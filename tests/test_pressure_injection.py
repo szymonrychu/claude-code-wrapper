@@ -241,3 +241,14 @@ async def test_first_seen_l1_tool_hook_is_not_a_rise(tmp_path):
     h = make(tmp_path, used=110_000)
     assert ctx(await tool(h)) == ""
     await h.router.close()
+
+
+async def test_batch_seen_at_level_zero_stops_post_tool_use_fallback(tmp_path):
+    h = make(tmp_path, used=50_000)
+    assert (
+        ctx(await batch(h)) == ""
+    )  # a PostToolBatch at L0 already proves the pinned claude emits it
+    status(h, 110_000)
+    assert ctx(await tool(h)) == ""  # PostToolUse no longer delivers, even on the rise
+    assert "<context-pressure>" in ctx(await batch(h))
+    await h.router.close()
