@@ -46,6 +46,13 @@ mise:
 sessions:
   max_sessions: 8
   resume_on_start: false
+  commands:
+    client: [clear]
+
+# Probes of the pressure engine (tests/live/test_live_claude.py): the policy is pushed per session.
+pressure:
+  enabled: true
+  l1_every_tool_calls: 1
 
 limits:
   turn_max_seconds: 180

@@ -154,3 +154,20 @@ async def test_interrupt_results_counted(tmp_path: Path) -> None:
     await h.router.drain()
     assert sample(m, "ccw_interrupts_total", result="timeout") == 1
     await h.router.close()
+
+
+def test_pressure_families() -> None:
+    m = Metrics()
+    m.pressure_level("s1", 2)
+    m.pressure_delivered(2, "PostToolBatch")
+    m.pressure_stop_block(3)
+    assert m.registry.get_sample_value("ccw_pressure_level", {"session": "s1"}) == 2
+    assert (
+        m.registry.get_sample_value(
+            "ccw_pressure_delivered_total", {"level": "2", "hook": "PostToolBatch"}
+        )
+        == 1
+    )
+    assert m.registry.get_sample_value("ccw_pressure_stop_blocks_total", {"level": "3"}) == 1
+    m.pressure_level_remove("s1")
+    assert m.registry.get_sample_value("ccw_pressure_level", {"session": "s1"}) is None

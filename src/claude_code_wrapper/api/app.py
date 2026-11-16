@@ -13,9 +13,11 @@ from claude_code_wrapper.api import (
     dialog,
     events,
     files,
+    inflight,
     managed_settings,
     notes,
     peers,
+    pressure,
     sessions,
     terminals,
     turns,
@@ -89,6 +91,8 @@ def create_app(manager: Any, cfg: Config, metrics: Metrics | None = None) -> Fas
     v1.include_router(events.router)
     v1.include_router(files.router)
     v1.include_router(notes.router)
+    v1.include_router(pressure.router)
+    v1.include_router(inflight.router)
     v1.include_router(managed_settings.router)
     v1.include_router(terminals.router)
     v1.include_router(peers.view_router)

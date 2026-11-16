@@ -196,11 +196,11 @@ async def test_clear_rechecks_subagents_before_typing(world):
 # ---------------------------------------------------------------- settings and relay
 
 
-def test_session_start_relay_registered_with_clear_matcher(tmp_path):
+def test_session_start_relay_registered_with_clear_compact_matcher(tmp_path):
     assert "SessionStart" in CLAUDE_HOOK_EVENTS
     doc = render_settings(tmp_path, Config(), relay_command=RELAY)
     (group,) = doc["hooks"]["SessionStart"]
-    assert group["matcher"] == "clear"
+    assert group["matcher"] == "clear|compact"
     (hook,) = group["hooks"]
     assert hook["command"] == f"{RELAY} SessionStart"
     for event in CLAUDE_HOOK_EVENTS:

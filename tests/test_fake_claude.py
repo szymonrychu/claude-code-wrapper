@@ -1261,3 +1261,35 @@ def test_fake_claude_continue_false_ends_turn(spawn, env, tmp_path, work):
     rows = transcript_lines(env["CLAUDE_CONFIG_DIR"], work, sid)
     users = [r["message"]["content"] for r in rows if r["type"] == "user"]
     assert [u for u in users if isinstance(u, str)] == ["hi"]
+
+
+def test_post_tool_batch_runs_once_per_tool_group(spawn, env, tmp_path, scenario_file):
+    out = tmp_path / "b.out"
+    cmd = f"cat >> {out}; echo >> {out}"
+    hook_settings(
+        env["CLAUDE_CONFIG_DIR"],
+        {
+            ev: [{"matcher": "", "hooks": [{"type": "command", "command": cmd, "timeout": 5}]}]
+            for ev in ("PostToolUse", "PostToolBatch")
+        },
+    )
+    tool = {"tool": "Bash", "input": {}, "result": "ok"}
+    sc = scenario_file(
+        {
+            "boot": {"bypass_dialog": False},
+            "turns": [
+                {"match": ".*", "steps": [tool, tool, {"text": "mid"}, tool, {"text": "end"}]}
+            ],
+        }
+    )
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.submit("x")
+    events = [json.loads(x)["hook_event_name"] for x in out.read_text().splitlines()]
+    assert events == [
+        "PostToolUse",
+        "PostToolUse",
+        "PostToolBatch",
+        "PostToolUse",
+        "PostToolBatch",
+    ]

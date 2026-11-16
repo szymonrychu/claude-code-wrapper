@@ -24,9 +24,9 @@ cleanup() {
   if [ "$status" -ne 0 ]; then
     echo "---- ${CONTAINER} logs ----" >&2
     docker logs "$CONTAINER" >&2 || true
-    echo "---- fake Messages API: requests (path, case, reply kind) ----" >&2
+    echo "---- fake Messages API: requests (path, case, reply kind, last 3 messages: role and block types) ----" >&2
     if [ -f "$LIVE_API_LOG" ]; then
-      jq -c '[.path, .case, .reply[0]]' "$LIVE_API_LOG" >&2 || true
+      jq -c '[.path, .case, .reply[0], [(.body.messages // [])[-3:][] | [.role, (if (.content | type) == "string" then ["string"] else [.content[]?.type] end)]]]' "$LIVE_API_LOG" >&2 || true
     fi
   fi
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true

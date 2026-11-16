@@ -37,6 +37,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -69,6 +70,7 @@ from .metrics import Metrics
 from .notes import NoteStore
 from .peer_service import PeerService
 from .plugins import install_plugins
+from .pressure import PressureState
 from .prompts import render_template, resolve_prompt
 from .redact import Redactor
 from .router import DEFAULT_DENY_REASON, SessionInfo, SessionRouter, TurnVetoed
@@ -342,6 +344,8 @@ class SessionManager:
         self._active: dict[str, _Active] = {}
         #: In-memory notes inbox per session (`notes.enabled`); nothing is persisted.
         self._notes: dict[str, NoteStore] = {}
+        #: In-memory pressure policy per session (`pressure.enabled`); the orchestrator re-pushes.
+        self._pressure: dict[str, PressureState] = {}
         self._dispatchers: set[HookDispatcher] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._reaper: asyncio.Task[None] | None = None
@@ -442,12 +446,42 @@ class SessionManager:
         meta = self._read_meta(session_id)
         raise InvalidState(session_id, str(meta.get("state")))
 
+    def inflight_source(self, session_id: str) -> SimpleNamespace:
+        """Router, workdir and tenure start for the in-flight inventory; `InvalidState` unless
+        the session is running."""
+        ctx = self._active.get(session_id)
+        if ctx is None or ctx.router is None or ctx.workdir is None:
+            meta = self._read_meta(session_id)
+            raise InvalidState(session_id, str(meta.get("state")))
+        since = datetime.fromisoformat(str(ctx.meta["created_at"]).replace("Z", "+00:00"))
+        return SimpleNamespace(router=ctx.router, workdir=ctx.workdir, since=since)
+
     def note_store(self, session_id: str) -> NoteStore:
         """The session's notes inbox, created on first use; `InvalidState` unless running."""
         if session_id not in self._active:
             meta = self._read_meta(session_id)
             raise InvalidState(session_id, str(meta.get("state")))
         return self._notes_for(session_id)
+
+    def pressure_state(self, session_id: str) -> PressureState:
+        """The session's pressure state, created on first use; `InvalidState` unless running."""
+        if session_id not in self._active:
+            meta = self._read_meta(session_id)
+            raise InvalidState(session_id, str(meta.get("state")))
+        return self._pressure_for(session_id)
+
+    def pressure_context(self, session_id: str) -> dict[str, Any] | None:
+        """The live context gauge (None when unknown or the session is not running)."""
+        ctx = self._active.get(session_id)
+        if ctx is None or ctx.router is None or ctx.router.context is None:
+            return None
+        return dict(ctx.router.context)
+
+    def _pressure_for(self, session_id: str) -> PressureState:
+        state = self._pressure.get(session_id)
+        if state is None:
+            state = self._pressure[session_id] = PressureState(self.cfg.pressure)
+        return state
 
     def _notes_for(self, session_id: str) -> NoteStore:
         store = self._notes.get(session_id)
@@ -834,6 +868,8 @@ class SessionManager:
         )
         if self.cfg.notes.enabled:
             ctx.router.notes = self._notes_for(ctx.session_id)
+        if self.cfg.pressure.enabled:
+            ctx.router.pressure = self._pressure_for(ctx.session_id)
         if self.usage is not None:
             ctx.router.on_rate_limits = self.usage.offer
         ctx.router.on_claude_session_change = functools.partial(self._on_claude_session_change, ctx)
@@ -1133,8 +1169,10 @@ class SessionManager:
         if self._active.get(ctx.session_id) is ctx:
             del self._active[ctx.session_id]
             self._notes.pop(ctx.session_id, None)
+            self._pressure.pop(ctx.session_id, None)
             if self.metrics is not None:
                 self.metrics.session_closed()
+                self.metrics.pressure_level_remove(ctx.session_id)
 
     def _finish(self, ctx: _Active) -> None:
         """Persist the final metadata and close the event log."""

@@ -28,6 +28,7 @@ CLAUDE_HOOK_EVENTS = (
     "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",
+    "PostToolBatch",
     "Stop",
     "SubagentStart",
     "SubagentStop",

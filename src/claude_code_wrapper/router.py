@@ -57,6 +57,8 @@ from .permissions import (
     PendingPermission,
     PermissionBroker,
 )
+from .pressure import PressureState, live_pct
+from .pressure import render as render_pressure
 from .pty_proc import PtyClosed
 from .redact import Redactor
 from .session import (
@@ -346,6 +348,11 @@ def _relay(stdout: str) -> RelayResponse:
     return {"stdout": stdout, "stderr": "", "exit_code": 0}
 
 
+PRESSURE_OPEN = "<context-pressure>"
+PRESSURE_CLOSE = "</context-pressure>"
+PRESSURE_HEAD = "From the orchestrator: this is an instruction about your context window, not data."
+
+
 def _additional_context(event_name: str, context: str) -> str:
     return json.dumps(
         {"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": context}}
@@ -417,6 +424,8 @@ class SessionRouter(SessionListener):
         self._cfg = cfg
         self.guard = RunawayGuard(cfg.guard)
         self._stop_chain: str | None = None  # turn id whose Stop chain the guard counts
+        #: Background tasks and session crons from the newest main-agent Stop (memory only).
+        self.stop_inventory: dict[str, Any] | None = None
         self.info = SessionInfo.coerce(session_info)
         self._usage = UsageTotals()
         self._last_marker: str | None = None
@@ -467,6 +476,8 @@ class SessionRouter(SessionListener):
         self.peer_inbox: PeerInbox | None = None
         #: The session's notes inbox, set by the manager when `notes.enabled` (memory only).
         self.notes: NoteStore | None = None
+        #: The session's pressure policy state, set by the manager when `pressure.enabled`.
+        self.pressure: PressureState | None = None
         #: Notes delivery throttle: monotonic time of the last delivery and the main-agent tool
         #: results seen since.
         self._notes_last = time.monotonic()
@@ -765,6 +776,7 @@ class SessionRouter(SessionListener):
                 "PreToolUse": self._on_pre_tool_use,
                 "PostToolUse": self._on_post_tool_use,
                 "PostToolUseFailure": self._on_post_tool_use,
+                "PostToolBatch": self._on_post_tool_batch,
                 "Stop": self._on_stop,
                 "SubagentStart": self._on_subagent,
                 "SubagentStop": self._on_subagent,
@@ -985,6 +997,8 @@ class SessionRouter(SessionListener):
         conversation. The previous conversation's per-session state (subagents, link waits, turn
         marker, usage, context) is dropped; `session_cleared` completes the command.
         """
+        if payload.get("source") == "compact":
+            return self._reinject_after_compact()
         current = self._current
         new_id = payload.get("session_id")
         if (
@@ -1023,6 +1037,31 @@ class SessionRouter(SessionListener):
         self.signals.publish("session_cleared", data)
         return _allow()
 
+    def _reinject_after_compact(self) -> RelayResponse:
+        """SessionStart(compact): the policy's `reinject_text` becomes additionalContext.
+
+        Never adopts a session id (compaction keeps it). Renders at L0 with an empty context and
+        resets the stored context. Empty without a policy or text. Memory
+        only; never raises.
+        """
+        try:
+            state = self.pressure
+            pol = state.policy if state is not None else None
+            if state is None or pol is None or not pol.reinject_text:
+                return _allow()
+            # Compaction emptied the window: the gauge is unknown (L0, no values), never stale.
+            self.reset_context()
+            body = render_pressure(pol.reinject_text, 0, {}, pol.thresholds, pol.waiting_on)
+            self._emit("pressure_reinjected", {"chars": len(body)})
+            return {
+                "stdout": _additional_context("SessionStart", body),
+                "stderr": "",
+                "exit_code": 0,
+            }
+        except Exception:  # noqa: BLE001
+            log.exception("pressure re-injection failed")
+            return _allow()
+
     async def _on_compact_hook(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
         """PreCompact emits `compacting` and signals; `compacted` comes from the boundary."""
         if event_name == "PreCompact":
@@ -1038,6 +1077,11 @@ class SessionRouter(SessionListener):
                     "custom_instructions": payload.get("custom_instructions"),
                 },
             )
+            state = self.pressure
+            pol = state.policy if state is not None else None
+            if pol is not None and pol.compact_instructions:
+                # PreCompact stdout is appended to the compaction instructions by Claude Code.
+                return {"stdout": pol.compact_instructions, "stderr": "", "exit_code": 0}
         else:
             self.signals.publish(
                 "post_compact",
@@ -1113,6 +1157,10 @@ class SessionRouter(SessionListener):
                     {"hook": event_name, "keys": keys, "appended": appended, "chars": len(text)},
                 )
                 parts.append(text)
+        return self._context_response(event_name, self._with_pressure(event_name, payload, parts))
+
+    @staticmethod
+    def _context_response(event_name: str, parts: list[str]) -> RelayResponse:
         if not parts:
             return _allow()
         return {
@@ -1120,6 +1168,59 @@ class SessionRouter(SessionListener):
             "stderr": "",
             "exit_code": 0,
         }
+
+    def _with_pressure(
+        self, event_name: str, payload: Mapping[str, Any], parts: list[str]
+    ) -> list[str]:
+        """Append the context pressure frame to `parts` when one is due (main agent only).
+
+        Memory only, like the notes path. Never raises: a failure here must not break a hook.
+        """
+        state = self.pressure
+        if state is None or payload.get("agent_id"):
+            return parts
+        try:
+            pol = state.policy
+            context = self.context
+            level = state.level(context)
+            if self._metrics is not None and pol is not None:
+                self._metrics.pressure_level(self.info.session_id, level)
+            if pol is None:
+                return parts
+            form = state.cadence.due(event_name, level)
+            if form is None or context is None:
+                return parts
+            tpl = pol.texts[f"l{level}"]  # type: ignore[index]
+            body = render_pressure(
+                tpl.full if form == "full" else tpl.short,
+                level,
+                context,
+                pol.thresholds,
+                pol.waiting_on,
+            )
+            state.deliveries += 1
+            self._emit(
+                "pressure_delivered",
+                {
+                    "level": level,
+                    "hook": event_name,
+                    "pct": live_pct(context),
+                    "used_tokens": context.get("used_tokens"),
+                    "form": form,
+                    "handoff_state": pol.handoff_state,
+                },
+            )
+            if self._metrics is not None:
+                self._metrics.pressure_delivered(level, event_name)
+            return [*parts, f"{PRESSURE_OPEN}\n{PRESSURE_HEAD}\n{body}\n{PRESSURE_CLOSE}"]
+        except Exception:  # noqa: BLE001
+            log.exception("context pressure injection failed")
+            return parts
+
+    async def _on_post_tool_batch(
+        self, event_name: str, payload: Mapping[str, Any]
+    ) -> RelayResponse:
+        return self._context_response(event_name, self._with_pressure(event_name, payload, []))
 
     def _deny(
         self, tool_use_id: Any, tool_name: str, reason: str, who: Mapping[str, Any]
@@ -1254,6 +1355,11 @@ class SessionRouter(SessionListener):
         self._resolve_pending_by_terminal(self.permissions.of_agent(None), "deny")
         await self._flush_transcripts()
         await self._await_running_marker()
+        self.stop_inventory = {
+            "background_tasks": _list_or_empty(payload.get("background_tasks")),
+            "session_crons": _list_or_empty(payload.get("session_crons")),
+            "at": now_iso(),
+        }
         active = bool(payload.get("stop_hook_active"))
         if self.guard.loop_tripped:
             if active:
@@ -1282,6 +1388,9 @@ class SessionRouter(SessionListener):
                 claude_session_id=_str_or_none(payload.get("session_id")),
             )
         else:
+            pressured = self._pressure_stop(payload, record)
+            if pressured is not None:
+                return pressured
             held = await self._stop_gate(payload)
             if held is not None:
                 return held
@@ -1310,6 +1419,76 @@ class SessionRouter(SessionListener):
             self._start_idle_runner()
             await self._after_turn(record, event)
         return self._stop_loop_answer() if tripped is not None else _allow()
+
+    def _pressure_stop(
+        self, payload: Mapping[str, Any], record: TurnRecord | None
+    ) -> RelayResponse | None:
+        """Block a Stop of the running turn under context pressure (bounded per turn), or once
+        for the resume check; None lets the Stop go on to the gate. Memory only, never raises."""
+        state = self.pressure
+        pol = state.policy if state is not None else None
+        if state is None or pol is None:
+            return None
+        try:
+            if record is None and not payload.get("agent_id"):
+                record = self.session.stop_target(payload, self._last_marker)
+            if (
+                record is None
+                or record is not self.session.current_turn
+                or record is self._commands_turn
+            ):
+                return None
+            if pol.handoff_state in ("submitted", "accepted"):
+                state.resume_open = False  # the handoff is in: nothing left to resume
+                return None
+            context = self.context
+            level = state.level(context)
+            cfg = self._cfg.pressure
+            if state.resume_open:
+                state.resume_open = False
+                if record.tool_calls == 0 and pol.resume_text:
+                    return self._block_stop(record, payload, level, pol.resume_text, "resume", 1)
+                # the agent worked since the restart: no resume block, the pressure check below
+            if level < 2 or context is None:
+                return None
+            bound = cfg.l2_stop_blocks if level == 2 else cfg.l3_stop_blocks
+            count = state.stop_count(record.turn_id)
+            if count >= bound:
+                return None
+            tpl = pol.texts[f"l{level}"]  # type: ignore[index]
+            reason = render_pressure(tpl.full, level, context, pol.thresholds, pol.waiting_on)
+            return self._block_stop(record, payload, level, reason, "pressure", count + 1)
+        except Exception:  # noqa: BLE001
+            log.exception("context pressure stop gate failed")
+            return None
+
+    def _block_stop(
+        self,
+        record: TurnRecord,
+        payload: Mapping[str, Any],
+        level: int,
+        reason: str,
+        why: str,
+        count: int,
+    ) -> RelayResponse:
+        state = self.pressure
+        if state is not None and why == "pressure":
+            state.note_stop_block(record.turn_id)
+        self._emit(
+            "pressure_stop_blocked",
+            {"turn_id": record.turn_id, "level": level, "count": count, "reason": why},
+        )
+        self._emit(
+            "turn_continued",
+            {
+                "turn_id": record.turn_id,
+                "reason": reason,
+                "stop_hook_active": bool(payload.get("stop_hook_active")),
+            },
+        )
+        if self._metrics is not None:
+            self._metrics.pressure_stop_block(level)
+        return {"stdout": _block_output(reason), "stderr": "", "exit_code": 0}
 
     def _stop_loop_answer(self) -> RelayResponse:
         limit = self.guard.cfg.max_stop_continuations
@@ -1419,6 +1598,11 @@ class SessionRouter(SessionListener):
                 "commands": commands,
             },
         )
+
+    @property
+    def outstanding_subagent_ids(self) -> list[str]:
+        """Ids of the subagents seen in SubagentStart and not yet in SubagentStop."""
+        return sorted(self._subagents)
 
     @property
     def outstanding_subagents(self) -> int:

@@ -21,8 +21,9 @@ from .claude_json import _deep_merge, _load, atomic_write
 
 PROMPT_HOOK_TIMEOUT = 15
 #: The relay's matcher per hook event (default ""). SessionStart is relayed only for `/clear`
-#: (source "clear"): startup, resume and compact SessionStarts never call the relay.
-RELAY_MATCHERS = {"SessionStart": "clear"}
+#: (source "clear": follow the new session id) and compaction (source "compact": re-inject the
+#: pressure policy's state text): startup and resume SessionStarts never call the relay.
+RELAY_MATCHERS = {"SessionStart": "clear|compact"}
 CCW_MCP_ALLOW = "mcp__ccw__command"
 PEERS_ALLOW = ("mcp__ccw__peers", "mcp__ccw__send_message")
 PEERS_DENY = ("SendMessage", "ListAgents")

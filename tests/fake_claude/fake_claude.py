@@ -225,7 +225,9 @@ matcher is matched (re.fullmatch; "" or "*" match all) against the tool name for
 against the source for SessionStart. Commands run via
 `sh -c` with the JSON payload on stdin and CLAUDE_PROJECT_DIR=<cwd>. PreToolUse deny
 is stdout hookSpecificOutput.permissionDecision == "deny" or exit code 2; additionalContext
-from PreToolUse/PostToolUse is written to the transcript as a system line.
+from PreToolUse/PostToolUse/PostToolBatch is written to the transcript as a system line.
+PostToolBatch runs once after each group of consecutive main-agent tool/mcp steps (after the
+PostToolUse hooks, before the next model text or the Stop hook); it has no matcher.
 """
 
 from __future__ import annotations
@@ -638,6 +640,7 @@ class Fake:
                 except subprocess.TimeoutExpired:
                     continue
                 res = {
+                    "stdout": p.stdout.decode(errors="replace"),
                     "code": p.returncode,
                     "stderr": p.stderr.decode(errors="replace").strip(),
                     "json": {},
@@ -984,6 +987,7 @@ class Fake:
             pre = self.run_hooks(
                 "PreCompact", {"trigger": "manual", "custom_instructions": args or None}
             )
+            self.record_precompact(pre)
             if self.block_reason(pre) is not None:
                 outcome = "canceled"
         if outcome != "ok":
@@ -1029,10 +1033,22 @@ class Fake:
         )
         if post_hook:
             self.run_hooks("PostCompact", {"trigger": trigger, "compact_summary": summary})
+        # claude runs SessionStart(compact) after every compaction and injects its context
+        self.context_from(self.run_hooks("SessionStart", {"source": "compact"}, match="compact"))
+
+    def record_precompact(self, results: list[dict]) -> None:
+        """PreCompact stdout is appended to the compaction instructions: log it for assertions."""
+        for r in results:
+            if r.get("stdout", "").strip() and not r["json"]:
+                self.write_line(
+                    {"type": "system", "subtype": "precompact_instructions", "content": r["stdout"]}
+                )
 
     def auto_compact_step(self, spec: dict) -> None:
         start = time.monotonic()
-        self.run_hooks("PreCompact", {"trigger": "auto", "custom_instructions": None})
+        self.record_precompact(
+            self.run_hooks("PreCompact", {"trigger": "auto", "custom_instructions": None})
+        )
         self.write_compaction("auto", int(spec.get("pre_tokens", 100000)), 5000, start)
 
     def prompt_command(self, name: str, args: str, cfg: dict) -> None:
@@ -1080,12 +1096,22 @@ class Fake:
             )
 
     def run_steps(self, steps: list[dict], tokens: int, bg: list[dict], turn: dict) -> bool:
-        """Run steps; False when the turn ended without a Stop (interrupt or raw print)."""
+        """Run steps; False when the turn ended without a Stop (interrupt or raw print).
+
+        A run of consecutive main-agent tool/mcp steps is one tool group: PostToolBatch hooks
+        run once after its last PostToolUse hooks, before the next model text (or the Stop)."""
+        batch_open = False
         for index, step in enumerate(steps):
             if self.interrupted():
                 self.do_interrupt()
                 return False
             self.absorb_queued()
+            main_tool = ("tool" in step and "agent" not in step) or (
+                "mcp" in step and "agent" not in step["mcp"]
+            )
+            if batch_open and not main_tool:
+                self.post_tool_batch()
+            batch_open = main_tool
             if "text" in step:
                 self.assistant_line({"type": "text", "text": step["text"]}, tokens)
                 self.last_text = step["text"]
@@ -1118,7 +1144,12 @@ class Fake:
                 self.auto_compact_step(step["auto_compact"] or {})
             elif "statusline" in step:
                 self.statusline_step(step["statusline"])
+        if batch_open:
+            self.post_tool_batch()
         return True
+
+    def post_tool_batch(self) -> None:
+        self.context_from(self.run_hooks("PostToolBatch", {}))
 
     def statusline_step(self, payload: dict) -> None:
         """Run settings.json `statusLine.command` with `payload` on stdin, its stdout drawn.

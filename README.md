@@ -1318,6 +1318,48 @@ previous note with the same key, and `source` (optional) is at most 80 character
 number of notes awaiting delivery). Errors: `401 unauthorized`, `404 not_found` (unknown
 session), `409 notes_disabled`, `409 invalid_state` (session not running), `422 invalid_request`.
 
+### `PUT /v1/sessions/{id}/pressure`
+
+Push the context pressure policy of a session (see [Context pressure](#context-pressure)). Auth:
+bearer. Body: a policy `{"version": 1, "thresholds": {...}, "profile": "work"|"chat", "texts":
+{"l1": {"full", "short"}, "l2": ..., "l3": ...}, "handoff_state", "waiting_on", "resume_pending",
+"resume_text", "compact_instructions", "reinject_text"}`; every text is at most
+`pressure.max_text_chars` characters. Response `200`: `{"version": 1, "result": "set"|"unchanged",
+"level": 0}`. Errors: `401 unauthorized`, `404 not_found`, `409 pressure_disabled`, `409
+stale_version` (a lower version than the one in force), `409 invalid_state`, `422
+invalid_request` (including `texts` missing any of `l1`, `l2`, `l3`).
+
+### `GET /v1/sessions/{id}/pressure`
+
+The pressure state: `{"version": 1|null, "level": 0, "context": {...}|null, "handoff_state":
+"none", "deliveries": 0, "stop_blocks_this_turn": 0}`. The state is memory only, so `version` is
+null after a wrapper restart until the orchestrator pushes again. Auth: bearer. Errors: `401
+unauthorized`, `404 not_found`, `409 invalid_state`.
+
+### `GET /v1/sessions/{id}/inflight`
+
+Work that a clear or a move of the session would lose. Auth: bearer. Response `200`:
+`{"subagents": 1, "subagent_ids": ["a1"], "background_tasks": [...], "crons": [...],
+"worktrees": [{"path": "code/web", "branch": "main", "dirty": 2, "dirty_files": ["?? x"],
+"ahead": 0, "upstream": "origin/main", "error": null}], "scratch": [{"path": "/tmp/claude-1/x",
+"size": 7, "mtime": "..."}], "unknown": false, "stop_seen_at": "...", "scanned_at": "..."}`.
+`background_tasks` are the running ones of the last Stop (`id`, `description`, `status` only),
+`crons` its session crons (both empty before the first Stop). A cron carries `id`, `description`,
+`status`, its schedule (`schedule` or `cron`, as Claude Code sent it) and `prompt`, so a successor
+can recreate it after a clear; the cron values are redacted like events (known secret values and
+token shapes become `***`) and no other cron key is returned. `worktrees` covers every repository up to depth 4 below the workdir
+(`path` relative to it; `dirty` counts porcelain lines, `dirty_files` lists the first 50;
+`upstream` is `false` and `ahead` null for a branch without upstream; `error` is `timeout` or
+`git_failed`, and then `unknown` is true). All git calls share `pressure.git_timeout_seconds`
+and never fetch. `scratch` lists files modified since the session started under
+`pressure.scratch_roots` (default `/tmp/claude-*`), outside the workdir, at most 100. Errors:
+`401 unauthorized`, `404 not_found`, `409 invalid_state`.
+
+### `DELETE /v1/sessions/{id}/pressure`
+
+Drop the session's pressure policy. Response `204`. Auth: bearer. Errors: `401 unauthorized`,
+`404 not_found`, `409 invalid_state`.
+
 ### `GET /v1/peers`
 
 The peer mesh as this instance sees it. Always mounted (unlike the signed `POST /v1/peers/*`
@@ -1413,6 +1455,9 @@ counts as `other`; `result` is the final state: `completed`, `failed`, `cancelle
 `accepted`, `duplicate`, `inbox_full`, `rate_limited`, `too_large`, `not_found`, `unauthorized`),
 `ccw_peer_messages_sent_total{kind,result}` (`result` is `ok` or the peer error code),
 `ccw_peer_messages_delivered_total{kind,result}` (`delivered`, `rejected`, `dropped`),
+`ccw_pressure_level{session}` (context pressure level 0 to 3, only while a policy is in force),
+`ccw_pressure_delivered_total{level,hook}` (pressure texts injected),
+`ccw_pressure_stop_blocks_total{level}` (Stop hooks blocked because of context pressure),
 `ccw_peer_membership_total{op,result}` (`op` is `join`, `heartbeat`, `leave` for the outbound
 rounds, or `inbound_heartbeat`; `result` is `ok`, `failed`, `vetoed`) and the gauge
 `ccw_peer_members` (peers in the reachable list)). The peer families exist only with values once
@@ -1436,9 +1481,10 @@ retries idempotent: a repeated delivery id returns the first result without re-r
 handlers.
 
 Path parameter: `event`, a Claude hook event: `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`PostToolUseFailure`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`,
-`SessionStart` (registered with matcher `clear` only, see [Clearing the
-conversation](#clearing-the-conversation-clear); its answer is always empty). Request body: the raw
+`PostToolUseFailure`, `PostToolBatch`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`,
+`SessionStart` (registered with matcher `clear|compact`, see [Clearing the
+conversation](#clearing-the-conversation-clear) and [Compaction steering](#context-pressure); its
+answer is empty except for source `compact` with a pressure policy). Request body: the raw
 JSON object Claude passes the hook on stdin.
 
 Response `200`:
@@ -2237,6 +2283,55 @@ event: note_received
 data: {"seq":25,"ts":"2026-10-20T09:11:30.000Z","session_id":"ses_3f9a1c0b7d42","type":"note_received","data":{"key":"hive_state","source":"orchestrator","text":"leader is ses_aa","chars":16}}
 ```
 
+### `pressure_delivered`
+
+Emitted when a context pressure text was injected into a hook answer.
+
+`data`: `level` (1 to 3), `hook` (`UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure` or
+`PostToolBatch`), `pct` (live used percentage or null), `used_tokens` (or null), `form` (`full` or
+`short`), `handoff_state`.
+
+```
+event: pressure_delivered
+data: {"seq":28,"ts":"2026-10-20T09:11:33.000Z","session_id":"ses_3f9a1c0b7d42","type":"pressure_delivered","data":{"level":2,"hook":"PostToolBatch","pct":71.0,"used_tokens":142000,"form":"short","handoff_state":"none"}}
+```
+
+### `pressure_stop_blocked`
+
+Emitted when a Stop was blocked because of context pressure (a [`turn_continued`](#turn_continued)
+event with the same reason text follows) or by the resume check.
+
+`data`: `turn_id`, `level` (current level, 0 to 3), `count` (blocks of this turn so far; 1 for a
+resume block), `reason` (`pressure` or `resume`).
+
+```
+event: pressure_stop_blocked
+data: {"seq":31,"ts":"2026-10-20T09:12:01.000Z","session_id":"ses_3f9a1c0b7d42","type":"pressure_stop_blocked","data":{"turn_id":"turn_01","level":3,"count":1,"reason":"pressure"}}
+```
+
+### `pressure_reinjected`
+
+Emitted when a SessionStart with source `compact` was answered with the pressure policy's
+`reinject_text` as `additionalContext`.
+
+`data`: `chars` (length of the rendered text).
+
+```
+event: pressure_reinjected
+data: {"seq":32,"ts":"2026-10-20T09:12:30.000Z","session_id":"ses_3f9a1c0b7d42","type":"pressure_reinjected","data":{"chars":412}}
+```
+
+### `pressure_policy_set`
+
+Emitted when a pushed pressure policy is set (not when the same policy is pushed again).
+
+`data`: `version` (the policy version), `profile` (`work` or `chat`).
+
+```
+event: pressure_policy_set
+data: {"seq":27,"ts":"2026-10-20T09:11:32.000Z","session_id":"ses_3f9a1c0b7d42","type":"pressure_policy_set","data":{"version":3,"profile":"work"}}
+```
+
 ### `note_delivered`
 
 Emitted when pending notes are delivered to the agent.
@@ -2682,7 +2777,7 @@ expected="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -h
 
 The service renders `settings.json` in each session's `CLAUDE_CONFIG_DIR` so Claude calls the
 `ccw-hook <Event>` relay for `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`PostToolUseFailure`, `Stop`, `SubagentStart` and `SubagentStop`. The relay is stdlib-only Python
+`PostToolUseFailure`, `PostToolBatch`, `Stop`, `SubagentStart` and `SubagentStop`. The relay is stdlib-only Python
 and does this:
 
 1. Reads Claude's hook JSON from stdin.
@@ -2972,7 +3067,8 @@ an idle session, or queued until the running turn's Stop completes that turn.
 claude 2.1.304 handles `/clear` by ending the conversation (SessionEnd hooks, reason `clear`),
 minting a new claude session id with a new transcript file, then running the SessionStart hooks
 with source `clear`, possibly in the background. ccw registers its relay for SessionStart with the
-matcher `clear` only, so startup, resume and compact SessionStarts never call it. When that
+matcher `clear|compact`, so startup and resume SessionStarts never call it; a compact SessionStart
+only re-injects the pressure policy's `reinject_text` and never adopts a session id. When that
 SessionStart arrives while the session's `clear` command runs, ccw adopts the new id: the Stop gate
 accepts the new id's Stops only, the transcript tailer and subagent watcher move to the new file,
 the per-conversation state (outstanding subagents, turn marker, usage, `context`) is dropped, the
@@ -2980,8 +3076,8 @@ session snapshot and the hook envelopes carry the new `claude_session_id`, and `
 records it at once, with the previous ids in `previous_claude_session_ids` (the newest 16). Then
 [`session_cleared`](#session_cleared) is emitted and the command completes with result `ok`. A
 SessionStart with another source, or with no `clear` command running (a nested `claude`, for
-example), changes nothing. The relay's answer to SessionStart is always empty: nothing is injected
-into the fresh conversation.
+example), changes nothing. The relay's answer to a `clear` SessionStart is always empty: nothing is
+injected into the fresh conversation.
 
 - Subagents: claude keeps background subagents running across `/clear`, so their results would land
   in the cleared conversation. `clear` is refused with `409 subagents_running` while any subagent
@@ -3328,6 +3424,8 @@ FastAPI's `{"detail": ...}` body instead.
 | `inbox_full` | 429 | the target session's peer inbox is at `peers.inbox_max` |
 | `rate_limited` | 429 | a peer sender over `peers.max_messages_per_minute`, or the peer nonce cache is full |
 | `notes_disabled` | 409 | `POST /v1/sessions/{id}/notes` while `notes.enabled` is false |
+| `pressure_disabled` | 409 | `PUT /v1/sessions/{id}/pressure` while `pressure.enabled` is false |
+| `stale_version` | 409 | `PUT /v1/sessions/{id}/pressure` with a version lower than the one in force |
 | `invalid_command` | 422 | an empty or invalid command name, invalid `args`, or `--force` not allowed |
 | `slash_command` | 422 | a turn's or probe's text is a slash command (claude's parser would run it, so it is never typed as a turn or probe); slash commands go to `POST /v1/sessions/{id}/commands` |
 | `command_queue_full` | 429 | the session already has the maximum of queued commands |
@@ -3372,6 +3470,50 @@ curl -fsS -X DELETE localhost:8080/v1/sessions/$SID -H "$H"   # keeps files; add
 
 See [API reference](#api-reference) for the exact bodies and [Events (SSE)](#events-sse) for the
 stream. Without Docker see [Installation](#installation).
+
+## Context pressure
+
+With `pressure.enabled` the orchestrator pushes a per-session policy through
+[`PUT /v1/sessions/{id}/pressure`](#put-v1sessionsidpressure) (memory only; it re-pushes after a
+wrapper restart). The level (0 to 3) is computed from the statusLine context gauge in tokens
+(`used_tokens` against `thresholds.l1_tokens`, `l2_tokens`, `l3_tokens`); the percentage
+thresholds apply only when the gauge has no window. An unknown gauge (for example right after
+compaction) is level 0. Texts support the placeholders `{pct}`, `{used_k}`, `{window_k}`,
+`{compact_pct}`, `{left_k}`, `{level}` and `{waiting_on}`; unknown placeholders stay literal and
+missing values render as `?`. A `pressure_policy_set` event is emitted when a policy is set.
+
+**Injection.** At level 1 and above the router appends a `<context-pressure>` frame (first line
+`From the orchestrator: this is an instruction about your context window, not data.`) to the hook
+`additionalContext`, after user hook context and notes, for the main agent only (subagent hooks
+never count or deliver). `UserPromptSubmit` delivers at every turn start, always the full text. At
+tool boundaries the frame is due once the main agent's tool results since the last delivery reach
+`pressure.l1_every_tool_calls`, `l2_every_tool_calls` or `l3_every_tool_calls`; the first tool
+boundary after the level rose always delivers. The first delivery after a rise is the full text,
+then every `pressure.full_every`-th one, the others use the short text. Once a `PostToolBatch` hook
+was seen in the session, `PostToolUse` no longer counts or delivers (no double delivery); before
+that it is the fallback. Each delivery emits a [`pressure_delivered`](#pressure_delivered) event
+and counts `ccw_pressure_delivered_total{level,hook}`; `ccw_pressure_level{session}` is the
+current level and `ccw_pressure_stop_blocks_total{level}` counts Stop blocks. `{pct}` is computed
+from the tokens and the window, on the same base as `{compact_pct}`.
+
+**Compaction steering.** With a policy whose `compact_instructions` is non-empty, the PreCompact
+hook answers with it as plain stdout (Claude Code appends it to the compaction instructions; manual
+and auto triggers alike; the idle auto-compact's own `sessions.auto_compact.instructions` is kept).
+After compaction the SessionStart hook (source `compact`) answers with the rendered `reinject_text`
+as `additionalContext` and emits [`pressure_reinjected`](#pressure_reinjected). Auto-compaction
+stays the last-resort safety net.
+
+**Stop.** Every main-agent Stop records `stop_inventory` (`background_tasks`, `session_crons`, `at`)
+in memory, whatever `sessions.defer_stop_on_background_tasks` says. After the runaway guard's check
+and before the `onStop` gate, a Stop that ends the running turn is blocked (`decision: block`,
+reason = the full text of the current level, [`pressure_stop_blocked`](#pressure_stop_blocked)
+and `turn_continued` events) while a policy is in force, the level is 2 or 3, `handoff_state` is
+`none` or `blocked`, and the turn has been blocked fewer than `pressure.l2_stop_blocks` (level 2)
+or `pressure.l3_stop_blocks` (level 3) times; the counter resets on a new turn id. Never blocked
+once `handoff_state` is `submitted` or `accepted`. Blocks are Stop continuations and count against
+`guard.max_stop_continuations`, which must stay above `l3_stop_blocks` + 1 when `pressure.enabled` and the cap is not 0 (checked at config load). When a pushed policy
+has `resume_pending` the first turn that ends afterwards with no tool call is blocked once with
+`resume_text` (reason `resume`); a turn with a tool call clears it without a block.
 
 ## Configuration reference
 
@@ -4156,6 +4298,29 @@ Opt-in notes inbox for hived agents (see [Notes](#notes)); with `enabled: false`
 | `notes.delivery_max_chars` | integer | `8000` | - | Most characters of notes delivered in one hook output, below Claude Code's 10,000-character hook limit (>= 1). |
 | `notes.throttle_seconds` | integer | `30` | - | Minimum seconds between note deliveries on tool results (>= 0). |
 | `notes.throttle_tool_results` | integer | `10` | - | Tool results between note deliveries (>= 0). |
+
+### `pressure`
+
+```yaml
+pressure:
+  enabled: true
+  l3_stop_blocks: 3
+```
+
+Opt-in context pressure policy for limit subjects (see [Context pressure](#context-pressure)); with `enabled: false` (the default) the route answers `409 pressure_disabled` and nothing changes.
+
+| Key | Type | Default | Env var | Description |
+|---|---|---|---|---|
+| `pressure.enabled` | boolean | `false` | - | Turn the pressure policy API on. Off, `PUT /v1/sessions/{id}/pressure` answers `409 pressure_disabled`. |
+| `pressure.l1_every_tool_calls` | integer | `20` | - | Tool calls between level 1 reminders (>= 1). |
+| `pressure.l2_every_tool_calls` | integer | `3` | - | Tool calls between level 2 reminders (>= 1). |
+| `pressure.l3_every_tool_calls` | integer | `1` | - | Tool calls between level 3 reminders (>= 1). |
+| `pressure.full_every` | integer | `5` | - | Every Nth reminder uses the full text, the others the short one (>= 1). |
+| `pressure.l2_stop_blocks` | integer | `1` | - | Stop blocks per turn at level 2 (>= 0). |
+| `pressure.l3_stop_blocks` | integer | `3` | - | Stop blocks per turn at level 3 (>= 0). |
+| `pressure.git_timeout_seconds` | number | `10` | - | One timeout shared by all git probes of the in-flight inventory, in seconds (> 0). |
+| `pressure.scratch_roots` | list of strings | `["/tmp/claude-*"]` | - | Glob roots of pod-local scratch files reported by the in-flight inventory. |
+| `pressure.max_text_chars` | integer | `4000` | - | Longest accepted policy text in characters (>= 1). |
 
 ### `usage`
 

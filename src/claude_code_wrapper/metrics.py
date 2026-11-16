@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 from collections.abc import Mapping
 from typing import Any
@@ -122,6 +123,21 @@ class Metrics:
         self._peer_members = Gauge(
             "ccw_peer_members", "Peers currently in the reachable list.", registry=reg
         )
+        self._pressure_level = Gauge(
+            "ccw_pressure_level", "Context pressure level (0-3).", ["session"], registry=reg
+        )
+        self._pressure_delivered = Counter(
+            "ccw_pressure_delivered_total",
+            "Context pressure texts injected into hook answers.",
+            ["level", "hook"],
+            registry=reg,
+        )
+        self._pressure_stop_blocks = Counter(
+            "ccw_pressure_stop_blocks_total",
+            "Stop hooks blocked because of context pressure.",
+            ["level"],
+            registry=reg,
+        )
         self._tools_seen: set[str] = set()
 
     # ------------------------------------------------------------------ sessions
@@ -198,6 +214,21 @@ class Metrics:
     def compaction(self, trigger: str) -> None:
         """`manual`, `auto` or `unknown` (anything else counts as unknown)."""
         self._compactions.labels(trigger if trigger in ("manual", "auto") else "unknown").inc()
+
+    # ------------------------------------------------------------------ context pressure
+
+    def pressure_level(self, session: str, level: int) -> None:
+        self._pressure_level.labels(session).set(level)
+
+    def pressure_level_remove(self, session: str) -> None:
+        with contextlib.suppress(KeyError):
+            self._pressure_level.remove(session)
+
+    def pressure_delivered(self, level: int, hook: str) -> None:
+        self._pressure_delivered.labels(str(level), hook).inc()
+
+    def pressure_stop_block(self, level: int) -> None:
+        self._pressure_stop_blocks.labels(str(level)).inc()
 
     # ------------------------------------------------------------------ peers
 

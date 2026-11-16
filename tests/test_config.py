@@ -566,3 +566,45 @@ def test_additional_directories_must_be_absolute(tmp_path):
     cfg = load_config(write(tmp_path, "claude: {additional_directories: [/data]}\n"))
     assert cfg.claude.additional_directories == ["/data"]
     assert Config().claude.additional_directories is None
+
+
+def test_pressure_defaults():
+    p = Config.model_validate({"server": {"auth_token": "tok-" + "a" * 20}}).pressure
+    assert p.model_dump() == {
+        "enabled": False,
+        "l1_every_tool_calls": 20,
+        "l2_every_tool_calls": 3,
+        "l3_every_tool_calls": 1,
+        "full_every": 5,
+        "l2_stop_blocks": 1,
+        "l3_stop_blocks": 3,
+        "git_timeout_seconds": 10,
+        "scratch_roots": ["/tmp/claude-*"],  # noqa: S108
+        "max_text_chars": 4000,
+    }
+
+
+def _guard_pressure(stop, l3):
+    return Config.model_validate(
+        {
+            "server": {"auth_token": "tok-" + "a" * 20},
+            "guard": {"max_stop_continuations": stop},
+            "pressure": {"enabled": True, "l3_stop_blocks": l3},
+        }
+    )
+
+
+def test_guard_stop_continuations_must_exceed_l3_stop_blocks():
+    from pydantic import ValidationError
+
+    _guard_pressure(0, 3)  # off stays valid
+    _guard_pressure(5, 3)
+    for stop in (1, 4):
+        with pytest.raises(ValidationError, match="l3_stop_blocks"):
+            _guard_pressure(stop, 3)
+
+
+def test_guard_stop_continuations_unchecked_when_pressure_disabled():
+    Config.model_validate(
+        {"server": {"auth_token": "tok-" + "a" * 20}, "guard": {"max_stop_continuations": 3}}
+    )
