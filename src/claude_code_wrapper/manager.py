@@ -47,7 +47,7 @@ from .bootstrap import (
     atomic_write,
     copy_config_files,
     ensure_config_dir,
-    ensure_skills_dir,
+    link_shared_dirs,
     seed_claude_json,
     write_instructions,
 )
@@ -699,7 +699,13 @@ class SessionManager:
         await self._step(
             ctx, "copy_config_files", copy_config_files, ctx.config_dir, self.cfg.claude
         )
-        await self._step(ctx, "ensure_skills_dir", ensure_skills_dir, ctx.config_dir)
+        await self._step(
+            ctx,
+            "link_shared_dirs",
+            link_shared_dirs,
+            ctx.config_dir,
+            self.cfg.paths.shared_claude_dir,
+        )
         await self._step(ctx, "install_plugins", self._install_plugins, ctx)
         # A tamper made while no session ran must be undone before claude reads the file.
         self.check_managed_settings("boot")

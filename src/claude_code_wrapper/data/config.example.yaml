@@ -20,6 +20,9 @@ paths:
   # Managed-settings file ccw writes at start (PreToolUse/PermissionRequest relay, managed mods
   # only); its directory must be dedicated. Unwritable: the relay stays in settings.json.
   managed_settings: /etc/claude-code/managed-settings.json
+  # Directory shared by the pods of a session: <config>/skills and <config>/rules become symlinks
+  # into it. Unset keeps a plain per-session skills dir.
+  # shared_claude_dir: /claude
 
 claude:
   binary: claude             # claude executable

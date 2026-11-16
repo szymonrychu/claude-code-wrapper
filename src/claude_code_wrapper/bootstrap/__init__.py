@@ -1,4 +1,4 @@
-from .claude_json import atomic_write, ensure_config_dir, ensure_skills_dir, seed_claude_json
+from .claude_json import atomic_write, ensure_config_dir, link_shared_dirs, seed_claude_json
 from .errors import BootstrapError
 from .instructions import MARKER, copy_config_files, write_instructions
 
@@ -8,7 +8,7 @@ __all__ = [
     "atomic_write",
     "copy_config_files",
     "ensure_config_dir",
-    "ensure_skills_dir",
+    "link_shared_dirs",
     "seed_claude_json",
     "write_instructions",
 ]
