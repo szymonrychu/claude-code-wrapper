@@ -104,6 +104,9 @@ never put it behind a public ingress.
 - `claude.main_agent_only_tools` denies matching tools to subagents in PreToolUse. This is a
   best-effort guard, not a security boundary: subagents share the pod and trust domain with the
   main agent (their Bash can read the same environment, for example `ORCH_AGENT_TOKEN`).
+  `claude.subagent_allowed_tools` lists `fnmatch` globs that exempt matching tools from that gate
+  (a read exemption for subagents); the gate stays fail-closed: a tool is denied unless an
+  allowed glob matches. The exemption never opens `mcp__ccw__*` or the native peer tools.
 - With `peers.enabled`, the shared peer token is one trust domain: any holder can push prompts into
   the agents of every instance and claim any sender. See the trust model in
   [Peer messaging](#peer-messaging).
@@ -3629,6 +3632,7 @@ claude:
 | `claude.passthrough_env_exclude` | list | `[]` | - | List of `fnmatch` patterns removing names matched by `claude.passthrough_env`, for example `["*_SECRET*", "AWS_*"]`. |
 | `claude.secret_env` | list | `[]` | - | List of exact env var names (`[A-Z_][A-Z0-9_]*`) whose values are secret whatever the name looks like. Only the claude child gets them (through `claude.passthrough_env` or `claude.env.extra`; listing a name does not select it): web-terminal shells, git, `init.setup_commands`, the global and per-workdir `mise` runs and plugin installs never do. Their values (from the service env, `claude.env.extra` and a create override's `extra`) are redacted by value at any length, on top of the name-pattern redaction, in events, screen tails, hook output, turn records, logs and API responses; a listed `extra` name is masked in `GET /v1/config` and session views and never stored in `session.json`. |
 | `claude.main_agent_only_tools` | list | `[]` | - | List of `fnmatch` globs (case-sensitive) of tool names that PreToolUse denies when the call comes from a subagent (hook payload carries `agent_id`), for example `["mcp__any-mcp__orchestrator_*"]`. Main-agent calls pass. Best-effort guard, not a security boundary: subagents share the pod and trust domain with the main agent. |
+| `claude.subagent_allowed_tools` | list | `[]` | - | List of `fnmatch` globs (case-sensitive) of tool names a subagent may call although `claude.main_agent_only_tools` matches them. Only that gate is affected: `mcp__ccw__*` and native peer tools stay denied for subagents. Same best-effort caveat. |
 | `claude.permissions.allow` | list | `[]` | - | List of allow rules, for example `Bash(git status:*)`. |
 | `claude.permissions.deny` | list | `["EnterPlanMode", "ExitPlanMode"]` | - | List of deny rules. Plan-mode tools are denied by default. |
 | `claude.additional_directories` | list or null | `null` | - | Absolute directories bypass sessions may write to besides their workdir. With `claude.permission_mode: bypassPermissions` the service writes `permissions.blockWritesOutsideWorkingDirectories: true` and `permissions.additionalDirectories` (this list, or `null` for `paths.workdir_root`, `/tmp` and the session's `CLAUDE_CONFIG_DIR`) to `settings.json`; in other modes neither key is written. `claude.settings` is merged after, so it can lift the fence. |
