@@ -242,6 +242,9 @@ class ClaudeConfig(_Model):
     #: and their values are redacted everywhere (no length floor).
     secret_env: list[str] = Field(default_factory=list)
     main_agent_only_tools: list[str] = Field(default_factory=list)
+    #: fnmatch globs of tools a subagent may call although `main_agent_only_tools` matches them
+    #: (a read exemption). Never opens `mcp__ccw__*` or the native peer tools.
+    subagent_allowed_tools: list[str] = Field(default_factory=list)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     #: With `permission_mode: bypassPermissions`, the directories writes may reach besides the
     #: session workdir; None means workdir_root, /tmp and the session config dir.

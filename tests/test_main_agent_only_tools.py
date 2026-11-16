@@ -10,16 +10,22 @@ from pydantic import ValidationError
 from test_router import Harness
 
 from claude_code_wrapper.config import Config
+from claude_code_wrapper.router import (
+    CCW_SUBAGENT_DENY_REASON,
+    CCW_TOOL_PREFIX,
+    MAIN_AGENT_ONLY_DENY_REASON,
+)
 
 TOOL = "mcp__any-mcp__orchestrator_handover"
 README = Path(__file__).resolve().parent.parent / "README.md"
 
 
-def make(tmp_path, globs):
+def make(tmp_path, globs, allowed=None):
     h = Harness(tmp_path)
-    h.router._cfg = h.cfg.model_copy(
-        update={"claude": h.cfg.claude.model_copy(update={"main_agent_only_tools": globs})}
-    )
+    upd = {"main_agent_only_tools": globs}
+    if allowed is not None:
+        upd["subagent_allowed_tools"] = allowed
+    h.router._cfg = h.cfg.model_copy(update={"claude": h.cfg.claude.model_copy(update=upd)})
     return h
 
 
@@ -72,3 +78,49 @@ def test_readme_documents_best_effort():
     trust = text.split("## Trust model", 1)[1].split("\n## ", 1)[0]
     assert "main_agent_only_tools" in trust
     assert "best-effort" in trust and "not a security boundary" in trust
+
+
+MAIN_ONLY = ["mcp__any-mcp__orchestrator_*"]
+HISTORY = "mcp__any-mcp__orchestrator_history_get"
+PATCH = "mcp__any-mcp__orchestrator_session_patch"
+
+
+async def test_subagent_allowed_tool_passes(tmp_path):
+    h = make(tmp_path, MAIN_ONLY, [HISTORY])
+    r = await call(h, HISTORY, agent_id="ag1")
+    assert r["stdout"] == "" and not h.events("tool_denied")
+    await h.router.close()
+
+
+async def test_subagent_other_tool_still_denied(tmp_path):
+    h = make(tmp_path, MAIN_ONLY, [HISTORY])
+    r = await call(h, PATCH, agent_id="ag1")
+    out = json.loads(r["stdout"])["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
+    assert out["permissionDecisionReason"] == MAIN_AGENT_ONLY_DENY_REASON
+    await h.router.close()
+
+
+async def test_main_agent_unaffected(tmp_path):
+    h = make(tmp_path, MAIN_ONLY, [HISTORY])
+    for tool in (HISTORY, PATCH):
+        r = await call(h, tool)
+        assert r["stdout"] == ""
+    assert not h.events("tool_denied")
+    await h.router.close()
+
+
+async def test_allowed_list_does_not_open_ccw_tools(tmp_path):
+    ccw = CCW_TOOL_PREFIX + "command"
+    h = make(tmp_path, MAIN_ONLY, [ccw])
+    r = await call(h, ccw, agent_id="ag1")
+    out = json.loads(r["stdout"])["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
+    assert out["permissionDecisionReason"] == CCW_SUBAGENT_DENY_REASON
+    await h.router.close()
+
+
+def test_allowed_key_defaults_empty_and_validates():
+    assert Config().claude.subagent_allowed_tools == []
+    with pytest.raises(ValidationError):
+        Config.model_validate({"claude": {"subagent_allowed_tools": "x"}})

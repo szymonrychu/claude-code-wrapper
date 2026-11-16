@@ -119,6 +119,12 @@ STOP_MARKER_POLL_SECONDS = 0.05
 PRIORITY_IDS_MAX = 256
 
 CCW_TOOL_PREFIX = "mcp__ccw__"
+
+
+def _glob_match(name: str, globs: list[str]) -> bool:
+    return any(fnmatch.fnmatchcase(name, g) for g in globs)
+
+
 MAIN_AGENT_ONLY_DENY_REASON = (
     "this tool is main agent only (claude.main_agent_only_tools); subagents cannot call it."
 )
@@ -1252,8 +1258,10 @@ class SessionRouter(SessionListener):
             gate_reason = NATIVE_PEER_DENY_REASON
         elif tool_name.startswith(CCW_TOOL_PREFIX) and payload.get("agent_id"):
             gate_reason = CCW_SUBAGENT_DENY_REASON
-        elif payload.get("agent_id") and any(
-            fnmatch.fnmatchcase(tool_name, g) for g in self._cfg.claude.main_agent_only_tools
+        elif (
+            payload.get("agent_id")
+            and _glob_match(tool_name, self._cfg.claude.main_agent_only_tools)
+            and not _glob_match(tool_name, self._cfg.claude.subagent_allowed_tools)
         ):
             gate_reason = MAIN_AGENT_ONLY_DENY_REASON
         if gate_reason is not None:
