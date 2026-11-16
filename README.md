@@ -1452,6 +1452,9 @@ counts as `other`; `result` is the final state: `completed`, `failed`, `cancelle
 `accepted`, `duplicate`, `inbox_full`, `rate_limited`, `too_large`, `not_found`, `unauthorized`),
 `ccw_peer_messages_sent_total{kind,result}` (`result` is `ok` or the peer error code),
 `ccw_peer_messages_delivered_total{kind,result}` (`delivered`, `rejected`, `dropped`),
+`ccw_pressure_level{session}` (context pressure level 0 to 3, only while a policy is in force),
+`ccw_pressure_delivered_total{level,hook}` (pressure texts injected),
+`ccw_pressure_stop_blocks_total{level}` (Stop hooks blocked because of context pressure),
 `ccw_peer_membership_total{op,result}` (`op` is `join`, `heartbeat`, `leave` for the outbound
 rounds, or `inbound_heartbeat`; `result` is `ok`, `failed`, `vetoed`) and the gauge
 `ccw_peer_members` (peers in the reachable list)). The peer families exist only with values once
