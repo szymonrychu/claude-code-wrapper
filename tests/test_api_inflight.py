@@ -50,7 +50,7 @@ def test_inflight_route_shape(tmp_path: Path) -> None:
     stub.router.outstanding_subagent_ids = ["ag1"]
     stub.router.stop_inventory = {
         "background_tasks": [{"id": "b1", "status": "running"}, {"id": "b2", "status": "done"}],
-        "session_crons": [{"id": "c1"}],
+        "session_crons": [{"id": "c1", "schedule": "* * * * *", "prompt": "p", "x": 1}],
         "at": "2026-01-01T00:00:00.000Z",
     }
     r = client.get(URL, headers=H)
@@ -69,7 +69,7 @@ def test_inflight_route_shape(tmp_path: Path) -> None:
     }
     assert body["subagents"] == 1 and body["subagent_ids"] == ["ag1"]
     assert [t["id"] for t in body["background_tasks"]] == ["b1"]
-    assert body["crons"] == [{"id": "c1"}]
+    assert body["crons"] == [{"id": "c1", "schedule": "* * * * *", "prompt": "p"}]
     assert body["stop_seen_at"] == "2026-01-01T00:00:00.000Z" and body["scanned_at"]
     assert body["unknown"] is False
 

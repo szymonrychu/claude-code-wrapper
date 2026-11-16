@@ -1343,8 +1343,11 @@ Work that a clear or a move of the session would lose. Auth: bearer. Response `2
 "worktrees": [{"path": "code/web", "branch": "main", "dirty": 2, "dirty_files": ["?? x"],
 "ahead": 0, "upstream": "origin/main", "error": null}], "scratch": [{"path": "/tmp/claude-1/x",
 "size": 7, "mtime": "..."}], "unknown": false, "stop_seen_at": "...", "scanned_at": "..."}`.
-`background_tasks` are the running ones of the last Stop, `crons` its session crons (both empty
-before the first Stop). `worktrees` covers every repository up to depth 4 below the workdir
+`background_tasks` are the running ones of the last Stop (`id`, `description`, `status` only),
+`crons` its session crons (both empty before the first Stop). A cron carries `id`, `description`,
+`status`, its schedule (`schedule` or `cron`, as Claude Code sent it) and `prompt`, so a successor
+can recreate it after a clear; the cron values are redacted like events (known secret values and
+token shapes become `***`) and no other cron key is returned. `worktrees` covers every repository up to depth 4 below the workdir
 (`path` relative to it; `dirty` counts porcelain lines, `dirty_files` lists the first 50;
 `upstream` is `false` and `ahead` null for a branch without upstream; `error` is `timeout` or
 `git_failed`, and then `unknown` is true). All git calls share `pressure.git_timeout_seconds`

@@ -11,6 +11,7 @@ from pathlib import Path
 from claude_code_wrapper import inflight
 from claude_code_wrapper.config import PressureConfig
 from claude_code_wrapper.inflight import build_inflight, scan_scratch, scan_worktrees
+from claude_code_wrapper.redact import Redactor
 
 ENV = {
     **os.environ,
@@ -308,7 +309,24 @@ async def test_background_tasks_and_crons_whitelisted(tmp_path):
         FakeRouter(inv), tmp_path, hour_ago(), PressureConfig(scratch_roots=[])
     )
     assert out["background_tasks"] == [{"id": "b1", "status": "running", "description": "d"}]
-    assert out["crons"] == [{"id": "c1", "description": "nightly"}]
+    assert out["crons"] == [
+        {"id": "c1", "description": "nightly", "prompt": "do x", "cron": "* * * * *"}
+    ]
+
+
+async def test_cron_prompt_is_redacted_and_other_keys_dropped(tmp_path):
+    marker = "CANARY-cron-secret-value-123"
+    router = FakeRouter(
+        {
+            "session_crons": [
+                {"id": "c1", "schedule": "0 9 * * *", "prompt": f"use {marker} now", "env": "x"}
+            ]
+        }
+    )
+    router._redactor = Redactor([marker])
+    out = await build_inflight(router, tmp_path, hour_ago(), PressureConfig(scratch_roots=[]))
+    assert out["crons"] == [{"id": "c1", "schedule": "0 9 * * *", "prompt": "use *** now"}]
+    assert marker not in repr(out)
 
 
 async def test_find_repos_deadline_marks_unknown_even_with_no_repos(tmp_path):

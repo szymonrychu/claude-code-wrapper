@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.timeutil import iso, now_iso
 
 GIT = "git"
@@ -202,10 +203,16 @@ async def scan_scratch(
     return await asyncio.to_thread(_scan_scratch, roots, since, deadline, exclude)
 
 
-def _slim(item: Any) -> dict[str, Any]:
-    """Whitelist id, description and status: task text and commands are never output."""
+_TASK_KEYS = ("id", "description", "status")
+#: A cron also keeps its schedule (`schedule` or `cron`, whichever Claude Code sent) and prompt:
+#: the successor after a clear must recreate it. Every other key stays dropped.
+_CRON_KEYS = (*_TASK_KEYS, "schedule", "cron", "prompt")
+
+
+def _slim(item: Any, keys: tuple[str, ...] = _TASK_KEYS) -> dict[str, Any]:
+    """Whitelist `keys`: task text and commands are never output."""
     src = item if isinstance(item, dict) else {}
-    return {k: src[k] for k in ("id", "description", "status") if k in src}
+    return {k: src[k] for k in keys if k in src}
 
 
 async def build_inflight(router: Any, workdir: Path, since: datetime, cfg: Any) -> dict[str, Any]:
@@ -221,11 +228,15 @@ async def build_inflight(router: Any, workdir: Path, since: datetime, cfg: Any) 
         scan_worktrees(workdir, cfg.git_timeout_seconds),
         scan_scratch(cfg.scratch_roots, since, cfg.git_timeout_seconds, exclude=workdir),
     )
+    redactor = getattr(router, "_redactor", None) or Redactor()
+    crons = [
+        redactor.redact_obj(_slim(c, _CRON_KEYS)) for c in inventory.get("session_crons") or []
+    ]
     return {
         "subagents": len(ids),
         "subagent_ids": ids,
         "background_tasks": [_slim(t) for t in tasks],
-        "crons": [_slim(c) for c in inventory.get("session_crons") or []],
+        "crons": crons,
         "worktrees": worktrees,
         "scratch": scratch,
         "unknown": scratch_incomplete
