@@ -3,7 +3,9 @@
 import contextlib
 import copy
 import json
+import logging
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,8 @@ from typing import Any
 from claude_code_wrapper.config import ClaudeConfig
 
 from .errors import BootstrapError
+
+log = logging.getLogger(__name__)
 
 
 def ensure_config_dir(config_dir: str | Path) -> Path:
@@ -20,11 +24,47 @@ def ensure_config_dir(config_dir: str | Path) -> Path:
     return path
 
 
-def ensure_skills_dir(config_dir: str | Path) -> Path:
-    """Create <config_dir>/skills so Claude Code watches it from session start."""
-    path = Path(config_dir) / "skills"
-    path.mkdir(mode=0o700, exist_ok=True)
-    return path
+SHARED_NAMES = ("skills", "rules")
+
+
+def _adopt_dir(source: Path, target: Path) -> None:
+    """Move the entries of a real directory into `target`; a target entry wins a name clash."""
+    for entry in source.iterdir():
+        dest = target / entry.name
+        if os.path.lexists(dest):
+            log.warning("shared dir: %s kept, local %s dropped", dest, entry)
+            continue
+        shutil.move(str(entry), str(dest))
+    shutil.rmtree(source)
+
+
+def link_shared_dirs(config_dir: str | Path, shared: str | Path | None) -> list[Path]:
+    """Link `<config_dir>/skills` and `rules` to `<shared>/...` so Claude Code watches them.
+
+    With `shared` None only `<config_dir>/skills` is created (0700), so Claude Code watches it
+    from session start. Idempotent: run by create and by resume.
+    """
+    config_dir = Path(config_dir)
+    if shared is None:
+        path = config_dir / "skills"
+        path.mkdir(mode=0o700, exist_ok=True)
+        return [path]
+    links: list[Path] = []
+    for name in SHARED_NAMES:
+        target = Path(shared) / name
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        link = config_dir / name
+        if link.is_symlink():
+            if link.resolve() != target.resolve():
+                link.unlink()
+        elif link.is_dir():
+            _adopt_dir(link, target)
+        elif os.path.lexists(link):
+            raise BootstrapError(f"{link} exists and is not a directory or symlink")
+        if not os.path.lexists(link):
+            link.symlink_to(target)
+        links.append(link)
+    return links
 
 
 def atomic_write(path: Path, data: str, mode: int = 0o600) -> None:

@@ -83,7 +83,7 @@ STEP_FUNCS = (
     "seed_claude_json",
     "write_instructions",
     "copy_config_files",
-    "ensure_skills_dir",
+    "link_shared_dirs",
     "install_plugins",
     "render_settings",
     "build_env",

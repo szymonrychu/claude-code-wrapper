@@ -141,8 +141,16 @@ class PathsConfig(_Model):
     sessions_root: str = "/sessions"
     #: The managed-settings file ccw writes; its parent dir is dedicated to it.
     managed_settings: str = "/etc/claude-code/managed-settings.json"
+    #: Directory shared by all pods of a session; `<config>/skills` and `<config>/rules` are
+    #: symlinked into it. `scripts` is used in place. None keeps a plain per-session skills dir.
+    shared_claude_dir: str | None = None
 
     _abs = field_validator("workdir_root", "sessions_root", "managed_settings")(_absolute)
+
+    @field_validator("shared_claude_dir")
+    @classmethod
+    def _shared_abs(cls, value: str | None) -> str | None:
+        return None if value is None else _absolute(value)
 
     @field_validator("managed_settings")
     @classmethod
