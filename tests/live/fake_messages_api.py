@@ -8,7 +8,8 @@ scripted by markers in the conversation's newest user text:
   to answer with.
 
 First request of a case (tools offered, no tool_result yet): a `tool_use` of LIVE-TOOL, or the
-text `done <name>` when the case has no tool. After the tool_result: the text `done <name>`.
+text `done <name>` when the case has no tool. After the tool_result (in any user message since
+the last assistant reply, as hook context may follow it): the text `done <name>`.
 Requests without a case marker (title or topic side requests) get the text `ok`.
 
 Every request is appended to the JSON-lines log (argv[2]) as `{path, case, reply,
@@ -72,11 +73,24 @@ def _case_and_tool(messages: list[dict[str, Any]]) -> tuple[str | None, dict[str
     return None, None
 
 
+def _since_last_reply(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The user messages after the newest assistant message.
+
+    A hook's additionalContext (PostToolBatch, PostToolUse) can arrive as its own user message
+    after the tool_result one, so the tool results are not always in the last message.
+    """
+    out: list[dict[str, Any]] = []
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            break
+        out.append(msg)
+    return out[::-1]
+
+
 def decide(body: dict[str, Any]) -> tuple[str | None, str, Any, list[dict[str, Any]]]:
-    """(case, kind, value, tool_results of the newest message): kind is `tool` or `text`."""
+    """(case, kind, value, tool_results since the last reply): kind is `tool` or `text`."""
     messages = body.get("messages") or []
-    last = messages[-1] if messages else {}
-    results = _tool_results(last.get("content")) if last.get("role") == "user" else []
+    results = [r for msg in _since_last_reply(messages) for r in _tool_results(msg.get("content"))]
     case, tool = _case_and_tool(messages)
     if case is None:
         return None, "text", "ok", results
