@@ -12,7 +12,7 @@ from claude_code_wrapper.config import (
 
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text()
-EXAMPLES = ROOT / "src" / "claude_code_wrapper" / "data" / "examples"
+EXAMPLES = ROOT / "examples"
 
 
 @pytest.fixture(autouse=True)

@@ -323,7 +323,7 @@ class SessionManager:
         self.managed_settings = managed_settings
         if managed_settings is not None:
             managed_settings.on_drift = self._on_managed_drift
-        #: Takes every session's statusLine rate limits (`usage.url` set), else None.
+        #: Takes every session's statusLine rate limits (`usage.endpoint` set), else None.
         self.usage = usage
         self._on_exit_request = on_exit_request
         self._created_any = False
@@ -344,7 +344,7 @@ class SessionManager:
         self._active: dict[str, _Active] = {}
         #: In-memory notes inbox per session (`notes.enabled`); nothing is persisted.
         self._notes: dict[str, NoteStore] = {}
-        #: In-memory pressure policy per session (`pressure.enabled`); the orchestrator re-pushes.
+        #: In-memory pressure policy per session (`pressure.enabled`); the client re-pushes.
         self._pressure: dict[str, PressureState] = {}
         self._dispatchers: set[HookDispatcher] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -649,7 +649,8 @@ class SessionManager:
         assert ctx.router is not None
         message = None
         try:
-            if (command := slash_command(text)) is not None:
+            marker = self.cfg.sessions.trailing_marker_pattern
+            if (command := slash_command(text, marker)) is not None:
                 ctx.router.request_command(*command, origin="client")
             else:
                 await ctx.router.submit_turn(text, origin="initial")

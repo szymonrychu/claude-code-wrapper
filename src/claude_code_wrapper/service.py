@@ -244,7 +244,7 @@ async def _run(
             if handle.request_exit(code):
                 asyncio.get_running_loop().call_later(EXIT_STOP_DELAY_SECONDS, stop.set)
 
-        if cfg.usage.url:
+        if cfg.usage.endpoint:
             redactor.add([cfg.usage.token])
             usage = UsageForwarder(cfg.usage)
             usage_task = asyncio.create_task(usage.run())

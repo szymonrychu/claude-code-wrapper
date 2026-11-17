@@ -1,4 +1,4 @@
-"""`POST /v1/sessions/{id}/notes`: push a note into a hived session's inbox."""
+"""`POST /v1/sessions/{id}/notes`: push a note into a session's inbox."""
 
 from __future__ import annotations
 

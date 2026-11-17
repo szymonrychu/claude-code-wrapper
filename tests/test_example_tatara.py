@@ -21,8 +21,8 @@ from claude_code_wrapper.interpolation import interpolate
 from claude_code_wrapper.manager import CreateSessionRequest
 
 ROOT = Path(__file__).resolve().parent.parent
-EXAMPLE = ROOT / "src/claude_code_wrapper/data/examples/tatara.config.yaml"
-SCRIPT = ROOT / "src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py"
+EXAMPLE = ROOT / "examples/tatara.config.yaml"
+SCRIPT = ROOT / "examples/tatara/tatara_hooks.py"
 SECRET = "hmac-secret"
 OUTCOME = "mcp__tatara__submit_outcome"
 ISSUE = "mcp__tatara__report_internal_issue"
@@ -197,13 +197,14 @@ async def full_turn(world: World, env, receiver, tmp_path) -> Run:
     return Run(record, json.loads(raw), headers, raw, good, bad, sid, cfgdir)
 
 
-def test_tatara_config_loads_and_ships(env):
+def test_tatara_config_loads_and_stays_out_of_the_package(env):
     import claude_code_wrapper
 
+    # A consumer's example lives in the repo's examples/, not in the shipped package (MEMORY.md
+    # 2026-11-17, system agnosticism).
     pkg = Path(claude_code_wrapper.__file__).resolve().parent
-    assert (pkg / "data/examples/tatara.config.yaml").samefile(EXAMPLE)
-    assert (pkg / "data/examples/tatara/tatara_hooks.py").samefile(SCRIPT)
-    assert (ROOT / "examples/tatara.config.yaml").samefile(EXAMPLE)
+    assert not list(pkg.rglob("tatara*"))
+    assert EXAMPLE.is_file() and not EXAMPLE.is_symlink() and SCRIPT.is_file()
     # loads with only the stub env (every value is ${VAR:-default})
     stub = {"TATARA_PYTHON": "py", "TATARA_HOOKS": "/h.py"}
     raw = yaml.safe_load(EXAMPLE.read_text())

@@ -376,6 +376,20 @@ async def test_initial_slash_prompt_runs_as_command(world: World) -> None:
     assert initial_rejections(world, sid) == []
 
 
+async def test_initial_slash_prompt_drops_the_configured_trailing_marker(world: World) -> None:
+    sessions = {
+        "commands": {"client": ["*"], "quiet_seconds": 0.2},
+        "trailing_marker_pattern": r"<!-- run-[a-z]+:[0-9]+ -->",
+    }
+    m = world.manager(world.cfg(sessions=sessions))
+    req = CreateSessionRequest(prompt="/review-pr 12\n\n<!-- run-cron:7 -->")
+    sid = (await m.create(req))["session_id"]
+    router = m.router(sid)
+    await world.until(lambda: router.commands.list(), what="the initial command record")
+    (rec,) = router.commands.list()
+    assert (rec.name, rec.args) == ("review-pr", "12")
+
+
 @pytest.mark.parametrize(
     ("client", "prompt", "reason"),
     [([], "/reload-plugins", "not_allowed"), (["*"], "/ is root", "invalid_command")],

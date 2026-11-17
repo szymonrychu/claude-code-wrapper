@@ -1,9 +1,9 @@
-"""Forward the agents' statusLine `rate_limits` to agents-usage (README "Usage forwarding").
+"""Forward the sessions' statusLine `rate_limits` to an ingest endpoint (README "Usage forwarding").
 
 One forwarder per service process. `offer` is synchronous and cheap, so the statusLine route
 never waits on the network: it drops a value equal to the last one sent (unless
 `min_interval_seconds` passed since that send) and otherwise puts the value in a one-slot,
-latest-wins buffer. One sender task POSTs the slot; a slow or dead agents-usage never builds a
+latest-wins buffer. One sender task POSTs the slot; a slow or dead receiver never builds a
 backlog. A failed POST is retried only by the next offer. Logs carry a status code or an
 exception class only, never the body, the token or a percent.
 """
@@ -25,10 +25,6 @@ from claude_code_wrapper.config import UsageConfig
 
 log = logging.getLogger(__name__)
 
-SAMPLES_PATH = "/usage/v1/samples"
-#: The agents-usage ingest rejects a larger body.
-MAX_BODY_BYTES = 8192
-
 #: (rate_limits, cli_version): what is sent, and what an offer is compared with.
 _Value = tuple[dict[str, Any], str | None]
 
@@ -43,7 +39,7 @@ class UsageForwarder:
     ) -> None:
         self._cfg = cfg
         self._clock = clock
-        self._url = cfg.url + SAMPLES_PATH
+        self._url = cfg.endpoint
         self._client = httpx.AsyncClient(
             transport=transport,
             trust_env=False,
@@ -103,7 +99,7 @@ class UsageForwarder:
             "rate_limits": rate_limits,
         }
         content = json.dumps(body, separators=(",", ":")).encode()
-        if len(content) > MAX_BODY_BYTES:
+        if len(content) > self._cfg.max_body_bytes:
             self._failed("body over the ingest cap")
             return
         try:
