@@ -2547,7 +2547,8 @@ background completion, recorded as an `origin: "agent"` turn) and a stale or for
 `assistant_texts` lists the running turn's main-chain (not sidechain, no `agent_id`) text blocks in
 order, each `{"message_id", "text"}` with `text` exactly as the `assistant_text` event carried it
 (redacted). It is kept in memory only, cleared when a turn starts, and capped at 200 blocks and
-256 KiB of text: the oldest blocks are dropped first and `assistant_texts_truncated` is then true.
+256 KiB of text (strict): the oldest blocks are dropped first until the total fits, a single block
+over 256 KiB is not buffered at all, and any drop sets `assistant_texts_truncated` true.
 
 Decisions (blocking actions; any other decision, `deny` included, is treated as `allow` and
 recorded as `invalid_decision`). A blocking action that fails (crash, timeout, bad output) with

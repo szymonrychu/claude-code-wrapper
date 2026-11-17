@@ -148,7 +148,7 @@ async def test_block_continues_turn_and_returns_reason(world: World):
     gate.reply(1, {"decision": "block", "reason": "write the outcome file"})
     cron = {"id": "c1", "type": "cron", "status": "scheduled", "description": "*/5 * * * *"}
     scenario = turn(
-        [{"text": "first leg"}],
+        [{"text": "first leg", "message_id": "msg_first"}],
         on_block=[{"sleep": 1.0}, {"text": "second leg"}],
         stop={"session_crons": [cron]},
     )
@@ -173,7 +173,6 @@ async def test_block_continues_turn_and_returns_reason(world: World):
         x.get("message") for x in lines
     ]
     first, second = Gate.calls(world, sid)
-    first_id = first["data"]["assistant_texts"][0]["message_id"]
     assert first["event"] == "onStop" and first["turn_id"] == record.turn_id
     assert first["data"] == {
         "turn_id": record.turn_id,
@@ -182,7 +181,7 @@ async def test_block_continues_turn_and_returns_reason(world: World):
         "background_tasks": [],
         "session_crons": [cron],
         "transcript_path": router.session.transcript_path,
-        "assistant_texts": [{"message_id": first_id, "text": "first leg"}],
+        "assistant_texts": [{"message_id": "msg_first", "text": "first leg"}],
         "assistant_texts_truncated": False,
     }
     assert second["data"]["stop_hook_active"] is True

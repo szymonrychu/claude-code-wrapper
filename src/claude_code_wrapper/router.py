@@ -2144,12 +2144,14 @@ class SessionRouter(SessionListener):
         }
 
     def _buffer_text(self, message_id: str | None, text: str) -> None:
-        """Keep a main-chain block of the running turn: oldest dropped past the block/byte caps."""
+        """Keep a main-chain block of the running turn: oldest dropped until within the caps."""
+        size = len(text.encode())
+        if size > MAX_BUFFERED_TEXT_BYTES:
+            self._texts_truncated = True
+            return
         self._texts.append({"message_id": message_id, "text": text})
-        self._texts_bytes += len(text.encode())
-        while len(self._texts) > MAX_BUFFERED_TEXTS or (
-            self._texts_bytes > MAX_BUFFERED_TEXT_BYTES and len(self._texts) > 1
-        ):
+        self._texts_bytes += size
+        while len(self._texts) > MAX_BUFFERED_TEXTS or self._texts_bytes > MAX_BUFFERED_TEXT_BYTES:
             dropped = self._texts.pop(0)
             self._texts_bytes -= len(dropped["text"].encode())
             self._texts_truncated = True

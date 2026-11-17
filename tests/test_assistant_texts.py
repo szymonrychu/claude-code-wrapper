@@ -105,3 +105,16 @@ async def test_byte_cap_sets_truncated(world: World):
     assert data["assistant_texts_truncated"] is True
     assert data["assistant_texts"][-1]["message_id"] == "m5"
     await router.interrupt()
+
+
+async def test_single_over_cap_block_is_not_buffered(world: World):
+    m, sid, _ = await running(world)
+    router = m.router(sid)
+    await router._on_assistant_text(ev("x" * (MAX_BYTES + 1), "big"))
+    data = router._assistant_text_data()
+    assert [b["text"] for b in data["assistant_texts"]] == ["hold"]
+    assert data["assistant_texts_truncated"] is True
+    await router._on_assistant_text(ev("after", "m-after"))
+    texts = [b["text"] for b in router._assistant_text_data()["assistant_texts"]]
+    assert texts == ["hold", "after"]
+    await router.interrupt()
