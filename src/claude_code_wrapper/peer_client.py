@@ -150,7 +150,7 @@ def new_msg_id() -> str:
     return "msg_" + secrets.token_hex(8)
 
 
-def _envelope_code(response: httpx.Response) -> str:
+def _error_code(response: httpx.Response) -> str:
     try:
         data = response.json()
         code = data["error"]["code"]
@@ -182,12 +182,12 @@ class PeerClient:
         status = response.status_code
         if status == 404:
             return self._err("unknown_peer", url)
-        if status == 409 and _envelope_code(response) == "left":
+        if status == 409 and _error_code(response) == "left":
             return self._err("left", url)
         if status == 413:
             return self._err("too_large")
         if status == 429:
-            code = _envelope_code(response)
+            code = _error_code(response)
             return self._err("inbox_full" if code == "inbox_full" else "rate_limited")
         if status == 401:
             return self._err("unauthorized")

@@ -20,12 +20,12 @@ router = APIRouter()
 CLOSED = "session_closed"
 
 
-def _envelope(request: Request, ev: Event) -> dict[str, Any]:
+def _body(request: Request, ev: Event) -> dict[str, Any]:
     return request.app.state.manager.redactor.redact_obj(asdict(ev))
 
 
 def _frame(request: Request, ev: Event, *, with_id: bool = True) -> bytes:
-    env = _envelope(request, ev)
+    env = _body(request, ev)
     head = f"id: {ev.seq}\n" if with_id else ""
     data = json.dumps(env, separators=(",", ":"), ensure_ascii=False)
     return f"{head}event: {ev.type}\ndata: {data}\n\n".encode()
@@ -55,7 +55,7 @@ async def history(
         older, more_before = await asyncio.to_thread(log.page_before, before_seq, size, wanted)
         next_seq = older[-1].seq if older else before_seq
         return {
-            "events": [_envelope(request, e) for e in older],
+            "events": [_body(request, e) for e in older],
             "next_seq": next_seq,
             "has_more": bool((await asyncio.to_thread(log.page, next_seq, 1, wanted))[0]),
             "prev_seq": older[0].seq if older and more_before else None,
@@ -64,7 +64,7 @@ async def history(
     events, more = await asyncio.to_thread(log.page, after_seq, size, wanted)
     next_seq = events[-1].seq if events else after_seq
     return {
-        "events": [_envelope(request, e) for e in events],
+        "events": [_body(request, e) for e in events],
         "next_seq": next_seq,
         "has_more": more,
     }

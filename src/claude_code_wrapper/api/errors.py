@@ -1,4 +1,4 @@
-"""Error envelope `{"error": {"code", "message"}}` and the exception handlers (D9)."""
+"""Error body `{"error": {"code", "message"}}` and the exception handlers (D9)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from claude_code_wrapper.redact import Redactor
 
 
 class ApiError(Exception):
-    """An error the API raises itself: status, envelope code, message and optional headers."""
+    """An error the API raises itself: status, body code, message and optional headers."""
 
     def __init__(
         self, status: int, code: str, message: str, headers: dict[str, str] | None = None
@@ -35,7 +35,7 @@ class ApiError(Exception):
         self.headers = headers
 
 
-def envelope(redactor: Redactor, status: int, code: str, message: str, headers=None):
+def error_response(redactor: Redactor, status: int, code: str, message: str, headers=None):
     body = {"error": {"code": code, "message": redactor.redact(message)}}
     return JSONResponse(body, status_code=status, headers=headers)
 
@@ -47,7 +47,7 @@ def _loc(loc: tuple[Any, ...]) -> str:
 
 def install_handlers(app: FastAPI, redactor: Redactor) -> None:
     def respond(status: int, code: str, message: str, headers=None) -> JSONResponse:
-        return envelope(redactor, status, code, message, headers)
+        return error_response(redactor, status, code, message, headers)
 
     def mapped(exc_type: type[Exception], status: int, code: str | None = None) -> None:
         async def handler(_: Request, exc: Exception) -> JSONResponse:

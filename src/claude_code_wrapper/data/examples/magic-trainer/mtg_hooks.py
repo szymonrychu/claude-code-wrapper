@@ -31,7 +31,7 @@ NARRATION_DEFAULT = "/proc/1/fd/1"
 SAY_CHARS = 80
 
 
-def envelope() -> dict[str, Any]:
+def body() -> dict[str, Any]:
     try:
         doc = json.load(sys.stdin)
     except ValueError:
@@ -153,7 +153,7 @@ def pending_tasks(lines: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def cmd_pending_tasks() -> int:
-    data = envelope().get("data") or {}
+    data = body().get("data") or {}
     path = data.get("transcript_path")
     pending = pending_tasks(read_turn_lines(path)) if isinstance(path, str) and path else []
     emit({"decision": "defer" if pending else "allow", "annotations": {"pending_tasks": pending}})
@@ -164,7 +164,7 @@ def cmd_pending_tasks() -> int:
 
 
 def cmd_review() -> int:
-    data = envelope().get("data") or {}
+    data = body().get("data") or {}
     spec = data.get("input")
     if not isinstance(spec, dict) or not spec.get("prompt"):
         emit({"output": None})
@@ -213,7 +213,7 @@ def narration_line(doc: dict[str, Any]) -> str | None:
 
 
 def cmd_narrate() -> int:
-    line = narration_line(envelope())
+    line = narration_line(body())
     if line:
         target = os.environ.get("NARRATION_LOG") or NARRATION_DEFAULT
         with open(target, "a", encoding="utf-8") as out:

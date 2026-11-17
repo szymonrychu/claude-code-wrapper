@@ -570,13 +570,15 @@ class Fake:
             {"type": "user", "message": {"role": "user", "content": content}}, path, sidechain
         )
 
-    def assistant_line(self, block: dict, prompt_tokens=0, path=None, sidechain=False) -> None:
+    def assistant_line(
+        self, block: dict, prompt_tokens=0, path=None, sidechain=False, message_id=None
+    ) -> None:
         out_tokens = len(str(block.get("text", block.get("thinking", ""))).split())
         self.write_line(
             {
                 "type": "assistant",
                 "message": {
-                    "id": "msg_" + uuid.uuid4().hex[:24],
+                    "id": message_id or "msg_" + uuid.uuid4().hex[:24],
                     "model": "fake-claude",
                     "role": "assistant",
                     "content": [block],
@@ -1113,7 +1115,8 @@ class Fake:
                 self.post_tool_batch()
             batch_open = main_tool
             if "text" in step:
-                self.assistant_line({"type": "text", "text": step["text"]}, tokens)
+                mid = step.get("message_id")
+                self.assistant_line({"type": "text", "text": step["text"]}, tokens, message_id=mid)
                 self.last_text = step["text"]
                 self.out(f"\n{step['text']}\n")
             elif "thinking" in step:

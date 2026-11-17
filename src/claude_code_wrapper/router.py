@@ -5,7 +5,7 @@ the transcript tailers and the redactor (D6, D7, D11). It is the `SessionListene
 session, the target of the internal API's hook relay (`handle_claude_hook`) and the entry point
 for turns (`submit_turn`, `interrupt`).
 
-Callbacks (a turn's terminal state, a forwarded AskUserQuestion) POST the event envelope
+Callbacks (a turn's terminal state, a forwarded AskUserQuestion) POST the event body
 `{seq, ts, session_id, type, data}` signed with `server.callback_secret`, so one receiver
 handles both and tells them apart by `type`.
 
@@ -115,6 +115,9 @@ PRIORITY_FLUSH_POLL = 0.05
 #: line; a Stop that reads the previous turn's marker waits this long for the running one.
 STOP_MARKER_WAIT_SECONDS = 2.0
 STOP_MARKER_POLL_SECONDS = 0.05
+#: Caps of the per-turn text-block buffer handed to onStop hooks (oldest blocks dropped first).
+MAX_BUFFERED_TEXTS = 200
+MAX_BUFFERED_TEXT_BYTES = 256 * 1024
 #: Priority deliveries remembered by client message id, so a retried send is idempotent.
 PRIORITY_IDS_MAX = 256
 
@@ -435,6 +438,10 @@ class SessionRouter(SessionListener):
         self.info = SessionInfo.coerce(session_info)
         self._usage = UsageTotals()
         self._last_marker: str | None = None
+        #: The running turn's main-chain text blocks (generic hook data), in memory only.
+        self._texts: list[dict[str, Any]] = []
+        self._texts_bytes = 0
+        self._texts_truncated = False
         #: client message id -> the turn its priority delivery started (or holds pending).
         self._priority_ids: OrderedDict[str, str] = OrderedDict()
         self._tailer: TranscriptTailer | None = None
@@ -560,6 +567,9 @@ class SessionRouter(SessionListener):
         """The managed-settings tamper check, then `turn_started`: a restore is logged first."""
         if self.managed_check is not None:
             self.managed_check("turn")
+        self._texts = []
+        self._texts_bytes = 0
+        self._texts_truncated = False
         self._emit("turn_started", {"turn_id": turn_id, "origin": origin, "text": text})
 
     def _emit_user_message(
@@ -606,7 +616,7 @@ class SessionRouter(SessionListener):
         turn_id: str | None = None,
         only_index: int | None = None,
     ) -> HookOutcome:
-        """Run `event`'s hooks; the envelope names `turn_id`, else the running turn."""
+        """Run `event`'s hooks; the body names `turn_id`, else the running turn."""
         try:
             if turn_id is None and (current := self.session.current_turn) is not None:
                 turn_id = current.turn_id
@@ -1565,6 +1575,7 @@ class SessionRouter(SessionListener):
             "background_tasks": tasks,
             "session_crons": _list_or_empty(payload.get("session_crons")),
             "transcript_path": _str_or_none(payload.get("transcript_path")),
+            **self._assistant_text_data(),
         }
         # The built-in defer is decided first; a hook allow cannot lift it, a hook block wins.
         builtin_defer = sessions.defer_stop_on_background_tasks and bool(tasks)
@@ -2125,18 +2136,44 @@ class SessionRouter(SessionListener):
         if self.peer_inbox is not None and turn_id is not None:
             self.peer_inbox.message_delivered(message.message_id, turn_id)
 
+    def _assistant_text_data(self) -> dict[str, Any]:
+        """The running turn's buffered main-chain text blocks, for the onStop hook data."""
+        return {
+            "assistant_texts": list(self._texts),
+            "assistant_texts_truncated": self._texts_truncated,
+        }
+
+    def _buffer_text(self, message_id: str | None, text: str) -> None:
+        """Keep a main-chain block of the running turn: oldest dropped until within the caps."""
+        size = len(text.encode())
+        if size > MAX_BUFFERED_TEXT_BYTES:
+            self._texts_truncated = True
+            return
+        self._texts.append({"message_id": message_id, "text": text})
+        self._texts_bytes += size
+        while len(self._texts) > MAX_BUFFERED_TEXTS or self._texts_bytes > MAX_BUFFERED_TEXT_BYTES:
+            dropped = self._texts.pop(0)
+            self._texts_bytes -= len(dropped["text"].encode())
+            self._texts_truncated = True
+
     async def _on_assistant_text(self, ev: AssistantText) -> None:
-        self._emit(
+        current = self.session.current_turn
+        turn_id = current.turn_id if current is not None else None
+        logged = self._emit(
             "assistant_text",
             {
                 "text": ev.text,
                 "message_id": ev.message_id,
                 "model": ev.model,
                 "agent_id": ev.agent_id,
+                "turn_id": turn_id,
+                "sidechain": ev.sidechain,
             },
         )
         if ev.sidechain:
             return
+        if turn_id is not None and ev.agent_id is None:
+            self._buffer_text(ev.message_id, logged.data["text"])
         if self._cfg.sessions.probe_alive_token in ev.text:
             for probe in self.session.probe_answered(ev.text):
                 if self._metrics is not None:
