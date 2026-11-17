@@ -21,8 +21,8 @@ from claude_code_wrapper.manager import CreateSessionRequest
 from claude_code_wrapper.router import TurnVetoed
 
 ROOT = Path(__file__).resolve().parent.parent
-EXAMPLE = ROOT / "src/claude_code_wrapper/data/examples/tatara.config.yaml"
-SCRIPT = ROOT / "src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py"
+EXAMPLE = ROOT / "examples/tatara.config.yaml"
+SCRIPT = ROOT / "examples/tatara/tatara_hooks.py"
 SLEEP = {"turns": [{"match": "go", "steps": [{"sleep": 30}]}]}
 
 

@@ -2808,14 +2808,16 @@ Do not treat `tool_input` as proof of what ran.
 
 ## Hook examples
 
-Worked examples of project behaviour expressed as hooks, with no project code in ccw. Each ships
-under `src/claude_code_wrapper/data/examples/` (symlinked from `examples/`) and is tested against
-the fake claude.
+Worked examples of project behaviour expressed as hooks, with no project code in ccw. All are
+tested against the fake claude. The magic-trainer one ships under
+`src/claude_code_wrapper/data/examples/` (symlinked from `examples/`); the tatara one is a
+consumer's own harness, so it lives only in the repository's `examples/` and is not in the
+package or image (see [System agnosticism](#system-agnosticism)).
 
 ### tatara
 
 [`tatara.config.yaml`](examples/tatara.config.yaml) and its script
-[`tatara_hooks.py`](src/claude_code_wrapper/data/examples/tatara/tatara_hooks.py) (python stdlib
+[`tatara_hooks.py`](examples/tatara/tatara_hooks.py) (python stdlib
 only, one script with subcommands) express tatara's turn path. Actions run
 `${TATARA_PYTHON:-python3} ${TATARA_HOOKS:-/opt/tatara/tatara_hooks.py} <subcommand>`; the task
 name comes from `TATARA_TASK`, the callback from `DEFAULT_CALLBACK_URL` signed with
