@@ -910,7 +910,7 @@ class SessionManager:
     ) -> None:
         """`/clear` moved claude to a new session id: persist it now, not at teardown, so a
         kill after the clear resumes the cleared conversation. The snapshot, the manager hook
-        envelopes and `transcript_path()` read it from meta."""
+        payloads and `transcript_path()` read it from meta."""
         meta = ctx.meta
         meta["claude_session_id"] = claude_session_id
         meta["transcript_path"] = transcript_path

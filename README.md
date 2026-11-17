@@ -1829,11 +1829,12 @@ data: {"seq":17,"ts":"2026-10-20T09:02:20.000Z","session_id":"ses_3f9a1c0b7d42",
 Emitted for each assistant text block read from the transcript (main thread and subagents).
 
 `data`: `text`, `message_id`, `model`, `agent_id` (null for the main thread, the subagent id for a
-sidechain; sidechain text does not fire `onAgentResponse`).
+sidechain; sidechain text does not fire `onAgentResponse`), `turn_id` (the id of the running turn,
+null when no turn is running) and `sidechain` (boolean, true for subagent text).
 
 ```
 event: assistant_text
-data: {"seq":10,"ts":"2026-10-20T09:01:05.000Z","session_id":"ses_3f9a1c0b7d42","type":"assistant_text","data":{"text":"Hello!","message_id":"msg_01","model":"claude-sonnet-4-5","agent_id":null}}
+data: {"seq":10,"ts":"2026-10-20T09:01:05.000Z","session_id":"ses_3f9a1c0b7d42","type":"assistant_text","data":{"text":"Hello!","message_id":"msg_01","model":"claude-sonnet-4-5","agent_id":null,"turn_id":null,"sidechain":false}}
 ```
 
 ### `thinking`
@@ -2542,7 +2543,11 @@ background completion, recorded as an `origin: "agent"` turn) and a stale or for
 `onStop`. Only the lead's Stop is gated: teammates fire `TeammateIdle`, not the parent Stop.
 `data`: `turn_id`, `stop_hook_active` (true when this Stop follows a block), `last_assistant_message`,
 `background_tasks`, `session_crons` (lists from the Stop payload, `[]` when absent),
-`transcript_path` (null when absent).
+`transcript_path` (null when absent), `assistant_texts` and `assistant_texts_truncated`.
+`assistant_texts` lists the running turn's main-chain (not sidechain, no `agent_id`) text blocks in
+order, each `{"message_id", "text"}` with `text` exactly as the `assistant_text` event carried it
+(redacted). It is kept in memory only, cleared when a turn starts, and capped at 200 blocks and
+256 KiB of text: the oldest blocks are dropped first and `assistant_texts_truncated` is then true.
 
 Decisions (blocking actions; any other decision, `deny` included, is treated as `allow` and
 recorded as `invalid_decision`). A blocking action that fails (crash, timeout, bad output) with

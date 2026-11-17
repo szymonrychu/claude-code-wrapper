@@ -173,6 +173,7 @@ async def test_block_continues_turn_and_returns_reason(world: World):
         x.get("message") for x in lines
     ]
     first, second = Gate.calls(world, sid)
+    first_id = first["data"]["assistant_texts"][0]["message_id"]
     assert first["event"] == "onStop" and first["turn_id"] == record.turn_id
     assert first["data"] == {
         "turn_id": record.turn_id,
@@ -181,6 +182,8 @@ async def test_block_continues_turn_and_returns_reason(world: World):
         "background_tasks": [],
         "session_crons": [cron],
         "transcript_path": router.session.transcript_path,
+        "assistant_texts": [{"message_id": first_id, "text": "first leg"}],
+        "assistant_texts_truncated": False,
     }
     assert second["data"]["stop_hook_active"] is True
     assert second["data"]["last_assistant_message"] == "second leg"

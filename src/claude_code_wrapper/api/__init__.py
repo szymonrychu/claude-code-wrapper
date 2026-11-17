@@ -1,1 +1,1 @@
-"""Public HTTP API: app factory, auth, error envelope and routers."""
+"""Public HTTP API: app factory, auth, error body and routers."""

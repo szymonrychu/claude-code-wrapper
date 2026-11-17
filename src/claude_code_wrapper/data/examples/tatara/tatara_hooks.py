@@ -67,7 +67,7 @@ def write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def envelope() -> dict[str, Any]:
+def body() -> dict[str, Any]:
     try:
         doc = json.load(sys.stdin)
     except ValueError:
@@ -79,7 +79,7 @@ def envelope() -> dict[str, Any]:
 
 
 def capture_issue() -> int:
-    tool_input = (envelope().get("data") or {}).get("tool_input") or {}
+    tool_input = (body().get("data") or {}).get("tool_input") or {}
     category = tool_input.get("category")
     severity = tool_input.get("severity")
     issue = {
@@ -114,7 +114,7 @@ def drain_issues() -> list[dict[str, Any]]:
 
 
 def outcome_result() -> int:
-    env = envelope()
+    env = body()
     data = env.get("data") or {}
     record = {"turn_id": env.get("turn_id"), "is_error": bool(data.get("is_error"))}
     write_atomic(state_dir() / "outcome.json", json.dumps(record))
@@ -145,7 +145,7 @@ def reprompt_pending(turn_id: str) -> bool:
 
 
 def outcome_gate() -> int:
-    turn_id = str(envelope().get("turn_id") or "")
+    turn_id = str(body().get("turn_id") or "")
     if not turn_id or not reprompt_pending(turn_id):
         return 0
     write_atomic(state_dir() / f"reprompts-{turn_id}", str(reprompt_count(turn_id) + 1))
@@ -166,7 +166,7 @@ def config_dir() -> Path:
 
 
 def statusline() -> int:
-    doc = envelope()
+    doc = body()
     limits = doc.get("rate_limits")
     if limits:
         directory = config_dir()
@@ -242,7 +242,7 @@ def duration(record: dict[str, Any]) -> float:
 
 
 def finalize() -> int:
-    env = envelope()
+    env = body()
     record = env.get("data") or {}
     turn_id = str(record.get("turn_id") or env.get("turn_id") or "")
     if turn_id and reprompt_pending(turn_id) and record.get("state") == "completed":
@@ -307,7 +307,7 @@ def ttl_gate() -> int:
         ttl = float(os.environ.get("AGENT_POD_TTL_SECONDS") or 0)
     except ValueError:
         ttl = 0.0
-    metadata = (envelope().get("data") or {}).get("metadata") or {}
+    metadata = (body().get("data") or {}).get("metadata") or {}
     path = state_dir() / "ttl.json"
     doc = read_json(path)
     if not isinstance(doc, dict) or "t0" not in doc:

@@ -14,7 +14,7 @@ from claude_code_wrapper.manager import InvalidState
 
 router = APIRouter()
 
-#: CommandRejected.code -> (status, envelope code)
+#: CommandRejected.code -> (status, body code)
 _REJECT = {
     "denied": (403, "command_denied"),
     "not_allowed": (403, "command_not_allowed"),

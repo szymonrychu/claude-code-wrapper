@@ -2,7 +2,7 @@
 (part `wrapper-terminals-api`, design D2, D3).
 
 Every check that can fail runs before the WebSocket is accepted, so a refused attach is an HTTP
-denial response with the usual error envelope: the bearer (`require_auth`), the terminal id
+denial response with the usual error body: the bearer (`require_auth`), the terminal id
 format, the session (404 `not_found` unknown, 409 `session_not_active`) and the terminal (404
 `terminal_not_found`). After accept, HTTP exception handlers no longer apply: failures are close
 codes (1003 unknown control, 1009 frame over `limits.terminal_max_frame_bytes`, 1013 dropped

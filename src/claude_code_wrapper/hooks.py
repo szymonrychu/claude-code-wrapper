@@ -47,7 +47,7 @@ EVENT_DECISIONS: dict[str, tuple[str, ...]] = {
 }
 EVENT_DECISIONS["onTick"] = ("allow",)
 EVENT_DECISIONS["onStop"] = ("allow", "block", "defer")
-#: Instance-level membership events: no session, so the envelope's session fields are empty.
+#: Instance-level membership events: no session, so the body's session fields are empty.
 INSTANCE_EVENTS: tuple[str, ...] = ("preJoin", "postJoin", "preLeave", "postLeave", "onStart")
 #: Across blocking actions the strictest honoured decision wins.
 DECISION_RANK = {"allow": 0, "defer": 1, "block": 2, "deny": 2}
