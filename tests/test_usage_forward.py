@@ -1,4 +1,4 @@
-"""UsageForwarder: statusLine rate_limits forwarded to agents-usage (README "Usage forwarding")."""
+"""UsageForwarder: statusLine rate_limits forwarded to an ingest (README "Usage forwarding")."""
 
 from __future__ import annotations
 
@@ -35,7 +35,9 @@ class Clock:
 
 
 def cfg(**kw: Any) -> UsageConfig:
-    return UsageConfig(**{"url": "http://usage.test", "token": TOKEN, "agent": "pod-0", **kw})
+    return UsageConfig(
+        **{"endpoint": "http://usage.test/ingest/samples", "token": TOKEN, "agent": "pod-0", **kw}
+    )
 
 
 def changed(pct: float) -> dict[str, Any]:
@@ -43,7 +45,7 @@ def changed(pct: float) -> dict[str, Any]:
 
 
 class Fake:
-    """An agents-usage stand-in: records requests, answers from a script (default 202)."""
+    """An ingest stand-in: records requests, answers from a script (default 202)."""
 
     def __init__(self, *answers: int | type[Exception]) -> None:
         self.requests: list[httpx.Request] = []
@@ -97,7 +99,7 @@ async def test_posts_body_and_bearer() -> None:
         await until(lambda: len(fake.requests) == 1)
         (req,) = fake.requests
         assert req.method == "POST"
-        assert str(req.url) == "http://usage.test/usage/v1/samples"
+        assert str(req.url) == "http://usage.test/ingest/samples"  # as configured, no path added
         assert req.headers["authorization"] == f"Bearer {TOKEN}"
         assert json.loads(req.content) == {
             "agent": "pod-0",
@@ -213,6 +215,19 @@ async def test_oversized_body_dropped_with_one_warning_per_streak(
         fwd.offer(RL, "2.1.304")  # a sendable value ends the streak and goes out
         await until(lambda: len(fake.requests) == 1)
         assert all(len(r.content) <= 8192 for r in fake.requests)
+    finally:
+        await fwd.aclose()
+
+
+async def test_body_cap_is_configurable(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger=LOGGER)
+    fake = Fake()
+    fwd = await running(fake, max_body_bytes=64)
+    try:
+        fwd.offer(RL, "2.1.304")  # about 150 bytes: over this receiver's cap
+        await settle(fwd)
+        assert fake.requests == []
+        assert len(_forward_warnings(caplog)) == 1
     finally:
         await fwd.aclose()
 
@@ -401,7 +416,7 @@ async def _lifespan(
     return _Recorder.made, managers
 
 
-async def test_disabled_without_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_disabled_without_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     made, managers = await _lifespan(monkeypatch, _service_cfg(tmp_path))
     assert made == []
     assert managers[0].usage is None
@@ -410,7 +425,9 @@ async def test_disabled_without_url(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 async def test_lifespan_starts_and_closes_forwarder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg = _service_cfg(tmp_path, url="http://usage.test", token=TOKEN, agent="pod-0")
+    cfg = _service_cfg(
+        tmp_path, endpoint="http://usage.test/ingest/samples", token=TOKEN, agent="pod-0"
+    )
     made, managers = await _lifespan(monkeypatch, cfg)
     (rec,) = made
     assert rec.cfg == cfg.usage

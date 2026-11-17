@@ -105,7 +105,7 @@ async def _scan_repo(workdir: Path, repo: Path) -> Worktree:
     wt["branch"] = out.strip() if code == 0 and out.strip() else None
     code, out = await _git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
     if code != 0 or not out.strip():
-        # the orchestrator gate reads `upstream is False` as "unpushed (no upstream)"
+        # `upstream is False` reads as "unpushed (no upstream)" to a client
         wt["upstream"] = False
         return wt
     wt["upstream"] = out.strip()

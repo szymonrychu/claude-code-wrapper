@@ -336,6 +336,10 @@ SLASH_PROSE = [
     "",
 ]
 
+#: A deployment's trailing marker (`sessions.trailing_marker_pattern`); here the run marker
+#: `<!-- agents-<kind>:<id> -->` that agents-orchestrator renders.
+MARKER = r"<!-- agents-[^\s:]+:\S+ -->"
+
 SLASH_MARKED = [
     ("/review-pr 12\n\n<!-- agents-webhook:42 -->", ("review-pr", "12")),
     ("/compact\n\n<!-- agents-schedule:7 -->", ("compact", "")),
@@ -356,8 +360,11 @@ SLASH_MARKED_PROSE = [
 
 
 async def test_slash_rule_matches_claude_parser(harness: Harness) -> None:
-    for text, expected in SLASH_COMMANDS + SLASH_EMPTY_NAME + SLASH_MARKED:
+    for text, expected in SLASH_COMMANDS + SLASH_EMPTY_NAME:
         assert slash_command(text) == expected, text
+        assert slash_command(text, MARKER) == expected, text
+    for text, expected in SLASH_MARKED:
+        assert slash_command(text, MARKER) == expected, text
     session = await harness.start()
     # Every text claude's parser would run as a command is refused, never typed as a turn.
     refused = [
@@ -383,6 +390,7 @@ async def test_slash_rule_matches_claude_parser(harness: Harness) -> None:
 async def test_slash_rule_leaves_paths_and_prose(harness: Harness) -> None:
     for text in SLASH_PROSE + SLASH_MARKED_PROSE:
         assert slash_command(text) is None, text
+        assert slash_command(text, MARKER) is None, text
     # Each is accepted as a turn: the slot is taken and the text is pasted with the turn marker.
     typed = [
         "/workdir/foo is broken",
@@ -421,6 +429,18 @@ JS_WHITESPACE = {
 
 def _ignorable(char: str) -> bool:
     return ord(char) not in JS_WHITESPACE and unicodedata.category(char) in ("Cc", "Cf")
+
+
+def test_trailing_marker_is_kept_without_a_pattern() -> None:
+    # No marker convention is built in: without `sessions.trailing_marker_pattern` a trailing
+    # marker is plain args text.
+    assert slash_command("/compact\n\n<!-- agents-schedule:7 -->") == (
+        "compact",
+        "<!-- agents-schedule:7 -->",
+    )
+    assert slash_command("/compact\n\n<!-- run-7 -->", r"<!-- run-\d+ -->") == ("compact", "")
+    # only a marker after a blank line at the very end is dropped
+    assert slash_command("/x <!-- run-7 -->", r"<!-- run-\d+ -->") == ("x", "<!-- run-7 -->")
 
 
 async def test_slash_whitespace_set_is_js_whitespace() -> None:

@@ -2,7 +2,7 @@
 
 The child is interactive claude under a PTY (D1), in its own workdir with its own
 `CLAUDE_CONFIG_DIR` (D4) and an env built from scratch so no service secret reaches it (D9).
-Boot follows the tatara/magic method (D13): answer each configured dialog once per boot, then
+Boot follows the dialog-answering method (D13): answer each configured dialog once per boot, then
 call the session ready on a ready marker or output quiescence, never before `min_boot_seconds`
 (a submit while the TUI is still painting exits claude). A boot that never gets there is
 relaunched once; a crash after boot is relaunched within `max_restarts`, with `--resume` only
@@ -56,6 +56,7 @@ import asyncio
 import codecs
 import contextlib
 import fnmatch
+import functools
 import inspect
 import logging
 import os
@@ -188,12 +189,14 @@ _JS_WHITESPACE = frozenset(
 _JS_WHITESPACE_CHARS = "".join(sorted(_JS_WHITESPACE))
 _JS_WHITESPACE_CLASS = "".join(f"\\u{ord(char):04x}" for char in sorted(_JS_WHITESPACE))
 
-# A trailing agents-common run marker (`agents_common.runs.marker`, `<!-- agents-<kind>:<id> -->`)
-# as `runs.py:_post_once` posts it: `text\n\nmarker`.
-_RUN_MARKER = re.compile(
-    rf"\n\n<!-- agents-[^{_JS_WHITESPACE_CLASS}:]+:[^{_JS_WHITESPACE_CLASS}]+ -->"
-    rf"[{_JS_WHITESPACE_CLASS}]*\Z"
-)
+
+@functools.lru_cache(maxsize=8)
+def _trailing_marker(pattern: str) -> re.Pattern[str]:
+    """`text\n\n<marker>` at the very end; the marker matches `sessions.trailing_marker_pattern`.
+
+    Cached: the pattern is one config value, compiled once.
+    """
+    return re.compile(rf"\n\n(?:{pattern})[{_JS_WHITESPACE_CLASS}]*\Z")
 
 
 def _ignorable(char: str) -> bool:
@@ -201,20 +204,22 @@ def _ignorable(char: str) -> bool:
     return char not in _JS_WHITESPACE and unicodedata.category(char) in ("Cc", "Cf")
 
 
-def slash_command(text: str) -> tuple[str, str] | None:
+def slash_command(text: str, marker: str = "") -> tuple[str, str] | None:
     """`(name, args)` when claude's own parser would run `text` as a slash command, else None.
 
     Design D2, mirroring claude 2.1.304 (`trim`, then a leading "/", the name up to the first
-    `\\s`, the args trimmed): a trailing run marker is dropped; leading JS whitespace and
-    invisible control or format characters (Cc, Cf: ESC, zero-width, bidi, NUL, DEL, C1) are
-    skipped, because the PTY paste drops ESC and claude ignores the rest; the text must then start
-    with "/". The name runs to the first JS whitespace character with the invisible characters
-    dropped from it, and the args are the rest stripped of JS whitespace only (newlines kept). An
-    empty name is a command (claude answers "Commands are in the form /command [args]"), and so
-    is a name matching `COMMAND_NAME`, with no length cap. Any other name (a path such as
-    "/etc/hosts") is prose that claude sends to the model.
+    `\\s`, the args trimmed): a trailing marker matching `marker` (the deployment's
+    `sessions.trailing_marker_pattern`, after a blank line) is dropped first; leading JS
+    whitespace and invisible control or format characters (Cc, Cf: ESC, zero-width, bidi, NUL,
+    DEL, C1) are skipped, because the PTY paste drops ESC and claude ignores the rest; the text
+    must then start with "/". The name runs to the first JS whitespace character with the
+    invisible characters dropped from it, and the args are the rest stripped of JS whitespace only
+    (newlines kept). An empty name is a command (claude answers "Commands are in the form
+    /command [args]"), and so is a name matching `COMMAND_NAME`, with no length cap. Any other
+    name (a path such as "/etc/hosts") is prose that claude sends to the model.
     """
-    text = _RUN_MARKER.sub("", text)
+    if marker:
+        text = _trailing_marker(marker).sub("", text)
     start = 0
     while start < len(text) and (text[start] in _JS_WHITESPACE or _ignorable(text[start])):
         start += 1
@@ -1218,7 +1223,7 @@ class Session:
         booting, dead, busy). A claude that exits under the write fails the turn with
         `claude_exited`; the record is returned either way.
         """
-        if slash_command(text) is not None:
+        if slash_command(text, self.spec.sessions.trailing_marker_pattern) is not None:
             # claude would run it as a command: no Stop, so the turn would never end (design D3).
             raise TurnRejected("slash_command")
         pty = self.check_submittable(reserved=reserved)
@@ -1526,7 +1531,7 @@ class Session:
         Raises `TurnRejected` (slash_command first, then `check_queueable`); a write to a
         claude that exited raises `TurnRejected("dead")`.
         """
-        if slash_command(text) is not None:
+        if slash_command(text, self.spec.sessions.trailing_marker_pattern) is not None:
             raise TurnRejected("slash_command")
         pty = self.check_queueable()
         self._question = False
@@ -2142,7 +2147,8 @@ class Session:
         first, for text claude would run as a command, then booting, dead, dialog_open while a
         permission is held); nothing is pasted.
         """
-        if text is not None and slash_command(text) is not None:
+        marker = self.spec.sessions.trailing_marker_pattern
+        if text is not None and slash_command(text, marker) is not None:
             raise TurnRejected("slash_command")
         pty = self._writable_pty()
         self.check_no_permission()

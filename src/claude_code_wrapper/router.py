@@ -359,7 +359,6 @@ def _relay(stdout: str) -> RelayResponse:
 
 PRESSURE_OPEN = "<context-pressure>"
 PRESSURE_CLOSE = "</context-pressure>"
-PRESSURE_HEAD = "From the orchestrator: this is an instruction about your context window, not data."
 
 
 def _additional_context(event_name: str, context: str) -> str:
@@ -401,7 +400,8 @@ def _response_is_error(event_name: str, payload: Mapping[str, Any]) -> bool:
 
 class SessionRouter(SessionListener):
     #: Takes `(rate_limits, cli_version)` from every statusLine that carries rate limits; the
-    #: manager wires `UsageForwarder.offer` (synchronous, never raises) when `usage.url` is set.
+    #: manager wires `UsageForwarder.offer` (synchronous, never raises) when `usage.endpoint`
+    #: is set.
     on_rate_limits: Callable[[Mapping[str, Any], str | None], None] | None = None
     #: Takes `(claude_session_id, transcript_path, previous_claude_session_id)` once `/clear`
     #: moved claude to a new session id; the manager persists it at once (resume follows it).
@@ -1164,7 +1164,7 @@ class SessionRouter(SessionListener):
                 )
             pending = [n for n in store.notes() if not n.delivered]
             if due and pending:
-                text, keys, appended = render_block(pending, cfg.delivery_max_chars)
+                text, keys, appended = render_block(pending, cfg.delivery_max_chars, cfg.frame_line)
                 store.remove(pending)
                 self._notes_last = time.monotonic()
                 self._notes_tool_results = 0
@@ -1228,7 +1228,7 @@ class SessionRouter(SessionListener):
             )
             if self._metrics is not None:
                 self._metrics.pressure_delivered(level, event_name)
-            return [*parts, f"{PRESSURE_OPEN}\n{PRESSURE_HEAD}\n{body}\n{PRESSURE_CLOSE}"]
+            return [*parts, f"{PRESSURE_OPEN}\n{self._cfg.pressure.head}\n{body}\n{PRESSURE_CLOSE}"]
         except Exception:  # noqa: BLE001
             log.exception("context pressure injection failed")
             return parts
@@ -1696,7 +1696,8 @@ class SessionRouter(SessionListener):
         """Start a turn. `vetted`: the turn id and onTurn outcome of a turn whose hook already
         ran (a priority delivery vets before it interrupts), so onTurn is not fired again.
         `turn_id`: an id allocated earlier (a priority turn already listed `pending`)."""
-        if slash_command(text) is not None:  # a slash line fires no hooks and writes no files
+        # a slash line fires no hooks and writes no files
+        if slash_command(text, self._cfg.sessions.trailing_marker_pattern) is not None:
             raise TurnRejected("slash_command")
         # a doomed turn fires no hooks; a vetted (priority) turn holds the reserved slot
         self.session.check_submittable(reserved=vetted is not None)
@@ -1774,7 +1775,7 @@ class SessionRouter(SessionListener):
         is `regular`. Raises `TurnRejected` (slash_command, booting, dead, or busy when neither
         a turn can start nor a running turn take the text) or `TurnVetoed`.
         """
-        if slash_command(text) is not None:
+        if slash_command(text, self._cfg.sessions.trailing_marker_pattern) is not None:
             raise TurnRejected("slash_command")
         if lane == "priority" and message_id is not None:
             known = self._priority_turn(message_id)

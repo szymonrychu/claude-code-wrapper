@@ -97,6 +97,17 @@ def test_render_pct_uses_tokens_when_window_known() -> None:
     assert out == "71 95"
 
 
+def test_profile_is_a_free_label() -> None:
+    # The wrapper only logs the profile: any short label a deployment uses is accepted.
+    texts = {lv: LevelTexts(full="f", short="s") for lv in ("l1", "l2", "l3")}
+    base = dict(version=1, thresholds=TH, texts=texts)
+    for label in ("work", "chat", "batch", "night-shift.v2"):
+        assert PressurePolicy(**base, profile=label).profile == label
+    for bad in ("", "a b", "x" * 65, "a\nb"):
+        with pytest.raises(ValueError):
+            PressurePolicy(**base, profile=bad)
+
+
 def test_waiting_on_is_capped() -> None:
     texts = {lv: LevelTexts(full="f", short="s") for lv in ("l1", "l2", "l3")}
     base = dict(version=1, thresholds=TH, profile="work", texts=texts)

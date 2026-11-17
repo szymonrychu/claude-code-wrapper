@@ -1,6 +1,6 @@
 """Context pressure policy: models, level evaluation, text rendering, per-session state.
 
-The orchestrator pushes a `PressurePolicy` per session (memory only; it re-pushes after a
+A client pushes a `PressurePolicy` per session (memory only; it re-pushes after a
 wrapper restart). Levels are computed from the statusLine context gauge in tokens: unknown
 context (None, e.g. right after compaction) is level 0, never a stale high level. The
 percentage thresholds are used only when the gauge reports no window.
@@ -51,7 +51,10 @@ class PressurePolicy(BaseModel):
 
     version: int = Field(ge=1)
     thresholds: Thresholds
-    profile: Literal["work", "chat"]
+    #: A label of the client's own policy profile; only logged (`pressure_policy_set`).
+    profile: Annotated[
+        str, StringConstraints(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    ]
     texts: dict[Literal["l1", "l2", "l3"], LevelTexts]
     handoff_state: Literal["none", "submitted", "blocked", "accepted"] = "none"
     waiting_on: list[Annotated[str, StringConstraints(max_length=200)]] = Field(

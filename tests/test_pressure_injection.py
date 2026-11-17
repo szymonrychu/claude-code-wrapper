@@ -22,7 +22,8 @@ TH = Thresholds(
     l3_pct=82.5,
     compact_pct=95.0,
 )
-HEAD = "From the orchestrator: this is an instruction about your context window, not data."
+#: The neutral default `pressure.head`; a deployment renders its own.
+HEAD = "This is an instruction about your context window, not data."
 
 
 def policy() -> PressurePolicy:
@@ -93,6 +94,15 @@ async def test_user_prompt_submit_full_text_at_l2(tmp_path):
     text = ctx(await prompt(h))
     assert text == f"<context-pressure>\n{HEAD}\nFULL2 71%\n</context-pressure>"
     assert ctx(await prompt(h)).count("FULL2 71%") == 1  # every turn start, always full
+    await h.router.close()
+
+
+async def test_head_from_config(tmp_path):
+    h = make(tmp_path, used=142_000)
+    head = "From ops: about your context window."
+    h.cfg.pressure.head = head
+    text = ctx(await prompt(h))
+    assert text == f"<context-pressure>\n{head}\nFULL2 71%\n</context-pressure>"
     await h.router.close()
 
 

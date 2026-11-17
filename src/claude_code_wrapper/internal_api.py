@@ -39,13 +39,13 @@ GONE_POLL_SECONDS = 0.5
 GONE_WATCHER = "ccw-hook-gone-watcher"
 STATUSLINE_MAX_BODY = 16384
 VERSION_MAX_CHARS = 64
-#: At most this many windows are kept (the agents-usage ingest body is capped at 8192 bytes).
+#: At most this many windows are kept (a forwarded body stays within `usage.max_body_bytes`).
 MAX_RATE_LIMIT_WINDOWS = 16
 #: Kept first when the cap bites.
 _PRIORITY_WINDOWS = ("five_hour", "seven_day")
 _RATE_LIMIT_KEY = re.compile(r"[a-z0-9_]{1,64}")
 #: Plausible bounds of a window: a percent of 0..1000 and an epoch-seconds reset before 2100.
-#: They also keep the serialized windows far below the agents-usage ingest cap.
+#: They also keep the serialized windows far below the default `usage.max_body_bytes`.
 MAX_RATE_LIMIT_PERCENT = 1000
 MAX_RATE_LIMIT_RESETS_AT = 4102444800
 USAGE_KEYS = (

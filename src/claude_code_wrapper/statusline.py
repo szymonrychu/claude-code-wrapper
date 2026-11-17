@@ -37,7 +37,7 @@ STATUSLINE_PATH = "/internal/statusline"
 CHAIN_FILE = "ccw-statusline-chain.json"
 POST_TIMEOUT = 2.0
 CHAIN_TIMEOUT = 30.0
-#: The agents-usage ingest token of the wrapper server process (`usage.token`); never passed on.
+#: The usage ingest token of the wrapper server process (`usage.token`); never passed on.
 ENV_USAGE_TOKEN = "CCW_USAGE_TOKEN"
 
 

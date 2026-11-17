@@ -74,7 +74,7 @@ def permission_timeouts(hold_seconds: float) -> PermissionTimeouts:
 #: other `CLAUDE_HOOK_EVENTS` stay in the session's settings.json.
 MANAGED_RELAY_EVENTS: tuple[str, ...] = ("PreToolUse", "PermissionRequest")
 #: The managed PermissionRequest hook timeout: one file serves every session, so it outlasts
-#: the longest hold a preset may set (`permission_hold_seconds` le 86400).
+#: the longest hold a config may set (`permission_hold_seconds` le 86400).
 PERMISSION_HOOK_CEILING: float = permission_timeouts(86400).hook_timeout
 #: Built-in security plugin whose `allowManagedModsOnly` option keeps unmanaged mods unloaded.
 SEC_PLUGIN = "cc-plugin-sec-default@builtin"
