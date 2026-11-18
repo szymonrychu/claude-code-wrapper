@@ -1686,7 +1686,12 @@ the turn ends like any other: its Stop is gated by `onStop` (a `block` continues
 While it runs, the session is busy as for any turn: an `idle` delivery gets `409 busy`, a
 `regular` one (the default lane) is typed into it (`prompt_queued` with its `turn_id`), a
 `priority` one interrupts it. A Stop with no main-chain record before it is still recorded as a
-completed `agent` turn, without `turn_started` and without `onStop`.
+completed `agent` turn, without `turn_started` and without `onStop`. Nothing is adopted while
+claude's previous turn may still be writing: after a turn that ended without a Stop and without an
+interrupt line in the transcript (a second ESC, `turn_max_seconds`, a crash, a fatal screen) until
+the next Stop or interrupt line, and for a probe claude answers as a turn of its own (it completes
+as an `agent` turn at its Stop, as before). An adopted turn is never continued with
+`restart_continue_prompt`: a crash fails it `claude_exited`, a resume fails it `service_shutdown`.
 
 ```
 event: turn_started

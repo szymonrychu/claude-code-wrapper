@@ -676,6 +676,11 @@ class Session:
         self._queued: dict[str, QueuedMessage] = {}
         #: The slot is held for a priority delivery (`reserve`).
         self._reserved = False
+        #: claude's last turn is known to be over, so a main-chain record read on a ready
+        #: session starts a turn of its own (`adopt_agent_turn`). Cleared when a turn ends
+        #: without a Stop (claude may still write records of it) and when a probe claude runs
+        #: as a turn of its own is read; set again by the next Stop or main-chain interrupt line.
+        self._adoptable = True
         if resume_turn is not None:
             # The slot is taken from the first boot; `start` continues or fails the turn.
             resume_turn.interrupted = None
@@ -754,6 +759,7 @@ class Session:
         A `resume_turn` is continued once claude is ready (cause `resume`) when the launch
         resumed and `restart_continue_prompt` is set, else it fails with `service_shutdown`, as
         it does when claude never boots. `turn_max_seconds` counts from its original submit.
+        An adopted `origin="agent"` turn is never continued: nobody asked for it, it fails.
         """
         if self.started_at is not None:
             raise RuntimeError("Session.start() may be called only once")
@@ -773,9 +779,9 @@ class Session:
             raise
         if adopted is None or self._held is not adopted or self._stopping:
             return
-        if resumed and self.spec.sessions.restart_continue_prompt:
+        if resumed and self.spec.sessions.restart_continue_prompt and adopted.origin != "agent":
             await self._continue_held(adopted, cause="resume")
-        else:  # nothing to paste, or a fresh claude has no conversation to continue
+        else:  # nothing to paste, a fresh claude, or an adopted turn nobody asked for
             self._end_turn(adopted, "failed", error=SERVICE_SHUTDOWN)
 
     async def _boot(self, *, resume: bool, slot: bool | None = None) -> bool:
@@ -987,6 +993,7 @@ class Session:
             if (
                 self.restarts < self.spec.max_restarts
                 and self.spec.sessions.restart_continue_prompt
+                and record.origin != "agent"  # nobody asked for an adopted turn: never re-pasted
             ):
                 self._held = record  # stays running; _recover continues or fails it
             else:  # never re-pasted: the client decides whether to retry
@@ -1645,10 +1652,14 @@ class Session:
         (claude woke on a background completion, a Monitor or task notification). The record is
         persisted, the session goes busy and the turn ends like any turn (its Stop, an
         interrupt, `turn_max_seconds`), so the Stop gate and the hooks see it. None, and
-        nothing changes, unless claude is live and ready with no turn and no command run.
+        nothing changes, unless claude is live and ready with no turn and no command run, and
+        its last turn is known to be over: after a turn that ended without a Stop or an interrupt
+        line (a second ESC, `turn_max_seconds`, a crash, a fatal screen) the record may be a late
+        one of that turn, and a probe claude runs as its own turn completes at its Stop as before.
         """
         if (
-            self.state != "ready"
+            not self._adoptable
+            or self.state != "ready"
             or self._turn is not None
             or self._command_active
             or self.pty is None
@@ -1866,6 +1877,7 @@ class Session:
         record.state = state
         record.error = error
         record.completed_at = now_iso()
+        self._adoptable = state == "completed"  # only a Stop says claude's turn is over
         pending = self._interrupting
         if pending is not None and pending.record is record:
             pending.done.set()
@@ -2138,6 +2150,7 @@ class Session:
             if self._commands_turn is record:
                 # claude runs no turn: there is no interrupt line to wait for.
                 self._end_turn(record, pending.final)
+                self._adoptable = True
                 return
             await self.send_escape()
             try:
@@ -2160,17 +2173,20 @@ class Session:
                 self._interrupting = None
 
     def on_interrupted(self) -> None:
-        """The transcript shows an interrupt: end the running turn (pending or unprompted)."""
+        """The transcript shows an interrupt: end the running turn (pending or unprompted).
+
+        claude wrote its last record of the turn, so a later main-chain record starts a new one.
+        """
         record = self._turn
-        if record is None:
-            return
         pending = self._interrupting
-        if self._commands_turn is record and (pending is None or pending.record is not record):
-            return  # an ESC'd slash command, not the turn
-        final: TurnState = "interrupted"
-        if pending is not None and pending.record is record:
-            final = pending.final
-        self._end_turn(record, final)
+        if record is not None and (
+            self._commands_turn is not record or (pending is not None and pending.record is record)
+        ):  # else an ESC'd slash command, not the turn
+            final: TurnState = "interrupted"
+            if pending is not None and pending.record is record:
+                final = pending.final
+            self._end_turn(record, final)
+        self._adoptable = True
 
     # -- probes ----------------------------------------------------------------------------
 
@@ -2217,6 +2233,8 @@ class Session:
     def probe_delivered(self, probe_id: str) -> Probe | None:
         """The probe's marker reached the transcript; the probe, or None when unknown."""
         probe = self._probes.get(probe_id)
+        if self._turn is None:
+            self._adoptable = False  # claude answers it as a turn of its own, ended by its Stop
         if probe is not None and probe.state == "pending":
             probe.state = "delivered"
             probe.delivered_at = now_iso()

@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import World, wait_turn
+from conftest import World, jsonl, wait_turn
+from test_router import assistant
 
 from claude_code_wrapper.bootstrap.settings import RelayTimeouts, relay_timeouts
 from claude_code_wrapper.config import HOOK_EVENTS, Config, HooksConfig
@@ -546,6 +547,151 @@ async def test_delivery_while_agent_origin_turn_runs_is_busy_handled(world: Worl
     assert [q["turn_id"] for q in queued] == [agent.turn_id]
     await world.until(lambda: m.get(sid)["state"] == "ready")
     assert _agent_turn(world, sid, m).state == "completed"
+
+
+def _append(m: Any, sid: str, *lines: str) -> None:
+    """Lines claude wrote to the main transcript (a record the tailer reads late, a wake)."""
+    with open(m.router(sid).session.transcript_path, "a") as f:
+        f.writelines(lines)
+
+
+async def _settled(world: World, m: Any, sid: str, text: str) -> None:
+    """The tailer read the line carrying `text` (it emitted its assistant_text)."""
+    await world.until(
+        lambda: [t for t in of_type(world, sid, "assistant_text") if t["text"] == text]
+    )
+    await m.router(sid).drain(0.5)
+
+
+async def test_late_record_after_a_stopless_end_is_not_adopted(world: World):
+    # The turn ends without a Stop and without an interrupt line (second-ESC path): a main-chain
+    # record read afterwards may still belong to it, so it opens no phantom agent turn.
+    scenario = {"turns": [{"match": "wedge", "steps": [{"print": "working...\n"}]}]}
+    cfg = world.cfg(scenario, sessions={"interrupt_settle_seconds": 0.3})
+    m, sid = await start(world, cfg)
+    router = m.router(sid)
+    record = await router.submit_turn("wedge")
+    await world.until(lambda: router.session.ring.contains("working..."))
+    await router.interrupt()
+    assert record.state == "interrupted" and m.get(sid)["state"] == "ready"
+    _append(m, sid, assistant("late words", mid="late1"))
+    await _settled(world, m, sid, "late words")
+    assert [s["origin"] for s in of_type(world, sid, "turn_started")] == ["client"]
+    assert [t.origin for t in m.open_turns(sid).list()] == ["client"]
+    assert m.get(sid)["state"] == "ready"
+    [late] = [t for t in of_type(world, sid, "assistant_text") if t["text"] == "late words"]
+    assert late["turn_id"] is None
+
+
+async def test_record_after_an_interrupt_line_is_adopted(world: World):
+    # The interrupt line closes claude's turn in transcript order: a record after it is a wake.
+    cfg = world.cfg(turn([{"text": "part"}, {"sleep": 30}]))
+    m, sid = await start(world, cfg)
+    router = m.router(sid)
+    record = await router.submit_turn("go")
+    await world.until(lambda: of_type(world, sid, "assistant_text"))
+    await router.interrupt()
+    assert record.state == "interrupted"
+    _append(m, sid, assistant("woke up", mid="wake1"))
+    await world.until(lambda: len(of_type(world, sid, "turn_started")) == 2)
+    assert _agent_turn(world, sid, m).state == "running"
+
+
+async def test_sidechain_and_subagent_records_never_adopt(world: World):
+    m, sid = await start(world, world.cfg(turn([{"text": "turn text"}])))
+    await m.router(sid).submit_turn("go")
+    await world.until(
+        lambda: m.get(sid)["state"] == "ready" and of_type(world, sid, "turn_completed")
+    )
+    side = json.loads(assistant("side words", mid="side1"))
+    side["isSidechain"] = True
+    sub = json.loads(assistant("sub words", mid="sub1"))
+    sub["agentId"] = "a1"
+    _append(m, sid, json.dumps(side) + "\n", json.dumps(sub) + "\n")
+    await _settled(world, m, sid, "sub words")
+    assert [s["origin"] for s in of_type(world, sid, "turn_started")] == ["client"]
+    assert m.get(sid)["state"] == "ready"
+
+
+async def test_interrupt_of_an_adopted_turn_ends_it_and_returns_to_ready(world: World):
+    cfg = world.cfg(turn([{"text": "turn text"}]), sessions={"interrupt_settle_seconds": 0.3})
+    m, sid = await start(world, cfg)
+    router = m.router(sid)
+    await router.submit_turn("go")
+    await world.until(
+        lambda: m.get(sid)["state"] == "ready" and of_type(world, sid, "turn_completed")
+    )
+    _append(m, sid, assistant("woke up", mid="wake1"))
+    await world.until(lambda: m.get(sid)["state"] == "busy")
+    agent = _agent_turn(world, sid, m)
+    assert await router.interrupt() == agent.turn_id
+    assert _agent_turn(world, sid, m).state == "interrupted"
+    assert m.get(sid)["state"] == "ready"
+
+
+async def test_probe_on_a_ready_session_is_not_adopted(world: World):
+    # A probe claude answers as a turn of its own completes as before: an agent record at its
+    # Stop, no turn_started, no onStop, never busy.
+    gate = Gate(world.tmp)
+    cfg = world.cfg({}, hooks={"onStop": [gate.action()]})
+    m, sid = await start(world, cfg)
+    probe = await m.router(sid).session.probe()
+    await world.until(lambda: probe.state == "answered")
+    await world.until(lambda: [t for t in m.open_turns(sid).list() if t.origin == "agent"])
+    assert _agent_turn(world, sid, m).state == "completed"
+    assert not of_type(world, sid, "turn_started")
+    assert Gate.calls(world, sid) == []
+    assert "busy" not in [s["state"] for s in of_type(world, sid, "session_state")]
+
+
+async def test_adopted_turn_is_not_continued_after_a_crash(world: World):
+    # claude dies while an adopted turn runs: nobody asked for it, so it fails and no restart
+    # prompt is pasted for it.
+    cfg = world.cfg(
+        turn([{"text": "turn text"}]),
+        sessions={"restart_continue_prompt": "Resume: continue the task"},
+    )
+    m, sid = await start(world, cfg)
+    router = m.router(sid)
+    await router.submit_turn("go")
+    await world.until(
+        lambda: m.get(sid)["state"] == "ready" and of_type(world, sid, "turn_completed")
+    )
+    _append(m, sid, assistant("woke up", mid="wake1"))
+    await world.until(lambda: m.get(sid)["state"] == "busy")
+    await router.session.pty.write(b"\x03")  # ctrl+c at idle: the fake exits
+    await world.until(lambda: _agent_turn(world, sid, m).state != "running")
+    agent = _agent_turn(world, sid, m)
+    assert (agent.state, agent.error) == ("failed", "claude_exited")
+    await world.until(lambda: m.get(sid)["state"] == "ready")
+    await router.drain(0.5)
+    assert not of_type(world, sid, "turn_resumed")
+    inputs = world.session_dir(sid) / "config" / "fake-inputs.jsonl"
+    assert not [i for i in jsonl(inputs) if i["text"].startswith("Resume")]
+
+
+async def test_adopted_turn_left_running_by_a_shutdown_is_not_continued(world: World):
+    cfg = world.cfg(
+        turn([{"text": "turn text"}]),
+        sessions={"restart_continue_prompt": "Resume: continue the task", "resume_on_start": True},
+    )
+    m1, sid = await start(world, cfg)
+    await m1.router(sid).submit_turn("go")
+    await world.until(
+        lambda: m1.get(sid)["state"] == "ready" and of_type(world, sid, "turn_completed")
+    )
+    _append(m1, sid, assistant("woke up", mid="wake1"))
+    await world.until(lambda: m1.get(sid)["state"] == "busy")
+    tid = _agent_turn(world, sid, m1).turn_id
+    await m1.shutdown()
+    m2 = world.manager(cfg)
+    await m2.load_persisted()
+    await world.until(lambda: m2.open_turns(sid).get(tid).state != "running")
+    done = m2.open_turns(sid).get(tid)
+    assert (done.state, done.error) == ("failed", "service_shutdown")
+    assert not of_type(world, sid, "turn_resumed")
+    await world.until(lambda: m2.get(sid)["state"] == "ready")
+    await m2.shutdown()
 
 
 async def test_turn_ended_while_gate_ran_is_neither_continued_nor_completed(world: World):
