@@ -16,6 +16,7 @@ from claude_code_wrapper.events import EVENT_TYPES
 from claude_code_wrapper.hooks import EVENT_DECISIONS, HookDispatcher, build_payload
 from claude_code_wrapper.manager import CreateSessionRequest
 from claude_code_wrapper.redact import Redactor
+from claude_code_wrapper.session import TurnRejected
 
 TASK = {"id": "b1", "type": "local_bash", "status": "running", "description": "npm test"}
 
@@ -442,15 +443,20 @@ async def test_stop_ends_a_turn_whose_prompt_is_a_queued_command_attachment(worl
     assert len(of_type(world, sid, "turn_completed")) == 1
 
 
-async def test_agent_origin_stop_unchanged(world: World):
+def _agent_turn(world: World, sid: str, m: Any) -> Any:
+    agent = [t for t in m.open_turns(sid).list() if t.origin == "agent"]
+    assert len(agent) == 1, agent
+    return agent[0]
+
+
+async def test_agent_origin_turn_is_adopted_and_gated(world: World):
+    # Claude woke by itself on a ready session (a background completion): its first main-chain
+    # record opens a running agent-origin turn, so its Stop is gated like any turn's.
     gate = Gate(world.tmp)
     scenario = turn(
-        [
-            {"text": "turn text"},
-            {"background": {"after": 1.0, "text": "monitor fired", "background_tasks": [TASK]}},
-        ]
+        [{"text": "turn text"}, {"background": {"after": 1.0, "text": "monitor fired"}}]
     )
-    cfg = _defer_cfg(world, scenario, hooks={"onStop": [gate.action()]})
+    cfg = world.cfg(scenario, hooks={"onStop": [gate.action()]})
     m, sid = await start(world, cfg)
     record = await m.router(sid).submit_turn("go")
     await world.until(lambda: len(of_type(world, sid, "turn_completed")) == 2)
@@ -458,9 +464,88 @@ async def test_agent_origin_stop_unchanged(world: World):
     assert first.turn_id == record.turn_id and first.state == "completed"
     assert second.origin == "agent" and second.state == "completed"
     assert second.final_text == "monitor fired"
-    # Only the client turn's Stop was gated; the background completion fired no onStop.
-    assert len(Gate.calls(world, sid)) == 1
-    assert not of_type(world, sid, "turn_deferred")
+    started = of_type(world, sid, "turn_started")
+    assert [(s["turn_id"], s["origin"]) for s in started] == [
+        (first.turn_id, "client"),
+        (second.turn_id, "agent"),
+    ]
+    calls = Gate.calls(world, sid)
+    assert len(calls) == 2
+    agent_call = calls[1]["data"]
+    assert agent_call["turn_id"] == second.turn_id
+    assert [t["text"] for t in agent_call["assistant_texts"]] == ["monitor fired"]
+    texts = {t["text"]: t["turn_id"] for t in of_type(world, sid, "assistant_text")}
+    assert texts == {"turn text": first.turn_id, "monitor fired": second.turn_id}
+    assert m.get(sid)["state"] == "ready"
+
+
+async def test_agent_origin_turn_block_continues_the_same_turn(world: World):
+    gate = Gate(world.tmp)
+    gate.reply(2, {"decision": "block", "reason": "close it"})
+    scenario = turn(
+        [{"text": "turn text"}, {"background": {"after": 1.0, "text": "monitor fired"}}]
+    )
+    cfg = world.cfg(scenario, hooks={"onStop": [gate.action()]})
+    m, sid = await start(world, cfg)
+    await m.router(sid).submit_turn("go")
+    await world.until(lambda: len(of_type(world, sid, "turn_completed")) == 2)
+    agent = _agent_turn(world, sid, m)
+    calls = [c["data"] for c in Gate.calls(world, sid)]
+    assert len(calls) == 3
+    assert calls[1]["turn_id"] == calls[2]["turn_id"] == agent.turn_id
+    assert calls[1]["stop_hook_active"] is False and calls[2]["stop_hook_active"] is True
+    assert of_type(world, sid, "turn_continued") == [
+        {"turn_id": agent.turn_id, "reason": "close it", "stop_hook_active": False}
+    ]
+    assert [s["origin"] for s in of_type(world, sid, "turn_started")] == ["client", "agent"]
+    assert agent.state == "completed"
+
+
+async def test_agent_origin_turn_keeps_background_defer(world: World):
+    # The built-in background-task defer applies to an adopted turn as to any turn: it stays
+    # running until a Stop with no background tasks.
+    scenario = turn(
+        [
+            {"text": "turn text"},
+            {"background": {"after": 1.0, "text": "monitor fired", "background_tasks": [TASK]}},
+            {"background": {"after": 2.0, "text": "all done"}},
+        ]
+    )
+    m, sid = await start(world, _defer_cfg(world, scenario))
+    await m.router(sid).submit_turn("go")
+    await world.until(lambda: of_type(world, sid, "turn_deferred"))
+    agent = _agent_turn(world, sid, m)
+    assert agent.state == "running" and m.get(sid)["state"] == "busy"
+    deferred = of_type(world, sid, "turn_deferred")
+    assert [(d["turn_id"], d["reason"]) for d in deferred] == [(agent.turn_id, "background_tasks")]
+    await world.until(lambda: len(of_type(world, sid, "turn_completed")) == 2)
+    agent = _agent_turn(world, sid, m)
+    assert agent.state == "completed" and agent.final_text == "all done"
+
+
+async def test_delivery_while_agent_origin_turn_runs_is_busy_handled(world: World):
+    # A client turn submitted while an adopted turn runs meets a busy session: the idle lane
+    # is refused, the regular lane types the text into the running agent-origin turn.
+    slow = {"type": "command", "run": "sleep 2", "blocking": True}
+    scenario = turn(
+        [{"text": "turn text"}, {"background": {"after": 0.5, "text": "monitor fired"}}]
+    )
+    cfg = world.cfg(scenario, hooks={"onStop": [slow]})
+    m, sid = await start(world, cfg)
+    router = m.router(sid)
+    await router.submit_turn("go")
+    await world.until(lambda: len(of_type(world, sid, "turn_started")) == 2)
+    agent = _agent_turn(world, sid, m)
+    assert agent.state == "running" and m.get(sid)["state"] == "busy"
+    with pytest.raises(TurnRejected) as exc:
+        await router.submit_turn("hello")
+    assert exc.value.reason == "busy"
+    delivery = await router.deliver("hello", lane="regular")
+    assert delivery.message is not None and delivery.message.turn_id == agent.turn_id
+    queued = of_type(world, sid, "prompt_queued")
+    assert [q["turn_id"] for q in queued] == [agent.turn_id]
+    await world.until(lambda: m.get(sid)["state"] == "ready")
+    assert _agent_turn(world, sid, m).state == "completed"
 
 
 async def test_turn_ended_while_gate_ran_is_neither_continued_nor_completed(world: World):

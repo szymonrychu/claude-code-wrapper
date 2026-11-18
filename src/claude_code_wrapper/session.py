@@ -1628,12 +1628,7 @@ class Session:
             last_activity_at=now,
             metadata=dict(message.metadata),
         )
-        self._turn = record
-        self._turn_started = self.clock()
-        self._last_activity = self._activity_persisted = self.clock()
-        self._set_state("busy")
-        self._persist(record)
-        self._arm_watch(record)
+        self._run(record)
         message.delivered_turn_id = record.turn_id
         log.info(
             "session %s: message %s runs as turn %s",
@@ -1642,6 +1637,45 @@ class Session:
             record.turn_id,
         )
         return message, True
+
+    def adopt_agent_turn(self) -> TurnRecord | None:
+        """Claude started a turn by itself on a ready session: a running `origin="agent"` record.
+
+        The router calls it on the first main-chain assistant record read while no turn runs
+        (claude woke on a background completion, a Monitor or task notification). The record is
+        persisted, the session goes busy and the turn ends like any turn (its Stop, an
+        interrupt, `turn_max_seconds`), so the Stop gate and the hooks see it. None, and
+        nothing changes, unless claude is live and ready with no turn and no command run.
+        """
+        if (
+            self.state != "ready"
+            or self._turn is not None
+            or self._command_active
+            or self.pty is None
+        ):
+            return None
+        now = now_iso()
+        record = TurnRecord(
+            turn_id=new_turn_id(),
+            session_id=self.spec.session_id,
+            origin="agent",
+            state="running",
+            started_at=now,
+            last_activity_at=now,
+        )
+        self._run(record)
+        log.info("session %s: agent turn %s adopted", self.spec.session_id, record.turn_id)
+        return record
+
+    def _run(self, record: TurnRecord) -> None:
+        """Make `record` the running turn of an idle session claude already works on: busy,
+        persisted, watched."""
+        self._turn = record
+        self._turn_started = self.clock()
+        self._last_activity = self._activity_persisted = self.clock()
+        self._set_state("busy")
+        self._persist(record)
+        self._arm_watch(record)
 
     def _with_marker(self, text: str, record: TurnRecord) -> str:
         if not self.spec.sessions.turn_marker:
@@ -1754,8 +1788,10 @@ class Session:
 
         A Stop for another claude session, a booting or dead session, or (while busy) carrying
         the marker of another turn targets nothing. While busy it targets the running turn
-        (`current_turn`). A Stop while ready with no turn running is a background completion
-        (Workflow, Monitor) and targets a new, not yet persisted `origin="agent"` record.
+        (`current_turn`), also an agent-origin turn `adopt_agent_turn` opened. A Stop while
+        ready with no turn running is a turn claude ran by itself without any main-chain
+        record the router read (nothing was adopted): it targets a new, not yet persisted
+        `origin="agent"` record, which completes at once and is not gated.
         """
         if payload.get("session_id") != self.spec.claude_session_id:
             log.info(

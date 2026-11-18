@@ -83,6 +83,7 @@ from .transcript import (
     ProbeMarker,
     SubagentWatcher,
     Thinking,
+    ToolUse,
     TranscriptTailer,
     Usage,
     UsageTotals,
@@ -2033,6 +2034,13 @@ class SessionRouter(SessionListener):
         if self._dropping_history:
             return
         for ev in events:
+            if (
+                isinstance(ev, (AssistantText, Thinking, ToolUse, Usage))
+                and not ev.sidechain
+                and ev.agent_id is None
+                and self.session.current_turn is None
+            ):
+                self._adopt_agent_turn()
             if isinstance(ev, AssistantText):
                 await self._on_assistant_text(ev)
             elif isinstance(ev, Thinking):
@@ -2121,10 +2129,7 @@ class SessionRouter(SessionListener):
         if new_turn:
             record = session.current_turn
             assert record is not None
-            self._last_marker = record.turn_id  # its Stop carries no marker of its own
-            self._usage.reset()
-            self._cancel_auto_compact()
-            self._emit_turn_started(record.turn_id, record.origin, record.text)
+            self._turn_began(record)
         self._emit(
             "prompt_delivered",
             {
@@ -2136,6 +2141,21 @@ class SessionRouter(SessionListener):
         )
         if self.peer_inbox is not None and turn_id is not None:
             self.peer_inbox.message_delivered(message.message_id, turn_id)
+
+    def _adopt_agent_turn(self) -> None:
+        """A main-chain assistant record on a ready session: claude runs a turn by itself (a
+        background completion woke it). It becomes a running agent-origin turn, so its texts
+        carry its id and are buffered, and its Stop goes through the gate like any turn's."""
+        record = self.session.adopt_agent_turn()
+        if record is not None:
+            self._turn_began(record)
+
+    def _turn_began(self, record: TurnRecord) -> None:
+        """A turn claude started without a paste of ours (a queued message, an adopted turn)."""
+        self._last_marker = record.turn_id  # its Stop carries no marker of its own
+        self._usage.reset()
+        self._cancel_auto_compact()
+        self._emit_turn_started(record.turn_id, record.origin, record.text)
 
     def _assistant_text_data(self) -> dict[str, Any]:
         """The running turn's buffered main-chain text blocks, for the onStop hook data."""
