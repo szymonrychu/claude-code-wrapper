@@ -26,7 +26,8 @@ Session model:
 - Turns are strictly sequential: one running turn per session. A second submit gets `409 busy`.
 - A turn has a state: `running`, then one of `completed`, `failed`, `interrupted`, `timeout`.
   A turn also has an `origin`: `client` (submitted over the API), `initial` (the configured
-  initial prompt), `agent` (an unsolicited Stop, for example a background task finishing) or
+  initial prompt), `agent` (a turn claude ran by itself on an idle session, for example woken by a
+  background task finishing: its first main-chain assistant record opens it as a running turn) or
   `peer` (a message from another ccw session, see [Peer messaging](#peer-messaging)).
 - Every happening is appended to a per-session event log (`events.jsonl`), streamed over SSE and
   pageable over `history`. User hooks (command or webhook actions) fire on the same happenings.
@@ -1676,6 +1677,22 @@ Emitted when a turn has been accepted and pasted.
 
 `data`: `turn_id`, `origin` (`client`, `initial`, `agent`, `peer`), `text` (the prompt).
 
+An `agent` turn is adopted: claude woke by itself while the session was ready (a background task,
+Monitor or Workflow completion) and the first main-chain assistant record (text, thinking, tool
+use or usage; never a subagent's) read from the transcript opened it. Its `turn_started` comes
+right before the `assistant_text` events it carries, with `text` `""`, the session goes busy, and
+the turn ends like any other: its Stop is gated by `onStop` (a `block` continues it as
+`turn_continued` with the same `turn_id`), an allow completes it and the session is ready again.
+While it runs, the session is busy as for any turn: an `idle` delivery gets `409 busy`, a
+`regular` one (the default lane) is typed into it (`prompt_queued` with its `turn_id`), a
+`priority` one interrupts it. A Stop with no main-chain record before it is still recorded as a
+completed `agent` turn, without `turn_started` and without `onStop`. Nothing is adopted while
+claude's previous turn may still be writing: after a turn that ended without a Stop and without an
+interrupt line in the transcript (a second ESC, `turn_max_seconds`, a crash, a fatal screen) until
+the next Stop or interrupt line, and for a probe claude answers as a turn of its own (it completes
+as an `agent` turn at its Stop, as before). An adopted turn is never continued with
+`restart_continue_prompt`: a crash fails it `claude_exited`, a resume fails it `service_shutdown`.
+
 ```
 event: turn_started
 data: {"seq":7,"ts":"2026-10-20T09:01:00.011Z","session_id":"ses_3f9a1c0b7d42","type":"turn_started","data":{"turn_id":"turn-1k9x2m0q4zw8","origin":"client","text":"hi"}}
@@ -1832,7 +1849,8 @@ Emitted for each assistant text block read from the transcript (main thread and 
 
 `data`: `text`, `message_id`, `model`, `agent_id` (null for the main thread, the subagent id for a
 sidechain; sidechain text does not fire `onAgentResponse`), `turn_id` (the id of the running turn,
-null when no turn is running) and `sidechain` (boolean, true for subagent text).
+null when no turn is running; main-chain text on an idle session first opens an `agent` turn, see
+`turn_started`, so it carries that turn's id) and `sidechain` (boolean, true for subagent text).
 
 ```
 event: assistant_text
@@ -2540,9 +2558,11 @@ Turn callbacks (`callbackUrl`) follow the same rule.
 ### `onStop`
 
 Trigger: Claude's Stop, relayed when it would end the running turn (a busy session, this
-session's claude session id, the running turn's marker). A Stop with no turn running (a
-background completion, recorded as an `origin: "agent"` turn) and a stale or foreign Stop fire no
-`onStop`. Only the lead's Stop is gated: teammates fire `TeammateIdle`, not the parent Stop.
+session's claude session id, the running turn's marker). This includes an adopted `agent` turn
+(claude woke by itself on a background completion, see `turn_started`): its Stop is gated with its
+own `turn_id` and `assistant_texts`, and a `block` retries with the same `turn_id`. A Stop with no
+turn running (claude stopped without any main-chain record read before, recorded as a completed
+`origin: "agent"` turn) and a stale or foreign Stop fire no `onStop`. Only the lead's Stop is gated: teammates fire `TeammateIdle`, not the parent Stop.
 `data`: `turn_id`, `stop_hook_active` (true when this Stop follows a block), `last_assistant_message`,
 `background_tasks`, `session_crons` (lists from the Stop payload, `[]` when absent),
 `transcript_path` (null when absent), `assistant_texts` and `assistant_texts_truncated`.
