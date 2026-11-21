@@ -96,9 +96,9 @@ def evaluate_level(th: Thresholds, context: Mapping[str, Any] | None) -> int:
     """Level 0..3 from the context gauge.
 
     No context: 0. Both used_tokens and a window (> 0) known: tokens against the token
-    thresholds. Otherwise used_percentage against the pct thresholds (same as the
-    orchestrator's due_level), whatever a lone used_tokens says (token thresholds are sized
-    for a window the gauge does not confirm). Nothing usable: 0.
+    thresholds. Otherwise used_percentage against the pct thresholds (same rule a policy
+    builder uses for unknown windows), whatever a lone used_tokens says (token thresholds
+    are sized for a window the gauge does not confirm). Nothing usable: 0.
     """
     if not context:
         return 0
