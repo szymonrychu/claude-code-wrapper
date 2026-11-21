@@ -1,9 +1,9 @@
 """Context pressure policy: models, level evaluation, text rendering, per-session state.
 
 A client pushes a `PressurePolicy` per session (memory only; it re-pushes after a
-wrapper restart). Levels are computed from the statusLine context gauge in tokens: unknown
-context (None, e.g. right after compaction) is level 0, never a stale high level. The
-percentage thresholds are used only when the gauge reports no window.
+wrapper restart). Levels are computed from the statusLine context gauge: tokens count only
+with a known window, the percentage thresholds decide when the gauge reports no window.
+Unknown context (None, e.g. right after compaction) is level 0, never a stale high level.
 """
 
 from __future__ import annotations
@@ -93,15 +93,19 @@ def _level(value: float | None, l1: float | None, l2: float, l3: float) -> int:
 
 
 def evaluate_level(th: Thresholds, context: Mapping[str, Any] | None) -> int:
-    """Level 0..3 from the context gauge: tokens first, percent only without a window."""
+    """Level 0..3 from the context gauge.
+
+    No context: 0. Known window (> 0) and known used_tokens: tokens against the token
+    thresholds. Unknown window: used_percentage against the pct thresholds, whatever
+    used_tokens says (token thresholds are sized for a window the gauge does not confirm).
+    Known window but unknown used_tokens: 0.
+    """
     if not context:
         return 0
-    used = context.get("used_tokens")
-    if used is not None:
+    if context.get("window_tokens"):
+        used = context.get("used_tokens")
         return _level(used, th.l1_tokens, th.l2_tokens, th.l3_tokens)
-    if context.get("window_tokens") is None:
-        return _level(context.get("used_percentage"), th.l1_pct, th.l2_pct, th.l3_pct)
-    return 0
+    return _level(context.get("used_percentage"), th.l1_pct, th.l2_pct, th.l3_pct)
 
 
 def _num(value: float) -> str:
@@ -136,7 +140,9 @@ def render(
         "used_k": "?" if used is None else str(round(used / 1000)),
         "window_k": "?" if not window else str(round(window / 1000)),
         "compact_pct": _num(compact_pct),
-        "left_k": "?" if used is None else str(max(0, round((th.compact_tokens - used) / 1000))),
+        "left_k": "?"
+        if used is None or not window
+        else str(max(0, round((th.compact_tokens - used) / 1000))),
         "level": str(level),
         "waiting_on": ", ".join(waiting_on) if waiting_on else "?",
     }
