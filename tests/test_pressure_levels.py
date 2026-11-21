@@ -35,8 +35,40 @@ def test_level_from_tokens() -> None:
         assert evaluate_level(TH, ctx(used)) == level
 
 
-def test_level_pct_fallback_without_window() -> None:
-    assert evaluate_level(TH, ctx(window=None, pct=71)) == 2
+TH25 = Thresholds(
+    l1_tokens=None,
+    l2_tokens=0,
+    l3_tokens=25_000,
+    compact_tokens=190_000,
+    l2_pct=15.0,
+    l3_pct=20.0,
+    compact_pct=95.0,
+)
+TH1M = Thresholds(
+    l1_tokens=None,
+    l2_tokens=150_000,
+    l3_tokens=200_000,
+    compact_tokens=900_000,
+    l2_pct=15.0,
+    l3_pct=20.0,
+    compact_pct=90.0,
+)
+
+
+@pytest.mark.parametrize(
+    ("th", "gauge", "level"),
+    [
+        pytest.param(TH, ctx(window=None, pct=71), 2, id="pct-fallback-without-window"),
+        pytest.param(TH25, ctx(39_000, None, 3.9), 0, id="mx-973-tokens-ignored-without-window"),
+        pytest.param(TH25, ctx(39_000, None, 21), 3, id="pct-decides-without-window"),
+        pytest.param(TH1M, ctx(39_000, 1_000_000), 0, id="1m-below-l2"),
+        pytest.param(TH1M, ctx(160_000, 1_000_000), 2, id="1m-l2"),
+        pytest.param(TH1M, ctx(210_000, 1_000_000), 3, id="1m-l3"),
+        pytest.param(TH1M, ctx(None, 1_000_000, 21), 3, id="window-known-used-unknown-pct"),
+    ],
+)
+def test_level_rule_matrix(th, gauge, level) -> None:
+    assert evaluate_level(th, gauge) == level
 
 
 def test_unknown_context_is_level_zero() -> None:
@@ -66,6 +98,8 @@ def test_render_unknown_placeholder_kept_literal() -> None:
 def test_render_missing_values_and_waiting_on() -> None:
     out = render("{pct} {used_k} {left_k} {waiting_on}", 1, ctx(window=None), TH, ["ci", "sub"])
     assert out == "? ? ? ci, sub"
+    # used known, no window: compact_tokens was computed for an assumed window
+    assert render("{left_k}", 1, ctx(39_000, None, 3.9), TH, []) == "?"
 
 
 def _policy(version: int = 1, **kw) -> PressurePolicy:
