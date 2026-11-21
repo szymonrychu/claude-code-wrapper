@@ -95,15 +95,15 @@ def _level(value: float | None, l1: float | None, l2: float, l3: float) -> int:
 def evaluate_level(th: Thresholds, context: Mapping[str, Any] | None) -> int:
     """Level 0..3 from the context gauge.
 
-    No context: 0. Known window (> 0) and known used_tokens: tokens against the token
-    thresholds. Unknown window: used_percentage against the pct thresholds, whatever
-    used_tokens says (token thresholds are sized for a window the gauge does not confirm).
-    Known window but unknown used_tokens: 0.
+    No context: 0. Both used_tokens and a window (> 0) known: tokens against the token
+    thresholds. Otherwise used_percentage against the pct thresholds (same as the
+    orchestrator's due_level), whatever a lone used_tokens says (token thresholds are sized
+    for a window the gauge does not confirm). Nothing usable: 0.
     """
     if not context:
         return 0
-    if context.get("window_tokens"):
-        used = context.get("used_tokens")
+    used = context.get("used_tokens")
+    if used is not None and context.get("window_tokens"):
         return _level(used, th.l1_tokens, th.l2_tokens, th.l3_tokens)
     return _level(context.get("used_percentage"), th.l1_pct, th.l2_pct, th.l3_pct)
 

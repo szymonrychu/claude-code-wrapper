@@ -3526,10 +3526,11 @@ stream. Without Docker see [Installation](#installation).
 
 With `pressure.enabled` a client pushes a per-session policy through
 [`PUT /v1/sessions/{id}/pressure`](#put-v1sessionsidpressure) (memory only; it re-pushes after a
-wrapper restart). The level (0 to 3) is computed from the statusLine context gauge in tokens
-(`used_tokens` against `thresholds.l1_tokens`, `l2_tokens`, `l3_tokens`); the percentage
-thresholds apply only when the gauge has no window. An unknown gauge (for example right after
-compaction) is level 0. Texts support the placeholders `{pct}`, `{used_k}`, `{window_k}`,
+wrapper restart). The level (0 to 3) is computed from the statusLine context gauge: tokens
+(`used_tokens` against `thresholds.l1_tokens`, `l2_tokens`, `l3_tokens`) only when both
+`used_tokens` and `window_tokens` are known, otherwise `used_percentage` against the percent
+thresholds. A gauge with neither (for example right after compaction) is level 0. `{left_k}`
+renders `?` without a window. Texts support the placeholders `{pct}`, `{used_k}`, `{window_k}`,
 `{compact_pct}`, `{left_k}`, `{level}` and `{waiting_on}`; unknown placeholders stay literal and
 missing values render as `?`. A `pressure_policy_set` event is emitted when a policy is set.
 

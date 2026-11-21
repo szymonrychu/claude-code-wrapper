@@ -64,7 +64,7 @@ TH1M = Thresholds(
         pytest.param(TH1M, ctx(39_000, 1_000_000), 0, id="1m-below-l2"),
         pytest.param(TH1M, ctx(160_000, 1_000_000), 2, id="1m-l2"),
         pytest.param(TH1M, ctx(210_000, 1_000_000), 3, id="1m-l3"),
-        pytest.param(TH1M, ctx(None, 1_000_000, 50), 0, id="window-known-used-unknown"),
+        pytest.param(TH1M, ctx(None, 1_000_000, 21), 3, id="window-known-used-unknown-pct"),
     ],
 )
 def test_level_rule_matrix(th, gauge, level) -> None:
