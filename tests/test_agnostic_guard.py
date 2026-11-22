@@ -19,6 +19,10 @@ FORBIDDEN = (
     "agents-common",
     "tatara",
     "preset",
+    "session-send",
+    "agent-send",
+    "project-post",
+    "message-in",
 )
 #: (path under src/, lowercase literal) -> why the literal may stay. The literal is removed
 #: from that file's text before the word check, so any other hit in the file still fails.
