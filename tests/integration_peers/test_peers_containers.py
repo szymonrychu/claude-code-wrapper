@@ -72,29 +72,31 @@ class Node:
 
     def tool_results(self, tool: str) -> list[str]:
         """The response text of every ccw MCP `tool` result, oldest first."""
-        out: list[str] = []
+        return [
+            e["data"]["response"]
+            for e in self.history("tool_result")
+            if e["data"]["tool_name"].endswith(f"__{tool}")
+        ]
+
+    def peer_prompts(self) -> list[str]:
+        """The text of every peer frame typed into the session, oldest first: as a turn of its
+        own or into the running turn (a lane may hand it to the turn that runs)."""
+        return [
+            e["data"]["text"] for e in self.history("user_message") if e["data"]["origin"] == "peer"
+        ]
+
+    def history(self, type_: str) -> list[dict[str, Any]]:
+        """Every event of `type_` in the session history, oldest first."""
+        out: list[dict[str, Any]] = []
         after = 0
         while True:
             page = self.api.get(
                 f"/v1/sessions/{self.sid}/history", params={"after_seq": after, "limit": 500}
             ).json()
-            out += [
-                e["data"]["response"]
-                for e in page["events"]
-                if e["type"] == "tool_result" and e["data"]["tool_name"].endswith(f"__{tool}")
-            ]
+            out += [e for e in page["events"] if e["type"] == type_]
             if not page["has_more"]:
                 return out
             after = page["next_seq"]
-
-    def peer_turns(self) -> list[str]:
-        """The prompt text of every peer-origin turn, oldest first."""
-        turns = self.api.get(f"/v1/sessions/{self.sid}/turns").json()["turns"]
-        return [
-            self.api.get(f"/v1/sessions/{self.sid}/turns/{t['turn_id']}").json()["text"]
-            for t in turns
-            if t["origin"] == "peer"
-        ]
 
     def listing(self) -> list[str]:
         """Run `list peers` and return the addresses of the newest result."""
@@ -128,28 +130,28 @@ def hook_log(compose: Callable[..., str], node: Node) -> list[str]:
 def exchange(src: Node, dst: Node) -> None:
     """src's agent sends ping to dst; dst answers pong; src gets the idle notice; then quiet."""
     src_sends, dst_sends = len(src.sends()), len(dst.sends())
-    src_turns, dst_turns = len(src.peer_turns()), len(dst.peer_turns())
+    src_seen, dst_seen = len(src.peer_prompts()), len(dst.peer_prompts())
     src.submit(f"send ping to {dst.address}")
-    wait_for(lambda: len(dst.peer_turns()) > dst_turns, f"{dst.name} to receive the ping")
-    ping = dst.peer_turns()[dst_turns]
+    wait_for(lambda: len(dst.peer_prompts()) > dst_seen, f"{dst.name} to receive the ping")
+    ping = dst.peer_prompts()[dst_seen]
     assert ping.startswith(f'<agent-message from="{src.address}" msg_id="msg_')
     assert "\nping\n</agent-message>" in ping
     wait_for(
         lambda: any(
             t.startswith(f'<agent-message from="{dst.address}"') and "\npong\n" in t
-            for t in src.peer_turns()[src_turns:]
+            for t in src.peer_prompts()[src_seen:]
         ),
         f"{src.name} to receive the pong",
     )
     wait_for(
-        lambda: any(t.startswith("<peer-idle-notice") for t in src.peer_turns()[src_turns:]),
+        lambda: any(t.startswith("<peer-idle-notice") for t in src.peer_prompts()[src_seen:]),
         f"{src.name} to receive the idle notice",
     )
     time.sleep(3)  # a loop would show up as extra messages
     assert len(src.sends()) == src_sends + 1
     assert len(dst.sends()) == dst_sends + 1
-    assert len(dst.peer_turns()) == dst_turns + 1
-    notices = [t for t in src.peer_turns()[src_turns:] if t.startswith("<peer-idle-notice")]
+    assert len(dst.peer_prompts()) == dst_seen + 1
+    notices = [t for t in src.peer_prompts()[src_seen:] if t.startswith("<peer-idle-notice")]
     assert len(notices) == 1
 
 

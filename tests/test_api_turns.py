@@ -289,7 +289,7 @@ def test_submit_validation_400_413(client: TestClient, stub: StubManager) -> Non
 def test_submit_busy_409_and_booting_503(client: TestClient, stub: StubManager) -> None:
     stub.router_obj.raise_on = TurnRejected("busy")
     assert post(client, {"text": "a"}).status_code == 409
-    for reason in ("booting", "dead"):  # idle lane; regular and priority: test_lanes.py
+    for reason in ("booting", "dead"):  # idle lane; regular and interrupt: test_lanes.py
         stub.router_obj.raise_on = TurnRejected(reason)
         r = post(client, {"text": "a", "lane": "idle"})
         assert r.status_code == 503 and r.json()["error"]["code"] == reason

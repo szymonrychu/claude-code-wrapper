@@ -93,7 +93,7 @@ class StubSession:
         self.calls.append(("complete", payload, usage, model_tokens, marker_turn_id))
         return self.complete_result
 
-    def check_submittable(self, *, reserved=False):
+    def check_submittable(self):
         if self.reject:
             raise TurnRejected(self.reject)
 
@@ -101,10 +101,7 @@ class StubSession:
         if self.reject in ("booting", "dead"):
             raise TurnRejected(self.reject)
 
-    def check_no_dialog(self):
-        """The stub never shows a dialog."""
-
-    def check_queueable(self):
+    def check_deliverable(self, lane):
         """The stub has no PTY to type a message into a running turn."""
         raise TurnRejected("busy")
 
@@ -117,7 +114,6 @@ class StubSession:
         turn_id=None,
         annotations=None,
         metadata=None,
-        reserved=False,
     ):
         if self.reject:
             raise TurnRejected(self.reject)

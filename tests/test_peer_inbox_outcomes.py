@@ -286,7 +286,13 @@ async def start_peer(world: World, on_outcome, scenario: dict | None = None):
 
 async def test_world_notify_when_idle_delivered_completed(world):
     rec = Recorder()
-    m, sid, router, inbox = await start_peer(world, rec)
+    # The second message is typed into the first turn (claude queues it): the outcome names
+    # the turn that read it, once that turn completed.
+    scenario = {
+        "queue_input": True,
+        "turns": [{"match": "plain", "steps": [{"sleep": 1.0}, {"text": "done"}]}],
+    }
+    m, sid, router, inbox = await start_peer(world, rec, scenario)
     plain, asked = msg(1, "plain"), wish(2, "tell me")
     inbox.put(plain)
     inbox.put(asked)
@@ -294,9 +300,7 @@ async def test_world_notify_when_idle_delivered_completed(world):
     await asyncio.sleep(0.1)
     ((item, status, record),) = rec.calls
     assert item is asked and status == "delivered" and record.state == "completed"
-    turns = turns_of(m, sid)
-    assert [t.state for t in turns] == ["completed", "completed"]
-    assert record.turn_id == turns[1].turn_id
+    assert [t.turn_id for t in turns_of(m, sid)] == [record.turn_id]
 
 
 async def test_world_interrupted_handling_turn(world):

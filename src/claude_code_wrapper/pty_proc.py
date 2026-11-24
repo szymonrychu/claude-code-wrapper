@@ -37,6 +37,12 @@ PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
 #: ctrl+l: claude's `chat:clearInput` key (2.1.304), which empties the input box.
 CLEAR_INPUT = b"\x0c"
+#: Enter: claude's submit key (while a turn runs, the text is queued for the model).
+CR = b"\r"
+#: Ctrl+Enter as a CSI-u key (ESC [ 13 ; 5 u): claude's send-now key (2.1.323), which asks
+#: that the queued text reach the model now. Claude's input parser reads CSI-u keys without a
+#: keyboard protocol negotiation.
+CTRL_ENTER = b"\x1b[13;5u"
 #: The gap after `CLEAR_INPUT`, so the paste that follows lands in a later read (as
 #: session.KEY_GAP_SECONDS spaces keys).
 CLEAR_INPUT_GAP_SECONDS = 0.25
@@ -255,9 +261,15 @@ class PtyProcess:
             await self._write_locked(paste_bytes(text))
 
     async def send_prompt(
-        self, text: str, delay: float, guard: Callable[[], bool] | None = None
+        self,
+        text: str,
+        delay: float,
+        guard: Callable[[], bool] | None = None,
+        *,
+        submit: bytes = CR,
     ) -> bool:
-        """Paste `text`, wait `delay`, then CR as a second write, all under one lock hold.
+        """Paste `text`, wait `delay`, then the `submit` key (CR, or `CTRL_ENTER`) as a second
+        write, all under one lock hold.
 
         The CR must arrive in a later read than the paste end or the TUI takes it as a
         newline inside the paste; holding the lock keeps any other writer out of the gap.
@@ -278,7 +290,7 @@ class PtyProcess:
             if guard is not None and not guard():
                 self._stale_input = True
                 return False
-            await self._write_locked(b"\r")
+            await self._write_locked(submit)
             return True
 
     def _check_writable(self) -> int:

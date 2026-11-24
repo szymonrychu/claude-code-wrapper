@@ -267,6 +267,8 @@ async def test_dismiss_dialog_closes(world: World) -> None:
         r = await c.post(url, json={"action": "dismiss", "expect_since": body["since"]})
     assert r.status_code == 200, r.text
     assert r.json() == {"status": "dismissed", "escape_sent": True}
+    # the fake logs the key after it reads it, so the answer can come first
+    await world.until(lambda: keys(world, sid), what="the ESC in the fake's key log")
     assert len(keys(world, sid)) == 1
 
 
@@ -295,6 +297,7 @@ async def test_dismiss_twice_sends_one_escape(world: World) -> None:
     assert [a["status"] for a in answers] == ["dismissed", "dismissed"]
     assert answers[0]["escape_sent"] is False
     assert answers[1]["escape_sent"] is True
+    await world.until(lambda: keys(world, sid), what="the ESC in the fake's key log")
     assert len(keys(world, sid)) == 1
 
 

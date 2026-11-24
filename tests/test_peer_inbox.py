@@ -33,8 +33,8 @@ DELIVERED_KEYS = {"msg_id", "from", "kind", "turn_id", "result"}
 
 
 def msg(n: int | str, text: str | None = None, sender: str = FROM, lane: str = "idle") -> InboxItem:
-    """A peer message on the idle lane: these tests pin delivery as a new turn on a ready
-    session (the regular and priority lanes are covered in test_lanes.py)."""
+    """A peer message on the idle lane (every lane starts a turn on a ready session; typing
+    into a running turn by lane is covered in test_lanes.py)."""
     return InboxItem(
         kind="message",
         from_address=sender,
@@ -504,47 +504,15 @@ async def test_world_idle_session_gets_peer_turn(world):
     assert turn.metadata == {"peer": {"from": FROM, "msg_id": item.msg_id, "kind": "message"}}
 
 
-async def test_busy_session_waits_for_turn_end(world):
-    scenario = {"turns": [{"match": "slow", "steps": [{"sleep": 1.0}, {"text": "done"}]}]}
-    m, sid, router, inbox = await start_peer(world, scenario)
-    await router.submit_turn("slow")
-    item = msg(1, "ping")
-    inbox.put(item)
-    await asyncio.sleep(0.4)
-    assert [t.origin for t in turns_of(m, sid)] == ["client"]  # never typed into a busy PTY
-    await world.until(lambda: len(completed(m, sid)) == 2, what="both turns completed")
-    client, peer = turns_of(m, sid)
-    assert client.origin == "client" and peer.origin == "peer"
-    assert client.completed_at <= peer.started_at
-
-
 async def test_world_three_messages_in_arrival_order(world):
-    m, sid, router, inbox = await start_peer(world)
+    m, sid, router, inbox = await start_peer(world, {"queue_input": True})
     items = [msg(i, f"note {i}") for i in (1, 2, 3)]
     for item in items:
         inbox.put(item)
-    await world.until(lambda: len(completed(m, sid)) == 3, what="three peer turns")
-    turns = turns_of(m, sid)
-    assert [t.text for t in turns] == [frame_message(i) for i in items]
-    assert all(t.origin == "peer" for t in turns)
-
-
-async def test_interrupt_then_next(world):
-    scenario = {"turns": [{"match": "SLOWPEER", "steps": [{"sleep": 5.0}, {"text": "x"}]}]}
-    m, sid, router, inbox = await start_peer(world, scenario)
-    first, second = msg(1, "SLOWPEER"), msg(2, "quick")
-    inbox.put(first)
-    inbox.put(second)
-    await world.until(
-        lambda: router.session.current_turn is not None and router.session.state == "busy",
-        what="first peer turn running",
-    )
-    await asyncio.sleep(0.3)
-    await router.interrupt()
-    await world.until(lambda: completed(m, sid), what="second peer turn completed")
-    a, b = turns_of(m, sid)
-    assert a.text == frame_message(first) and a.state == "interrupted"
-    assert b.text == frame_message(second) and b.state == "completed"
+    await world.until(lambda: inbox.depth == 0, what="all three delivered")
+    delivered = [e["data"] for e in world.events(sid) if e["type"] == "peer_message_delivered"]
+    assert [d["msg_id"] for d in delivered] == [i.msg_id for i in items]
+    assert turns_of(m, sid)[0].text == frame_message(items[0])
 
 
 async def test_idle_compact_races_pop(world):
