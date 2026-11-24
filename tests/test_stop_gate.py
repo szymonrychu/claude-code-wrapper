@@ -281,19 +281,26 @@ async def test_hook_cannot_allow_past_builtin_defer(world: World):
         [
             {"text": "started"},
             {"background": {"after": 1.0, "text": "still going", "background_tasks": [TASK]}},
+            {"background": {"after": 2.0, "text": "all done", "background_tasks": []}},
         ],
         stop={"background_tasks": [TASK]},
     )
     m, sid = await start(world, _defer_cfg(world, scenario, hooks={"onStop": [gate.action()]}))
     record = await m.router(sid).submit_turn("go")
     done = await wait_turn(m, sid)
-    assert done.turn_id == record.turn_id and done.final_text == "still going"
+    assert done.turn_id == record.turn_id and done.final_text == "all done"
     # 1: tasks running, hook allow -> still deferred; 2: tasks running, hook block -> block
-    # wins; 3: after the block, no tasks -> allow completes.
-    assert [c["data"]["background_tasks"] for c in Gate.calls(world, sid)] == [[TASK], [TASK], []]
+    # wins; 3: the retried Stop still lists the running task; 4: background finished -> allow.
+    assert [c["data"]["background_tasks"] for c in Gate.calls(world, sid)] == [
+        [TASK],
+        [TASK],
+        [TASK],
+        [],
+    ]
     assert types(world, sid, "turn_deferred", "turn_continued", "turn_completed") == [
         "turn_deferred",
         "turn_continued",
+        "turn_deferred",
         "turn_completed",
     ]
 
