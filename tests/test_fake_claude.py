@@ -822,6 +822,27 @@ def test_stop_block_exit_2_uses_stderr_and_on_block_steps(
     assert [r["message"]["content"] for r in rows if r["type"] == "user"] == ["hi", "no yet"]
 
 
+def test_stop_block_retry_keeps_running_background_tasks(spawn, env, tmp_path, scenario_file):
+    out = tmp_path / "stop.out"
+    script = (
+        "if grep -q 'stop_hook_active.: true' "
+        + str(out)
+        + '; then exit 0; fi; echo \'{"decision": "block", "reason": "keep going"}\''
+    )
+    block_hook(env, tmp_path, script)
+    task = {"id": "bg1", "type": "bash", "status": "running", "description": "sleep"}
+    sc = scenario_boot(
+        scenario_file,
+        [{"match": ".*", "stop": {"background_tasks": [task]}, "steps": [{"text": "first"}]}],
+    )
+    p = spawn(FAKE_CLAUDE_SCENARIO=str(sc))
+    p.wait_for("? for shortcuts")
+    p.submit("hi")
+    stops = wait_payloads(p, out, 2)
+    assert [s["stop_hook_active"] for s in stops] == [False, True]
+    assert [s["background_tasks"] for s in stops] == [[task], [task]]
+
+
 def test_stop_block_cap(spawn, env, tmp_path):
     out = block_hook(env, tmp_path, 'echo \'{"decision": "block", "reason": "again"}\'')
     p = spawn(CLAUDE_CODE_STOP_HOOK_BLOCK_CAP="2")
