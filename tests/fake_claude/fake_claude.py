@@ -1259,7 +1259,6 @@ class Fake:
             if reason is None or blocks >= cap:
                 return
             blocks += 1
-            tasks, crons = [], []
             self.user_line(reason)
             steps = on_block if on_block is not None else [{"text": f"continued: {reason}"}]
             if not self.run_steps(steps, len(reason.split()), [], {}):
