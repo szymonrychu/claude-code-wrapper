@@ -372,6 +372,42 @@ def _block_output(reason: str) -> str:
     return json.dumps({"decision": "block", "reason": reason})
 
 
+_AGENT_TASK_TYPES = frozenset({"subagent", "local_agent"})
+
+
+def _taskstop_id(payload: Mapping[str, Any]) -> str | None:
+    """The task id a TaskStop call targeted: tool_input task_id, shell_id, then tool_response."""
+    tool_input, tool_response = payload.get("tool_input"), payload.get("tool_response")
+    for src, key in (
+        (tool_input, "task_id"),
+        (tool_input, "shell_id"),
+        (tool_response, "task_id"),
+    ):
+        if isinstance(src, dict) and isinstance(src.get(key), str):
+            return src[key]
+    return None
+
+
+def _vanished_subagents(known: set[str], tasks: list[Any]) -> dict[str, str]:
+    """Ids in `known` that a Stop `background_tasks` list lists as an agent entry with a
+    non-running status, mapped to that status. An id that is merely absent is kept (nested
+    subagents and teammates may not be listed)."""
+    out: dict[str, str] = {}
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        tid, status = t.get("id"), t.get("status", "running")
+        if (
+            isinstance(tid, str)
+            and tid in known
+            and t.get("type") in _AGENT_TASK_TYPES
+            and isinstance(status, str)
+            and status != "running"
+        ):
+            out[tid] = status
+    return out
+
+
 def _str_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
@@ -456,6 +492,8 @@ class SessionRouter(SessionListener):
         self._tick_runs: set[asyncio.Task[Any]] = set()
         self._closed = False
         self._subagents: set[str] = set()
+        self._synthetic_stopped: set[str] = set()  # stopped by TaskStop/Stop reconcile
+        self._subagent_types: dict[str, Any] = {}
         self._runner: asyncio.Task[Any] | None = None
         #: Why the runner is being cancelled (claude_exited, session_stopped, interrupted).
         self._abort: str | None = None
@@ -1041,6 +1079,8 @@ class SessionRouter(SessionListener):
             self.info.claude_session_id = new_id
             self.ensure_tailing()
             self._subagents.clear()
+            self._synthetic_stopped.clear()
+            self._subagent_types.clear()
             for wait in self._link_waits.values():
                 wait.cancel()
             self._link_waits.clear()
@@ -1366,6 +1406,11 @@ class SessionRouter(SessionListener):
         )
         self._emit("tool_result", data)
         self.session.record_tool_call()
+        if tool_name == "TaskStop" and not data["is_error"]:
+            # A subagent killed by TaskStop never delivers SubagentStop.
+            stopped = _taskstop_id(payload)
+            if stopped in self._subagents:
+                await self._on_subagent("SubagentStop", {"agent_id": stopped}, reason="killed")
         outcome = await self._fire("onToolResult", data, tool_name=tool_name)
         self._annotate(self.session.current_turn, outcome)
         return self._with_notes(event_name, payload, outcome.additional_context)
@@ -1379,6 +1424,9 @@ class SessionRouter(SessionListener):
             "session_crons": _list_or_empty(payload.get("session_crons")),
             "at": now_iso(),
         }
+        gone = _vanished_subagents(self._subagents, self.stop_inventory["background_tasks"])
+        for agent_id, status in sorted(gone.items()):
+            await self._on_subagent("SubagentStop", {"agent_id": agent_id}, reason=status)
         active = bool(payload.get("stop_hook_active"))
         if self.guard.loop_tripped:
             if active:
@@ -1629,20 +1677,31 @@ class SessionRouter(SessionListener):
         """Subagents seen in SubagentStart and not yet in SubagentStop."""
         return len(self._subagents)
 
-    async def _on_subagent(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
+    async def _on_subagent(
+        self, event_name: str, payload: Mapping[str, Any], reason: str | None = None
+    ) -> RelayResponse:
         started = event_name == "SubagentStart"
         agent_id = payload.get("agent_id")
         if isinstance(agent_id, str):
             if started:
                 self._subagents.add(agent_id)
+                self._subagent_types[agent_id] = payload.get("agent_type")
             else:
                 self._subagents.discard(agent_id)
                 self._resolve_pending_by_terminal(self.permissions.of_agent(agent_id), "deny")
+                if reason is not None:
+                    self._synthetic_stopped.add(agent_id)
+                elif agent_id in self._synthetic_stopped:
+                    self._synthetic_stopped.discard(agent_id)
+                    return _allow()  # synthetic stop already emitted and fired the hook
         data: dict[str, Any] = {
             "agent_id": payload.get("agent_id"),
-            "agent_type": payload.get("agent_type"),
+            "agent_type": payload.get("agent_type")
+            or (self._subagent_types.pop(agent_id, None) if isinstance(agent_id, str) else None),
             "parent_tool_use_id": _parent_tool_use_id(self.session.transcript_path, agent_id),
         }
+        if reason is not None:
+            data["reason"] = reason
         if not started and isinstance(payload.get("last_assistant_message"), str):
             data["last_assistant_message"] = payload["last_assistant_message"]
         self._emit("subagent_started" if started else "subagent_stopped", data)

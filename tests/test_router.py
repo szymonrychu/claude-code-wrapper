@@ -508,6 +508,72 @@ async def test_subagent_events(tmp_path):
     await h.router.close()
 
 
+@pytest.mark.parametrize(
+    "tool_input, tool_response",
+    [({"task_id": "a1"}, "ok"), ({"shell_id": "a1"}, "ok"), ({}, {"task_id": "a1"})],
+)
+async def test_taskstop_clears_killed_subagent(tmp_path, tool_input, tool_response):
+    h = Harness(tmp_path)
+    await h.router.handle_claude_hook("SubagentStart", {"agent_id": "a1", "agent_type": "x"})
+    await h.router.handle_claude_hook(
+        "PostToolUse",
+        {"tool_name": "TaskStop", "tool_input": tool_input, "tool_response": tool_response},
+    )
+    assert h.router.outstanding_subagents == 0
+    (ev,) = h.events("subagent_stopped")
+    assert ev.data["agent_id"] == "a1" and ev.data["reason"] == "killed"
+    await h.router.close()
+
+
+@pytest.mark.parametrize(
+    "tasks, left, reasons",
+    [
+        ([{"id": "a2", "type": "local_agent", "status": "running"}], {"a1", "a2"}, []),
+        ([{"id": "a1", "type": "local_agent", "status": "completed"}], {"a2"}, ["completed"]),
+        ([{"id": "a1", "type": "subagent", "status": "failed"}], {"a2"}, ["failed"]),
+        ([{"id": "a1", "type": "shell", "status": "killed"}], {"a1", "a2"}, []),
+        ([{"id": ["a1"], "type": "local_agent", "status": "killed"}], {"a1", "a2"}, []),
+        ([], {"a1", "a2"}, []),
+        (None, {"a1", "a2"}, []),
+    ],
+)
+async def test_stop_reconciles_subagents_with_background_tasks(tmp_path, tasks, left, reasons):
+    h = Harness(tmp_path)
+    for aid in ("a1", "a2"):
+        await h.router.handle_claude_hook("SubagentStart", {"agent_id": aid, "agent_type": "x"})
+    payload = {} if tasks is None else {"background_tasks": tasks}
+    await h.router.handle_claude_hook("Stop", payload)
+    assert set(h.router.outstanding_subagent_ids) == left
+    assert [e.data["reason"] for e in h.events("subagent_stopped")] == reasons
+    await h.router.close()
+
+
+@pytest.mark.parametrize(
+    "event, response", [("PostToolUseFailure", "boom"), ("PostToolUse", {"is_error": True})]
+)
+async def test_failed_taskstop_clears_nothing(tmp_path, event, response):
+    h = Harness(tmp_path)
+    await h.router.handle_claude_hook("SubagentStart", {"agent_id": "a1", "agent_type": "x"})
+    await h.router.handle_claude_hook(
+        event, {"tool_name": "TaskStop", "tool_input": {"task_id": "a1"}, "tool_response": response}
+    )
+    assert h.router.outstanding_subagents == 1
+    assert not h.events("subagent_stopped")
+    await h.router.close()
+
+
+async def test_late_subagent_stop_after_synthetic_stop_emits_nothing(tmp_path):
+    h = Harness(tmp_path)
+    await h.router.handle_claude_hook("SubagentStart", {"agent_id": "a1", "agent_type": "x"})
+    await h.router.handle_claude_hook(
+        "PostToolUse", {"tool_name": "TaskStop", "tool_input": {"task_id": "a1"}}
+    )
+    await h.router.handle_claude_hook("SubagentStop", {"agent_id": "a1", "agent_type": "x"})
+    (ev,) = h.events("subagent_stopped")
+    assert ev.data["agent_type"] == "x"
+    await h.router.close()
+
+
 async def test_exception_in_handler_returns_allow(tmp_path):
     h = Harness(tmp_path, hooks={"onError": [webhook()]})
 

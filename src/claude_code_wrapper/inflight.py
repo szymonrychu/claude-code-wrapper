@@ -172,6 +172,8 @@ def _scan_scratch(
                     dirnames[:] = []
                     continue
                 dirnames.sort()
+                if os.path.relpath(dirpath, root).count(os.sep) == 1 and "tasks" in dirnames:
+                    dirnames.remove("tasks")  # <project>/<session>/tasks: Claude Code's own output
                 for name in sorted(filenames):
                     if len(out) >= MAX_SCRATCH:
                         return out, incomplete
