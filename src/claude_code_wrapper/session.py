@@ -1295,12 +1295,33 @@ class Session:
         prompt. The one predicate every writer of text plus CR obeys."""
         return self._permission_pending or self._orphan_lock or self.dialog_kind() == "permission"
 
+    def real_dialog_open(self) -> bool:
+        """A dialog that text plus CR would answer or dismiss is open: a permission prompt
+        (`permission_prompt_open`), an unanswered question, a usage-limit wait, or a footer
+        with no turn running (a command dialog). A generic footer seen while a turn runs
+        (for example "esc to cancel" in the working status line) is not one."""
+        return (
+            self.permission_prompt_open()
+            or self._question
+            or self.dialog_kind() == "usage_wait"
+            or (self._turn is None and self.dialog_open())
+        )
+
     def _no_permission(self) -> bool:
         return not self.permission_prompt_open()
 
+    def _no_real_dialog(self) -> bool:
+        return not self.real_dialog_open()
+
+    def check_no_real_dialog(self) -> None:
+        """Raise `TurnRejected("dialog_open")` while `real_dialog_open`."""
+        if self.real_dialog_open():
+            raise TurnRejected("dialog_open")
+
     def check_no_permission(self) -> None:
         """Raise `TurnRejected("dialog_open")` while `permission_prompt_open`. Every writer of
-        text plus CR checks this, and passes `_no_permission` as the write guard."""
+        text plus CR checks this, and passes `_no_permission` as the write guard. The
+        `regular` and `interrupt` lanes are stricter (`check_typeable`, `real_dialog_open`)."""
         if self.permission_prompt_open():
             raise TurnRejected("dialog_open")
 
@@ -1486,8 +1507,9 @@ class Session:
 
     def check_typeable(self) -> PtyProcess:
         """The PTY a `regular` or `interrupt` lane message may be typed into now: a live claude
-        running a turn of its own and no permission prompt open (`permission_prompt_open`: a
-        CR would approve it). Other dialog footers do not hold it, so a stale footer with no
+        running a turn of its own and no real dialog open (`real_dialog_open`: a permission
+        prompt, question, usage wait or command dialog, which a CR would answer or dismiss).
+        A generic footer seen while the turn runs does not hold it, so a stale footer with no
         hook after it never blocks delivery.
 
         Raises `TurnRejected` booting or dead, then dialog_open, else busy when no turn runs
@@ -1495,7 +1517,7 @@ class Session:
         then would reach a command line or a dialog, not the model). No side effects.
         """
         pty = self._writable_pty()
-        self.check_no_permission()
+        self.check_no_real_dialog()
         self._check_turn_takes_text()
         return pty
 
@@ -1538,7 +1560,6 @@ class Session:
         if slash_command(text, self.spec.sessions.trailing_marker_pattern) is not None:
             raise TurnRejected("slash_command")
         pty = self.check_deliverable(lane)
-        self._question = False
         record = self._turn
         assert record is not None
         message = QueuedMessage(
@@ -1560,7 +1581,7 @@ class Session:
             written = await pty.send_prompt(
                 prompt,
                 self.spec.boot.submit_delay_seconds,
-                self._no_permission,
+                self._no_real_dialog if lane != "idle" else self._no_permission,
                 submit=CTRL_ENTER if lane == "interrupt" else CR,
             )
         except PtyClosed as exc:
@@ -1571,6 +1592,7 @@ class Session:
         if not written:
             self._queued.pop(message.message_id, None)
             raise TurnRejected("dialog_open")
+        self._question = False  # the written prompt answers (or drops) the question
         log.info(
             "session %s: message %s queued into %s (%s)",
             self.spec.session_id,

@@ -300,29 +300,42 @@ async def test_open_permission_prompt_refuses_every_lane(world: World) -> None:
         assert r.status_code == 202 and r.json()["queued"] is True
 
 
-OTHER_DIALOG = {
-    "queue_input": True,
-    "turns": [
-        {
-            "match": "pick",
-            "steps": [{"text": "Pick a colour\n 1. Red\n 2. Blue\n Esc to cancel"}, {"sleep": 30}],
-        }
+def _footer_script(text: str) -> dict:
+    return {
+        "queue_input": True,
+        "turns": [{"match": "pick", "steps": [{"text": text}, {"sleep": 30}]}],
+    }
+
+
+OTHER_DIALOG = _footer_script("Pick a colour\n 1. Red\n 2. Blue\n Esc to cancel")
+USAGE_WAIT = _footer_script("Usage limit reached\n Press Enter to continue\n Esc to cancel")
+
+
+@pytest.mark.parametrize(
+    ("kind", "lane", "status"),
+    [
+        ("footer", "regular", 202),  # a generic footer while a turn runs: the old false positive
+        ("footer", "interrupt", 202),
+        ("footer", "idle", 409),
+        ("usage_wait", "regular", 409),
+        ("usage_wait", "interrupt", 409),
+        ("question", "regular", 409),
+        ("question", "interrupt", 409),
     ],
-}
-
-
-@pytest.mark.parametrize(("lane", "status"), [("regular", 202), ("interrupt", 202), ("idle", 409)])
-async def test_other_dialog_footer_holds_only_the_idle_lane(
-    world: World, lane: str, status: int
+)
+async def test_only_a_real_dialog_holds_regular_and_interrupt(
+    world: World, kind: str, lane: str, status: int
 ) -> None:
-    # A footer that is not a permission prompt (or a stale one with no hook after it) holds
-    # only `idle`; `regular` and `interrupt` are typed at once.
-    m, sid, c = await _lane_app(world, OTHER_DIALOG)
+    # A generic footer holds only `idle`; a usage wait or an unanswered question also holds
+    # `regular` and `interrupt`, which would answer or dismiss it.
+    m, sid, c = await _lane_app(world, USAGE_WAIT if kind == "usage_wait" else OTHER_DIALOG)
     session = m.router(sid).session
     async with c:
         r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "pick one", "lane": "idle"})
         running = r.json()["turn_id"]
         await world.until(session.dialog_open, what="the dialog footer on screen")
+        if kind == "question":
+            session.set_question_waiting()
         assert not session.permission_prompt_open()
         r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": lane})
         assert r.status_code == status, r.text
