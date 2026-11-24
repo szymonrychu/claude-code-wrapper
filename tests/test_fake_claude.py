@@ -234,7 +234,8 @@ def test_basic_turn_transcript_and_hooks(spawn, env, work, tmp_path):
     p.submit("hello there")
     lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
     types = [x["type"] for x in lines]
-    assert types == ["user", "assistant", "assistant", "user", "assistant"]
+    assert types == ["user", "assistant", "assistant", "user", "assistant", "system"]
+    assert lines[5]["subtype"] == "stop_hook_summary"  # written after the Stop hooks ran
     assert lines[0]["message"]["content"] == "hello there"
     assert lines[0]["sessionId"] == "11111111-1111-4111-8111-111111111111"
     assert lines[0]["isSidechain"] is False and lines[0]["cwd"] == work

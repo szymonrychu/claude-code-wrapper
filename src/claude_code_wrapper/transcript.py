@@ -15,7 +15,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -60,8 +60,6 @@ def mangle_cwd(path: str | Path) -> str:
 class _Event:
     sidechain: bool = False
     agent_id: str | None = None
-    #: The line's `timestamp` (when claude wrote the record), None when absent.
-    timestamp: str | None = field(default=None, compare=False)
 
 
 @dataclass
@@ -115,6 +113,12 @@ class Interrupted(_Event):
 
 
 @dataclass
+class TurnEnded(_Event):
+    """A `system` / `stop_hook_summary` entry: claude ran its Stop hooks and wrote it after
+    them, so every record of the stopped turn is above it in the transcript."""
+
+
+@dataclass
 class ProbeMarker(_Event):
     probe_id: str
 
@@ -160,6 +164,7 @@ Event = (
     | ToolResult
     | Usage
     | Interrupted
+    | TurnEnded
     | ProbeMarker
     | CommandInvoked
     | CommandOutput
@@ -261,7 +266,6 @@ def parse_line(
     flags = {
         "sidechain": bool(sidechain or obj.get("isSidechain")),
         "agent_id": agent_id or _str(obj.get("agentId")),
-        "timestamp": _str(obj.get("timestamp")),
     }
     if kind == "system":
         made = _system_events(obj, redactor)
@@ -305,6 +309,8 @@ def _system_events(obj: dict, redactor: Redactor | None) -> list[_Made]:
             "duration_ms": dur if isinstance(dur, int) and not isinstance(dur, bool) else None,
         }
         return [(CompactBoundary, kw)]
+    if subtype == "stop_hook_summary":
+        return [(TurnEnded, {})]
     body = text if isinstance(text, str) else ""
     head = body.lstrip()
     if subtype == "informational":

@@ -82,9 +82,12 @@ class StubSession:
     def on_interrupted(self):
         self.calls.append(("on_interrupted",))
 
-    def adopt_agent_turn(self, written_at=None):
+    def adopt_agent_turn(self):
         """The stub never adopts a turn claude ran by itself."""
         return None
+
+    def transcript_turn_over(self):
+        pass
 
     def complete(self, payload, *, usage=None, model_tokens=None, marker_turn_id=None):
         self.calls.append(("complete", payload, usage, model_tokens, marker_turn_id))

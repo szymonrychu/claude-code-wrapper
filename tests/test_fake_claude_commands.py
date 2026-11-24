@@ -492,8 +492,8 @@ def test_prompt_command_scenario(boot, env, work, tmp_path):  # noqa: F811
     p.submit("/hello world", wait="Hello, world!")
     p.wait_for("? for shortcuts", since=p.buf.rindex("Hello, world!"))
     lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
-    assert [x["type"] for x in lines] == ["user", "user", "assistant"]
-    echo, meta, reply = lines
+    assert [x["type"] for x in lines] == ["user", "user", "assistant", "system"]
+    echo, meta, reply, _summary = lines
     assert echo["message"]["content"] == prompt_echo("hello", "world")
     assert not echo.get("isMeta")
     assert meta["isMeta"] is True
@@ -517,7 +517,7 @@ def test_prose_command_scenario(boot, env, work, tmp_path):  # noqa: F811
     p.submit("/tmp", wait="a dir")
     p.wait_for("? for shortcuts", since=p.buf.rindex("a dir"))
     lines = transcript_lines(env["CLAUDE_CONFIG_DIR"], work)
-    assert [x["type"] for x in lines] == ["user", "assistant"]
+    assert [x["type"] for x in lines] == ["user", "assistant", "system"]
     assert lines[0]["message"]["content"] == "/tmp"
     assert events_of(out) == ["UserPromptSubmit", "Stop"]
     assert payloads(out)[0]["prompt"] == "/tmp"

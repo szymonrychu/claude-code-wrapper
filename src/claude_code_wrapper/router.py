@@ -85,6 +85,7 @@ from .transcript import (
     Thinking,
     ToolUse,
     TranscriptTailer,
+    TurnEnded,
     Usage,
     UsageTotals,
     UserPrompt,
@@ -2099,7 +2100,7 @@ class SessionRouter(SessionListener):
                 and ev.agent_id is None
                 and self.session.current_turn is None
             ):
-                self._adopt_agent_turn(ev.timestamp)
+                self._adopt_agent_turn()
             if isinstance(ev, AssistantText):
                 await self._on_assistant_text(ev)
             elif isinstance(ev, Thinking):
@@ -2130,6 +2131,9 @@ class SessionRouter(SessionListener):
             elif isinstance(ev, Interrupted):
                 if not ev.sidechain:
                     self.session.on_interrupted()
+            elif isinstance(ev, TurnEnded):
+                if not ev.sidechain and ev.agent_id is None:
+                    self.session.transcript_turn_over()
             elif isinstance(ev, CompactBoundary):
                 if not ev.sidechain:
                     data = {
@@ -2155,6 +2159,8 @@ class SessionRouter(SessionListener):
                 if not ev.sidechain:
                     self.signals.publish("command_unknown", {"name": ev.name})
             elif isinstance(ev, UserPrompt):
+                if not ev.sidechain and ev.agent_id is None:
+                    self.session.transcript_turn_over()  # also when the end marker is missing
                 if ev.turn_marker:
                     self._last_marker = ev.turn_marker
                 if ev.message_id and not ev.sidechain:
@@ -2201,11 +2207,11 @@ class SessionRouter(SessionListener):
         if self.peer_inbox is not None and turn_id is not None:
             self.peer_inbox.message_delivered(message.message_id, turn_id)
 
-    def _adopt_agent_turn(self, written_at: str | None) -> None:
+    def _adopt_agent_turn(self) -> None:
         """A main-chain assistant record on a ready session: claude runs a turn by itself (a
         background completion woke it). It becomes a running agent-origin turn, so its texts
         carry its id and are buffered, and its Stop goes through the gate like any turn's."""
-        record = self.session.adopt_agent_turn(written_at)
+        record = self.session.adopt_agent_turn()
         if record is not None:
             self._turn_began(record)
 

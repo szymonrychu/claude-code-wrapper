@@ -210,8 +210,10 @@ def test_bash_tamper_restored_with_event(live: Live, session: dict[str, Any]) ->
     turn = live.turn(sid, live_prompt("tamper"))
     assert turn["state"] == "completed", turn
     events = [e for e in live.events(sid, "managed_settings_restored") if e["seq"] not in seen]
-    # The relay check can restore the file before the turn-end check: any trigger counts.
-    assert any(e["data"]["restored"] for e in events), events
+    # The relay check can restore the file before the turn-end check: either trigger counts.
+    assert any(
+        e["data"]["trigger"] in {"turn", "relay"} and e["data"]["restored"] for e in events
+    ), events
     found = in_container("sha256sum", MANAGED_FILE).stdout.split()[0]
     assert found == expected
     content = container_file(MANAGED_FILE) or ""
