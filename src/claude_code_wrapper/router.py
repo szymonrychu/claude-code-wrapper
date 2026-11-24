@@ -492,6 +492,7 @@ class SessionRouter(SessionListener):
         self._tick_runs: set[asyncio.Task[Any]] = set()
         self._closed = False
         self._subagents: set[str] = set()
+        self._synthetic_stopped: set[str] = set()  # stopped by TaskStop/Stop reconcile
         self._subagent_types: dict[str, Any] = {}
         self._runner: asyncio.Task[Any] | None = None
         #: Why the runner is being cancelled (claude_exited, session_stopped, interrupted).
@@ -1078,6 +1079,7 @@ class SessionRouter(SessionListener):
             self.info.claude_session_id = new_id
             self.ensure_tailing()
             self._subagents.clear()
+            self._synthetic_stopped.clear()
             self._subagent_types.clear()
             for wait in self._link_waits.values():
                 wait.cancel()
@@ -1685,10 +1687,13 @@ class SessionRouter(SessionListener):
                 self._subagents.add(agent_id)
                 self._subagent_types[agent_id] = payload.get("agent_type")
             else:
-                if agent_id not in self._subagents:
-                    return _allow()  # already stopped (synthetic stop, then the real one)
                 self._subagents.discard(agent_id)
                 self._resolve_pending_by_terminal(self.permissions.of_agent(agent_id), "deny")
+                if reason is not None:
+                    self._synthetic_stopped.add(agent_id)
+                elif agent_id in self._synthetic_stopped:
+                    self._synthetic_stopped.discard(agent_id)
+                    return _allow()  # synthetic stop already emitted and fired the hook
         data: dict[str, Any] = {
             "agent_id": payload.get("agent_id"),
             "agent_type": payload.get("agent_type")
