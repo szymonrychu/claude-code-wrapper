@@ -1,5 +1,6 @@
 {
   "boot": {"bypass_dialog": true, "min_seconds": 0.1},
+  "queue_input": true,
   "turns": [
     {
       "match": "(?m)^send (?P<body>ping) to (?P<to>\\S+)$",

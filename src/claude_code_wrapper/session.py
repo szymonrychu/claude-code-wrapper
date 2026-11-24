@@ -1576,12 +1576,19 @@ class Session:
         while len(self._queued) > MAX_QUEUED:
             del self._queued[next(iter(self._queued))]
         prompt = f"{text}\n\n<!-- ccw message: {message.message_id} -->"
+        no_dialog = self._no_real_dialog if lane != "idle" else self._no_permission
+
+        def guard() -> bool:
+            # The turn must still run at the paste and at the key: a key after it ended would
+            # submit the text as a new prompt to the idle claude, outside any turn here.
+            return self._turn is record and self.state == "busy" and no_dialog()
+
         try:
             self._typed = _squash(prompt)
             written = await pty.send_prompt(
                 prompt,
                 self.spec.boot.submit_delay_seconds,
-                self._no_real_dialog if lane != "idle" else self._no_permission,
+                guard,
                 submit=CTRL_ENTER if lane == "interrupt" else CR,
             )
         except PtyClosed as exc:
@@ -1591,7 +1598,7 @@ class Session:
             self.last_input = self.clock()
         if not written:
             self._queued.pop(message.message_id, None)
-            raise TurnRejected("dialog_open")
+            raise TurnRejected("busy" if self._turn is not record else "dialog_open")
         self._question = False  # the written prompt answers (or drops) the question
         log.info(
             "session %s: message %s queued into %s (%s)",

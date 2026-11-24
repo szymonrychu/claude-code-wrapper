@@ -13,6 +13,7 @@ from conftest import jsonl
 
 PEER_TOKEN = "peer-shared-token-0123456789"
 SCENARIO = {
+    "queue_input": True,  # claude queues text typed into a running turn
     "turns": [
         {
             "match": r"(?m)^send (?P<body>ping) to (?P<to>\S+)$",
@@ -49,7 +50,7 @@ SCENARIO = {
             "match": r"(?m)^list peers$",
             "steps": [{"mcp": {"server": "ccw", "tool": "peers", "arguments": {}}}],
         },
-    ]
+    ],
 }
 
 
@@ -215,19 +216,10 @@ def metric(text: str, name: str, **labels: str) -> float:
     return 0.0
 
 
-async def peer_turns(node: Node) -> list[str]:
-    """The prompt text of every peer-origin turn on a node, oldest first."""
-    out = []
-    async with httpx.AsyncClient() as c:
-        for t in await node.turns():
-            if t["origin"] != "peer":
-                continue
-            r = await c.get(
-                f"{node.svc.url}/v1/sessions/{node.sid}/turns/{t['turn_id']}",
-                headers=node.headers,
-            )
-            out.append(r.json()["text"])
-    return out
+def peer_prompts(node: Node) -> list[str]:
+    """The text of every peer frame typed into a node's session, oldest first: as a turn of
+    its own or into the running turn (a lane may hand it to the turn that runs)."""
+    return [e["data"]["text"] for e in node.events("user_message") if e["data"]["origin"] == "peer"]
 
 
 async def exchange(src: Node, dst: Node) -> None:
@@ -263,15 +255,15 @@ async def test_send_and_reply_round_trip(world, ccw_service) -> None:
     assert [x["arguments"]["message"] for x in a.sent(c.address)] == ["ping"]
     assert [x["arguments"]["message"] for x in c.sent(a.address)] == ["pong"]
     assert a.sent(c.address)[0]["text"].startswith("Sent msg_")
-    c_peer = await peer_turns(c)
+    c_peer = peer_prompts(c)
     assert len(c_peer) == 1
     assert c_peer[0].startswith(f'<agent-message from="{a.address}" msg_id="msg_')
     assert "\nping\n</agent-message>" in c_peer[0]
     assert any(
         t.startswith(f'<agent-message from="{c.address}"') and "\npong\n" in t
-        for t in await peer_turns(a)
+        for t in peer_prompts(a)
     )
-    assert not await peer_turns(b)  # B took no part
+    assert not peer_prompts(b)  # B took no part
 
 
 async def test_reverse_direction(world, ccw_service) -> None:
@@ -285,7 +277,7 @@ async def test_reverse_direction(world, ccw_service) -> None:
     assert [(e["data"]["from"], e["data"]["message"]) for e in pong] == [(a.address, "pong")]
     assert [x["arguments"]["message"] for x in c.sent(a.address)] == ["ping"]
     assert [x["arguments"]["message"] for x in a.sent(c.address)] == ["pong"]
-    a_peer = await peer_turns(a)
+    a_peer = peer_prompts(a)
     assert a_peer and a_peer[0].startswith(f'<agent-message from="{c.address}" msg_id="msg_')
     assert "\nping\n</agent-message>" in a_peer[0]
 
@@ -297,11 +289,11 @@ async def test_notify_when_idle_round_trip(world, ccw_service) -> None:
     await exchange(a, c)
     notices = [e for e in a.received() if e["data"]["kind"] == "notice"]
     assert [e["data"]["from"] for e in notices] == [c.address]
-    frames = [t for t in await peer_turns(a) if t.startswith("<peer-idle-notice")]
+    frames = [t for t in peer_prompts(a) if t.startswith("<peer-idle-notice")]
     assert len(frames) == 1
     assert frames[0].startswith(f'<peer-idle-notice from="{c.address}" msg_id="msg_')
     assert 'state="completed"/>' in frames[0].splitlines()[0]
-    assert not [t for t in await peer_turns(a) if t.startswith("<peer-delivery-failed")]
+    assert not [t for t in peer_prompts(a) if t.startswith("<peer-delivery-failed")]
     delivered = [e for e in a.events("peer_message_delivered") if e["data"]["kind"] == "notice"]
     assert [e["data"]["result"] for e in delivered] == ["delivered"]
 

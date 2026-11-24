@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,27 @@ async def test_queue_prompt_pastes_into_the_running_turn(
     # A client-chosen id is used as is.
     own = await session.queue_prompt("more", lane="regular", origin="peer", message_id="m-7")
     assert own.message_id == "m-7" and own.origin == "peer"
+
+
+@pytest.mark.parametrize("lane", ["regular", "interrupt", "idle"])
+async def test_turn_ending_before_the_submit_key_refuses_the_message(
+    harness: Harness,  # noqa: F811
+    lane: str,
+) -> None:
+    # The turn ends between the paste and its submit key: the key would submit the text as a
+    # new prompt on the idle claude, not hand it to the turn it was queued into.
+    session = await harness.start({"turns": [{"match": "slow", "steps": [{"sleep": 30}]}]})
+    record = await session.submit("slow one")
+    harness.writes.clear()
+    task = asyncio.create_task(session.queue_prompt("late", lane=lane, origin="peer"))
+    await wait_until(lambda: len(harness.writes) == 1)  # the paste, waiting for its key
+    payload = {"session_id": session.spec.claude_session_id, "last_assistant_message": "done"}
+    assert session.complete(payload, marker_turn_id=record.turn_id) is record
+    with pytest.raises(TurnRejected) as exc:
+        await task
+    assert exc.value.reason == "busy"
+    assert len(harness.writes) == 1  # no submit key
+    assert session.undelivered(record.turn_id) == []
 
 
 async def test_queue_prompt_needs_a_running_turn(harness: Harness) -> None:  # noqa: F811
@@ -256,6 +278,7 @@ async def test_every_lane_starts_a_turn_on_an_idle_session(world: World, lane: s
 # ------------------------------------------------------------------ C4: dialog refusal
 
 DIALOG = {
+    "queue_input": True,  # claude keeps the turn running while text is typed into it
     "turns": [
         {
             "match": "edit",
@@ -264,7 +287,7 @@ DIALOG = {
                 {"sleep": 30},
             ],
         }
-    ]
+    ],
 }
 
 
@@ -297,7 +320,7 @@ async def test_open_permission_prompt_refuses_every_lane(world: World) -> None:
         session.note_hook()
         assert not session.dialog_open()
         r = await c.post(f"/v1/sessions/{sid}/turns", json={"text": "go", "lane": "regular"})
-        assert r.status_code == 202 and r.json()["queued"] is True
+        assert r.status_code == 202 and r.json()["queued"] is True, r.text
 
 
 def _footer_script(text: str) -> dict:

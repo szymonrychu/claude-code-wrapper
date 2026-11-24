@@ -206,6 +206,7 @@ Local slash commands
   attachment line {"type": "attachment", "attachment": {"type": "queued_command", "prompt": T}}
   (the model reads it within the same turn, so no extra Stop). Texts still queued when the turn
   ends (Stop, an interrupt or a raw print) are sent next, each as a normal turn of its own.
+  A paste whose CR never came stays in the input box until clearInput (ctrl+l) empties it.
   Ctrl+Enter (CSI-u ESC[13;5u, chat:sendNow) after a paste submits it like a CR; while a turn
   runs (queue_input) it is logged as key "ctrl_enter" in fake-keys.jsonl, ends the running
   (or the next) "sleep" step early and the queued texts are written as queued_command
@@ -759,6 +760,7 @@ class Fake:
                     elif ch == CLEAR_INPUT:
                         self.record_key("clear_input")
                         paste, pasted, typed = b"", False, b""
+                        self.busy_input = b""  # a paste left unsubmitted when the turn ended
                     elif not pasted:
                         typed += ch
 
