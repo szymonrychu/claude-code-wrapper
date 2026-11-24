@@ -103,10 +103,16 @@ class Node:
         return self.events("peer_message_received")
 
     async def submit(self, prompt: str) -> None:
-        """POST a client turn, retrying while the session is busy (bounded at 30 s)."""
+        """POST a client turn once the session is ready, retrying while it is refused (bounded
+        at 30 s). Every lane types into a running turn, so the wait for ready is the caller's."""
         end = asyncio.get_running_loop().time() + 30
+        url = f"{self.svc.url}/v1/sessions/{self.sid}"
         async with httpx.AsyncClient() as c:
             while True:
+                state = (await c.get(url, headers=self.headers)).json().get("state")
+                if state != "ready" and asyncio.get_running_loop().time() < end:
+                    await asyncio.sleep(0.1)
+                    continue
                 r = await c.post(
                     f"{self.svc.url}/v1/sessions/{self.sid}/turns",
                     json={"text": prompt, "lane": "idle"},
@@ -116,6 +122,7 @@ class Node:
                     break
                 await asyncio.sleep(0.1)
         assert r.status_code == 202, f"{self.name} turn {prompt!r}: {r.text}"
+        assert r.json()["queued"] is False, f"{self.name} turn {prompt!r}: {r.text}"
 
     async def turns(self) -> list[dict]:
         async with httpx.AsyncClient() as c:

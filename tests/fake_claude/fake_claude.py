@@ -206,6 +206,10 @@ Local slash commands
   attachment line {"type": "attachment", "attachment": {"type": "queued_command", "prompt": T}}
   (the model reads it within the same turn, so no extra Stop). Texts still queued when the turn
   ends (Stop, an interrupt or a raw print) are sent next, each as a normal turn of its own.
+  Ctrl+Enter (CSI-u ESC[13;5u, chat:sendNow) after a paste submits it like a CR; while a turn
+  runs (queue_input) it is logged as key "ctrl_enter" in fake-keys.jsonl, ends the running
+  (or the next) "sleep" step early and the queued texts are written as queued_command
+  attachments at once (the model takes them now, within the same turn).
   Input log: every submitted line is appended to $CLAUDE_CONFIG_DIR/fake-inputs.jsonl as
   {"text", "state": "idle"|"busy", "ts"}. Bytes other than ESC arriving while a turn or command
   runs are recorded with state "busy" (and dropped), so tests can prove nothing typed into a
@@ -253,6 +257,8 @@ from typing import Any
 PASTE_START = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
 DOWN = b"\x1b[B"
+#: Ctrl+Enter as a CSI-u key: claude's chat:sendNow.
+CTRL_ENTER = b"\x1b[13;5u"
 CLEAR_INPUT = b"\x0c"  # ctrl+l, chat:clearInput in claude 2.1.304
 FOOTER = "? for shortcuts"
 AUTO_FOOTER = "\u23f5\u23f5 auto mode on (shift+tab to cycle)"
@@ -485,6 +491,8 @@ class Fake:
         #: Bytes typed during a turn (queue_input) and the texts queued from them.
         self.busy_input = b""
         self.queued: list[str] = []
+        #: Ctrl+Enter arrived after a queued paste (chat:sendNow).
+        self.send_now = False
         self.user_prompts: list[str] = []
 
     @staticmethod
@@ -740,6 +748,12 @@ class Fake:
                             in_paste, paste, pasted, typed = False, b"", False, b""
                             self.submit(text.rstrip("\n"))
                             data = b""
+                    elif ch == b"\x1b" and data.startswith(CTRL_ENTER[1:]) and (pasted or typed):
+                        self.record_key("ctrl_enter")
+                        text = (paste if pasted else typed).decode(errors="replace")
+                        in_paste, paste, pasted, typed = False, b"", False, b""
+                        self.submit(text.rstrip("\n"))
+                        data = b""
                     elif ch == b"\x1b" and not data.startswith(b"["):
                         self.record_key("esc")
                     elif ch == CLEAR_INPUT:
@@ -775,7 +789,7 @@ class Fake:
                 self.queue_busy(data)
                 # a loaded host coalesces reads: an ESC can arrive glued to a paste's CR
                 bare = data.replace(PASTE_START, b"").replace(PASTE_END, b"")
-                if b"\x1b" in bare:
+                if b"\x1b" in bare.replace(CTRL_ENTER, b""):
                     self.record_key("esc")
                     return True
             else:
@@ -792,11 +806,15 @@ class Fake:
             if start < 0 or end < 0:
                 return
             rest = self.busy_input[end + len(PASTE_END) :]
-            cr = rest.find(b"\r")
-            if cr < 0:
+            keys = [(i, k) for k in (b"\r", CTRL_ENTER) if (i := rest.find(k)) >= 0]
+            if not keys:
                 return
+            cr, key = min(keys)
             text = self.busy_input[start + len(PASTE_START) : end].decode(errors="replace")
-            self.busy_input = rest[cr + 1 :]
+            self.busy_input = rest[cr + len(key) :]
+            if key == CTRL_ENTER:
+                self.record_key("ctrl_enter")
+                self.send_now = True
             self.queued.append(text)
             self.record_input(text, "queued")
 
@@ -806,6 +824,10 @@ class Fake:
             return self.interrupted(seconds)
         deadline = time.monotonic() + seconds
         while (left := deadline - time.monotonic()) > 0:
+            if self.send_now:  # chat:sendNow: the turn makes way and the model takes it now
+                self.send_now = False
+                self.absorb_queued()
+                return False
             if self.interrupted(left):
                 return True
         return False

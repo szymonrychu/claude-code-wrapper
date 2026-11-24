@@ -29,7 +29,7 @@ router = APIRouter()
 
 #: A client message id: it is pasted into claude's input as a marker, so the charset is tight.
 MESSAGE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-#: Refusals a `regular` or `priority` delivery answers 409 (claude is not live), not 503.
+#: Refusals a `regular` or `interrupt` delivery answers 409 (claude is not live), not 503.
 _LANE_CONFLICTS = frozenset({"booting", "dead"})
 
 #: A message id that names an attachment directory: no colon, no separator, no leading dot.
@@ -76,8 +76,6 @@ class TurnRequest(BaseModel):
     metadata: dict[str, Any] | None = None
     lane: Lane = "regular"
     #: The id of the message when it is typed into a running turn; generated when absent.
-    #: On the priority lane it also makes a retry idempotent: a second send with an id this
-    #: session already took answers the turn the first one started (`duplicate: true`).
     message_id: str | None = Field(default=None, pattern=MESSAGE_ID_PATTERN)
 
 
@@ -207,8 +205,6 @@ async def submit_turn(session_id: str, body: TurnRequest, request: Request) -> A
             "lane": body.lane,
             "queued": False,
         }
-        if delivery.duplicate:  # a retried priority send: the turn its first send started
-            out["duplicate"] = True
     if attachment_paths:
         out["attachments"] = attachment_paths
         out["message_id"] = message_id

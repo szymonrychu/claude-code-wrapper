@@ -28,13 +28,13 @@ from .timeutil import now_iso  # noqa: F401  (re-exported: the one service times
 log = logging.getLogger(__name__)
 
 Origin = Literal["client", "initial", "agent", "peer"]
-#: How a message reaches a session: `idle` waits for no turn to be running, `regular` is typed
-#: into a running turn for claude to queue, `priority` interrupts the running turn first.
-Lane = Literal["idle", "regular", "priority"]
+#: How a message reaches a session. On an idle session every lane starts a turn. While a turn
+#: runs: `regular` is typed with Enter at once (claude queues it for the model), `interrupt` is
+#: typed with Ctrl+Enter (claude's send-now: the model takes it now), `idle` is typed with Enter
+#: only when no dialog footer is open, in practice at the next tool boundary.
+Lane = Literal["regular", "interrupt", "idle"]
 LANES: tuple[str, ...] = get_args(Lane)
-#: `pending`: a priority delivery's turn, listed while it interrupts the running turn and before
-#: it starts; served from memory only, never written to turns.jsonl.
-TurnState = Literal["pending", "running", "completed", "failed", "interrupted", "timeout"]
+TurnState = Literal["running", "completed", "failed", "interrupted", "timeout"]
 ProbeState = Literal["pending", "delivered", "answered"]
 #: Why a `running` turn has no claude working on it: the service shut down under it.
 Interruption = Literal["shutdown"]
@@ -208,9 +208,6 @@ class TurnStore:
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(line)
         self._needs_newline = False
-        held = self._records.get(record.turn_id)
-        if held is not None and held.state == "pending":
-            del self._records[record.turn_id]  # listed in start order, not from when it was held
         self._records[record.turn_id] = record.model_copy(deep=True)
 
     def refresh(self, record: TurnRecord) -> None:
@@ -222,12 +219,6 @@ class TurnStore:
         if self.readonly:
             raise StoreReadOnly(f"{self.path} is read-only")
         self._records[record.turn_id] = record.model_copy(deep=True)
-
-    def discard(self, turn_id: str) -> None:
-        """Forget a `pending` record (served by `refresh`, never written); others stay."""
-        record = self._records.get(turn_id)
-        if record is not None and record.state == "pending":
-            del self._records[turn_id]
 
     def get(self, turn_id: str) -> TurnRecord | None:
         record = self._records.get(turn_id)

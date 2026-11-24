@@ -42,8 +42,9 @@ PEERS_DESCRIPTION = (
 )
 SEND_DESCRIPTION = (
     "Send a message to another ccw session by address (<instance>/<session id>, from `peers`). "
-    "By lane: regular (default) is typed into the peer's running turn, or starts a turn when it "
-    "is idle; idle waits until the peer is idle; priority interrupts the peer's running turn. A "
+    "An idle peer starts a turn with it. While the peer works, by lane: regular (default) "
+    "reaches it as soon as it can, without interrupting; interrupt makes the peer take it now; "
+    "idle waits for the peer's next tool boundary. A "
     "reply, if any, arrives here the same way. Set "
     "notify_when_idle to be told when the peer has handled it. Errors start with one of: "
     "unknown peer, peer unreachable, message too large, inbox full, rate limited, "
@@ -130,7 +131,7 @@ def _peer_tools() -> list[dict[str, Any]]:
                     "lane": {
                         "type": "string",
                         "enum": list(LANES),
-                        "description": "regular (default), idle or priority",
+                        "description": "regular (default), interrupt or idle",
                     },
                 },
                 "required": ["to", "message"],

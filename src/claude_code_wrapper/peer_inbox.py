@@ -2,11 +2,11 @@
 
 `put` queues a peer message or notice. On an idle session (ready, no turn, no command runner,
 no idle-runner command queued) delivery takes the head; while a turn runs it takes the first
-message whose lane is not `idle` (`regular`, the default, or `priority`), when the running turn
-can take a message (`Session.check_queueable`). Either way it goes through
-`SessionRouter.deliver` with the item's lane and origin `peer`, so the onTurn hook may veto it:
-a new turn, or the text typed into the running turn (`regular`) or a new turn after the running
-one is interrupted (`priority`). Notices are always `idle`. Nothing here writes to the PTY.
+item whose lane's gate lets the running turn take it now (`Session.check_deliverable`:
+`regular`, the default, and `interrupt` unless a permission prompt is open, `idle` at a tool
+boundary). Either way it goes through `SessionRouter.deliver` with the item's lane and origin
+`peer`, so the onTurn hook may veto it: a new turn, or the text typed into the running turn
+(Ctrl+Enter on `interrupt`). Notices are always `idle`. Nothing here writes to the PTY.
 `deliver` awaits the onTurn hook, so the session can change in between; a `TurnRejected` then
 keeps the item queued and the next ready state delivers it.
 
@@ -57,7 +57,7 @@ MAX_RATE_SENDERS = 1024
 #: Seconds between re-checks while an idle-runner command is queued but not yet started.
 _QUEUED_COMMAND_POLL = 0.05
 #: Seconds before retrying a delivery the session refused (`TurnRejected`): a refusal on a
-#: ready session (a dialog open, a priority delivery holding the slot) can last a while.
+#: ready session (a dialog open) can last a while.
 REJECT_BACKOFF_SECONDS = 0.25
 
 Kind = Literal["message", "notice"]
@@ -309,15 +309,15 @@ class PeerInbox:
         return item.lane if item.kind == "message" else "idle"
 
     def _busy_pick(self) -> InboxItem | None:
-        """The first non-idle message, when the running turn can take one now."""
-        item = next((i for i in self._items if self._lane(i) != "idle"), None)
-        if item is None:
-            return None
-        try:
-            self._router.session.check_queueable()
-        except TurnRejected:
-            return None
-        return item
+        """The first item the running turn can take now, by its lane's gate."""
+        session = self._router.session
+        for item in self._items:
+            try:
+                session.check_deliverable(self._lane(item))
+            except TurnRejected:
+                continue
+            return item
+        return None
 
     async def _attempt(self) -> None:
         router = self._router

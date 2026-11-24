@@ -34,7 +34,7 @@ INTERRUPT_PREFIX = "[Request interrupted by user"
 
 _TURN_MARKER = re.compile(r"<!--\s*ccw turn:\s*(\S+?)\s*-->")
 _PROBE_MARKER = re.compile(r"<!--\s*ccw probe:\s*(\S+?)\s*-->")
-#: A message typed into a running turn (a regular or priority lane delivery, `queue_prompt`).
+#: A message typed into a running turn (a lane delivery, `queue_prompt`).
 _MESSAGE_MARKER = re.compile(r"<!--\s*ccw message:\s*(\S+?)\s*-->")
 _COMMAND_PREFIXES = ("<command-name>", "<command-message>")
 _OUTPUT_PREFIXES = ("<local-command-stdout>", "<local-command-stderr>")

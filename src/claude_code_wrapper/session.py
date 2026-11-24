@@ -63,14 +63,14 @@ import os
 import re
 import time
 import unicodedata
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
 from .claude_env import SECRET_KEY_RE, ClaudeEnv, listed_values
 from .config import COMMAND_NAME, BootConfig, BootDialog, LimitsConfig, SessionsConfig
-from .pty_proc import PtyClosed, PtyProcess
+from .pty_proc import CR, CTRL_ENTER, PtyClosed, PtyProcess
 from .redact import Redactor
 from .ring import Ring, _squash, strip_ansi
 from .turns import (
@@ -674,8 +674,6 @@ class Session:
         self._activity_persisted = self._last_activity
         self._probes: dict[str, Probe] = {}
         self._queued: dict[str, QueuedMessage] = {}
-        #: The slot is held for a priority delivery (`reserve`).
-        self._reserved = False
         #: claude's last turn is known to be over in transcript order, so a main-chain record
         #: read on a ready session starts a turn of its own (`adopt_agent_turn`). Cleared when a
         #: turn ends (at its Stop claude may still write the turn's last record; without a Stop
@@ -1183,35 +1181,14 @@ class Session:
             raise TurnRejected("dead")
         return self.pty
 
-    def check_submittable(self, *, reserved: bool = False) -> PtyProcess:
+    def check_submittable(self) -> PtyProcess:
         """Raise `TurnRejected(booting|dead|busy|dialog_open)` if a turn cannot start now (no
-        side effects).
-
-        While the slot is reserved (`reserve`) only the holder (`reserved=True`) may start one.
-        """
+        side effects)."""
         pty = self._writable_pty()
-        if self.state == "busy" or self._turn is not None or (self._reserved and not reserved):
+        if self.state == "busy" or self._turn is not None:
             raise TurnRejected("busy")
         self.check_no_permission()
         return pty
-
-    @property
-    def reserved(self) -> bool:
-        return self._reserved
-
-    @contextlib.contextmanager
-    def reserve(self) -> Iterator[None]:
-        """Hold the turn slot across an interrupt and the next submit (a priority delivery).
-
-        Meanwhile other turns (`check_submittable`) and slash command runs (`begin_command`)
-        are refused busy, so nothing takes the slot the interrupt freed. A turn claude starts by
-        itself (`deliver_message`) is still accounted.
-        """
-        self._reserved = True
-        try:
-            yield
-        finally:
-            self._reserved = False
 
     async def submit(
         self,
@@ -1222,7 +1199,6 @@ class Session:
         turn_id: str | None = None,
         annotations: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
-        reserved: bool = False,
     ) -> TurnRecord:
         """Start a turn: reserve the slot, persist the record, then paste and CR.
 
@@ -1234,7 +1210,7 @@ class Session:
         if slash_command(text, self.spec.sessions.trailing_marker_pattern) is not None:
             # claude would run it as a command: no Stop, so the turn would never end (design D3).
             raise TurnRejected("slash_command")
-        pty = self.check_submittable(reserved=reserved)
+        pty = self.check_submittable()
         self._question = False  # a new prompt answers (or drops) the question
         now = now_iso()
         record = TurnRecord(
@@ -1499,17 +1475,36 @@ class Session:
         if self.dialog_open():
             raise TurnRejected("dialog_open")
 
-    def check_queueable(self, *, reserved: bool = False) -> PtyProcess:
-        """The PTY a message may be typed into: a live claude running a turn of its own.
+    def check_queueable(self) -> PtyProcess:
+        """The PTY an `idle` lane message may be typed into: `check_typeable`, and refused
+        dialog_open while any dialog footer is open (`dialog_open`), which in practice holds the
+        message until the next relayed hook, a tool boundary. No side effects."""
+        pty = self._writable_pty()
+        self.check_no_dialog()
+        self._check_turn_takes_text()
+        return pty
+
+    def check_typeable(self) -> PtyProcess:
+        """The PTY a `regular` or `interrupt` lane message may be typed into now: a live claude
+        running a turn of its own and no permission prompt open (`permission_prompt_open`: a
+        CR would approve it). Other dialog footers do not hold it, so a stale footer with no
+        hook after it never blocks delivery.
 
         Raises `TurnRejected` booting or dead, then dialog_open, else busy when no turn runs
         or a slash command run, its command phase or a crash relaunch holds the slot (typing
-        then would reach a command line or a dialog, not the model), or a priority delivery is
-        interrupting the turn (`reserve`; only the holder passes `reserved=True`). No side
-        effects.
+        then would reach a command line or a dialog, not the model). No side effects.
         """
         pty = self._writable_pty()
-        self.check_no_dialog()
+        self.check_no_permission()
+        self._check_turn_takes_text()
+        return pty
+
+    def check_deliverable(self, lane: str) -> PtyProcess:
+        """The lane's gate for typing into the running turn: `check_queueable` for `idle`,
+        `check_typeable` for `regular` and `interrupt`."""
+        return self.check_queueable() if lane == "idle" else self.check_typeable()
+
+    def _check_turn_takes_text(self) -> None:
         record = self._turn
         if (
             self.state != "busy"
@@ -1517,10 +1512,8 @@ class Session:
             or self._command_active
             or self._commands_turn is not None
             or self._held is record
-            or (self._reserved and not reserved)
         ):
             raise TurnRejected("busy")
-        return pty
 
     async def queue_prompt(
         self,
@@ -1532,16 +1525,19 @@ class Session:
         callback_url: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> QueuedMessage:
-        """Type `text` into the running turn: paste with a message marker, then one CR.
+        """Type `text` into the running turn: paste with a message marker, then the submit key:
+        CR (Enter, submit) on `idle` and `regular`, Ctrl+Enter (send now) on
+        `interrupt`.
 
         No ESC and no turn marker: claude queues the text (Enter while busy) and passes it to
-        the model within the same turn, so the turn's Stop still completes the running record.
-        Raises `TurnRejected` (slash_command first, then `check_queueable`); a write to a
-        claude that exited raises `TurnRejected("dead")`.
+        the model within the same turn, so the turn's Stop still completes the running record;
+        Ctrl+Enter asks claude to hand it to the model now. Raises `TurnRejected`
+        (slash_command first, then the lane's gate `check_deliverable`); a write to a claude
+        that exited raises `TurnRejected("dead")`.
         """
         if slash_command(text, self.spec.sessions.trailing_marker_pattern) is not None:
             raise TurnRejected("slash_command")
-        pty = self.check_queueable()
+        pty = self.check_deliverable(lane)
         self._question = False
         record = self._turn
         assert record is not None
@@ -1562,7 +1558,10 @@ class Session:
         try:
             self._typed = _squash(prompt)
             written = await pty.send_prompt(
-                prompt, self.spec.boot.submit_delay_seconds, self._no_permission
+                prompt,
+                self.spec.boot.submit_delay_seconds,
+                self._no_permission,
+                submit=CTRL_ENTER if lane == "interrupt" else CR,
             )
         except PtyClosed as exc:
             self._queued.pop(message.message_id, None)
@@ -1926,8 +1925,6 @@ class Session:
         the session. False, and nothing changes, unless the session is ready with no turn.
         """
         if self.state != "ready" or self._turn is not None or self._command_active:
-            return False
-        if self._reserved:
             return False
         self._command_active = True
         self._set_state("busy")
