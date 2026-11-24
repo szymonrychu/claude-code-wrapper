@@ -86,6 +86,9 @@ class StubSession:
         """The stub never adopts a turn claude ran by itself."""
         return None
 
+    def transcript_turn_over(self):
+        pass
+
     def complete(self, payload, *, usage=None, model_tokens=None, marker_turn_id=None):
         self.calls.append(("complete", payload, usage, model_tokens, marker_turn_id))
         return self.complete_result

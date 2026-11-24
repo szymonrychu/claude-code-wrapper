@@ -110,7 +110,8 @@ Scenario schema
     {"background": {"after": seconds, "text": s, "background_tasks": [...]}}  after the
                          turn, wait, append an assistant line and run Stop again; that Stop
                          carries background_tasks (default [])
-  After the last step: Stop hooks run with the last assistant text, then the footer.
+  After the last step: Stop hooks run with the last assistant text, then the footer. After
+  each Stop run with at least one hook a system line of subtype stop_hook_summary is written.
   Turn-level keys besides "match" and "steps":
     "stop": {"background_tasks": [...], "session_crons": [...]}  the turn's first Stop
                          carries these lists verbatim (entries {"id","type","status",
@@ -1218,9 +1219,19 @@ class Fake:
                     "session_crons": crons,
                 },
             )
-            if any(r["json"].get("continue") is False for r in results):
-                return  # continue:false ends the turn as allowed, ahead of any block
+            stopped = any(r["json"].get("continue") is False for r in results)
             reason = self.block_reason(results)
+            if results:  # claude's end-of-turn marker, written after the Stop hooks ran
+                summary = {
+                    "type": "system",
+                    "subtype": "stop_hook_summary",
+                    "hookCount": len(results),
+                    "preventedContinuation": stopped,
+                    "level": "suggestion",
+                }
+                self.write_line(summary)
+            if stopped:
+                return  # continue:false ends the turn as allowed, ahead of any block
             if reason is None or blocks >= cap:
                 return
             blocks += 1

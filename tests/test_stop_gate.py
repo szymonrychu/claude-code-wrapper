@@ -549,6 +549,15 @@ async def test_delivery_while_agent_origin_turn_runs_is_busy_handled(world: Worl
     assert _agent_turn(world, sid, m).state == "completed"
 
 
+_TURN_ENDED = json.dumps({"type": "system", "subtype": "stop_hook_summary"}) + "\n"
+
+
+async def _turn_over(world: World, m: Any, sid: str) -> None:
+    """The completed turn's end-of-turn marker is in the transcript: a later record is a wake."""
+    transcript = Path(m.router(sid).session.transcript_path)
+    await world.until(lambda: "stop_hook_summary" in transcript.read_text())
+
+
 def _append(m: Any, sid: str, *lines: str) -> None:
     """Lines claude wrote to the main transcript (a record the tailer reads late, a wake)."""
     with open(m.router(sid).session.transcript_path, "a") as f:
@@ -581,6 +590,36 @@ async def test_late_record_after_a_stopless_end_is_not_adopted(world: World):
     assert m.get(sid)["state"] == "ready"
     [late] = [t for t in of_type(world, sid, "assistant_text") if t["text"] == "late words"]
     assert late["turn_id"] is None
+
+
+async def _stopped_before_its_marker(world: World) -> tuple[Any, str]:
+    """A turn completed by its Stop whose end-of-turn marker is not in the transcript yet."""
+    scenario = {"turns": [{"match": "wedge", "steps": [{"print": "working...\n"}]}]}
+    m, sid = await start(world, world.cfg(scenario))
+    router = m.router(sid)
+    record = await router.submit_turn("wedge")
+    transcript = Path(router.session.transcript_path)
+    await world.until(lambda: transcript.exists() and record.turn_id in transcript.read_text())
+    await router.handle_claude_hook("Stop", {"session_id": router.info.claude_session_id})
+    assert record.state == "completed" and m.get(sid)["state"] == "ready"
+    return m, sid
+
+
+async def test_record_before_the_end_of_turn_marker_is_not_adopted(world: World):
+    # claude can run the Stop hook before it writes the turn's last record (T-717): a record
+    # read after the Stop but above the stop_hook_summary line is the stopped turn's.
+    m, sid = await _stopped_before_its_marker(world)
+    _append(m, sid, assistant("late words", mid="late1"))
+    await _settled(world, m, sid, "late words")
+    assert [s["origin"] for s in of_type(world, sid, "turn_started")] == ["client"]
+    assert m.get(sid)["state"] == "ready"
+
+
+async def test_record_after_the_end_of_turn_marker_is_adopted(world: World):
+    m, sid = await _stopped_before_its_marker(world)
+    _append(m, sid, _TURN_ENDED, assistant("woke up", mid="wake1"))
+    await world.until(lambda: len(of_type(world, sid, "turn_started")) == 2)
+    assert _agent_turn(world, sid, m).state == "running"
 
 
 async def test_record_after_an_interrupt_line_is_adopted(world: World):
@@ -621,6 +660,7 @@ async def test_interrupt_of_an_adopted_turn_ends_it_and_returns_to_ready(world: 
     await world.until(
         lambda: m.get(sid)["state"] == "ready" and of_type(world, sid, "turn_completed")
     )
+    await _turn_over(world, m, sid)
     _append(m, sid, assistant("woke up", mid="wake1"))
     await world.until(lambda: m.get(sid)["state"] == "busy")
     agent = _agent_turn(world, sid, m)
@@ -657,6 +697,7 @@ async def test_adopted_turn_is_not_continued_after_a_crash(world: World):
     await world.until(
         lambda: m.get(sid)["state"] == "ready" and of_type(world, sid, "turn_completed")
     )
+    await _turn_over(world, m, sid)
     _append(m, sid, assistant("woke up", mid="wake1"))
     await world.until(lambda: m.get(sid)["state"] == "busy")
     await router.session.pty.write(b"\x03")  # ctrl+c at idle: the fake exits
@@ -680,6 +721,7 @@ async def test_adopted_turn_left_running_by_a_shutdown_is_not_continued(world: W
     await world.until(
         lambda: m1.get(sid)["state"] == "ready" and of_type(world, sid, "turn_completed")
     )
+    await _turn_over(world, m1, sid)
     _append(m1, sid, assistant("woke up", mid="wake1"))
     await world.until(lambda: m1.get(sid)["state"] == "busy")
     tid = _agent_turn(world, sid, m1).turn_id

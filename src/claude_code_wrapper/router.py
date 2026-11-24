@@ -85,6 +85,7 @@ from .transcript import (
     Thinking,
     ToolUse,
     TranscriptTailer,
+    TurnEnded,
     Usage,
     UsageTotals,
     UserPrompt,
@@ -2130,6 +2131,9 @@ class SessionRouter(SessionListener):
             elif isinstance(ev, Interrupted):
                 if not ev.sidechain:
                     self.session.on_interrupted()
+            elif isinstance(ev, TurnEnded):
+                if not ev.sidechain and ev.agent_id is None:
+                    self.session.transcript_turn_over()
             elif isinstance(ev, CompactBoundary):
                 if not ev.sidechain:
                     data = {
@@ -2155,6 +2159,8 @@ class SessionRouter(SessionListener):
                 if not ev.sidechain:
                     self.signals.publish("command_unknown", {"name": ev.name})
             elif isinstance(ev, UserPrompt):
+                if not ev.sidechain and ev.agent_id is None:
+                    self.session.transcript_turn_over()  # also when the end marker is missing
                 if ev.turn_marker:
                     self._last_marker = ev.turn_marker
                 if ev.message_id and not ev.sidechain:

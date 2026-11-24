@@ -676,10 +676,11 @@ class Session:
         self._queued: dict[str, QueuedMessage] = {}
         #: The slot is held for a priority delivery (`reserve`).
         self._reserved = False
-        #: claude's last turn is known to be over, so a main-chain record read on a ready
-        #: session starts a turn of its own (`adopt_agent_turn`). Cleared when a turn ends
-        #: without a Stop (claude may still write records of it) and when a probe claude runs
-        #: as a turn of its own is read; set again by the next Stop or main-chain interrupt line.
+        #: claude's last turn is known to be over in transcript order, so a main-chain record
+        #: read on a ready session starts a turn of its own (`adopt_agent_turn`). Cleared when a
+        #: turn ends (at its Stop claude may still write the turn's last record; without a Stop
+        #: it may still write any) and when a probe claude runs as a turn of its own is read;
+        #: set again by the transcript (`transcript_turn_over`).
         self._adoptable = True
         if resume_turn is not None:
             # The slot is taken from the first boot; `start` continues or fails the turn.
@@ -1653,9 +1654,11 @@ class Session:
         persisted, the session goes busy and the turn ends like any turn (its Stop, an
         interrupt, `turn_max_seconds`), so the Stop gate and the hooks see it. None, and
         nothing changes, unless claude is live and ready with no turn and no command run, and
-        its last turn is known to be over: after a turn that ended without a Stop or an interrupt
-        line (a second ESC, `turn_max_seconds`, a crash, a fatal screen) the record may be a late
-        one of that turn, and a probe claude runs as its own turn completes at its Stop as before.
+        its last turn is known to be over in the transcript (`transcript_turn_over`): until then
+        a record may be a late one of that turn. claude can run the Stop hook before it writes
+        the turn's last record (T-717), and after a turn that ended without a Stop (a second ESC,
+        `turn_max_seconds`, a crash, a fatal screen) it may write any. A probe claude runs as
+        its own turn completes at its Stop as before.
         """
         if (
             not self._adoptable
@@ -1877,7 +1880,7 @@ class Session:
         record.state = state
         record.error = error
         record.completed_at = now_iso()
-        self._adoptable = state == "completed"  # only a Stop says claude's turn is over
+        self._adoptable = False  # until the transcript shows claude's turn is over
         pending = self._interrupting
         if pending is not None and pending.record is record:
             pending.done.set()
@@ -2186,6 +2189,13 @@ class Session:
             if pending is not None and pending.record is record:
                 final = pending.final
             self._end_turn(record, final)
+        self._adoptable = True
+
+    def transcript_turn_over(self) -> None:
+        """The transcript shows claude's last turn is over: its end-of-turn marker (the
+        `stop_hook_summary` line claude writes after the Stop hooks) or a new prompt record (a
+        wake's task notification, a typed prompt). Every record of the stopped turn is above
+        it, so a later main-chain record is a new turn claude runs (`adopt_agent_turn`)."""
         self._adoptable = True
 
     # -- probes ----------------------------------------------------------------------------
