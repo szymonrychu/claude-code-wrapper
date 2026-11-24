@@ -376,28 +376,36 @@ _AGENT_TASK_TYPES = frozenset({"subagent", "local_agent"})
 
 
 def _taskstop_id(payload: Mapping[str, Any]) -> str | None:
-    """The task id a TaskStop call targeted (its input, else the response)."""
-    sources = (payload.get("tool_input"), payload.get("tool_response"))
-    for key in ("task_id", "shell_id"):
-        for src in sources:
-            if isinstance(src, dict) and isinstance(src.get(key), str):
-                return src[key]
+    """The task id a TaskStop call targeted: tool_input task_id, shell_id, then tool_response."""
+    tool_input, tool_response = payload.get("tool_input"), payload.get("tool_response")
+    for src, key in (
+        (tool_input, "task_id"),
+        (tool_input, "shell_id"),
+        (tool_response, "task_id"),
+    ):
+        if isinstance(src, dict) and isinstance(src.get(key), str):
+            return src[key]
     return None
 
 
-def _vanished_subagents(known: set[str], tasks: list[Any]) -> list[str]:
-    """Ids in `known` that a Stop `background_tasks` list shows as no longer running. Only
-    trusted when the list demonstrably covers agents (an agent-typed entry) or says so for the id
-    itself: a list without agent entries may simply not list subagents."""
-    entries = [t for t in tasks if isinstance(t, dict)]
-    running = {
-        t.get("id")
-        for t in entries
-        if t.get("type") in _AGENT_TASK_TYPES and t.get("status", "running") == "running"
-    }
-    covers_agents = any(t.get("type") in _AGENT_TASK_TYPES for t in entries)
-    ended = {t.get("id") for t in entries if t.get("status", "running") != "running"}
-    return sorted(i for i in known if i not in running and (covers_agents or i in ended))
+def _vanished_subagents(known: set[str], tasks: list[Any]) -> dict[str, str]:
+    """Ids in `known` that a Stop `background_tasks` list lists as an agent entry with a
+    non-running status, mapped to that status. An id that is merely absent is kept (nested
+    subagents and teammates may not be listed)."""
+    out: dict[str, str] = {}
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        tid, status = t.get("id"), t.get("status", "running")
+        if (
+            isinstance(tid, str)
+            and tid in known
+            and t.get("type") in _AGENT_TASK_TYPES
+            and isinstance(status, str)
+            and status != "running"
+        ):
+            out[tid] = status
+    return out
 
 
 def _str_or_none(value: Any) -> str | None:
@@ -484,6 +492,7 @@ class SessionRouter(SessionListener):
         self._tick_runs: set[asyncio.Task[Any]] = set()
         self._closed = False
         self._subagents: set[str] = set()
+        self._subagent_types: dict[str, Any] = {}
         self._runner: asyncio.Task[Any] | None = None
         #: Why the runner is being cancelled (claude_exited, session_stopped, interrupted).
         self._abort: str | None = None
@@ -1069,6 +1078,7 @@ class SessionRouter(SessionListener):
             self.info.claude_session_id = new_id
             self.ensure_tailing()
             self._subagents.clear()
+            self._subagent_types.clear()
             for wait in self._link_waits.values():
                 wait.cancel()
             self._link_waits.clear()
@@ -1394,7 +1404,7 @@ class SessionRouter(SessionListener):
         )
         self._emit("tool_result", data)
         self.session.record_tool_call()
-        if tool_name == "TaskStop":
+        if tool_name == "TaskStop" and not data["is_error"]:
             # A subagent killed by TaskStop never delivers SubagentStop.
             stopped = _taskstop_id(payload)
             if stopped in self._subagents:
@@ -1412,8 +1422,9 @@ class SessionRouter(SessionListener):
             "session_crons": _list_or_empty(payload.get("session_crons")),
             "at": now_iso(),
         }
-        for gone in _vanished_subagents(self._subagents, self.stop_inventory["background_tasks"]):
-            await self._on_subagent("SubagentStop", {"agent_id": gone}, reason="killed")
+        gone = _vanished_subagents(self._subagents, self.stop_inventory["background_tasks"])
+        for agent_id, status in sorted(gone.items()):
+            await self._on_subagent("SubagentStop", {"agent_id": agent_id}, reason=status)
         active = bool(payload.get("stop_hook_active"))
         if self.guard.loop_tripped:
             if active:
@@ -1672,12 +1683,16 @@ class SessionRouter(SessionListener):
         if isinstance(agent_id, str):
             if started:
                 self._subagents.add(agent_id)
+                self._subagent_types[agent_id] = payload.get("agent_type")
             else:
+                if agent_id not in self._subagents:
+                    return _allow()  # already stopped (synthetic stop, then the real one)
                 self._subagents.discard(agent_id)
                 self._resolve_pending_by_terminal(self.permissions.of_agent(agent_id), "deny")
         data: dict[str, Any] = {
             "agent_id": payload.get("agent_id"),
-            "agent_type": payload.get("agent_type"),
+            "agent_type": payload.get("agent_type")
+            or (self._subagent_types.pop(agent_id, None) if isinstance(agent_id, str) else None),
             "parent_tool_use_id": _parent_tool_use_id(self.session.transcript_path, agent_id),
         }
         if reason is not None:
