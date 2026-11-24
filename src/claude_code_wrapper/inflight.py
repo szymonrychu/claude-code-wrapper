@@ -177,6 +177,8 @@ def _scan_scratch(
                         return out, incomplete
                     if time.monotonic() > deadline:
                         return out, True
+                    if name.endswith(".output") and os.path.basename(dirpath) == "tasks":
+                        continue  # Claude Code's own background task output
                     path = os.path.join(dirpath, name)
                     try:
                         st = os.lstat(path)

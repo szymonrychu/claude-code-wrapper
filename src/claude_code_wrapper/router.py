@@ -372,6 +372,34 @@ def _block_output(reason: str) -> str:
     return json.dumps({"decision": "block", "reason": reason})
 
 
+_AGENT_TASK_TYPES = frozenset({"subagent", "local_agent"})
+
+
+def _taskstop_id(payload: Mapping[str, Any]) -> str | None:
+    """The task id a TaskStop call targeted (its input, else the response)."""
+    sources = (payload.get("tool_input"), payload.get("tool_response"))
+    for key in ("task_id", "shell_id"):
+        for src in sources:
+            if isinstance(src, dict) and isinstance(src.get(key), str):
+                return src[key]
+    return None
+
+
+def _vanished_subagents(known: set[str], tasks: list[Any]) -> list[str]:
+    """Ids in `known` that a Stop `background_tasks` list shows as no longer running. Only
+    trusted when the list demonstrably covers agents (an agent-typed entry) or says so for the id
+    itself: a list without agent entries may simply not list subagents."""
+    entries = [t for t in tasks if isinstance(t, dict)]
+    running = {
+        t.get("id")
+        for t in entries
+        if t.get("type") in _AGENT_TASK_TYPES and t.get("status", "running") == "running"
+    }
+    covers_agents = any(t.get("type") in _AGENT_TASK_TYPES for t in entries)
+    ended = {t.get("id") for t in entries if t.get("status", "running") != "running"}
+    return sorted(i for i in known if i not in running and (covers_agents or i in ended))
+
+
 def _str_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
@@ -1366,6 +1394,11 @@ class SessionRouter(SessionListener):
         )
         self._emit("tool_result", data)
         self.session.record_tool_call()
+        if tool_name == "TaskStop":
+            # A subagent killed by TaskStop never delivers SubagentStop.
+            stopped = _taskstop_id(payload)
+            if stopped in self._subagents:
+                await self._on_subagent("SubagentStop", {"agent_id": stopped}, reason="killed")
         outcome = await self._fire("onToolResult", data, tool_name=tool_name)
         self._annotate(self.session.current_turn, outcome)
         return self._with_notes(event_name, payload, outcome.additional_context)
@@ -1379,6 +1412,8 @@ class SessionRouter(SessionListener):
             "session_crons": _list_or_empty(payload.get("session_crons")),
             "at": now_iso(),
         }
+        for gone in _vanished_subagents(self._subagents, self.stop_inventory["background_tasks"]):
+            await self._on_subagent("SubagentStop", {"agent_id": gone}, reason="killed")
         active = bool(payload.get("stop_hook_active"))
         if self.guard.loop_tripped:
             if active:
@@ -1629,7 +1664,9 @@ class SessionRouter(SessionListener):
         """Subagents seen in SubagentStart and not yet in SubagentStop."""
         return len(self._subagents)
 
-    async def _on_subagent(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
+    async def _on_subagent(
+        self, event_name: str, payload: Mapping[str, Any], reason: str | None = None
+    ) -> RelayResponse:
         started = event_name == "SubagentStart"
         agent_id = payload.get("agent_id")
         if isinstance(agent_id, str):
@@ -1643,6 +1680,8 @@ class SessionRouter(SessionListener):
             "agent_type": payload.get("agent_type"),
             "parent_tool_use_id": _parent_tool_use_id(self.session.transcript_path, agent_id),
         }
+        if reason is not None:
+            data["reason"] = reason
         if not started and isinstance(payload.get("last_assistant_message"), str):
             data["last_assistant_message"] = payload["last_assistant_message"]
         self._emit("subagent_started" if started else "subagent_stopped", data)

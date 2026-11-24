@@ -163,6 +163,13 @@ async def test_scratch_outside_workdir_reported(tmp_path):
     assert got[0]["size"] == 7 and got[0]["mtime"]
 
 
+async def test_scratch_skips_claude_task_output(tmp_path):
+    touch(tmp_path / "pod" / "claude-1" / "x" / "tasks" / "b1.output")
+    keep = touch(tmp_path / "pod" / "claude-1" / "x" / "notes.output")
+    got, _ = await scan_scratch([str(tmp_path / "pod" / "claude-*")], hour_ago(), 20)
+    assert [g["path"] for g in got] == [str(keep)]
+
+
 async def test_scratch_inside_workdir_excluded(tmp_path):
     work = tmp_path / "work"
     touch(work / "claude-1" / "persisted.md")
