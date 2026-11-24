@@ -82,7 +82,7 @@ class StubSession:
     def on_interrupted(self):
         self.calls.append(("on_interrupted",))
 
-    def adopt_agent_turn(self):
+    def adopt_agent_turn(self, written_at=None):
         """The stub never adopts a turn claude ran by itself."""
         return None
 

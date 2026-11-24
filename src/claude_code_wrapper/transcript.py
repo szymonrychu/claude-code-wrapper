@@ -15,7 +15,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,8 @@ def mangle_cwd(path: str | Path) -> str:
 class _Event:
     sidechain: bool = False
     agent_id: str | None = None
+    #: The line's `timestamp` (when claude wrote the record), None when absent.
+    timestamp: str | None = field(default=None, compare=False)
 
 
 @dataclass
@@ -259,6 +261,7 @@ def parse_line(
     flags = {
         "sidechain": bool(sidechain or obj.get("isSidechain")),
         "agent_id": agent_id or _str(obj.get("agentId")),
+        "timestamp": _str(obj.get("timestamp")),
     }
     if kind == "system":
         made = _system_events(obj, redactor)

@@ -524,6 +524,17 @@ def _redactor_for(env: Mapping[str, str], secret_env: Iterable[str] = ()) -> Red
     return redactor
 
 
+def _written_before(written_at: str | None, stopped_at: str | None) -> bool:
+    """True when a transcript record's `written_at` is not after the `stopped_at` moment;
+    False when either is missing or unreadable."""
+    if written_at is None or stopped_at is None:
+        return False
+    try:
+        return datetime.fromisoformat(written_at) <= datetime.fromisoformat(stopped_at)
+    except ValueError:
+        return False
+
+
 def _age_seconds(record: TurnRecord) -> float:
     """Wall-clock seconds since the turn was submitted (0 for an unreadable `started_at`)."""
     try:
@@ -681,6 +692,8 @@ class Session:
         #: without a Stop (claude may still write records of it) and when a probe claude runs
         #: as a turn of its own is read; set again by the next Stop or main-chain interrupt line.
         self._adoptable = True
+        #: When the last turn ended at its Stop: a record claude wrote before it is that turn's.
+        self._stopped_at: str | None = None
         if resume_turn is not None:
             # The slot is taken from the first boot; `start` continues or fails the turn.
             resume_turn.interrupted = None
@@ -1645,7 +1658,7 @@ class Session:
         )
         return message, True
 
-    def adopt_agent_turn(self) -> TurnRecord | None:
+    def adopt_agent_turn(self, written_at: str | None = None) -> TurnRecord | None:
         """Claude started a turn by itself on a ready session: a running `origin="agent"` record.
 
         The router calls it on the first main-chain assistant record read while no turn runs
@@ -1656,9 +1669,13 @@ class Session:
         its last turn is known to be over: after a turn that ended without a Stop or an interrupt
         line (a second ESC, `turn_max_seconds`, a crash, a fatal screen) the record may be a late
         one of that turn, and a probe claude runs as its own turn completes at its Stop as before.
+        Nor when the record was written (`written_at`, its transcript timestamp) before the last
+        turn's Stop: claude can run the Stop hook before that turn's last record reaches the
+        transcript, so the record is a late one of the completed turn, not a wake.
         """
         if (
             not self._adoptable
+            or _written_before(written_at, self._stopped_at)
             or self.state != "ready"
             or self._turn is not None
             or self._command_active
@@ -1878,6 +1895,8 @@ class Session:
         record.error = error
         record.completed_at = now_iso()
         self._adoptable = state == "completed"  # only a Stop says claude's turn is over
+        if self._adoptable:
+            self._stopped_at = record.completed_at
         pending = self._interrupting
         if pending is not None and pending.record is record:
             pending.done.set()

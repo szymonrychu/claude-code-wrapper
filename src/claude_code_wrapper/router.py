@@ -2099,7 +2099,7 @@ class SessionRouter(SessionListener):
                 and ev.agent_id is None
                 and self.session.current_turn is None
             ):
-                self._adopt_agent_turn()
+                self._adopt_agent_turn(ev.timestamp)
             if isinstance(ev, AssistantText):
                 await self._on_assistant_text(ev)
             elif isinstance(ev, Thinking):
@@ -2201,11 +2201,11 @@ class SessionRouter(SessionListener):
         if self.peer_inbox is not None and turn_id is not None:
             self.peer_inbox.message_delivered(message.message_id, turn_id)
 
-    def _adopt_agent_turn(self) -> None:
+    def _adopt_agent_turn(self, written_at: str | None) -> None:
         """A main-chain assistant record on a ready session: claude runs a turn by itself (a
         background completion woke it). It becomes a running agent-origin turn, so its texts
         carry its id and are buffered, and its Stop goes through the gate like any turn's."""
-        record = self.session.adopt_agent_turn()
+        record = self.session.adopt_agent_turn(written_at)
         if record is not None:
             self._turn_began(record)
 

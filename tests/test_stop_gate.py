@@ -583,6 +583,21 @@ async def test_late_record_after_a_stopless_end_is_not_adopted(world: World):
     assert late["turn_id"] is None
 
 
+async def test_late_record_written_before_the_stop_is_not_adopted(world: World):
+    # claude can run the Stop hook before its last record of the turn reaches the transcript: a
+    # record stamped before the turn's Stop, read after it, opens no phantom agent turn (T-717).
+    m, sid = await start(world, world.cfg(turn([{"text": "turn text"}])))
+    record = await m.router(sid).submit_turn("go")
+    await world.until(lambda: record.state == "completed" and m.get(sid)["state"] == "ready")
+    late = json.loads(assistant("late words", mid="late1"))
+    late["timestamp"] = record.started_at  # written during the turn, before its Stop
+    _append(m, sid, json.dumps(late) + "\n")
+    await _settled(world, m, sid, "late words")
+    assert [s["origin"] for s in of_type(world, sid, "turn_started")] == ["client"]
+    assert [t.origin for t in m.open_turns(sid).list()] == ["client"]
+    assert m.get(sid)["state"] == "ready"
+
+
 async def test_record_after_an_interrupt_line_is_adopted(world: World):
     # The interrupt line closes claude's turn in transcript order: a record after it is a wake.
     cfg = world.cfg(turn([{"text": "part"}, {"sleep": 30}]))
