@@ -147,10 +147,11 @@ class Handler(BaseHTTPRequestHandler):
             }
             f.write(json.dumps(record) + "\n")
         if "count_tokens" in path:
-            return self._json({"input_tokens": 10})
-        if not path.startswith("/v1/messages"):
-            return self._json({})
-        self._reply(body, kind, value)
+            self._json({"input_tokens": 10})
+        elif not path.startswith("/v1/messages"):
+            self._json({})
+        else:
+            self._reply(body, kind, value)
 
     def _reply(self, body: dict[str, Any], kind: str, value: Any) -> None:
         model = body.get("model", "claude-sonnet-4-5")
@@ -181,7 +182,8 @@ class Handler(BaseHTTPRequestHandler):
             "usage": usage,
         }
         if not body.get("stream"):
-            return self._json({**message, "content": [full], "stop_reason": stop})
+            self._json({**message, "content": [full], "stop_reason": stop})
+            return
         payload = _sse(
             [
                 (

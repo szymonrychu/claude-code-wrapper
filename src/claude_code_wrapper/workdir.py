@@ -84,7 +84,7 @@ async def _git(args: Sequence[str], cwd: Path | None, env: Mapping[str, str]) ->
     return out.strip()
 
 
-async def prepare_workdir(
+async def prepare_workdir(  # noqa: C901
     init_cfg: InitConfig,
     workdir_root: str | Path,
     *,
@@ -190,7 +190,7 @@ def attachment_files(message_id: str, attachments: Sequence[tuple[str, bytes]]) 
     return files
 
 
-def safe_write_files(
+def safe_write_files(  # noqa: C901
     workdir: str | Path,
     files: Mapping[str, str | bytes],
     *,

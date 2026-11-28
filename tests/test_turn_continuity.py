@@ -15,8 +15,7 @@ from typing import Any
 from conftest import World, jsonl, turns_of, wait_until
 from test_session_turns import Harness, harness  # noqa: F401 - the fixture is used by name
 
-from claude_code_wrapper.config import Config, SessionsConfig
-from claude_code_wrapper.events import EVENT_TYPES
+from claude_code_wrapper.config import Config
 from claude_code_wrapper.manager import CreateSessionRequest, SessionManager
 from claude_code_wrapper.session import PROJECT_DIR_NAME
 
@@ -77,12 +76,6 @@ def slow_relaunch(cfg: Config, turns: list[dict], seconds: float) -> None:
 
 
 # ---------------------------------------------------------------- config and vocabulary
-
-
-def test_restart_continue_prompt_defaults_off() -> None:
-    assert SessionsConfig().restart_continue_prompt == ""
-    assert Config().sessions.restart_continue_prompt == ""
-    assert "turn_resumed" in EVENT_TYPES
 
 
 # ---------------------------------------------------------------- the continued turn

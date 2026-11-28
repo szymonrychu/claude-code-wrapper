@@ -31,6 +31,8 @@ from claude_code_wrapper import service
 from claude_code_wrapper.config import HOOK_EVENTS, Config
 from claude_code_wrapper.service import ServiceHandle, run_service
 
+pytestmark = pytest.mark.critical
+
 FIXTURES = Path(__file__).parent / "fixtures"
 SCENARIO = FIXTURES / "scenarios" / "e2e.json"
 RECORD_HOOK = FIXTURES / "hooks" / "record_hook.sh"

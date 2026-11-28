@@ -5,6 +5,8 @@ import pytest
 
 from claude_code_wrapper.events import EVENT_TYPES, Event, EventLog
 
+pytestmark = pytest.mark.critical
+
 
 def test_event_types_exact():
     assert EVENT_TYPES == [

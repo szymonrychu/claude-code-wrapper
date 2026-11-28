@@ -141,7 +141,7 @@ def _peer_tools() -> list[dict[str, Any]]:
     ]
 
 
-async def _call_peers(router: Any, name: str, args: Any, peers: PeerTools) -> dict[str, Any]:
+async def _call_peers(router: Any, name: str, args: Any, peers: PeerTools) -> dict[str, Any]:  # noqa: C901, PLR0911
     if args is None:
         args = {}
     if not isinstance(args, dict):
@@ -176,7 +176,7 @@ async def _call_peers(router: Any, name: str, args: Any, peers: PeerTools) -> di
     )
 
 
-def _call(router: Any, params: Any) -> dict[str, Any] | None:
+def _call(router: Any, params: Any) -> dict[str, Any] | None:  # noqa: PLR0911
     """The tools/call result, or None when the tool name is not `command`."""
     if not isinstance(params, dict) or params.get("name") != TOOL_NAME:
         return None
@@ -204,7 +204,7 @@ def _call(router: Any, params: Any) -> dict[str, Any] | None:
     )
 
 
-async def handle_message(
+async def handle_message(  # noqa: PLR0911
     router: Any, message: Any, peers: PeerTools | None = None
 ) -> dict[str, Any] | None:
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":

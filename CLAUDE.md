@@ -21,6 +21,7 @@ Package `src/claude_code_wrapper/`: `claude_env.py`, `redact.py`, `disk_redact.p
 
 - `mise run install` - uv sync
 - `mise run test` - uv run pytest
+- `mise run test:critical` - critical-path tests only (`pytest -m critical`)
 - `mise run lint` - ruff check and format check
 - `mise run fmt` - ruff format and autofix
 - `mise run run` - serve with config.example.yaml

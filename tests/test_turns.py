@@ -17,6 +17,8 @@ from claude_code_wrapper.turns import (
     new_turn_id,
 )
 
+pytestmark = pytest.mark.critical
+
 
 def _record(turn_id: str, state: str = "running", **kw) -> TurnRecord:
     base = {

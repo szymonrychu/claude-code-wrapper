@@ -112,13 +112,12 @@ class Pty:
 def env(tmp_path, claude_config_dir):
     work = tmp_path / "work"
     work.mkdir()
-    e = {
+    return {
         "PATH": os.environ["PATH"],
         "CLAUDE_CONFIG_DIR": str(claude_config_dir),
         "FAKE_CLAUDE_SCENARIO": str(BASIC),
         "FAKE_CLAUDE_LOG": str(tmp_path / "log.jsonl"),
     }
-    return e
 
 
 @pytest.fixture

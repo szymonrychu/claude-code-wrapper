@@ -33,6 +33,8 @@ from claude_code_wrapper.permissions import (
 )
 from claude_code_wrapper.router import HOLD_GONE_WAITER, OPERATOR_DENY_MESSAGE
 
+pytestmark = pytest.mark.critical
+
 BASH = {"command": "echo probe"}
 
 

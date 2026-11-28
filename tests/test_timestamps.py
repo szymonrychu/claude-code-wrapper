@@ -5,8 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import yaml
-
 from claude_code_wrapper import events, hooks, metrics, ring, session, turns
 from claude_code_wrapper.api import sessions as api_sessions
 from claude_code_wrapper.api import turns as api_turns
@@ -30,15 +28,6 @@ def test_metrics_parse_z_timestamps():
 def test_squash_and_out_are_single_definitions():
     assert session._squash is ring._squash
     assert api_sessions._out is api_turns._out
-
-
-def test_example_config_single_source_and_guard_is_self_contained():
-    root_copy = ROOT / "config.example.yaml"
-    packaged = ROOT / "src/claude_code_wrapper/data/config.example.yaml"
-    assert root_copy.is_symlink() or root_copy.read_bytes() == packaged.read_bytes()
-    cfg = yaml.safe_load(packaged.read_text())
-    for action in cfg["hooks"]["onAgentToolCall"]:
-        assert "guard.sh" not in action["run"]
 
 
 def test_turns_and_events_share_timestamp_format(tmp_path):

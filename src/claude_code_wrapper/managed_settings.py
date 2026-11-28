@@ -115,7 +115,7 @@ def _check_guard_plugin(overlay: dict[str, Any]) -> None:
                 raise LockedKeyError(f"enabledPlugins.{name}")
 
 
-def merge_overlay(baseline: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+def merge_overlay(baseline: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
     """The baseline with `overlay` applied (spec D2, R7). Dicts deep merge; each hooks event
     list is the baseline groups then the overlay groups; `permissions.deny` is the baseline
     rules then the overlay rules not already present; any other list is replaced. Refuses a
@@ -358,7 +358,7 @@ class ManagedSettings:
             and (self._dedicated or name in CLAUDE_MANAGED_NAMES)
         )
 
-    def _inspect(self) -> tuple[DriftKind, str | None] | None:
+    def _inspect(self) -> tuple[DriftKind, str | None] | None:  # noqa: PLR0911
         """The first drift kind (and the found file's sha256), or None for a clean dir."""
         try:
             st = os.lstat(self.path)

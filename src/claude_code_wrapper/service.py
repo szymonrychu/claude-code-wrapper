@@ -212,7 +212,7 @@ async def _fire_on_start(cfg: Config, redactor: Redactor, handle: ServiceHandle)
     return True
 
 
-async def _run(
+async def _run(  # noqa: C901, PLR0915
     cfg: Config,
     redactor: Redactor,
     ready: asyncio.Event | None,

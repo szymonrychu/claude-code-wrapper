@@ -1131,7 +1131,7 @@ class SessionManager:
             ctx.closed_emitted = True
             self._emit(ctx, "session_closed", {})
 
-    async def _teardown(
+    async def _teardown(  # noqa: C901, PLR0912
         self,
         ctx: _Active,
         grace: float,

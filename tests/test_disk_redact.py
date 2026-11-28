@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 
+import pytest
 from conftest import World, wait_turn, wait_until
 from test_secret_env import BAR, FOO, _scenario, _session
 from test_terminals import base_service_env
@@ -26,6 +27,8 @@ from claude_code_wrapper.disk_redact import (
 )
 from claude_code_wrapper.manager import CreateSessionRequest, SessionManager
 from claude_code_wrapper.redact import Redactor
+
+pytestmark = pytest.mark.critical
 
 PEM_LIKE = "CANARY-line-one\nCANARY-line-two"
 

@@ -438,7 +438,7 @@ class SessionRouter(SessionListener):
     #: moved claude to a new session id; the manager persists it at once (resume follows it).
     on_claude_session_change: Callable[[str, str, str], None] | None = None
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         session: Session | None,
         event_log: EventLog,
@@ -1282,7 +1282,7 @@ class SessionRouter(SessionListener):
             self._metrics.tool_call(tool_name, "deny")
         return {"stdout": deny_output(reason), "stderr": "", "exit_code": 0}
 
-    async def _on_pre_tool_use(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
+    async def _on_pre_tool_use(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:  # noqa: C901, PLR0911, PLR0912
         tool_name = str(payload.get("tool_name") or "")
         tool_use_id = payload.get("tool_use_id")
         tool_input = payload.get("tool_input")
@@ -1407,7 +1407,7 @@ class SessionRouter(SessionListener):
         self._annotate(self.session.current_turn, outcome)
         return self._with_notes(event_name, payload, outcome.additional_context)
 
-    async def _on_stop(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:
+    async def _on_stop(self, event_name: str, payload: Mapping[str, Any]) -> RelayResponse:  # noqa: C901, PLR0912
         self._resolve_pending_by_terminal(self.permissions.of_agent(None), "deny")
         await self._flush_transcripts()
         await self._await_running_marker()
@@ -1479,7 +1479,7 @@ class SessionRouter(SessionListener):
             await self._after_turn(record, event)
         return self._stop_loop_answer() if tripped is not None else _allow()
 
-    def _pressure_stop(
+    def _pressure_stop(  # noqa: PLR0911
         self, payload: Mapping[str, Any], record: TurnRecord | None
     ) -> RelayResponse | None:
         """Block a Stop of the running turn under context pressure (bounded per turn), or once
@@ -1580,7 +1580,7 @@ class SessionRouter(SessionListener):
             await asyncio.sleep(STOP_MARKER_POLL_SECONDS)
             await self._flush_transcripts()
 
-    async def _stop_gate(self, payload: Mapping[str, Any]) -> RelayResponse | None:
+    async def _stop_gate(self, payload: Mapping[str, Any]) -> RelayResponse | None:  # noqa: PLR0911
         """onStop for a Stop that would end the running turn; the relay answer if it stays open.
 
         None means "complete as today": no gate is configured and no command is queued, the
@@ -1940,7 +1940,7 @@ class SessionRouter(SessionListener):
 
     # ------------------------------------------------------------------ transcript events
 
-    async def _on_transcript_events(self, events: list[TranscriptEvent]) -> None:
+    async def _on_transcript_events(self, events: list[TranscriptEvent]) -> None:  # noqa: C901, PLR0912
         self.session.note_activity()
         if self._dropping_history:
             return
@@ -2471,7 +2471,7 @@ class SessionRouter(SessionListener):
         timeouts = self.commands_cfg.timeout_seconds
         return float(timeouts.get(name, timeouts.get("default", 60)))
 
-    async def _run_command(self, record: CommandRecord) -> None:
+    async def _run_command(self, record: CommandRecord) -> None:  # noqa: C901
         """D4 step 3: quiet screen, onCommand, type the line, wait for completion or timeout.
 
         One deadline (D7): `timeout_seconds[name]` from the runner taking the command, spent by
@@ -2610,7 +2610,7 @@ class SessionRouter(SessionListener):
         finally:
             self._dialog_restart = False
 
-    async def _await_completion(
+    async def _await_completion(  # noqa: C901, PLR0911, PLR0912
         self, record: CommandRecord, mark: int, deadline: float
     ) -> tuple[str, str | None, str | None, str | None]:
         """(state, result, error, output) from the signal bus by `deadline`, else a timeout.

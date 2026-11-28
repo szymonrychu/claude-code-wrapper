@@ -15,6 +15,10 @@ run = "uv sync"
 description = "Run the test suite"
 run = "uv run pytest"
 
+[tasks."test:critical"]
+description = "Run the critical-path tests (default deselection kept)"
+run = "uv run pytest -m \"critical and not integration and not live\""
+
 [tasks.lint]
 description = "Lint and check formatting"
 run = "uv run ruff check . && uv run ruff format --check ."

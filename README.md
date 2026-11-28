@@ -5009,6 +5009,8 @@ tree at `/workdir/workbench`, `~/.ssh` read-only, and the example config; it for
 `.github/workflows/build.yaml` runs a strict chain of jobs, each `needs` the previous one:
 `pre-commit` -> `unit` (lint + tests) -> `integration` (compose-based, real image, fake claude) ->
 `build-push`. Pull requests run the whole chain and build the image, but never log in or push.
+`test-critical` (`mise run test:critical`) runs the critical-path tests beside `unit`, after
+`pre-commit`, as a fast signal.
 Only a push to `main` logs in to Harbor and pushes the image. The only registry used is Harbor
 (no Docker Hub, no PyPI, no GHCR). The image is built as a gzip OCI archive and pushed with
 `regctl` in 50MB chunks, because Cloudflare in front of Harbor rejects request bodies over 100MB
@@ -5062,6 +5064,7 @@ Run `pre-commit install` once per clone to enable the gitleaks hook.
 ```bash
 mise run install    # uv sync
 mise run test       # uv run pytest
+mise run test:critical  # critical-path tests only (pytest -m critical)
 mise run lint       # ruff check + ruff format --check
 mise run fmt        # ruff format + autofix
 mise run run        # serve with config.example.yaml
@@ -5074,9 +5077,7 @@ mise run run        # serve with config.example.yaml
   dialogs, bracketed-paste input, Stop hook, transcript writing), so the suite never needs a real
   Claude or network.
 - **TDD.** Every behaviour change is written test-first: see the failing test, then the code.
-  README coverage is itself tested: `tests/test_readme_api.py` and `tests/test_readme_config.py`
-  fail on an undocumented route, event, hook, error code, config key or Claude env var. After
-  changing a model, update the tables here (defaults are compared with the model).
+  After changing a model, route, event, hook, error code or config key, update the tables here.
 - **Manual real-Claude smoke.**
   1. `export CLAUDE_CODE_OAUTH_TOKEN=... CCW_AUTH_TOKEN=smoke`
   2. `docker compose up -d --build`

@@ -36,6 +36,8 @@ from claude_code_wrapper.session import (
 )
 from claude_code_wrapper.turns import TurnRecord, TurnStore
 
+pytestmark = pytest.mark.critical
+
 SID = "ses_0123456789ab"
 BYPASS = BootDialog(pattern="Bypass Permissions mode", keys=["\x1b[B", "\r"], delay_seconds=0.05)
 BOOT = {

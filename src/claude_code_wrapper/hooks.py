@@ -304,7 +304,7 @@ class HookDispatcher:
             return True
         return tool_name is not None and re.fullmatch(matcher, tool_name) is not None
 
-    async def _run(
+    async def _run(  # noqa: C901
         self,
         event: str,
         index: int,

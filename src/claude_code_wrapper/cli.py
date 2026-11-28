@@ -53,7 +53,7 @@ def missing_prerequisites(binary: str) -> list[str]:
     return [name for name in (binary, "git") if shutil.which(name) is None]
 
 
-def _serve(args: argparse.Namespace) -> int:
+def _serve(args: argparse.Namespace) -> int:  # noqa: PLR0911
     path = args.config or os.environ.get("CCW_CONFIG") or DEFAULT_CONFIG
     try:
         cfg = load_config(path)
@@ -119,7 +119,7 @@ def _managed_settings(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911
     args = _parser().parse_args(argv)
     if args.command == "version":
         print(__version__)

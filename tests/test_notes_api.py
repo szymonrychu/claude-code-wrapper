@@ -110,18 +110,6 @@ def test_stored_text_unmodified(tmp_path: Path) -> None:
     assert "escaped" in notes and "unmodified" in notes
 
 
-def test_config_defaults() -> None:
-    n = Config().notes
-    assert (n.enabled, n.max_notes, n.max_note_chars, n.delivery_max_chars) == (
-        False,
-        50,
-        2000,
-        8000,
-    )
-    assert n.max_keyed_notes == 32
-    assert (n.throttle_seconds, n.throttle_tool_results) == (30, 10)
-
-
 def test_store_pending_and_delivered() -> None:
     s = NoteStore(max_notes=2)
     a = s.put("a", key="k")

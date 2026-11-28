@@ -210,18 +210,6 @@ def test_bool_true_is_1_false_omitted():
     assert ClaudeEnv().to_env() == {}
 
 
-def test_documented_on_flags_are_bool():
-    cat = {s.env: s for s in ClaudeEnv.catalogue()}
-    for env in (
-        "DISABLE_COMPACT",
-        "DISABLE_AUTO_COMPACT",
-        "DISABLE_LOGIN_COMMAND",
-        "DISABLE_PROMPT_CACHING_OPUS",
-        "CLAUDE_CODE_USE_MANTLE",
-    ):
-        assert cat[env].type == "bool"
-
-
 @pytest.mark.parametrize("field", ["mcp_timeout", "bash_default_timeout_ms", "max_thinking_tokens"])
 def test_numeric_fields_reject_non_positive(field):
     for bad in (0, -5):

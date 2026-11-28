@@ -401,7 +401,7 @@ def _positionals(args: list[str]) -> list[str]:
     return out
 
 
-def plugin_main(args: list[str]) -> int:
+def plugin_main(args: list[str]) -> int:  # noqa: C901, PLR0911, PLR0912
     state = _load_state()
     as_json = "--json" in args
     pos = _positionals(args)
@@ -708,7 +708,7 @@ class Fake:
                 raise Exit(1)
 
     # ---- main loop
-    def run(self) -> int:
+    def run(self) -> int:  # noqa: C901, PLR0912, PLR0915
         os.makedirs(self.proj_dir, exist_ok=True)
         self.boot()
         in_paste = False
@@ -1122,7 +1122,7 @@ class Fake:
                 )
             )
 
-    def run_steps(self, steps: list[dict], tokens: int, bg: list[dict], turn: dict) -> bool:
+    def run_steps(self, steps: list[dict], tokens: int, bg: list[dict], turn: dict) -> bool:  # noqa: C901, PLR0912
         """Run steps; False when the turn ended without a Stop (interrupt or raw print).
 
         A run of consecutive main-agent tool/mcp steps is one tool group: PostToolBatch hooks
@@ -1286,7 +1286,7 @@ class Fake:
             return "bypassPermissions"
         return "default" if boot.get("manual_start") else "auto"
 
-    def permission_prompt(
+    def permission_prompt(  # noqa: C901
         self, name: str, tinput: dict, who: dict, footer: bool, suggestions: list | None = None
     ) -> tuple[str, str | None]:
         """Draw the permission prompt and race the PermissionRequest hooks against keys.
@@ -1424,7 +1424,7 @@ class Fake:
         )
 
     @staticmethod
-    def mcp_call(server: str, tool: str, arguments: dict) -> tuple[str, bool]:
+    def mcp_call(server: str, tool: str, arguments: dict) -> tuple[str, bool]:  # noqa: C901
         """Real claude's HTTP MCP handshake and tools/call; returns (result text, is_error)."""
         try:
             with open(os.path.join(config_dir(), ".claude.json")) as f:
@@ -1575,7 +1575,7 @@ def print_main(argv: list[str]) -> int:
     return 0
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str]) -> int:  # noqa: PLR0911
     if argv[:1] == ["--version"]:
         print(VERSION)
         return 0
