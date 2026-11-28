@@ -9,11 +9,14 @@ import os
 import time
 
 import httpx
+import pytest
 
 from claude_code_wrapper import hooks
 from claude_code_wrapper.config import HooksConfig
 from claude_code_wrapper.hooks import HookDispatcher, build_payload
 from claude_code_wrapper.redact import Redactor
+
+pytestmark = pytest.mark.critical
 
 
 def payload():

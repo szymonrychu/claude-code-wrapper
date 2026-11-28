@@ -12,6 +12,8 @@ import pytest
 
 from claude_code_wrapper import hook_relay as hr
 
+pytestmark = pytest.mark.critical
+
 
 class _Srv:
     def __init__(self, script: list[Any]) -> None:

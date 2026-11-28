@@ -26,6 +26,8 @@ from claude_code_wrapper.session import TurnRejected
 from claude_code_wrapper.turns import Probe, TurnRecord, TurnStore, now_iso
 from claude_code_wrapper.workdir import FileWriteError
 
+pytestmark = pytest.mark.critical
+
 TOKEN = "tok-0123456789abcdef"
 SECRET = "sk-ant-oat01-supersecretvalue"
 H = {"Authorization": f"Bearer {TOKEN}"}

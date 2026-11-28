@@ -18,6 +18,8 @@ from claude_code_wrapper.peer_auth import (
     verify_request,
 )
 
+pytestmark = pytest.mark.critical
+
 TOKEN = "s3cret-peer-token-value"
 NOW = 1_700_000_000_000
 BODY = b'{"message":"hi"}'

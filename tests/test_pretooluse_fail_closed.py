@@ -11,6 +11,8 @@ from test_router import Harness, webhook
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.hooks import gate_fail_mode
 
+pytestmark = pytest.mark.critical
+
 PRE = {"tool_use_id": "tu1", "tool_name": "Bash", "tool_input": {}}
 
 

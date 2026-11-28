@@ -15,6 +15,8 @@ import pytest
 from claude_code_wrapper import pty_proc
 from claude_code_wrapper.pty_proc import PtyClosed, PtyProcess
 
+pytestmark = pytest.mark.critical
+
 FIXTURES = Path(__file__).parent / "fixtures" / "scenarios"
 
 # A child that switches its terminal to raw mode, prints READY, then reports what it read.

@@ -34,6 +34,8 @@ from claude_code_wrapper.manager import CreateSessionRequest, SessionManager
 from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.session import _redactor_for
 
+pytestmark = pytest.mark.critical
+
 #: Long value under a name the secret pattern does not match.
 FOO = "CANARY-foo-value-4417"
 #: Short value: below the name-pattern redaction's length floor.

@@ -19,6 +19,8 @@ from claude_code_wrapper.bootstrap.settings import (
 )
 from claude_code_wrapper.config import Config
 
+pytestmark = pytest.mark.critical
+
 RELAY = "/x/ccw-hook"
 MANAGED_DIR = Path("/etc/claude-code")
 

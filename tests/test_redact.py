@@ -1,4 +1,8 @@
+import pytest
+
 from claude_code_wrapper.redact import Redactor
+
+pytestmark = pytest.mark.critical
 
 
 def test_redactor_longest_first():

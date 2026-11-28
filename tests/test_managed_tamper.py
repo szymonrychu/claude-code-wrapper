@@ -19,6 +19,8 @@ from claude_code_wrapper.hook_relay import CLAUDE_HOOK_EVENTS
 from claude_code_wrapper.internal_api import HEADER_SESSION, HEADER_TOKEN, create_internal_app
 from claude_code_wrapper.managed_settings import TMP_NAME, Drift, ManagedSettings
 
+pytestmark = pytest.mark.critical
+
 RELAY = "/x/ccw-hook"
 GROUP = {"matcher": "Bash", "hooks": [{"type": "command", "command": "/bin/true"}]}
 

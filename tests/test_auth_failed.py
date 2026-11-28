@@ -19,6 +19,8 @@ from claude_code_wrapper.manager import CreateSessionRequest, SessionManager
 from claude_code_wrapper.redact import Redactor
 from claude_code_wrapper.session import AUTH_FAILED, FatalScanner
 
+pytestmark = pytest.mark.critical
+
 DOT = "·"
 CASES = [
     ("Login reached its time limit", "time_limit"),

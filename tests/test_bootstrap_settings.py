@@ -3,6 +3,8 @@ import stat
 import sys
 from pathlib import Path
 
+import pytest
+
 from claude_code_wrapper.bootstrap.settings import (
     MANAGED_RELAY_EVENTS,
     RELAY_MATCHERS,
@@ -14,6 +16,8 @@ from claude_code_wrapper.bootstrap.settings import (
 )
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.hook_relay import CLAUDE_HOOK_EVENTS
+
+pytestmark = pytest.mark.critical
 
 RELAY = "/opt/ccw-hook"
 

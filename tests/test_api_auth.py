@@ -12,6 +12,8 @@ from claude_code_wrapper.api.app import create_app
 from claude_code_wrapper.config import Config
 from claude_code_wrapper.redact import Redactor
 
+pytestmark = pytest.mark.critical
+
 TOKEN = "tok-0123456789abcdef"
 
 

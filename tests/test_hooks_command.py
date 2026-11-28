@@ -7,9 +7,13 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from claude_code_wrapper.config import HooksConfig
 from claude_code_wrapper.hooks import HookDispatcher, build_payload
 from claude_code_wrapper.redact import Redactor
+
+pytestmark = pytest.mark.critical
 
 
 def make(tmp_path: Path, hooks: dict, **kw) -> tuple[HookDispatcher, list]:

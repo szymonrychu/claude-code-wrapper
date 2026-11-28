@@ -9,6 +9,8 @@ from claude_code_wrapper.config import (
     load_config,
 )
 
+pytestmark = pytest.mark.critical
+
 
 def write(tmp_path, text):
     p = tmp_path / "config.yaml"
