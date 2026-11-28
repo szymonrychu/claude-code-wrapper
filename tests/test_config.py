@@ -122,3 +122,31 @@ def test_peers_token_redacted(tmp_path):
     assert cfg.redacted()["peers"]["token"] == "***"
     assert token not in str(cfg.redacted())
     assert Config().redacted()["peers"]["token"] == ""
+
+
+def test_allow_anonymous_default_false(tmp_path):
+    cfg = load_config(write(tmp_path, "server:\n  auth_token: t\n"))
+    assert cfg.server.allow_anonymous is False
+
+
+def test_usage_endpoint_requires_token(tmp_path):
+    msg = err(tmp_path, "usage:\n  endpoint: http://usage.test:8002/samples\n")
+    assert "usage.token: required when usage.endpoint is set" in msg
+    msg = err(
+        tmp_path, "usage:\n  endpoint: http://usage.test:8002/samples\n  token: " + "t" * 15 + "\n"
+    )
+    assert "usage.token: must be at least 16 characters" in msg
+
+
+def test_hook_events_match_hooks_config_fields():
+    from claude_code_wrapper.config import HOOK_EVENTS, HooksConfig
+
+    assert tuple(HooksConfig.model_fields) == HOOK_EVENTS
+
+
+def test_empty_auth_vars_are_unset(tmp_path, monkeypatch):
+    for k in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CCW_AUTH_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = load_config(write(tmp_path, "claude: {}\n"))
+    assert cfg.claude.env.to_env() == {}
+    assert cfg.claude.env.redacted() == {}

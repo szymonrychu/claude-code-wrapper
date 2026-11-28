@@ -225,6 +225,13 @@ def test_write_managed_mode_and_no_temp_left(tmp_path):
     assert not (tmp_path / TMP_NAME).exists()
 
 
+def test_paths_managed_settings_must_be_absolute(tmp_path):
+    with pytest.raises(ValueError):
+        _cfg(paths={"managed_settings": "etc/claude-code/managed-settings.json"})
+    ok = _cfg(paths={"managed_settings": str(tmp_path / "m" / "managed-settings.json")})
+    assert ok.paths.managed_settings.endswith("/m/managed-settings.json")
+
+
 @pytest.mark.parametrize("parent", ["/", "/etc", "/tmp"])
 def test_paths_managed_settings_rejects_shared_parent(parent):
     """R1: the parent dir is the managed dir; a system-wide dir cannot be dedicated."""
