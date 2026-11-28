@@ -84,7 +84,6 @@ class StubSession:
 
     def adopt_agent_turn(self):
         """The stub never adopts a turn claude ran by itself."""
-        return None
 
     def transcript_turn_over(self):
         pass

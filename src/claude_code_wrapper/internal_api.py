@@ -204,7 +204,7 @@ async def _watch_disconnect(request: Request, gone: asyncio.Event) -> None:
     gone.set()
 
 
-def create_internal_app(manager: SessionManager) -> FastAPI:
+def create_internal_app(manager: SessionManager) -> FastAPI:  # noqa: C901, PLR0915
     app = FastAPI(title="ccw-internal", docs_url=None, redoc_url=None, openapi_url=None)
     deliveries: dict[str, OrderedDict[str, asyncio.Task[RelayResponse]]] = {}
 
@@ -213,7 +213,7 @@ def create_internal_app(manager: SessionManager) -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/internal/hooks/{event}")
-    async def hook(event: str, request: Request) -> JSONResponse:
+    async def hook(event: str, request: Request) -> JSONResponse:  # noqa: C901
         if event not in CLAUDE_HOOK_EVENTS:
             raise HTTPException(404, "unknown hook event")
         router = _authorized_router(manager, request)

@@ -105,7 +105,7 @@ def _spawned(name: str, tinput: dict[str, Any]) -> str | None:
     return None
 
 
-def pending_tasks(lines: list[dict[str, Any]]) -> list[dict[str, str]]:
+def pending_tasks(lines: list[dict[str, Any]]) -> list[dict[str, str]]:  # noqa: C901, PLR0912
     """Background work started in `lines` and neither finished nor stopped."""
     started: dict[str, dict[str, Any]] = {}  # tool_use_id -> task
     for line in lines:

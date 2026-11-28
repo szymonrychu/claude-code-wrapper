@@ -78,7 +78,7 @@ def _ids(text: str, key: str, label: str) -> set[str]:
         raise PluginInstallError(label, 0, f"unparseable json: {text[-TAIL_BYTES:]}") from exc
 
 
-async def install_plugins(
+async def install_plugins(  # noqa: C901, PLR0912
     plugins_cfg: PluginsConfig,
     *,
     claude_binary: str,

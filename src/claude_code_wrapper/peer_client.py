@@ -178,7 +178,7 @@ class PeerClient:
         text = _PREFIX[code] + (f": {detail}" if detail else "")
         return PeerError(code, text.replace(self._token, "***"))
 
-    def _map_status(self, response: httpx.Response, url: str) -> PeerError:
+    def _map_status(self, response: httpx.Response, url: str) -> PeerError:  # noqa: PLR0911
         status = response.status_code
         if status == 404:
             return self._err("unknown_peer", url)

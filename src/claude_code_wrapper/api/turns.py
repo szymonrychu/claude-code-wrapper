@@ -104,7 +104,7 @@ def _rejected(exc: TurnRejected, lane: str = "idle") -> ApiError:
     )
 
 
-def _decode_attachments(
+def _decode_attachments(  # noqa: C901
     attachments: list[TurnAttachment], message_id: str, limits: Any
 ) -> dict[str, bytes]:
     """Check and decode the attachments into turn files; oversize ones are refused undecoded."""
@@ -145,7 +145,7 @@ def _decode_attachments(
 
 
 @router.post("/sessions/{session_id}/turns", status_code=202)
-async def submit_turn(session_id: str, body: TurnRequest, request: Request) -> Any:
+async def submit_turn(session_id: str, body: TurnRequest, request: Request) -> Any:  # noqa: C901, PLR0912
     try:
         live = _live_router(request, session_id)
     except ApiError as exc:

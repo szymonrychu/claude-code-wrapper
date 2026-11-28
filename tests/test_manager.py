@@ -90,7 +90,7 @@ STEP_FUNCS = (
 )
 
 
-async def test_create_runs_steps_in_order_and_is_ready(
+async def test_create_runs_steps_in_order_and_is_ready(  # noqa: PLR0915
     world: World, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     hooks_out = tmp_path / "on_create.jsonl"

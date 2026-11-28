@@ -148,7 +148,7 @@ async def scan_worktrees(workdir: Path, timeout: float) -> list[Worktree]:
     return out
 
 
-def _scan_scratch(
+def _scan_scratch(  # noqa: C901
     roots: list[str], since: datetime, deadline: float, exclude: Path | None
 ) -> tuple[list[ScratchFile], bool]:
     floor = since.timestamp()

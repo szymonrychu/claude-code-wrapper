@@ -306,7 +306,7 @@ class PeerService:
     async def accept_heartbeat(self, view: MemberView) -> MemberView:
         return await self.membership.accept_heartbeat(view)
 
-    # ------------------------------------------------------------------ notices (D8)
+    # ------------------------------------------------------------------ notices, D8
 
     async def _notify(
         self,

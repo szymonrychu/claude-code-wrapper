@@ -98,7 +98,7 @@ def test_render_managed_never_sets_hook_kill_switches():
     assert "statusLine" not in doc
 
 
-# ---------------------------------------------------------------- install (D2, Q3)
+# ---------------------------------------------------------------- install, D2 and Q3
 
 
 def _baseline() -> dict:
@@ -232,7 +232,7 @@ def test_paths_managed_settings_rejects_shared_parent(parent):
         _cfg(paths={"managed_settings": str(Path(parent) / "managed-settings.json")})
 
 
-# ---------------------------------------------------------------- wiring (D3)
+# ---------------------------------------------------------------- wiring, D3
 
 
 def _session_hooks(world, sid: str) -> dict:

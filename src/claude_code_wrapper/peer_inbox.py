@@ -319,7 +319,7 @@ class PeerInbox:
             return item
         return None
 
-    async def _attempt(self) -> None:
+    async def _attempt(self) -> None:  # noqa: C901
         router = self._router
         while True:
             if self._closed or not self._items:

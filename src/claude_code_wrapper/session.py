@@ -575,7 +575,7 @@ class Session:
     the session holds it from the start and `start` continues or fails it.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         spec: SessionSpec,
         listener: SessionListener,

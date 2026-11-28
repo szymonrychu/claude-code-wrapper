@@ -205,7 +205,7 @@ def _install_statusline(doc: dict[str, Any], config_dir: str | Path) -> None:
     doc["statusLine"] = replacement
 
 
-def render_settings(
+def render_settings(  # noqa: C901, PLR0912, PLR0915
     config_dir: str | Path,
     cfg: Config,
     relay_command: str | None = None,
