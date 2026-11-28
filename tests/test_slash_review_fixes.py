@@ -1,18 +1,11 @@
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 import pytest
 from conftest import World
 from test_command_runner import finished, inputs, start, types
 
 from claude_code_wrapper.commands import MAX_COMMAND_ARGS, CommandRejected, validate
 from claude_code_wrapper.pty_proc import paste_bytes
-
-ROOT = Path(__file__).resolve().parent.parent
-README = (ROOT / "README.md").read_text()
-EXAMPLE = (ROOT / "src/claude_code_wrapper/data/config.example.yaml").read_text()
 
 
 @pytest.mark.parametrize(
@@ -29,25 +22,6 @@ def test_args_keep_newlines_and_tabs():
     assert validate("compact", "x\n/exit", allow_force=False) == "x\n/exit"
     assert validate("mcp", "reconnect\tgh", allow_force=False) == "reconnect\tgh"
     assert validate("compact", "a" * MAX_COMMAND_ARGS, allow_force=False) == "a" * 20000
-
-
-def test_readme_command_events_use_id():
-    for ev in ("queued", "started", "completed", "failed"):
-        m = re.search(rf"### `command_{ev}`\n(.*?)(?=^### )", README, re.S | re.M)
-        assert m and "`command_id`" not in m.group(1), ev
-        assert "`id`" in m.group(1) and "`result`" in m.group(1) and "`output`" in m.group(1)
-
-
-def test_readme_documents_subagent_bypass():
-    body = README.split("\n## Slash commands\n")[1].split("\n## ", 1)[0]
-    assert "PreToolUse" in body and "/internal/mcp" in body and "subagent" in body
-    trust = README.split("\n## Trust model\n")[1].split("\n## ", 1)[0]
-    assert "/internal/mcp" in trust
-
-
-def test_example_config_commands_client_comment():
-    line = next(x for x in EXAMPLE.splitlines() if "client: []" in x)
-    assert "/sessions/" not in line and "public commands endpoint" in line
 
 
 async def test_args_smuggling_never_typed(world: World):

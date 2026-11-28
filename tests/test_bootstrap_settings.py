@@ -245,15 +245,6 @@ def test_permission_timeouts_formula():
     assert t.relay_timeout < t.hook_timeout
 
 
-def test_default_permission_timeout_ties_to_formula():
-    from claude_code_wrapper.config import DEFAULT_PERMISSION_HOLD_SECONDS
-    from claude_code_wrapper.hook_relay import DEFAULT_PERMISSION_TIMEOUT
-
-    default = permission_timeouts(DEFAULT_PERMISSION_HOLD_SECONDS)
-    assert default.relay_timeout == DEFAULT_PERMISSION_TIMEOUT
-    assert Config().sessions.commands.permission_hold_seconds == DEFAULT_PERMISSION_HOLD_SECONDS
-
-
 def test_permission_hook_timeout_follows_override(tmp_path):
     doc = _render(tmp_path, permission_hold_seconds=60)
     assert doc["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"] == 90

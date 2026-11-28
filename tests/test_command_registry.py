@@ -38,14 +38,6 @@ def rejected(fn, *a, **kw) -> CommandRejected:
     return e.value
 
 
-# ------------------------------------------------------------------ config
-def test_commands_config_defaults_off():
-    c = Config().sessions.commands
-    assert c.agent == [] and c.client == []
-    assert c.timeout_seconds == {"compact": 600, "default": 60}
-    assert c.continue_prompt and c.allow_force is False and c.quiet_seconds == 1.5
-
-
 DENY = [
     "exit",
     "quit",

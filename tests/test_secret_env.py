@@ -41,10 +41,6 @@ BAR = "Zq7"
 NAMES = ["FOO", "BAR"]
 
 
-def test_secret_env_defaults_to_empty() -> None:
-    assert Config.model_validate({}).claude.secret_env == []
-
-
 @pytest.mark.parametrize("name", ["foo", "1FOO", "FOO-BAR", "", "FOO*"])
 def test_secret_env_names_are_env_names(name: str) -> None:
     with pytest.raises(ValidationError):

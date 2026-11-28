@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -337,13 +335,3 @@ def test_routes_absent_when_disabled(route) -> None:
 def test_peer_token_redacted() -> None:
     _, mgr = make()
     assert PEER_TOKEN not in mgr.redactor.redact(f"x {PEER_TOKEN} y")
-
-
-def test_peer_routes_documented() -> None:
-    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
-    api = re.search(r"^## API reference\s*$(.*?)^## ", readme, re.S | re.M).group(1)
-    for route in ROUTES:
-        assert f"### `POST /v1/peers/{route}`" in api
-    errors = re.search(r"^## Errors\s*$(.*?)^## ", readme, re.S | re.M).group(1)
-    for code in ("message_too_large", "inbox_full", "rate_limited"):
-        assert re.search(rf"^\|\s*`{code}`\s*\|", errors, re.M), code

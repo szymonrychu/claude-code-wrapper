@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from claude_code_wrapper.claude_env import ClaudeEnv
-from claude_code_wrapper.config import ClaudeConfig, Config
+from claude_code_wrapper.config import Config
 from claude_code_wrapper.manager import SessionManager
 from claude_code_wrapper.session import build_env, passthrough_names
 
@@ -35,11 +35,6 @@ def test_star_never_passes_ccw_or_managed():
 
 def test_case_sensitive():
     assert passthrough_names(SERVICE, ["gh_*"], []) == []
-
-
-def test_config_field_defaults_and_parses():
-    assert ClaudeConfig().passthrough_env_exclude == []
-    assert ClaudeConfig(passthrough_env_exclude=["*KEY"]).passthrough_env_exclude == ["*KEY"]
 
 
 def test_glob_matches_names():

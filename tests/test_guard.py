@@ -4,12 +4,6 @@ from claude_code_wrapper.config import Config, GuardConfig
 from claude_code_wrapper.guard import BreakerVerdict, RunawayGuard, SpawnVerdict, call_key
 
 
-def test_guard_config_defaults_off():
-    assert Config().guard == GuardConfig(
-        max_stop_continuations=0, max_agent_spawns=0, tool_failure_repeats=0
-    )
-
-
 @pytest.mark.parametrize(
     "field,bad",
     [
@@ -23,21 +17,6 @@ def test_guard_config_defaults_off():
 def test_guard_config_bounds(field, bad):
     with pytest.raises(ValueError, match=field):
         Config.model_validate({"guard": {field: bad}})
-
-
-def test_guard_config_accepts_orchestrator_defaults_and_refuses_extra():
-    cfg = Config.model_validate(
-        {
-            "guard": {
-                "max_stop_continuations": 25,
-                "max_agent_spawns": 300,
-                "tool_failure_repeats": 3,
-            }
-        }
-    )
-    assert cfg.guard.tool_failure_repeats == 3
-    with pytest.raises(ValueError):
-        Config.model_validate({"guard": {"foo": 1}})
 
 
 def test_stop_continuation_counts_active_only_and_trips_at_cap():

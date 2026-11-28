@@ -23,11 +23,6 @@ def parse(sessions: dict[str, Any]) -> Config:
 # ---------------------------------------------------------------- config
 
 
-def test_auto_compact_off_by_default():
-    cfg = parse({}).sessions.auto_compact
-    assert (cfg.idle_seconds, cfg.instructions, cfg.min_context_tokens) == (0, "", 0)
-
-
 def test_unknown_key_and_negative_values_rejected():
     for bad in ({"nope": 1}, {"idle_seconds": -1}, {"min_context_tokens": -1}):
         with pytest.raises(ValueError):

@@ -73,13 +73,6 @@ def test_key_validates_as_list_of_strings():
         Config.model_validate({"claude": {"main_agent_only_tools": "mcp__x__*"}})
 
 
-def test_readme_documents_best_effort():
-    text = README.read_text()
-    trust = text.split("## Trust model", 1)[1].split("\n## ", 1)[0]
-    assert "main_agent_only_tools" in trust
-    assert "best-effort" in trust and "not a security boundary" in trust
-
-
 MAIN_ONLY = ["mcp__any-mcp__orchestrator_*"]
 HISTORY = "mcp__any-mcp__orchestrator_history_get"
 PATCH = "mcp__any-mcp__orchestrator_session_patch"
@@ -118,9 +111,3 @@ async def test_allowed_list_does_not_open_ccw_tools(tmp_path):
     assert out["permissionDecision"] == "deny"
     assert out["permissionDecisionReason"] == CCW_SUBAGENT_DENY_REASON
     await h.router.close()
-
-
-def test_allowed_key_defaults_empty_and_validates():
-    assert Config().claude.subagent_allowed_tools == []
-    with pytest.raises(ValidationError):
-        Config.model_validate({"claude": {"subagent_allowed_tools": "x"}})

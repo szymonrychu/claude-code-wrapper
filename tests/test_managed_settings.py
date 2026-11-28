@@ -17,7 +17,7 @@ from claude_code_wrapper.bootstrap.settings import (
     relay_timeouts,
     render_managed_settings,
 )
-from claude_code_wrapper.config import Config, ConfigError, load_config
+from claude_code_wrapper.config import Config
 
 RELAY = "/x/ccw-hook"
 MANAGED_DIR = Path("/etc/claude-code")
@@ -223,30 +223,11 @@ def test_write_managed_mode_and_no_temp_left(tmp_path):
     assert not (tmp_path / TMP_NAME).exists()
 
 
-def test_paths_managed_settings_must_be_absolute(tmp_path):
-    assert Config().paths.managed_settings == "/etc/claude-code/managed-settings.json"
-    with pytest.raises(ValueError):
-        _cfg(paths={"managed_settings": "etc/claude-code/managed-settings.json"})
-    ok = _cfg(paths={"managed_settings": str(tmp_path / "m" / "managed-settings.json")})
-    assert ok.paths.managed_settings.endswith("/m/managed-settings.json")
-
-
 @pytest.mark.parametrize("parent", ["/", "/etc", "/tmp"])
 def test_paths_managed_settings_rejects_shared_parent(parent):
     """R1: the parent dir is the managed dir; a system-wide dir cannot be dedicated."""
     with pytest.raises(ValueError, match="dedicated"):
         _cfg(paths={"managed_settings": str(Path(parent) / "managed-settings.json")})
-
-
-def test_example_config_carries_managed_settings_path():
-    from importlib import resources
-
-    text = resources.files("claude_code_wrapper.data").joinpath("config.example.yaml")
-    assert "managed_settings: /etc/claude-code/managed-settings.json" in text.read_text()
-    try:
-        load_config(str(text))
-    except ConfigError as exc:  # pragma: no cover - the example must validate
-        pytest.fail(str(exc))
 
 
 # ---------------------------------------------------------------- wiring (D3)

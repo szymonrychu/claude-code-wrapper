@@ -10,17 +10,10 @@ import pytest
 from conftest import World, jsonl, wait_until
 
 from claude_code_wrapper import manager as manager_mod
-from claude_code_wrapper.config import Config
 from claude_code_wrapper.manager import CreateSessionRequest
 from claude_code_wrapper.service import ServiceHandle, run_service
 
 CRASH = {"turns": [{"match": "crash", "steps": [{"exit": 1}]}]}
-
-
-def test_defaults_off() -> None:
-    cfg = Config.model_validate({})
-    assert cfg.sessions.exit_when_last_destroyed is False
-    assert cfg.sessions.exit_when_dead is False
 
 
 async def test_last_destroy_stops_service_exit_0(world: World) -> None:

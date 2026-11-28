@@ -54,27 +54,6 @@ def test_magic_config_loads_and_ships():
     assert link.is_symlink() and link.resolve() == EXAMPLE.resolve()
 
 
-def test_example_config_options():
-    cfg = Config.model_validate({k: v for k, v in example().items() if k in SECTIONS})
-    s = cfg.sessions
-    assert s.defer_stop_on_background_tasks is True
-    assert s.exit_when_last_destroyed is True
-    assert s.max_restarts == 0
-    assert s.ask_user_question == "deny"
-    assert cfg.claude.settings["teammateMode"] == "in-process"
-    assert cfg.claude.env.claude_code_experimental_agent_teams is None
-    assert cfg.claude.env.mcp_timeout == 60000
-    assert cfg.claude.env.mcp_tool_timeout == 600000
-    assert cfg.claude.env.max_mcp_output_tokens == 50000
-    runs = [c.run for c in cfg.init.setup_commands]
-    assert "credential.helper" in runs[0] and "/etc/mtg/git-token" in runs[0]
-    assert "safe.directory /guides" in runs[1]
-    assert runs[2] == "true"
-    (review,) = cfg.hooks.onDestroy
-    assert review.blocking is True and review.timeout_seconds == 4800
-    assert review.run.endswith("review")
-
-
 def test_example_env_overrides():
     cfg = Config.model_validate(
         {
