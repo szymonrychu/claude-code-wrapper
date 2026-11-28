@@ -57,9 +57,12 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q -m 'not integration and not live'"
+addopts = "-q --strict-markers -m 'not integration and not live'"
 markers = [
+    "unit: in-process test, no IO beyond tmp files and in-process fakes",
     "integration: needs the compose stack (mise run test:integration)",
+    "e2e: whole service across processes",
     "live: real Claude Code in the built image (mise run test:live)",
+    "critical: critical-path behaviour (mise run test:critical)",
 ]
 asyncio_mode = "auto"
